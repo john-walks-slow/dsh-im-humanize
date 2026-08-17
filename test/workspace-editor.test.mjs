@@ -3,14 +3,14 @@ import test from 'node:test';
 import * as React from 'react';
 import TestRenderer from 'react-test-renderer';
 
-import { WorkspaceEditor } from '../plugin-src/client/workspace-editor.js';
+import {
+  WorkspaceDirectoryPickerContext,
+  WorkspaceEditor,
+} from '../plugin-src/client/workspace-editor.js';
 import { DiscordSettingsTab } from '../plugin-src/client/channels/discord/index.js';
+import { en, setImTranslator } from '../plugin-src/client/i18n.js';
 
 const { act, create } = TestRenderer;
-
-function submitEvent() {
-  return { preventDefault() {} };
-}
 
 function deferred() {
   let resolve;
@@ -20,6 +20,68 @@ function deferred() {
 
 async function flushMicrotasks() {
   for (let index = 0; index < 6; index += 1) await Promise.resolve();
+}
+
+function directoryListing(path, childNames = [], { home = '/workspace', truncated = false } = {}) {
+  let cursor = '';
+  const crumbs = [{ name: '/', path: '/', hidden: false }];
+  for (const name of path.split('/').filter(Boolean)) {
+    cursor += `/${name}`;
+    crumbs.push({ name, path: cursor, hidden: false });
+  }
+  return {
+    path,
+    home,
+    crumbs,
+    entries: childNames.map((name) => ({
+      name,
+      path: `${path === '/' ? '' : path}/${name}`,
+      hidden: name.startsWith('.'),
+    })),
+    truncated,
+  };
+}
+
+function nativeUnavailable() {
+  const error = new Error('Directory browsing is unavailable');
+  error.rpcError = {
+    code: 'directory-picker-unavailable',
+    message: error.message,
+    details: { capability: 'native' },
+  };
+  return error;
+}
+
+function nativeDirectoryPicker(selected) {
+  const calls = { list: 0, pick: 0 };
+  return {
+    calls,
+    async listDirectory() {
+      calls.list += 1;
+      throw nativeUnavailable();
+    },
+    async pickDirectory() {
+      calls.pick += 1;
+      return selected;
+    },
+  };
+}
+
+function withDirectoryPicker(element, picker) {
+  return React.createElement(
+    WorkspaceDirectoryPickerContext.Provider,
+    { value: picker },
+    element,
+  );
+}
+
+function textOf(node) {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  return node?.children?.map(textOf).join('') ?? '';
+}
+
+function buttonNamed(root, name) {
+  return root.findAllByType('button').find((button) => textOf(button) === name);
 }
 
 function discordSnapshot(workspace) {
@@ -53,12 +115,139 @@ function twoBotDiscordSnapshot(firstWorkspace) {
   };
 }
 
-test('WorkspaceEditor shows the current path and saves an edited absolute path', async () => {
+test('WorkspaceEditor browses from the current path and saves the selected directory', async () => {
   const saved = [];
+  const listed = [];
+  const picker = {
+    async listDirectory(path) {
+      listed.push(path);
+      if (path === '/workspace/current') {
+        return directoryListing(path, ['next project', '.hidden']);
+      }
+      if (path === '/workspace/current/next project') return directoryListing(path);
+      throw new Error(`Unexpected directory: ${path}`);
+    },
+    async pickDirectory() { throw new Error('native picker should not run'); },
+  };
   function Fixture() {
     const [workspace, setWorkspace] = React.useState('/workspace/current');
     return React.createElement(WorkspaceEditor, {
       workspace,
+      directoryPicker: picker,
+      async onSave(value) {
+        saved.push(value);
+        setWorkspace(value);
+      },
+    });
+  }
+
+  const bodyNode = { scrollTop: 0 };
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(Fixture), {
+      createNodeMock(element) {
+        if (element.props?.className === 'dim-directoryPickerBody') return bodyNode;
+        return {};
+      },
+    });
+  });
+  assert.equal(renderer.root.findByType('code').props.title, '/workspace/current');
+
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-workspaceEdit' }).props.onClick();
+    await flushMicrotasks();
+  });
+  const dialog = renderer.root.findByProps({ role: 'dialog' });
+  assert.equal(dialog.props['aria-modal'], 'true');
+  assert.equal(
+    textOf(renderer.root.findByProps({ id: dialog.props['aria-describedby'] })),
+    '切换后会清除这个机器人的旧会话映射。',
+  );
+  assert.equal(renderer.root.findAllByProps({ title: '/workspace/current/.hidden' }).length, 0);
+  bodyNode.scrollTop = 240;
+  await act(async () => {
+    renderer.root.findByProps({ title: '/workspace/current/next project' }).props.onClick();
+    await flushMicrotasks();
+  });
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-directoryPickerPrimary' }).props.onClick();
+    await flushMicrotasks();
+  });
+
+  assert.deepEqual(listed, ['/workspace/current', '/workspace/current/next project']);
+  assert.equal(bodyNode.scrollTop, 0);
+  assert.deepEqual(saved, ['/workspace/current/next project']);
+  assert.equal(renderer.root.findByType('code').props.title, '/workspace/current/next project');
+});
+
+test('WorkspaceEditor keeps the picker open and presents a rejected workspace error', async () => {
+  const picker = {
+    async listDirectory(path) {
+      return path === '/workspace/current'
+        ? directoryListing(path, ['missing'])
+        : directoryListing(path);
+    },
+  };
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(WorkspaceEditor, {
+      workspace: '/workspace/current',
+      directoryPicker: picker,
+      async onSave() {
+        const error = new Error('工作区路径不存在。');
+        error.code = 'workspace-not-found';
+        throw error;
+      },
+    }));
+  });
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-workspaceEdit' }).props.onClick();
+    await flushMicrotasks();
+  });
+  await act(async () => {
+    renderer.root.findByProps({ title: '/workspace/current/missing' }).props.onClick();
+    await flushMicrotasks();
+    renderer.root.findByProps({ className: 'dim-directoryPickerPrimary' }).props.onClick();
+    await flushMicrotasks();
+  });
+
+  assert.equal(textOf(renderer.root.findByProps({ role: 'alert' })), '工作区路径不存在。');
+  assert.equal(renderer.root.findByProps({ role: 'dialog' }).props['aria-modal'], 'true');
+  assert.equal(renderer.root.findByType('code').props.title, '/workspace/current');
+});
+
+test('WorkspaceEditor closes without saving when the current directory is selected', async () => {
+  let saves = 0;
+  const picker = { async listDirectory(path) { return directoryListing(path); } };
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(WorkspaceEditor, {
+      workspace: '/workspace/current',
+      directoryPicker: picker,
+      async onSave() { saves += 1; },
+    }));
+  });
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-workspaceEdit' }).props.onClick();
+    await flushMicrotasks();
+  });
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-directoryPickerPrimary' }).props.onClick();
+    await flushMicrotasks();
+  });
+
+  assert.equal(saves, 0);
+  assert.equal(renderer.root.findAllByProps({ role: 'dialog' }).length, 0);
+});
+
+test('WorkspaceEditor falls back to one native picker without restarting after save', async () => {
+  const saved = [];
+  const picker = nativeDirectoryPicker('/workspace/native');
+  function Fixture() {
+    const [workspace, setWorkspace] = React.useState('/workspace/current');
+    return React.createElement(WorkspaceEditor, {
+      workspace,
+      directoryPicker: picker,
       async onSave(value) {
         saved.push(value);
         setWorkspace(value);
@@ -68,81 +257,89 @@ test('WorkspaceEditor shows the current path and saves an edited absolute path',
 
   let renderer;
   await act(async () => { renderer = create(React.createElement(Fixture)); });
-  assert.equal(renderer.root.findByType('code').props.title, '/workspace/current');
-
   await act(async () => {
-    renderer.root.findByType('button').props.onClick();
-  });
-  const input = renderer.root.findByType('input');
-  assert.equal(input.props.value, '/workspace/current');
-  assert.equal(input.props.maxLength, 4_096);
-  await act(async () => {
-    input.props.onChange({ target: { value: '  /workspace/next project  ' } });
-  });
-  await act(async () => {
-    await renderer.root.findByType('form').props.onSubmit(submitEvent());
+    renderer.root.findByProps({ className: 'dim-workspaceEdit' }).props.onClick();
+    await flushMicrotasks();
   });
 
-  assert.deepEqual(saved, ['/workspace/next project']);
-  assert.equal(renderer.root.findByType('code').props.title, '/workspace/next project');
+  assert.deepEqual(saved, ['/workspace/native']);
+  assert.deepEqual(picker.calls, { list: 1, pick: 1 });
+  assert.equal(renderer.root.findByType('code').props.title, '/workspace/native');
+  assert.equal(renderer.root.findAllByProps({ role: 'dialog' }).length, 0);
 });
 
-test('WorkspaceEditor keeps editing and presents a rejected workspace error', async () => {
-  let renderer;
-  await act(async () => {
-    renderer = create(React.createElement(WorkspaceEditor, {
-      workspace: '/workspace/current',
-      async onSave() {
-        const error = new Error('工作区路径不存在。');
-        error.code = 'workspace-not-found';
-        throw error;
-      },
-    }));
-  });
-  await act(async () => { renderer.root.findByType('button').props.onClick(); });
-  await act(async () => {
-    renderer.root.findByType('input').props.onChange({ target: { value: '/workspace/missing' } });
-  });
-  await act(async () => {
-    await renderer.root.findByType('form').props.onSubmit(submitEvent());
-  });
-
-  assert.equal(renderer.root.findByProps({ role: 'alert' }).children.join(''), '工作区路径不存在。');
-  assert.equal(renderer.root.findByType('input').props.value, '/workspace/missing');
-});
-
-test('WorkspaceEditor rejects a relative path before calling the Host', async () => {
+test('WorkspaceEditor treats native picker cancellation as cancellation, not an error', async () => {
   let saves = 0;
+  const picker = nativeDirectoryPicker(null);
   let renderer;
   await act(async () => {
     renderer = create(React.createElement(WorkspaceEditor, {
       workspace: '/workspace/current',
+      directoryPicker: picker,
       async onSave() { saves += 1; },
     }));
   });
-  await act(async () => { renderer.root.findByType('button').props.onClick(); });
   await act(async () => {
-    renderer.root.findByType('input').props.onChange({ target: { value: 'relative/path' } });
-  });
-  await act(async () => {
-    await renderer.root.findByType('form').props.onSubmit(submitEvent());
+    renderer.root.findByProps({ className: 'dim-workspaceEdit' }).props.onClick();
+    await flushMicrotasks();
   });
 
   assert.equal(saves, 0);
-  assert.equal(renderer.root.findByProps({ role: 'alert' }).children.join(''), '工作区必须是绝对路径。');
+  assert.deepEqual(picker.calls, { list: 1, pick: 1 });
+  assert.equal(renderer.root.findAllByProps({ role: 'alert' }).length, 0);
+  assert.equal(renderer.root.findAllByProps({ role: 'dialog' }).length, 0);
 });
 
-test('WorkspaceEditor moves keyboard focus into and back out of edit mode', async () => {
-  let inputFocus = 0;
+test('WorkspaceEditor falls back to the Host home when the saved path is unreadable', async () => {
+  const listed = [];
+  const saved = [];
+  const picker = {
+    async listDirectory(path) {
+      listed.push(path);
+      if (path === '/workspace/gone') {
+        const error = new Error('missing');
+        error.rpcError = { code: 'directory-unreadable', message: 'missing', details: { path } };
+        throw error;
+      }
+      return directoryListing('/workspace', ['projects']);
+    },
+  };
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(WorkspaceEditor, {
+      workspace: '/workspace/gone',
+      directoryPicker: picker,
+      async onSave(value) { saved.push(value); },
+    }));
+  });
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-workspaceEdit' }).props.onClick();
+    await flushMicrotasks();
+  });
+
+  assert.deepEqual(listed, ['/workspace/gone', undefined]);
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-directoryPickerPrimary' }).props.onClick();
+    await flushMicrotasks();
+  });
+  assert.deepEqual(saved, ['/workspace']);
+});
+
+test('WorkspaceEditor moves keyboard focus into and back out of the picker', async () => {
+  let dialogFocus = 0;
   let editFocus = 0;
+  const picker = { async listDirectory(path) { return directoryListing(path); } };
   let renderer;
   await act(async () => {
     renderer = create(React.createElement(WorkspaceEditor, {
       workspace: '/workspace/current',
+      directoryPicker: picker,
       async onSave() {},
     }), {
       createNodeMock(element) {
-        if (element.type === 'input') return { focus() { inputFocus += 1; } };
+        if (element.props?.className === 'dim-directoryPicker') {
+          return { focus() { dialogFocus += 1; } };
+        }
         if (element.props?.className === 'dim-workspaceEdit') {
           return { focus() { editFocus += 1; } };
         }
@@ -150,12 +347,42 @@ test('WorkspaceEditor moves keyboard focus into and back out of edit mode', asyn
       },
     });
   });
-  await act(async () => { renderer.root.findByType('button').props.onClick(); });
-  assert.equal(inputFocus, 1);
-  const cancel = renderer.root.findAllByType('button')
-    .find((button) => button.children.join('') === '取消');
-  await act(async () => { cancel.props.onClick(); });
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-workspaceEdit' }).props.onClick();
+    await flushMicrotasks();
+  });
+  assert.equal(dialogFocus, 1);
+  await act(async () => {
+    buttonNamed(renderer.root, '取消').props.onClick();
+    await flushMicrotasks();
+  });
   assert.equal(editFocus, 1);
+});
+
+test('WorkspaceEditor never translates Host filesystem names in the English UI', async (t) => {
+  setImTranslator((key) => en[key] ?? key);
+  t.after(() => setImTranslator(null));
+  const picker = {
+    async listDirectory(path) { return directoryListing(path, ['微信']); },
+  };
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(WorkspaceEditor, {
+      workspace: '/workspace/current',
+      directoryPicker: picker,
+      async onSave() {},
+    }));
+    await flushMicrotasks();
+  });
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-workspaceEdit' }).props.onClick();
+    await flushMicrotasks();
+  });
+
+  const directory = renderer.root.findByProps({ title: '/workspace/current/微信' });
+  assert.equal(textOf(directory), '微信');
+  assert.doesNotMatch(textOf(directory), /WeChat/);
+  await act(async () => { renderer.unmount(); });
 });
 
 test('a status response started before saving cannot restore the old workspace', async (t) => {
@@ -185,8 +412,12 @@ test('a status response started before saving cannot restore the old workspace',
   };
 
   let renderer;
+  const picker = nativeDirectoryPicker('/workspace/new');
   await act(async () => {
-    renderer = create(React.createElement(DiscordSettingsTab, { rpcCall }));
+    renderer = create(withDirectoryPicker(
+      React.createElement(DiscordSettingsTab, { rpcCall }),
+      picker,
+    ));
     await flushMicrotasks();
   });
   await act(async () => {
@@ -194,12 +425,7 @@ test('a status response started before saving cannot restore the old workspace',
     await flushMicrotasks();
   });
   await act(async () => {
-    renderer.root.findAllByType('button')
-      .find((button) => button.children.join('') === '修改').props.onClick();
-  });
-  await act(async () => {
-    renderer.root.findByType('input').props.onChange({ target: { value: '/workspace/new' } });
-    await renderer.root.findByType('form').props.onSubmit(submitEvent());
+    buttonNamed(renderer.root, '选择目录').props.onClick();
     await flushMicrotasks();
   });
   assert.equal(renderer.root.findByType('code').props.title, '/workspace/new');
@@ -237,8 +463,12 @@ test('an older reconnect snapshot from another bot cannot restore a saved worksp
   };
 
   let renderer;
+  const picker = nativeDirectoryPicker('/workspace/new');
   await act(async () => {
-    renderer = create(React.createElement(DiscordSettingsTab, { rpcCall }));
+    renderer = create(withDirectoryPicker(
+      React.createElement(DiscordSettingsTab, { rpcCall }),
+      picker,
+    ));
     await flushMicrotasks();
   });
   const firstCard = renderer.root.findByProps({ 'data-bot-id': 'discord_first' });
@@ -249,12 +479,7 @@ test('an older reconnect snapshot from another bot cannot restore a saved worksp
     await flushMicrotasks();
   });
   await act(async () => {
-    firstCard.findAllByType('button')
-      .find((button) => button.children.join('') === '修改').props.onClick();
-  });
-  await act(async () => {
-    firstCard.findByType('input').props.onChange({ target: { value: '/workspace/new' } });
-    await firstCard.findByType('form').props.onSubmit(submitEvent());
+    buttonNamed(firstCard, '选择目录').props.onClick();
     await flushMicrotasks();
   });
 

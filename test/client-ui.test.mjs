@@ -557,10 +557,11 @@ test('every shipped Chinese client string has an English projection', async () =
   }
 });
 
-test('client registers a live bilingual locale seat for the IM settings tab', () => {
+test('client registers a live bilingual locale seat and directory picker for the IM settings tab', async () => {
   const effects = [];
   const registrations = [];
   const dictionaries = [];
+  const directoryCalls = [];
   const rpcCall = async () => ({ ok: true, value: {} });
   const ctx = {
     effect(install, label) {
@@ -577,6 +578,16 @@ test('client registers a live bilingual locale seat for the IM settings tab', ()
       },
     },
     connection: { rpc: { call: rpcCall } },
+    workspaces: {
+      async listDirectory(path, signal) {
+        directoryCalls.push({ operation: 'list', path, signal });
+        return { path, entries: [] };
+      },
+      async pickDirectory() {
+        directoryCalls.push({ operation: 'pick' });
+        return '/workspace/chosen';
+      },
+    },
     slots: {
       inject(name, install) {
         assert.equal(name, 'settings.plugins.tab');
@@ -595,16 +606,28 @@ test('client registers a live bilingual locale seat for the IM settings tab', ()
     assert.ok(dictionaryEffect);
     dictionaryEffect.install();
 
-    assert.deepEqual(clientInject, ['slots', 'connection', 'locale']);
+    assert.deepEqual(clientInject, ['slots', 'connection', 'locale', 'workspaces']);
     assert.equal(dictionaries[0].namespace, IM_LOCALE_NAMESPACE);
     assert.deepEqual(Object.keys(dictionaries[0].value.en).sort(), Object.keys(dictionaries[0].value.zh).sort());
     assert.equal(registrations.length, 1);
     assert.equal(registrations[0].options.locale, IM_LOCALE_NAMESPACE);
     assert.equal(registrations[0].options.label(), 'IM bots');
 
+    const injected = registrations[0].options.inject();
+    const signal = new AbortController().signal;
+    assert.deepEqual(
+      await injected.workspaceDirectoryPicker.listDirectory('/workspace/current', signal),
+      { path: '/workspace/current', entries: [] },
+    );
+    assert.equal(await injected.workspaceDirectoryPicker.pickDirectory(), '/workspace/chosen');
+    assert.deepEqual(directoryCalls, [
+      { operation: 'list', path: '/workspace/current', signal },
+      { operation: 'pick' },
+    ]);
+
     const markup = renderToStaticMarkup(React.createElement(
       registrations[0].component,
-      registrations[0].options.inject(),
+      injected,
     ));
     assert.match(markup, /Connect IM bots to DeepSeek Harness with ease/);
     assert.match(markup, /Help &amp; feedback · Open GitHub/);
