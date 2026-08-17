@@ -12,6 +12,7 @@ const HELP_TEXT = [
   '直接发送文字或带文字识别结果的语音即可继续当前会话。',
   '/new  开启一个全新会话',
   '/workspace 工作区绝对路径  切换工作区',
+  '/workspacelist  列出工作区绝对路径',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');
@@ -138,7 +139,9 @@ export class WeixinHarnessBridge {
       }
       const workspaceCommand = await runWorkspaceCommand(text, this.#harness);
       if (workspaceCommand) {
-        await this.#send(sender, workspaceCommand.message, contextToken, runId);
+        for (const reply of workspaceCommand.messages ?? [workspaceCommand.message]) {
+          await this.#send(sender, reply, contextToken, runId);
+        }
         await this.#state.markSeen(messageId);
         return;
       }

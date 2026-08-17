@@ -1,7 +1,15 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { isAbsolute } from 'node:path';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function workspacePaths(value) {
+  if (!Array.isArray(value?.items)) return [];
+  return value.items.flatMap((item) => (
+    typeof item?.path === 'string' && isAbsolute(item.path) ? [item.path] : []
+  ));
+}
 
 function messageText(event) {
   return (event?.data?.message?.content ?? [])
@@ -195,6 +203,11 @@ export class HarnessClient {
       }
     }
     throw new Error(`Harness did not become ready: ${lastError?.message ?? 'timeout'}`);
+  }
+
+  async listWorkspaces(options = {}) {
+    await this.ensureRunning();
+    return workspacePaths(await this.rpc('workspace.list', {}, 30000, options));
   }
 
   async workspaceId(options = {}) {

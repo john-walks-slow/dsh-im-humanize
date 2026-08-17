@@ -12,7 +12,10 @@ import {
   observeBotWorkspaceRemovals,
   validateWorkspacePath,
 } from '../src/channels/shared/bot-workspace-store.mjs';
-import { runWorkspaceCommand } from '../src/channels/shared/workspace-command.mjs';
+import {
+  runWorkspaceCommand,
+  splitWorkspaceCommandMessage,
+} from '../src/channels/shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../src/channels/shared/workspace-session.mjs';
 import { HarnessClient as WeixinHarnessClient } from '../src/channels/weixin/harness-client.mjs';
 import { HarnessClient as FeishuHarnessClient } from '../src/channels/feishu/harness-client.mjs';
@@ -753,6 +756,140 @@ test('/workspace command preserves spaces and returns actionable validation mess
     (await runWorkspaceCommand(`/workspace ${alternateWorkspace}`, removedHarness)).message,
     /正在移除或已重新接入/,
   );
+});
+
+test('/workspacelist returns existing absolute paths with the current workspace first', async (t) => {
+  const { root, defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const thirdWorkspace = join(root, 'third');
+  await mkdir(thirdWorkspace);
+  let listCalls = 0;
+  const harness = {
+    currentWorkspace() { return defaultWorkspace; },
+    async listWorkspaces() {
+      listCalls += 1;
+      return [
+        alternateWorkspace,
+        defaultWorkspace,
+        alternateWorkspace,
+        thirdWorkspace,
+        join(root, 'missing'),
+        'relative/path',
+      ];
+    },
+  };
+
+  const result = await runWorkspaceCommand('/WORKSPACELIST', harness);
+  assert.equal(result.handled, true);
+  assert.match(result.message, /工作区（3）/);
+  assert.match(result.message, new RegExp(`1\\. ${defaultWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}（当前）`));
+  assert.ok(result.message.indexOf(defaultWorkspace) < result.message.indexOf(alternateWorkspace));
+  assert.ok(result.message.indexOf(alternateWorkspace) < result.message.indexOf(thirdWorkspace));
+  assert.doesNotMatch(result.message, /missing|relative\/path/);
+  assert.match(result.message, /切换用法：\/workspace 工作区绝对路径/);
+  assert.equal(result.messages.join(''), result.message);
+  assert.equal(listCalls, 1);
+
+  assert.match((await runWorkspaceCommand('/workspacelist extra', harness)).message, /用法/);
+  assert.equal(listCalls, 1);
+  assert.match((await runWorkspaceCommand('/workspacelist', {})).message, /暂不支持/);
+  assert.match((await runWorkspaceCommand('/workspacelist', {
+    async listWorkspaces() { throw new Error('private host detail'); },
+  })).message, /暂时无法获取/);
+  assert.match((await runWorkspaceCommand('/workspacelist', {
+    async listWorkspaces() { return []; },
+  })).message, /没有仍然存在/);
+});
+
+test('/workspacelist splits a long registry without dropping paths', async (t) => {
+  const { root, defaultWorkspace } = await fixture(t);
+  const paths = Array.from({ length: 48 }, (_, index) => (
+    join(root, `workspace-${String(index).padStart(2, '0')}`)
+  ));
+  await Promise.all(paths.map((workspace) => mkdir(workspace)));
+  const result = await runWorkspaceCommand('/workspacelist', {
+    currentWorkspace() { return defaultWorkspace; },
+    async listWorkspaces() { return paths; },
+  });
+
+  assert.ok(result.messages.length > 1);
+  assert.equal(result.messages.join(''), result.message);
+  assert.ok(result.messages.every((message) => message.length <= 1_800));
+  for (const workspace of paths) assert.ok(result.message.includes(workspace));
+});
+
+test('/workspacelist hides unsafe Unicode paths and rechecks the bot scope', async (t) => {
+  const { root, defaultWorkspace } = await fixture(t);
+  const unsafePaths = [
+    join(root, 'line\u2028separator'),
+    join(root, 'bidi\u202ereversal'),
+    join(root, 'control\u0085next-line'),
+  ];
+  await Promise.all(unsafePaths.map((workspace) => mkdir(workspace)));
+
+  const filtered = await runWorkspaceCommand('/workspacelist', {
+    currentWorkspace() { return defaultWorkspace; },
+    async listWorkspaces() { return unsafePaths; },
+  });
+  assert.match(filtered.message, /工作区（1）/);
+  for (const workspace of unsafePaths) assert.ok(!filtered.message.includes(workspace));
+
+  const stale = await runWorkspaceCommand('/workspacelist', {
+    currentWorkspace() { return defaultWorkspace; },
+    async listWorkspaces() { return [defaultWorkspace]; },
+    assertWorkspaceScope() {
+      const error = new Error('old bot lifecycle');
+      error.code = 'workspace-bot-not-found';
+      throw error;
+    },
+  });
+  assert.match(stale.message, /正在移除或已重新接入/);
+});
+
+test('workspace command message splitting bounds a single very long path', () => {
+  const message = `/workspace/${'nested/'.repeat(600)}project-😀`;
+  const messages = splitWorkspaceCommandMessage(message);
+  assert.ok(messages.length > 1);
+  assert.ok(messages.every((part) => part.length <= 1_800));
+  assert.equal(messages.join(''), message);
+});
+
+test('all nine channel bridge families advertise and fan out /workspacelist replies', async () => {
+  const bridgeFiles = [
+    '../src/channels/shared/text-harness-bridge.mjs',
+    '../src/channels/weixin/weixin-bridge.mjs',
+    '../src/channels/feishu/bridge.mjs',
+    '../src/channels/dingtalk/dingtalk-bridge.mjs',
+    '../src/channels/wecom/wecom-bridge.mjs',
+    '../src/channels/qq/qq-bridge.mjs',
+  ];
+  for (const file of bridgeFiles) {
+    const source = await readFile(new URL(file, import.meta.url), 'utf8');
+    assert.match(source, /\/workspacelist  列出工作区绝对路径/);
+    assert.match(source, /workspaceCommand\.messages \?\? \[workspaceCommand\.message\]/);
+  }
+});
+
+test('a stale bot scope cannot finish listing workspaces after same-id rebinding', async (t) => {
+  const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await workspaces.ensure('bot_list');
+  let finishList;
+  const harness = {
+    listWorkspaces() {
+      return new Promise((resolve) => { finishList = resolve; });
+    },
+  };
+  const oldScope = createBotScopedHarness(harness, {
+    botId: 'bot_list',
+    workspaces,
+    state: { async clearSessions() {} },
+  });
+  const pending = oldScope.listWorkspaces();
+  await workspaces.retireAfterConfigCommit('bot_list');
+  await workspaces.ensure('bot_list', { workspace: alternateWorkspace });
+  finishList([defaultWorkspace]);
+
+  await assert.rejects(pending, { code: 'workspace-bot-not-found' });
 });
 
 for (const [name, Client] of [

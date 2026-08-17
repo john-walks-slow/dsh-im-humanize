@@ -3,6 +3,53 @@ import test from 'node:test';
 
 import { HarnessClient, HarnessReplyTracker, HarnessRpcError } from '../../../src/channels/dingtalk/harness-client.mjs';
 
+test('HarnessClient lists only absolute workspace paths and forwards request options', async () => {
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/default-workspace',
+  });
+  const options = {
+    signal: new AbortController().signal,
+    rpcId: 'dingtalk-workspace-list',
+  };
+  let ensuredWith;
+  let rpcCall;
+  let response = {
+    items: [
+      {
+        workspaceId: 'workspace-one',
+        path: '/tmp/workspace-one',
+        title: 'private title',
+        sessionIds: ['private-session'],
+      },
+      { workspaceId: 'relative', path: 'relative/workspace' },
+      null,
+      { workspaceId: 'workspace-two', path: '/tmp/workspace two' },
+    ],
+    archivedSessionIds: ['private-archive'],
+  };
+  client.ensureRunning = async (received) => { ensuredWith = received; };
+  client.rpc = async (method, payload, timeoutMs, rpcOptions) => {
+    rpcCall = { method, payload, timeoutMs, options: rpcOptions };
+    return response;
+  };
+
+  assert.deepEqual(await client.listWorkspaces(options), [
+    '/tmp/workspace-one',
+    '/tmp/workspace two',
+  ]);
+  assert.equal(ensuredWith, options);
+  assert.deepEqual(rpcCall, {
+    method: 'workspace.list',
+    payload: {},
+    timeoutMs: 30_000,
+    options,
+  });
+
+  response = null;
+  assert.deepEqual(await client.listWorkspaces(), []);
+});
+
 test('reply tracker associates only the Harness turn created by the DingTalk prompt RPC', () => {
   const tracker = new HarnessReplyTracker({ promptRpcId: 'dingtalk-prompt', afterSeq: 2 });
   const update = tracker.consume([

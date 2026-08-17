@@ -398,7 +398,41 @@ export function createBotWorkspaceScope(harness, { botId, workspaces, state }) {
   const sessionGenerations = new Map();
   const scopedHarness = new Proxy(harness, {
     get(target, property) {
-      if (property === 'currentWorkspace') return () => workspaces.workspaceFor(botId);
+      if (property === 'currentWorkspace') {
+        return () => {
+          if (!isCurrentScope()) {
+            const error = new Error('找不到要修改的机器人。');
+            error.code = 'workspace-bot-not-found';
+            throw error;
+          }
+          return workspaces.workspaceFor(botId);
+        };
+      }
+      if (property === 'assertWorkspaceScope') {
+        return () => {
+          if (!isCurrentScope()) {
+            const error = new Error('找不到要修改的机器人。');
+            error.code = 'workspace-bot-not-found';
+            throw error;
+          }
+        };
+      }
+      if (property === 'listWorkspaces' && typeof target.listWorkspaces === 'function') {
+        return async (...args) => {
+          if (!isCurrentScope()) {
+            const error = new Error('找不到要修改的机器人。');
+            error.code = 'workspace-bot-not-found';
+            throw error;
+          }
+          const paths = await target.listWorkspaces(...args);
+          if (!isCurrentScope()) {
+            const error = new Error('找不到要修改的机器人。');
+            error.code = 'workspace-bot-not-found';
+            throw error;
+          }
+          return paths;
+        };
+      }
       if (property === 'switchWorkspace') {
         return (workspace) => {
           if (!isCurrentScope()) {

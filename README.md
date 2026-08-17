@@ -70,11 +70,14 @@ QQ 扫码接入使用腾讯 QQBot v2 官方流程。默认腾讯授权页会把�
 | 命令 | 作用 |
 | --- | --- |
 | `/workspace <工作区绝对路径>` | 切换当前机器人的 Harness 工作区。 |
+| `/workspacelist` | 列出当前 Harness Host 上仍然存在的工作区绝对路径。 |
 
 示例：`/workspace /Users/alice/projects/my-app`
 
 - 只接受已经存在的绝对目录；路径无效时机器人会返回具体提示和正确用法。
+- `/workspacelist` 不需要参数。它合并 Harness 全局登记项与当前机器人的路径；当前路径仍存在且可安全显示时会排在首位并标记为“当前”。结果可直接复制到 `/workspace` 命令。
 - 任何已在对应平台可见范围内、能够正常向机器人发消息的用户都可以执行，不区分管理员和普通用户。
+- 工作区列表来自 Harness Host 的全局登记信息，可能包含其他机器人、其他渠道或非 IM 项目的本机绝对路径。请将机器人可见范围限制给可信用户。
 - 切换成功后只清除当前机器人的旧 Harness 会话映射，不影响其他机器人。
 - 新工作区对后续消息生效；已经开始生成的回复会继续完成。
 
@@ -172,11 +175,14 @@ Each bot maintains an independent Harness workspace. A newly connected bot recor
 | Command | Description |
 | --- | --- |
 | `/workspace <absolute workspace path>` | Switch the current bot's Harness workspace. |
+| `/workspacelist` | List workspace absolute paths that still exist on the current Harness Host. |
 
 Example: `/workspace /Users/alice/projects/my-app`
 
 - The path must be an existing absolute directory. The bot returns an actionable error and the correct usage when validation fails.
+- `/workspacelist` takes no arguments. It combines the Harness global registry with the current bot's path. When that current path still exists and is safe to display, it appears first and is marked as current. Any listed path can be copied directly into `/workspace`.
 - Any user who is already within the platform bot's visibility scope and can normally message it can run the command; there is no additional administrator/ordinary-user distinction.
+- The list comes from the Harness Host's global registry and can include local absolute paths for other bots, other channels, or non-IM projects. Restrict the bot's visibility to trusted users.
 - A successful switch clears only the current bot's old Harness session mappings and does not affect other bots.
 - The new workspace applies to subsequent messages; a reply that has already started generating is allowed to finish.
 

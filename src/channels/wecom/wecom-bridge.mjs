@@ -8,6 +8,7 @@ const HELP_TEXT = [
   '直接发送文字即可继续当前会话。',
   '/new  开启一个全新会话',
   '/workspace 工作区绝对路径  切换工作区',
+  '/workspacelist  列出工作区绝对路径',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');
@@ -187,7 +188,9 @@ export class WecomHarnessBridge {
       }
       const workspaceCommand = await runWorkspaceCommand(text, this.#harness);
       if (workspaceCommand) {
-        await this.#sendImmediate(frame, chatId, workspaceCommand.message);
+        for (const reply of workspaceCommand.messages ?? [workspaceCommand.message]) {
+          await this.#sendImmediate(frame, chatId, reply);
+        }
         await this.#state.markSeen(messageId);
         return;
       }

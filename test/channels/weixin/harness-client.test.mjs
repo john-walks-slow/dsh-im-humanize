@@ -1,7 +1,47 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { HarnessReplyTracker } from '../../../src/channels/weixin/harness-client.mjs';
+import { HarnessClient, HarnessReplyTracker } from '../../../src/channels/weixin/harness-client.mjs';
+
+test('HarnessClient lists only absolute workspace paths', async () => {
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/default-workspace',
+  });
+  const options = { rpcId: 'weixin-workspace-list' };
+  const calls = [];
+  let response = {
+    items: [
+      {
+        workspaceId: 'workspace-one',
+        path: '/tmp/workspace-one',
+        title: 'private title',
+        sessionIds: ['private-session'],
+      },
+      { workspaceId: 'relative', path: 'relative/workspace' },
+      null,
+      { workspaceId: 'workspace-two', path: '/tmp/workspace two' },
+    ],
+    archivedSessionIds: ['private-archive'],
+  };
+  client.ensureRunning = async () => { calls.push({ method: 'ensureRunning' }); };
+  client.rpc = async (method, payload, timeoutMs, rpcOptions) => {
+    calls.push({ method, payload, timeoutMs, options: rpcOptions });
+    return response;
+  };
+
+  assert.deepEqual(await client.listWorkspaces(options), [
+    '/tmp/workspace-one',
+    '/tmp/workspace two',
+  ]);
+  assert.deepEqual(calls, [
+    { method: 'ensureRunning' },
+    { method: 'workspace.list', payload: {}, timeoutMs: 30_000, options },
+  ]);
+
+  response = { items: 'invalid' };
+  assert.deepEqual(await client.listWorkspaces(), []);
+});
 
 test('reply tracker associates only the Harness turn created by the Weixin prompt RPC', () => {
   const tracker = new HarnessReplyTracker({ promptRpcId: 'weixin-prompt', afterSeq: 2 });
