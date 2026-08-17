@@ -178,3 +178,30 @@ IM management RPCs accept loopback browsers by default. When a Web profile is de
 ```
 
 `trusted-host` reuses Harness's Host/Origin fence; it is not user authentication. Anyone who can reach that LAN authority can inspect bot status, scan or submit application credentials, reconnect bots, and remove bots. Enable it only on a trusted network.
+
+---
+
+## 联系方式 / Contact
+
+欢迎通过邮箱、微信或小红书联系我。点击二维码图片可查看原图。
+
+You can reach me by email, WeChat, or Xiaohongshu. Click either QR image to view it at full resolution.
+
+<table>
+  <tr>
+    <th align="center">邮箱 / Email</th>
+    <th align="center">微信 / WeChat</th>
+    <th align="center">小红书 / Xiaohongshu</th>
+  </tr>
+  <tr>
+    <td align="center" valign="middle">
+      <a href="mailto:longmanr307@gmail.com">longmanr307@gmail.com</a>
+    </td>
+    <td align="center" valign="top">
+      <a href="docs/images/weixin.jpg"><img src="docs/images/weixin.jpg" alt="微信二维码 / WeChat QR code" width="240"></a>
+    </td>
+    <td align="center" valign="top">
+      <a href="docs/images/xhs.jpg"><img src="docs/images/xhs.jpg" alt="小红书二维码 / Xiaohongshu QR code" width="240"></a>
+    </td>
+  </tr>
+</table>
