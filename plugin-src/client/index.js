@@ -122,19 +122,27 @@ export function IMSettingsTab({
   whatsappRpcCall,
 }) {
   const [selected, setSelected] = React.useState('weixin');
+  const githubTooltipId = React.useId();
   const active = CHANNELS.find((channel) => channel.id === selected) ?? CHANNELS[0];
   return h('section', { className: 'dim-page', 'aria-label': 'IM机器人设置' },
     h('header', { className: 'dim-title' },
       h('p', null, '让聊天机器人轻松接入 DeepSeek Harness'),
-      h('a', {
-        className: 'dim-githubLink',
-        href: 'https://github.com/xmanrui/dsh-im',
-        target: '_blank',
-        rel: 'noopener noreferrer',
-        'aria-label': 'dsh-im GitHub',
-      },
-      h('span', null, 'GitHub'),
-      h('span', { className: 'dim-githubArrow', 'aria-hidden': 'true' }, '↗')),
+      h('span', { className: 'dim-githubAction' },
+        h('a', {
+          className: 'dim-githubLink',
+          href: 'https://github.com/xmanrui/dsh-im',
+          target: '_blank',
+          rel: 'noopener noreferrer',
+          'aria-label': 'dsh-im GitHub',
+          'aria-describedby': githubTooltipId,
+        },
+        h('span', null, 'GitHub'),
+        h('span', { className: 'dim-githubArrow', 'aria-hidden': 'true' }, '↗')),
+        h('span', {
+          id: githubTooltipId,
+          className: 'dim-githubTooltip',
+          role: 'tooltip',
+        }, '帮助与反馈 · 前往 GitHub')),
     ),
     h('div', { className: 'dim-layout' },
       h('nav', { className: 'dim-rail', role: 'tablist', 'aria-label': 'IM 渠道' },

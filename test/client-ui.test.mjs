@@ -116,8 +116,12 @@ test('IM settings renders nine compact logo channel tabs without enable switches
   assert.match(markup, /target="_blank"/);
   assert.match(markup, /rel="noopener noreferrer"/);
   assert.match(markup, /aria-label="dsh-im GitHub"/);
+  assert.match(markup, /aria-describedby="[^"]+"/);
+  assert.match(markup, /role="tooltip"[^>]*>帮助与反馈 · 前往 GitHub</);
   assert.match(styles, /\.dim-title p \{[^}]*color: var\(--dsw-alias-label-primary, #1f2329\);[^}]*font-size: 14px;[^}]*font-weight: 700;/);
   assert.match(styles, /\.dim-githubLink \{[^}]*border: 1px solid var\(--dsw-alias-border-l2, #dfe1e5\);[^}]*text-decoration: none;/);
+  assert.match(styles, /\.dim-githubTooltip \{[^}]*bottom: calc\(100% \+ 8px\);[^}]*transform: translateY\(3px\);/);
+  assert.match(styles, /\.dim-githubAction:hover \.dim-githubTooltip, \.dim-githubAction:focus-within \.dim-githubTooltip \{[^}]*opacity: 1;[^}]*visibility: visible;/);
   assert.doesNotMatch(markup, /\d+ 个渠道|dim-channelCount/);
   assert.match(markup, />微信</);
   assert.match(markup, />飞书</);
@@ -596,6 +600,7 @@ test('client registers a live bilingual locale seat for the IM settings tab', ()
       registrations[0].options.inject(),
     ));
     assert.match(markup, /Connect chatbots to DeepSeek Harness with ease/);
+    assert.match(markup, /Help &amp; feedback · Open GitHub/);
     assert.match(markup, />WeChat<|>Feishu<|>DingTalk<|>WeCom</);
     assert.match(markup, />QQ<[^]*>Slack<[^]*>Telegram<[^]*>Discord<[^]*>WhatsApp</);
     assert.doesNotMatch(markup, /[\p{Script=Han}]/u);
