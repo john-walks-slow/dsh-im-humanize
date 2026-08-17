@@ -5,6 +5,7 @@
 </p>
 
 <p align="center"><strong>让聊天机器人轻松接入 DeepSeek Harness</strong></p>
+<p align="center"><strong>Connect IM bots to DeepSeek Harness with ease</strong></p>
 
 ## 中文
 

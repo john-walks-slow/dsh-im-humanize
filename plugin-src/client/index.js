@@ -43,6 +43,8 @@ import { installImStyles } from './styles.js';
 export const name = 'im-settings';
 export const inject = ['slots', 'connection', 'locale'];
 
+const IM_PLUGIN_LOGO_URL = globalThis.__DSH_IM_LOGO_DATA_URL__ ?? 'assets/logo-icon.png';
+
 const CHANNELS = Object.freeze([
   { id: 'weixin', label: '微信' },
   { id: 'feishu', label: '飞书' },
@@ -126,7 +128,15 @@ export function IMSettingsTab({
   const active = CHANNELS.find((channel) => channel.id === selected) ?? CHANNELS[0];
   return h('section', { className: 'dim-page', 'aria-label': 'IM机器人设置' },
     h('header', { className: 'dim-title' },
-      h('p', null, '让聊天机器人轻松接入 DeepSeek Harness'),
+      h('div', { className: 'dim-brand' },
+        h('img', {
+          className: 'dim-brandLogo',
+          src: IM_PLUGIN_LOGO_URL,
+          alt: 'dsh-im',
+          width: 48,
+          height: 48,
+        }),
+        h('p', null, '让聊天机器人轻松接入 DeepSeek Harness')),
       h('span', { className: 'dim-githubAction' },
         h('a', {
           className: 'dim-githubLink',
