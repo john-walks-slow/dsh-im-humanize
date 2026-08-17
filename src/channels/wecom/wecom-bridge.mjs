@@ -10,6 +10,7 @@ const HELP_TEXT = [
   '/workspace 工作区绝对路径  切换工作区',
   '/workspacelist  列出工作区绝对路径',
   '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
+  '/session Session ID  将当前聊天绑定到指定会话',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');
@@ -187,7 +188,7 @@ export class WecomHarnessBridge {
         await this.#state.markSeen(messageId);
         return;
       }
-      const workspaceCommand = await runWorkspaceCommand(text, this.#harness);
+      const workspaceCommand = await runWorkspaceCommand(text, this.#harness, key);
       if (workspaceCommand) {
         for (const reply of workspaceCommand.messages ?? [workspaceCommand.message]) {
           await this.#sendImmediate(frame, chatId, reply);

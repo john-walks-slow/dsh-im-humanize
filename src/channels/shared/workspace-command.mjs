@@ -1,13 +1,19 @@
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 
+import { WORKSPACE_SESSION_STALE } from './workspace-session.mjs';
+
 const WORKSPACE_COMMAND = /^\/workspace(?:\s+([\s\S]+))?$/i;
 const WORKSPACE_LIST_COMMAND = /^\/workspacelist(?:\s+([\s\S]+))?$/i;
 const SESSION_LIST_COMMAND = /^\/sessionlist(?:\s+([\s\S]+))?$/i;
+const SESSION_BIND_PREFIX = /^\/session(?=$|\s)/i;
+const SESSION_BIND_COMMAND = /^\/session[ \t]+([^\s]+)$/i;
 const MAX_WORKSPACE_PATH_LENGTH = 4_096;
 const MAX_COMMAND_MESSAGE_LENGTH = 1_800;
+const MAX_SESSION_ID_LENGTH = 256;
 const UNSAFE_DISPLAY_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 const UNSAFE_DISPLAY_TEXT_GLOBAL = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu;
+const SESSION_BIND_USAGE = '用法：/session Session ID';
 const SESSION_LIST_USAGE = [
   '用法：',
   '/sessionlist  列出当前工作区会话',
@@ -28,6 +34,14 @@ function normalizedWorkspacePath(value) {
 function safeDisplayText(value) {
   if (typeof value !== 'string') return '';
   return value.replace(UNSAFE_DISPLAY_TEXT_GLOBAL, ' ').replace(/\s+/gu, ' ').trim();
+}
+
+function validSessionId(value) {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= MAX_SESSION_ID_LENGTH
+    && !/\p{White_Space}/u.test(value)
+    && !UNSAFE_DISPLAY_TEXT.test(value);
 }
 
 async function existingWorkspacePaths(values) {
@@ -176,6 +190,8 @@ function sessionListMessage(workspace, sessions) {
     `会话（${rows.length}）：`,
     '',
     ...rows.map((row, index) => `${index + 1}. ${row}`),
+    '',
+    '绑定用法：/session Session ID',
   ].join('\n');
 }
 
@@ -203,9 +219,70 @@ async function runSessionListCommand(match, harness) {
   }
 }
 
-export async function runWorkspaceCommand(text, harness) {
+function sessionBindErrorMessage(error) {
+  if (error?.code === 'session-id-invalid') {
+    return `Session ID 格式无效。\n${SESSION_BIND_USAGE}`;
+  }
+  if (['session-not-registered', 'session-not-found'].includes(error?.code)) {
+    return '未找到该会话，请先执行 /sessionlist 确认 Session ID。';
+  }
+  if (error?.code === 'session-subagent-unsupported') {
+    return '子代理会话不能绑定到机器人对话，请选择普通会话。';
+  }
+  if (error?.code === 'session-workspace-ambiguous') {
+    return '该会话的工作区归属不明确，暂时无法绑定。';
+  }
+  if (error?.code === 'session-summary-unavailable') {
+    return '暂时无法读取该会话的信息，请稍后重试。';
+  }
+  if (error?.code === 'workspace-bot-not-found') {
+    return '机器人正在移除或已重新接入，无法绑定原对话的会话。';
+  }
+  if ([WORKSPACE_SESSION_STALE, 'agent-busy', 'session-conflict', 'workspace-conflict']
+    .includes(error?.code)) {
+    return '工作区或会话状态已发生变化，请重试。';
+  }
+  return '暂时无法绑定会话，请稍后重试。';
+}
+
+async function runSessionBindCommand(command, harness, conversationKey) {
+  const match = SESSION_BIND_COMMAND.exec(command);
+  const sessionId = match?.[1];
+  if (!validSessionId(sessionId)) return commandResult(SESSION_BIND_USAGE);
+  if (typeof harness?.bindWorkspaceSession !== 'function') {
+    return commandResult('当前机器人暂不支持绑定已有会话。');
+  }
+  if (typeof conversationKey !== 'string' || !conversationKey) {
+    return commandResult('当前消息缺少可绑定的会话上下文。');
+  }
+  try {
+    const bound = await harness.bindWorkspaceSession(conversationKey, sessionId);
+    harness.assertWorkspaceScope?.();
+    const workspace = normalizedWorkspacePath(bound?.workspace);
+    const boundSessionId = safeDisplayText(bound?.sessionId);
+    if (!workspace || !boundSessionId) {
+      throw new TypeError('Harness returned an invalid bound session');
+    }
+    const title = safeDisplayText(bound?.title) || '暂无标题';
+    const message = [
+      '当前聊天已绑定会话：',
+      `工作区：${workspace}`,
+      `标题：${title}`,
+      `ID：${boundSessionId}`,
+      `归档：${bound?.archived === true ? '是' : '否'}`,
+    ].join('\n');
+    return commandResult(message, splitWorkspaceCommandMessage(message));
+  } catch (error) {
+    return commandResult(sessionBindErrorMessage(error));
+  }
+}
+
+export async function runWorkspaceCommand(text, harness, conversationKey) {
   if (typeof text !== 'string') return null;
   const command = text.trim();
+  if (SESSION_BIND_PREFIX.test(command)) {
+    return runSessionBindCommand(command, harness, conversationKey);
+  }
   const sessionListMatch = SESSION_LIST_COMMAND.exec(command);
   if (sessionListMatch) return runSessionListCommand(sessionListMatch, harness);
   const listMatch = WORKSPACE_LIST_COMMAND.exec(command);

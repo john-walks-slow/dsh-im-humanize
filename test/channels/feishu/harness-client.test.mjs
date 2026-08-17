@@ -156,6 +156,162 @@ test('HarnessClient lists sessions by workspace accounting in its stored order',
   );
 });
 
+test('HarnessClient adopts one registered ordinary session without changing its preset', async () => {
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/default-workspace',
+    agentPreset: 'custom-preset',
+  });
+  const options = {
+    signal: new AbortController().signal,
+    rpcId: 'feishu-session-adopt',
+  };
+  const calls = [];
+  client.ensureRunning = async (received) => {
+    calls.push({ method: 'ensureRunning', options: received });
+  };
+  client.rpc = async (method, payload, timeoutMs, rpcOptions) => {
+    calls.push({ method, payload, timeoutMs, options: rpcOptions });
+    if (method === 'workspace.list') {
+      return {
+        items: [
+          {
+            workspaceId: 'workspace-target',
+            path: '/tmp/target',
+            sessionIds: ['session-other', 'session-target'],
+          },
+          { workspaceId: 'workspace-unsafe', path: '/tmp/unsafe\u202e', sessionIds: [] },
+          { workspaceId: 'workspace-other', path: '/tmp/other', sessionIds: [] },
+        ],
+        archivedSessionIds: ['session-target'],
+      };
+    }
+    if (method === 'session.list') {
+      return {
+        items: [{
+          sessionId: 'session-target',
+          projections: { values: { title: 'Existing conversation' } },
+        }],
+      };
+    }
+    assert.equal(method, 'session.create');
+    return { sessionId: 'session-target', agentPreset: 'persisted-preset' };
+  };
+
+  assert.deepEqual(await client.adoptWorkspaceSession('session-target', options), {
+    sessionId: 'session-target',
+    workspace: '/tmp/target',
+    title: 'Existing conversation',
+    archived: true,
+  });
+  assert.deepEqual(calls, [
+    { method: 'ensureRunning', options },
+    { method: 'workspace.list', payload: {}, timeoutMs: 30000, options },
+    { method: 'session.list', payload: {}, timeoutMs: 30000, options },
+    {
+      method: 'session.create',
+      payload: { workspaceId: 'workspace-target', sessionId: 'session-target' },
+      timeoutMs: 30000,
+      options,
+    },
+  ]);
+});
+
+test('HarnessClient safely rejects invalid, unregistered, ambiguous, and subagent adoption', async () => {
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/default-workspace',
+  });
+  let mode = 'unregistered';
+  let createCalls = 0;
+  client.ensureRunning = async () => undefined;
+  client.rpc = async (method) => {
+    if (method === 'workspace.list') {
+      if (mode === 'invalid-workspaces') return { items: null, archivedSessionIds: [] };
+      if (mode === 'unregistered') {
+        return {
+          items: [{ workspaceId: 'workspace', path: '/tmp/workspace', sessionIds: [] }],
+          archivedSessionIds: [],
+        };
+      }
+      return {
+        items: [
+          {
+            workspaceId: 'workspace-one',
+            path: '/tmp/one',
+            sessionIds: ['session-target'],
+          },
+          ...(mode === 'ambiguous' ? [{
+            workspaceId: 'workspace-two',
+            path: '/tmp/two',
+            sessionIds: ['session-target'],
+          }] : []),
+        ],
+        archivedSessionIds: [],
+      };
+    }
+    if (method === 'session.list') {
+      if (mode === 'summary-missing') return { items: [] };
+      return {
+        items: [{
+          sessionId: 'session-target',
+          ...(mode === 'subagent' ? { origin: 'subagent' } : {}),
+        }],
+      };
+    }
+    createCalls += 1;
+    return mode === 'bad-create'
+      ? { sessionId: 'different-session' }
+      : { sessionId: 'session-target' };
+  };
+
+  for (const invalid of [
+    undefined,
+    '',
+    '   ',
+    'session target',
+    'session\u0000target',
+    's'.repeat(257),
+  ]) {
+    await assert.rejects(
+      client.adoptWorkspaceSession(invalid),
+      (error) => error?.code === 'session-id-invalid',
+    );
+  }
+  await assert.rejects(
+    client.adoptWorkspaceSession('session-target'),
+    (error) => error?.code === 'session-not-registered',
+  );
+  mode = 'ambiguous';
+  await assert.rejects(
+    client.adoptWorkspaceSession('session-target'),
+    (error) => error?.code === 'session-workspace-ambiguous',
+  );
+  mode = 'summary-missing';
+  await assert.rejects(
+    client.adoptWorkspaceSession('session-target'),
+    (error) => error?.code === 'session-summary-unavailable',
+  );
+  mode = 'subagent';
+  await assert.rejects(
+    client.adoptWorkspaceSession('session-target'),
+    (error) => error?.code === 'session-subagent-unsupported',
+  );
+  assert.equal(createCalls, 0);
+
+  mode = 'invalid-workspaces';
+  await assert.rejects(
+    client.adoptWorkspaceSession('session-target'),
+    /invalid response for workspace\.list/,
+  );
+  mode = 'bad-create';
+  await assert.rejects(
+    client.adoptWorkspaceSession('session-target'),
+    /invalid response for session\.create/,
+  );
+  assert.equal(createCalls, 1);
+});
+
 test('HarnessClient reads the nested workspace.create response used by DSH rc.6', async (t) => {
   const methods = [];
   t.mock.method(globalThis, 'fetch', async (_url, options) => {

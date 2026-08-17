@@ -14,6 +14,7 @@ const HELP_TEXT = [
   '/workspace 工作区绝对路径  切换工作区',
   '/workspacelist  列出工作区绝对路径',
   '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
+  '/session Session ID  将当前聊天绑定到指定会话',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');
@@ -121,6 +122,7 @@ export class WeixinHarnessBridge {
       }
 
       const command = text.trim().toLowerCase();
+      const key = conversationKey(sender);
       if (command === '/help') {
         await this.#send(sender, HELP_TEXT, contextToken, runId);
         await this.#state.markSeen(messageId);
@@ -133,12 +135,12 @@ export class WeixinHarnessBridge {
         return;
       }
       if (command === '/new') {
-        await this.#state.clearSession(conversationKey(sender));
+        await this.#state.clearSession(key);
         await this.#send(sender, '已开启新会话。请发送你的问题。', contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
-      const workspaceCommand = await runWorkspaceCommand(text, this.#harness);
+      const workspaceCommand = await runWorkspaceCommand(text, this.#harness, key);
       if (workspaceCommand) {
         for (const reply of workspaceCommand.messages ?? [workspaceCommand.message]) {
           await this.#send(sender, reply, contextToken, runId);
@@ -147,7 +149,6 @@ export class WeixinHarnessBridge {
         return;
       }
 
-      const key = conversationKey(sender);
       const { answer } = await askInWorkspaceSession({
         harness: this.#harness,
         state: this.#state,

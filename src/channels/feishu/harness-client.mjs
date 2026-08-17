@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 
+import { adoptRegisteredWorkspaceSession } from '../shared/harness-session-binding.mjs';
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function workspacePaths(value) {
@@ -258,6 +260,10 @@ export class HarnessClient {
     if (!workspace) return { workspace: workspacePath, sessions: [] };
     const sessionList = await this.rpc('session.list', {}, 30000, options);
     return workspaceSessions(workspace, workspaceList.archivedSessionIds, sessionList);
+  }
+
+  async adoptWorkspaceSession(value, options = {}) {
+    return adoptRegisteredWorkspaceSession(this, value, options, 30000);
   }
 
   async workspaceId(options = {}) {

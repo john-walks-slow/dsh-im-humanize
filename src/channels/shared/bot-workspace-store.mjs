@@ -1,9 +1,36 @@
-import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { WORKSPACE_SESSION_STALE } from './workspace-session.mjs';
 
 const EMPTY_DOCUMENT = Object.freeze({ version: 1, workspaces: Object.freeze({}) });
+
+function workspaceSessionStale(message) {
+  const error = new Error(message);
+  error.code = WORKSPACE_SESSION_STALE;
+  return error;
+}
+
+async function canonicalWorkspacePath(value) {
+  return resolve(await realpath(value));
+}
+
+async function sameWorkspacePath(left, right) {
+  if (left === right) return true;
+  try {
+    return await canonicalWorkspacePath(left) === await canonicalWorkspacePath(right);
+  } catch {
+    return false;
+  }
+}
 
 function botIdOf(value) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
@@ -176,6 +203,72 @@ export class BotWorkspaceStore {
         throw error;
       }
       return workspace;
+    });
+  }
+
+  async bindWorkspaceSession(botId, value, {
+    conversationKey,
+    sessionId,
+    clearSessions,
+    setSession,
+    incarnation,
+    expectedGeneration,
+  } = {}) {
+    const id = botIdOf(botId);
+    if (typeof conversationKey !== 'string' || !conversationKey
+      || typeof sessionId !== 'string' || !sessionId) {
+      throw new TypeError('conversationKey and sessionId are required');
+    }
+    if (typeof clearSessions !== 'function' || typeof setSession !== 'function') {
+      throw new TypeError('session state callbacks are required');
+    }
+    if (!this.has(id)
+      || (incarnation !== undefined && incarnation !== this.incarnationFor(id))) {
+      const error = new Error('找不到要修改的机器人。');
+      error.code = 'workspace-bot-not-found';
+      throw error;
+    }
+    const workspace = await canonicalWorkspacePath(await validateWorkspacePath(value));
+    return this.#enqueue(id, async () => {
+      if (!this.has(id)
+        || (incarnation !== undefined && incarnation !== this.incarnationFor(id))) {
+        const error = new Error('找不到要修改的机器人。');
+        error.code = 'workspace-bot-not-found';
+        throw error;
+      }
+      if (expectedGeneration !== undefined
+        && expectedGeneration !== this.generationFor(id)) {
+        throw workspaceSessionStale(
+          'The bot workspace changed before the session binding could be committed.',
+        );
+      }
+
+      if (!(await sameWorkspacePath(workspace, this.workspaceFor(id)))) {
+        const previous = this.#workspaces[id];
+        // Fence every session resolved before this transition, then remove
+        // the old workspace mappings before publishing the new workspace.
+        this.#generations.set(id, this.#freshGeneration());
+        await clearSessions();
+        this.#workspaces[id] = workspace;
+        try {
+          await this.#persist();
+        } catch (error) {
+          // Session mappings stay cleared and the advanced generation stays
+          // fenced. Restoring either could pair an old session with a state
+          // transition whose durable outcome is unknown.
+          this.#workspaces[id] = previous;
+          throw error;
+        }
+      }
+
+      // This write remains inside the same bot transition as the workspace
+      // mutation, so another switch or bind cannot interleave between them.
+      await setSession(conversationKey, sessionId);
+      return {
+        workspace,
+        sessionId,
+        generation: this.#generations.get(id),
+      };
     });
   }
 
@@ -447,6 +540,62 @@ export function createBotWorkspaceScope(harness, { botId, workspaces, state }) {
           });
         };
       }
+      if (property === 'bindWorkspaceSession') {
+        return async (conversationKey, sessionId) => {
+          if (typeof conversationKey !== 'string' || !conversationKey
+            || typeof sessionId !== 'string' || !sessionId) {
+            throw new TypeError('conversationKey and sessionId are required');
+          }
+          if (!isCurrentScope()) {
+            const error = new Error('找不到要修改的机器人。');
+            error.code = 'workspace-bot-not-found';
+            throw error;
+          }
+          if (typeof target.adoptWorkspaceSession !== 'function') {
+            throw new TypeError('Harness does not support adopting workspace sessions');
+          }
+          const expectedGeneration = workspaces.generationFor(botId);
+          const adopted = await target.adoptWorkspaceSession(sessionId);
+          if (!isCurrentScope()) {
+            const error = new Error('找不到要修改的机器人。');
+            error.code = 'workspace-bot-not-found';
+            throw error;
+          }
+          if (expectedGeneration !== workspaces.generationFor(botId)) {
+            throw workspaceSessionStale(
+              'The bot workspace changed while the session was being adopted.',
+            );
+          }
+          if (!adopted || typeof adopted !== 'object'
+            || adopted.sessionId !== sessionId || typeof adopted.workspace !== 'string') {
+            throw new TypeError('Harness returned an invalid adopted workspace session');
+          }
+          const bound = await workspaces.bindWorkspaceSession(botId, adopted.workspace, {
+            conversationKey,
+            sessionId,
+            clearSessions: () => state.clearSessions(),
+            setSession: (key, selectedSessionId) => state.setSession(key, selectedSessionId),
+            incarnation,
+            expectedGeneration,
+          });
+          if (!isCurrentScope()) {
+            const error = new Error('找不到要修改的机器人。');
+            error.code = 'workspace-bot-not-found';
+            throw error;
+          }
+          if (bound.generation !== workspaces.generationFor(botId)) {
+            throw workspaceSessionStale(
+              'The bot workspace changed before the session binding completed.',
+            );
+          }
+          sessionGenerations.set(sessionId, bound.generation);
+          return {
+            ...adopted,
+            workspace: bound.workspace,
+            sessionId: bound.sessionId,
+          };
+        };
+      }
       if (property === 'createSession') {
         return async (options = {}) => {
           await workspaces.whenBotIdle(botId);
@@ -462,6 +611,37 @@ export function createBotWorkspaceScope(harness, { botId, workspaces, state }) {
           });
           sessionGenerations.set(sessionId, generation);
           return sessionId;
+        };
+      }
+      if (property === 'workspaceSession') {
+        return (sessionId) => {
+          if (typeof sessionId !== 'string' || !sessionId) {
+            throw new TypeError('sessionId is required');
+          }
+          const generation = sessionGenerations.get(sessionId)
+            ?? workspaces.generationFor(botId);
+          // Transfer the mutable provenance entry into this immutable handle.
+          // A later handle for the same id captures its own generation instead
+          // of sharing deletion or rebinding state with this call.
+          sessionGenerations.delete(sessionId);
+          const isCurrentSession = () => isCurrentScope()
+            && generation === workspaces.generationFor(botId);
+          return Object.freeze({
+            sessionId,
+            async sessionExists(...args) {
+              if (!isCurrentSession()) return false;
+              const exists = await target.sessionExists(sessionId, ...args);
+              return isCurrentSession() && exists;
+            },
+            ask(...args) {
+              if (!isCurrentSession()) {
+                throw workspaceSessionStale(
+                  'The bot workspace changed before this prompt started.',
+                );
+              }
+              return target.ask(sessionId, ...args);
+            },
+          });
         };
       }
       if (property === 'sessionExists') {

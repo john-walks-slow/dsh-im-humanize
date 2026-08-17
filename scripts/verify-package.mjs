@@ -72,6 +72,11 @@ for (const marker of ['/feishu', '/weixin', '/dingtalk', '/wecom', '/qq', '/slac
     throw new Error(`host bundle does not contain the internal ${marker} RPC provider`);
   }
 }
+for (const marker of ['/session Session ID', 'bindWorkspaceSession', 'session-subagent-unsupported']) {
+  if (!host.includes(marker)) {
+    throw new Error(`host bundle does not contain the Session binding marker: ${marker}`);
+  }
+}
 if (/@xmanrui\/dsh-(?:feishu|weixin|dingtalk)/.test(host)) {
   throw new Error('host bundle still imports an external channel plugin');
 }

@@ -103,6 +103,7 @@ export class TextHarnessBridge {
           '/workspace 工作区绝对路径  切换工作区',
           '/workspacelist  列出工作区绝对路径',
           '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
+          '/session Session ID  将当前聊天绑定到指定会话',
           '/status  检查连接状态',
           '/help  显示本帮助',
         ].join('\n'));
@@ -115,7 +116,8 @@ export class TextHarnessBridge {
         await this.#state.markSeen(messageId);
         return;
       }
-      const workspaceCommand = await runWorkspaceCommand(text, this.#harness);
+      const conversationKey = `${message.kind}:${message.conversationId}`;
+      const workspaceCommand = await runWorkspaceCommand(text, this.#harness, conversationKey);
       if (workspaceCommand) {
         for (const reply of workspaceCommand.messages ?? [workspaceCommand.message]) {
           await this.#bot.sendText(target, reply);
@@ -123,7 +125,6 @@ export class TextHarnessBridge {
         await this.#state.markSeen(messageId);
         return;
       }
-      const conversationKey = `${message.kind}:${message.conversationId}`;
       if (command === '/new') {
         await this.#state.clearSession(conversationKey);
         await this.#bot.sendText(target, '已开启新会话。请发送你的问题。');

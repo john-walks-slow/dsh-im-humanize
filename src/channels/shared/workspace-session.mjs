@@ -1,9 +1,20 @@
 export const WORKSPACE_SESSION_STALE = 'workspace-session-stale';
 
-async function sessionExists(harness, sessionId, options) {
+function workspaceSession(harness, sessionId) {
+  if (typeof harness.workspaceSession === 'function') {
+    return harness.workspaceSession(sessionId);
+  }
+  return Object.freeze({
+    sessionId,
+    sessionExists: (...args) => harness.sessionExists(sessionId, ...args),
+    ask: (...args) => harness.ask(sessionId, ...args),
+  });
+}
+
+async function sessionExists(session, options) {
   return options === undefined
-    ? harness.sessionExists(sessionId)
-    : harness.sessionExists(sessionId, options);
+    ? session.sessionExists()
+    : session.sessionExists(options);
 }
 
 async function createSession(harness, options) {
@@ -27,15 +38,17 @@ export async function askInWorkspaceSession({
   askOptions,
 }) {
   while (true) {
-    let sessionId = state.sessionFor(key);
-    if (!sessionId || !(await sessionExists(harness, sessionId, existsOptions))) {
-      sessionId = await createSession(harness, createOptions);
-      if (await state.setSession(key, sessionId) === false) continue;
-    }
     try {
+      let sessionId = state.sessionFor(key);
+      let session = sessionId ? workspaceSession(harness, sessionId) : null;
+      if (!session || !(await sessionExists(session, existsOptions))) {
+        sessionId = await createSession(harness, createOptions);
+        if (await state.setSession(key, sessionId) === false) continue;
+        session = workspaceSession(harness, sessionId);
+      }
       return {
         sessionId,
-        answer: await harness.ask(sessionId, text, askOptions),
+        answer: await session.ask(text, askOptions),
       };
     } catch (error) {
       if (error?.code !== WORKSPACE_SESSION_STALE) throw error;
