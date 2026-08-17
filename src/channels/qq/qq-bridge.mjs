@@ -8,6 +8,7 @@ const HELP_TEXT = [
   '/new  开启一个全新会话',
   '/workspace 工作区绝对路径  切换工作区',
   '/workspacelist  列出工作区绝对路径',
+  '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');

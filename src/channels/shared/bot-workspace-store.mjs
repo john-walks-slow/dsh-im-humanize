@@ -417,20 +417,21 @@ export function createBotWorkspaceScope(harness, { botId, workspaces, state }) {
           }
         };
       }
-      if (property === 'listWorkspaces' && typeof target.listWorkspaces === 'function') {
+      if ((property === 'listWorkspaces' || property === 'listWorkspaceSessions')
+        && typeof target[property] === 'function') {
         return async (...args) => {
           if (!isCurrentScope()) {
             const error = new Error('找不到要修改的机器人。');
             error.code = 'workspace-bot-not-found';
             throw error;
           }
-          const paths = await target.listWorkspaces(...args);
+          const result = await target[property](...args);
           if (!isCurrentScope()) {
             const error = new Error('找不到要修改的机器人。');
             error.code = 'workspace-bot-not-found';
             throw error;
           }
-          return paths;
+          return result;
         };
       }
       if (property === 'switchWorkspace') {

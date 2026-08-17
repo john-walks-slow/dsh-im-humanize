@@ -11,6 +11,47 @@ function workspacePaths(value) {
   ));
 }
 
+function workspaceFromList(workspacePath, workspaceList) {
+  if (!Array.isArray(workspaceList?.items)
+    || !Array.isArray(workspaceList?.archivedSessionIds)) {
+    throw new Error('Harness returned an invalid response for workspace.list');
+  }
+
+  const workspace = workspaceList.items.find((item) => item?.path === workspacePath);
+  if (!workspace) return null;
+  if (!Array.isArray(workspace.sessionIds)
+    || workspace.sessionIds.some((sessionId) => typeof sessionId !== 'string')) {
+    throw new Error('Harness returned invalid session IDs for workspace.list');
+  }
+  return workspace;
+}
+
+function workspaceSessions(workspace, archivedSessionIds, sessionList) {
+  if (!Array.isArray(sessionList?.items)) {
+    throw new Error('Harness returned an invalid response for session.list');
+  }
+
+  const archived = new Set(archivedSessionIds);
+  const summaries = new Map(sessionList.items.flatMap((item) => (
+    typeof item?.sessionId === 'string' ? [[item.sessionId, item]] : []
+  )));
+  return {
+    workspace: workspace.path,
+    sessions: workspace.sessionIds.map((sessionId) => {
+      const summary = summaries.get(sessionId);
+      const title = summary?.projections?.values?.title;
+      return {
+        sessionId,
+        title: typeof title === 'string' ? title : null,
+        archived: archived.has(sessionId),
+        blank: summary?.blank === true,
+        origin: summary?.origin === 'subagent' ? 'subagent' : null,
+        summaryAvailable: summary !== undefined,
+      };
+    }),
+  };
+}
+
 function messageText(event) {
   return (event?.data?.message?.content ?? [])
     .filter((part) => part.type === 'text' && typeof part.text === 'string')
@@ -208,6 +249,15 @@ export class HarnessClient {
   async listWorkspaces(options = {}) {
     await this.ensureRunning();
     return workspacePaths(await this.rpc('workspace.list', {}, 30000, options));
+  }
+
+  async listWorkspaceSessions(workspacePath, options = {}) {
+    await this.ensureRunning();
+    const workspaceList = await this.rpc('workspace.list', {}, 30000, options);
+    const workspace = workspaceFromList(workspacePath, workspaceList);
+    if (!workspace) return { workspace: workspacePath, sessions: [] };
+    const sessionList = await this.rpc('session.list', {}, 30000, options);
+    return workspaceSessions(workspace, workspaceList.archivedSessionIds, sessionList);
   }
 
   async workspaceId(options = {}) {

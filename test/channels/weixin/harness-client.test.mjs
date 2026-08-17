@@ -43,6 +43,117 @@ test('HarnessClient lists only absolute workspace paths', async () => {
   assert.deepEqual(await client.listWorkspaces(), []);
 });
 
+test('HarnessClient lists sessions by workspace accounting in its stored order', async () => {
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/default-workspace',
+  });
+  const options = { rpcId: 'weixin-session-list' };
+  const calls = [];
+  let invalidWorkspaceResponse = false;
+  let invalidSessionResponse = false;
+  client.ensureRunning = async () => { calls.push({ method: 'ensureRunning' }); };
+  client.rpc = async (method, payload, timeoutMs, rpcOptions) => {
+    calls.push({ method, payload, timeoutMs, options: rpcOptions });
+    if (method === 'workspace.list') {
+      if (invalidWorkspaceResponse) return null;
+      return {
+        items: [
+          {
+            workspaceId: 'target',
+            path: '/tmp/target',
+            sessionIds: ['session-two', 'session-missing', 'session-one'],
+          },
+          { workspaceId: 'other', path: '/tmp/other', sessionIds: ['cwd-only'] },
+        ],
+        archivedSessionIds: ['session-missing', 'session-one'],
+      };
+    }
+    assert.equal(method, 'session.list');
+    if (invalidSessionResponse) return null;
+    return {
+      items: [
+        {
+          sessionId: 'session-one',
+          blank: false,
+          cwd: '/tmp/target',
+          projections: { values: { title: null } },
+        },
+        {
+          sessionId: 'session-two',
+          blank: true,
+          origin: 'subagent',
+          cwd: '/tmp/different',
+          projections: { values: { title: 'Second session' } },
+        },
+        {
+          sessionId: 'cwd-only',
+          blank: false,
+          cwd: '/tmp/target',
+          projections: { values: { title: 'Must not leak into target' } },
+        },
+      ],
+    };
+  };
+
+  assert.deepEqual(await client.listWorkspaceSessions('/tmp/target', options), {
+    workspace: '/tmp/target',
+    sessions: [
+      {
+        sessionId: 'session-two',
+        title: 'Second session',
+        archived: false,
+        blank: true,
+        origin: 'subagent',
+        summaryAvailable: true,
+      },
+      {
+        sessionId: 'session-missing',
+        title: null,
+        archived: true,
+        blank: false,
+        origin: null,
+        summaryAvailable: false,
+      },
+      {
+        sessionId: 'session-one',
+        title: null,
+        archived: true,
+        blank: false,
+        origin: null,
+        summaryAvailable: true,
+      },
+    ],
+  });
+  assert.deepEqual(calls, [
+    { method: 'ensureRunning' },
+    { method: 'workspace.list', payload: {}, timeoutMs: 30_000, options },
+    { method: 'session.list', payload: {}, timeoutMs: 30_000, options },
+  ]);
+
+  calls.length = 0;
+  assert.deepEqual(await client.listWorkspaceSessions('/tmp/unregistered'), {
+    workspace: '/tmp/unregistered',
+    sessions: [],
+  });
+  assert.deepEqual(calls, [
+    { method: 'ensureRunning' },
+    { method: 'workspace.list', payload: {}, timeoutMs: 30_000, options: {} },
+  ]);
+
+  invalidWorkspaceResponse = true;
+  await assert.rejects(
+    client.listWorkspaceSessions('/tmp/target'),
+    /invalid response for workspace\.list/,
+  );
+  invalidWorkspaceResponse = false;
+  invalidSessionResponse = true;
+  await assert.rejects(
+    client.listWorkspaceSessions('/tmp/target'),
+    /invalid response for session\.list/,
+  );
+});
+
 test('reply tracker associates only the Harness turn created by the Weixin prompt RPC', () => {
   const tracker = new HarnessReplyTracker({ promptRpcId: 'weixin-prompt', afterSeq: 2 });
   const first = tracker.consume([
