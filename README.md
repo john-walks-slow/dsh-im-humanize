@@ -1,5 +1,11 @@
 # dsh-im
 
+<p align="center">
+  <img src="assets/logo.png" alt="dsh-im logo" width="160">
+</p>
+
+<p align="center"><strong>让聊天机器人轻松接入 DeepSeek Harness</strong></p>
+
 ## 中文
 
 通过扫码、App Manifest 或已有机器人凭据把 IM 机器人接入 DeepSeek Harness。一个插件、一个设置入口，统一管理飞书、微信、钉钉、企业微信、QQ、Slack、Telegram、Discord 和 WhatsApp 机器人。
