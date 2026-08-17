@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { createImHostPlugin, inject, name } from '../plugin-src/host/index.mjs';
 
-test('Host composes all eight IM channels inside one plugin context', async () => {
+test('Host composes all nine IM channels inside one plugin context', async () => {
   const calls = [];
   const plugin = createImHostPlugin({
     applyFeishu: async (ctx, config) => calls.push(['feishu', ctx, config]),
@@ -11,6 +11,7 @@ test('Host composes all eight IM channels inside one plugin context', async () =
     applyDingtalk: async (ctx, config) => calls.push(['dingtalk', ctx, config]),
     applyWecom: async (ctx, config) => calls.push(['wecom', ctx, config]),
     applyQq: async (ctx, config) => calls.push(['qq', ctx, config]),
+    applySlack: async (ctx, config) => calls.push(['slack', ctx, config]),
     applyTelegram: async (ctx, config) => calls.push(['telegram', ctx, config]),
     applyDiscord: async (ctx, config) => calls.push(['discord', ctx, config]),
     applyWhatsapp: async (ctx, config) => calls.push(['whatsapp', ctx, config]),
@@ -23,6 +24,7 @@ test('Host composes all eight IM channels inside one plugin context', async () =
     dingtalk: { replyTimeoutMs: 60_000 },
     wecom: { replyTimeoutMs: 60_000 },
     qq: { replyTimeoutMs: 60_000 },
+    slack: { replyTimeoutMs: 60_000 },
     telegram: { replyTimeoutMs: 60_000 },
     discord: { replyTimeoutMs: 60_000 },
     whatsapp: { replyTimeoutMs: 60_000 },
@@ -38,6 +40,7 @@ test('Host composes all eight IM channels inside one plugin context', async () =
     ['dingtalk', ctx, { ...config.dingtalk, rpcAuthority: 'trusted-host' }],
     ['wecom', ctx, { ...config.wecom, rpcAuthority: 'trusted-host' }],
     ['qq', ctx, { ...config.qq, rpcAuthority: 'trusted-host' }],
+    ['slack', ctx, { ...config.slack, rpcAuthority: 'trusted-host' }],
     ['telegram', ctx, { ...config.telegram, rpcAuthority: 'trusted-host' }],
     ['discord', ctx, { ...config.discord, rpcAuthority: 'trusted-host' }],
     ['whatsapp', ctx, { ...config.whatsapp, rpcAuthority: 'trusted-host' }],

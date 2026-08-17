@@ -11,10 +11,12 @@ const required = [
   'README.md',
   'THIRD_PARTY_NOTICES.md',
   'plugin-src/client/channels/dingtalk/index.js',
+  'plugin-src/client/channels/slack/index.js',
   'plugin-src/host/channels/feishu/index.mjs',
   'plugin-src/host/channels/weixin/index.mjs',
   'plugin-src/host/channels/dingtalk/index.mjs',
   'plugin-src/host/channels/qq/index.mjs',
+  'plugin-src/host/channels/slack/index.mjs',
   'plugin-src/host/channels/wecom/index.mjs',
   'plugin-src/host/channels/telegram/index.mjs',
   'plugin-src/host/channels/discord/index.mjs',
@@ -23,6 +25,7 @@ const required = [
   'src/channels/weixin/weixin-runtime.mjs',
   'src/channels/dingtalk/dingtalk-runtime.mjs',
   'src/channels/qq/qq-runtime.mjs',
+  'src/channels/slack/slack-runtime.mjs',
   'src/channels/wecom/wecom-runtime.mjs',
   'src/channels/telegram/telegram-runtime.mjs',
   'src/channels/discord/discord-runtime.mjs',
@@ -60,7 +63,7 @@ if (!client.includes('container-type: inline-size')
   || !client.includes('@container (max-width: 680px)')) {
   throw new Error('client bundle does not contain the narrow-panel DingTalk QR layout');
 }
-for (const marker of ['/feishu', '/weixin', '/dingtalk', '/wecom', '/qq', '/telegram', '/discord', '/whatsapp']) {
+for (const marker of ['/feishu', '/weixin', '/dingtalk', '/wecom', '/qq', '/slack', '/telegram', '/discord', '/whatsapp']) {
   if (!host.includes(marker)) {
     throw new Error(`host bundle does not contain the internal ${marker} RPC provider`);
   }

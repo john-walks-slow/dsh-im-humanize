@@ -1,41 +1,27 @@
 import { unlink } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
-import { createTokenConnectionSupervisor } from './connection-supervisor.mjs';
+import { SlackConfigStore } from '../../../../src/channels/slack/config-store.mjs';
+import { SlackController } from '../../../../src/channels/slack/slack-controller.mjs';
+import { SlackHarnessClient } from '../../../../src/channels/slack/harness-client.mjs';
+import { SlackRuntime } from '../../../../src/channels/slack/slack-runtime.mjs';
+import { SlackStateStore } from '../../../../src/channels/slack/state-store.mjs';
+import { createTokenConnectionSupervisor } from '../shared/connection-supervisor.mjs';
+import { harnessOrigin, pluginPaths } from '../shared/production.mjs';
 
-export function harnessOrigin(webServer, configured) {
-  if (configured !== undefined) return new URL(configured);
-  const port = webServer?.port;
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error('dsh-im token channel requires an initialized DSH webServer port');
-  }
-  return new URL(`http://127.0.0.1:${port}`);
-}
+export async function createProductionController(ctx, config = {}, internals = {}) {
+  if (!ctx?.credentials) throw new TypeError('dsh-im slack requires ctx.credentials');
+  if (!ctx?.webServer) throw new TypeError('dsh-im slack requires ctx.webServer');
 
-export function pluginPaths(config, channel) {
-  const dshHome = resolve(config.dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh'));
-  const root = resolve(config.dataDir ?? join(dshHome, 'integrations', `dsh-${channel}`));
-  return {
-    config: resolve(config.configPath ?? join(root, 'config.json')),
-    bots: resolve(config.botsDir ?? join(root, 'bots')),
-  };
-}
-
-export async function createTokenProductionController(ctx, config, internals, definitions) {
-  const { channel, ConfigStore, StateStore, HarnessClient, Controller, Runtime } = definitions;
-  if (!ctx?.credentials) throw new TypeError(`dsh-im ${channel} requires ctx.credentials`);
-  if (!ctx?.webServer) throw new TypeError(`dsh-im ${channel} requires ctx.webServer`);
-
-  const ResolvedConfigStore = internals.ConfigStore ?? ConfigStore;
-  const ResolvedStateStore = internals.StateStore ?? StateStore;
-  const ResolvedHarness = internals.HarnessClient ?? HarnessClient;
-  const ResolvedController = internals.Controller ?? Controller;
-  const ResolvedRuntime = internals.Runtime ?? Runtime;
+  const ResolvedConfigStore = internals.ConfigStore ?? SlackConfigStore;
+  const ResolvedStateStore = internals.StateStore ?? SlackStateStore;
+  const ResolvedHarness = internals.HarnessClient ?? SlackHarnessClient;
+  const ResolvedController = internals.Controller ?? SlackController;
+  const ResolvedRuntime = internals.Runtime ?? SlackRuntime;
   const createSupervisor = internals.createConnectionSupervisor ?? createTokenConnectionSupervisor;
   const logger = typeof ctx.logger === 'function'
-    ? ctx.logger(`dsh-im:${channel}`) : (ctx.logger ?? console);
-  const paths = pluginPaths(config, channel);
+    ? ctx.logger('dsh-im:slack') : (ctx.logger ?? console);
+  const paths = pluginPaths(config, 'slack');
   const configStore = await new ResolvedConfigStore(paths.config).load();
   const stateStores = new Map();
   const statePath = (botId) => resolve(paths.bots, botId, 'state.json');
@@ -58,10 +44,11 @@ export async function createTokenProductionController(ctx, config, internals, de
     credentials: ctx.credentials,
     configStore,
     logger,
-    ...(internals.inspectToken ? { inspectToken: internals.inspectToken } : {}),
-    createRuntime: async ({ botId, config: botConfig, token }) => new ResolvedRuntime({
+    ...(internals.inspectCredentials ? { inspectCredentials: internals.inspectCredentials } : {}),
+    createRuntime: async ({ botId, config: botConfig, botToken, appToken }) => new ResolvedRuntime({
       config: botConfig,
-      token,
+      botToken,
+      appToken,
       harness,
       state: await stateFor(botId),
       replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
@@ -85,7 +72,7 @@ export async function createTokenProductionController(ctx, config, internals, de
     },
   });
   const supervisor = createSupervisor({
-    channel,
+    channel: 'slack',
     controller,
     harness,
     logger,

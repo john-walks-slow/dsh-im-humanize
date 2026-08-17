@@ -5,6 +5,7 @@ import {
   DiscordLogoGlyph,
   FeishuLogoGlyph,
   QqLogoGlyph,
+  SlackLogoGlyph,
   TelegramLogoGlyph,
   WecomLogoGlyph,
   WeixinLogoGlyph,
@@ -21,6 +22,9 @@ import { installFeishuStyles } from './channels/feishu/styles.js';
 import { QQ_RPC_CHANNEL } from './channels/qq/api.js';
 import { QqSettingsTab } from './channels/qq/index.js';
 import { installQqStyles } from './channels/qq/styles.js';
+import { SLACK_RPC_CHANNEL } from './channels/slack/api.js';
+import { SlackSettingsTab } from './channels/slack/index.js';
+import { installSlackStyles } from './channels/slack/styles.js';
 import { TELEGRAM_RPC_CHANNEL } from './channels/telegram/api.js';
 import { TelegramSettingsTab } from './channels/telegram/index.js';
 import { installTelegramStyles } from './channels/telegram/styles.js';
@@ -46,6 +50,7 @@ const CHANNELS = Object.freeze([
   { id: 'dingtalk', label: '钉钉' },
   { id: 'wecom', label: '企业微信' },
   { id: 'qq', label: 'QQ' },
+  { id: 'slack', label: 'Slack' },
   { id: 'telegram', label: 'Telegram' },
   { id: 'discord', label: 'Discord' },
   { id: 'whatsapp', label: 'WhatsApp' },
@@ -79,6 +84,11 @@ function TelegramLogo() {
     h(TelegramLogoGlyph));
 }
 
+function SlackLogo() {
+  return h('span', { className: 'dim-logo dim-logoSlack', 'aria-hidden': 'true' },
+    h(SlackLogoGlyph));
+}
+
 function DiscordLogo() {
   return h('span', { className: 'dim-logo dim-logoDiscord', 'aria-hidden': 'true' },
     h(DiscordLogoGlyph));
@@ -95,6 +105,7 @@ function ChannelLogo({ channel }) {
   if (channel === 'dingtalk') return h(DingtalkLogo);
   if (channel === 'wecom') return h(WecomLogo);
   if (channel === 'qq') return h(QqLogo);
+  if (channel === 'slack') return h(SlackLogo);
   if (channel === 'telegram') return h(TelegramLogo);
   if (channel === 'discord') return h(DiscordLogo);
   return h(WhatsappLogo);
@@ -105,6 +116,7 @@ export function IMSettingsTab({
   discordRpcCall,
   feishuRpcCall,
   qqRpcCall,
+  slackRpcCall,
   telegramRpcCall,
   wecomRpcCall,
   weixinRpcCall,
@@ -148,6 +160,8 @@ export function IMSettingsTab({
               ? h(WecomSettingsTab, { rpcCall: wecomRpcCall })
               : active.id === 'qq'
                 ? h(QqSettingsTab, { rpcCall: qqRpcCall })
+                : active.id === 'slack'
+                  ? h(SlackSettingsTab, { rpcCall: slackRpcCall })
                 : active.id === 'telegram'
                   ? h(TelegramSettingsTab, { rpcCall: telegramRpcCall })
                   : active.id === 'discord'
@@ -164,6 +178,7 @@ export function apply(ctx) {
       installWeixinStyles(),
       installWecomStyles(),
       installQqStyles(),
+      installSlackStyles(),
       installTelegramStyles(),
       installDiscordStyles(),
       installWhatsappStyles(),
@@ -190,6 +205,8 @@ export function apply(ctx) {
     ctx.connection.rpc.call(DISCORD_RPC_CHANNEL, endpoint, payload, signal);
   const whatsappRpcCall = (endpoint, payload, signal) =>
     ctx.connection.rpc.call(WHATSAPP_RPC_CHANNEL, endpoint, payload, signal);
+  const slackRpcCall = (endpoint, payload, signal) =>
+    ctx.connection.rpc.call(SLACK_RPC_CHANNEL, endpoint, payload, signal);
 
   ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
     name: 'settings.plugins.tab',
@@ -201,6 +218,7 @@ export function apply(ctx) {
       discordRpcCall,
       feishuRpcCall,
       qqRpcCall,
+      slackRpcCall,
       telegramRpcCall,
       wecomRpcCall,
       weixinRpcCall,

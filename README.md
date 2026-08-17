@@ -2,9 +2,9 @@
 
 ## 中文
 
-通过扫码或已有机器人凭据把 IM 机器人接入 DeepSeek Harness。一个插件、一个设置入口，统一管理飞书、微信、钉钉、企业微信、QQ、Telegram、Discord 和 WhatsApp 机器人。
+通过扫码、App Manifest 或已有机器人凭据把 IM 机器人接入 DeepSeek Harness。一个插件、一个设置入口，统一管理飞书、微信、钉钉、企业微信、QQ、Slack、Telegram、Discord 和 WhatsApp 机器人。
 
-Connect IM bots to DeepSeek Harness by scanning a QR code or entering existing bot credentials. One plugin and one settings entry provide unified management for Feishu, WeChat, DingTalk, WeCom, QQ, Telegram, Discord, and WhatsApp bots.
+Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest, or entering existing bot credentials. One plugin and one settings entry provide unified management for Feishu, WeChat, DingTalk, WeCom, QQ, Slack, Telegram, Discord, and WhatsApp bots.
 
 ## 界面
 
@@ -17,6 +17,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code or entering existing b
 - 钉钉：扫码创建机器人，或使用已有 Client ID + Client Secret 绑定机器人，使用钉钉 Stream 长连接收消息，并通过 AI Card 流式显示 Harness 回答。
 - 企业微信：使用企业微信 App 扫码创建智能机器人，或使用已有 Bot ID + Secret 绑定机器人，通过官方 WebSocket 长连接收消息，原生显示“正在思考中”、工具执行进度和流式回答。
 - QQ：使用手机 QQ 扫码创建机器人，或使用已有 AppID + AppSecret 绑定机器人，通过 WebSocket 长连接收消息；私聊支持原生“正在输入”和流式回答，群聊在机器人被 @ 后回复。
+- Slack：使用预置 App Manifest 辅助创建并配置应用，再填写 Bot Token（`xoxb-`）与 App Token（`xapp-`），通过 Socket Mode 长连接收消息；私聊直接回复，频道仅在机器人被 @ 时响应，并优先使用 Slack 官方流式消息 API 显示 Harness 回答。
 - Telegram：使用 @BotFather 生成的 Bot Token 接入机器人，通过官方 Bot API 长轮询收消息；私聊直接回复，群聊仅在机器人被提及或收到对机器人消息的回复时响应，并通过编辑消息流式显示 Harness 回答。
 - Discord：使用 Developer Portal 生成的 Bot Token 接入机器人，通过 Gateway v10 长连接收消息；私信直接回复，服务器频道仅在机器人被提及时响应，并通过编辑消息流式显示 Harness 回答。
 - WhatsApp：使用手机 WhatsApp 扫码关联设备，通过 WhatsApp Web 长连接收消息；收到消息后显示已读和“正在输入”，再发送 Harness 的最终回答。
@@ -41,6 +42,8 @@ dsh plugin --profile web add @xmanrui/dsh-im
 
 Telegram 和 Discord 没有官方扫码创建机器人流程，因此页面只显示带钥匙图标的「手动接入」入口，并只要求 Bot Token。Telegram Token 由 @BotFather 生成；若该机器人已经配置 Webhook，需要先由原服务移除 Webhook，Bot API 长轮询才能接管消息。Discord Token 来自 Developer Portal 的 Bot 页面；还需把机器人邀请到目标服务器，并授予查看频道、发送消息和读取历史消息权限。本插件只读取私信和明确提及机器人的服务器消息，因此不要求 Message Content 特权 Intent。
 
+Slack 页面提供 Manifest 辅助创建与双 Token 接入。点击「开始接入」，复制页面提供的 App Manifest，再打开 Slack 创建页并选择 **From a manifest**；创建后在 **Basic Information → App-Level Tokens** 生成包含 `connections:write` 的 App Token，并在 **OAuth & Permissions** 将应用安装到工作区以取得 Bot Token。插件会验证两个 Token，再通过 Socket Mode 建立连接；Slack 没有官方扫码创建机器人流程。两个 Token 只提交到本机 Harness Host 并写入受保护的凭据存储，状态接口和机器人列表不会回传 Token。
+
 WhatsApp 页面只显示「扫码接入机器人」。打开手机 WhatsApp 的「设置 → 已关联设备 → 关联设备」，扫描 Harness 页面中的二维码即可，不需要 Meta 控制台、Cloud API、Webhook、Phone Number ID 或 Access Token。关联设备状态只保存在本机 `~/.dsh/integrations/dsh-whatsapp/auth`，浏览器只会收到一次性二维码和脱敏后的账号状态。个人账号可在 WhatsApp 的「给自己发消息」会话中直接使用；插件按消息 ID 过滤自己的回复，避免形成回复循环。
 
 建议为机器人准备独立 WhatsApp 号码。关联个人常用账号会让发给该账号的私聊消息成为 Harness 输入；群聊只有明确提及该账号或回复该账号消息时才会触发。请只把机器人号码开放给可信联系人，并在不再使用时同时从 Harness 和手机「已关联设备」中移除。
@@ -56,10 +59,10 @@ QQ 扫码接入使用腾讯 QQBot v2 官方流程。默认腾讯授权页会把�
 ## 设计
 
 - Harness 中只注册一个「IM机器人」设置页；
-- 八个渠道的 Host、客户端与运行时源码都在本仓库维护，不依赖外部独立渠道插件；
-- 左侧使用渠道 Logo 切换微信、飞书、钉钉、企业微信、QQ、Telegram、Discord 和 WhatsApp，不使用启用/停用开关；
-- 八个渠道保持独立的 RPC、凭据、连接监督和会话映射；
-- 浏览器只获得二维码和脱敏状态；手动输入的 Secret 或 Bot Token 仅单向提交给本机 Host，任何 RPC 响应都不会返回 App Secret、`bot_token`、钉钉 `client_secret`、企业微信 Secret、QQ `app_secret`、Telegram/Discord Bot Token、WhatsApp 关联设备密钥或原始用户标识。
+- 九个渠道的 Host、客户端与运行时源码都在本仓库维护，不依赖外部独立渠道插件；
+- 左侧使用渠道 Logo 切换微信、飞书、钉钉、企业微信、QQ、Slack、Telegram、Discord 和 WhatsApp，不使用启用/停用开关；
+- 九个渠道保持独立的 RPC、凭据、连接监督和会话映射；
+- 浏览器只获得二维码、Manifest 和脱敏状态；手动输入的 Secret 或 Token 仅单向提交给本机 Host，任何 RPC 响应都不会返回 App Secret、`bot_token`、钉钉 `client_secret`、企业微信 Secret、QQ `app_secret`、Slack Bot/App Token、Telegram/Discord Bot Token、WhatsApp 关联设备密钥或原始用户标识。
 
 ## 本地开发
 
@@ -85,9 +88,9 @@ IM 管理 RPC 默认仅接受回环浏览器。如果 Web profile 在受信任�
 
 ## English
 
-Connect IM bots to DeepSeek Harness by scanning a QR code or entering existing bot credentials. One plugin and one settings entry provide unified management for Feishu, WeChat, DingTalk, WeCom, QQ, Telegram, Discord, and WhatsApp bots.
+Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest, or entering existing bot credentials. One plugin and one settings entry provide unified management for Feishu, WeChat, DingTalk, WeCom, QQ, Slack, Telegram, Discord, and WhatsApp bots.
 
-> GitHub description: Connect IM bots to DeepSeek Harness by QR code or bot credentials (supports Feishu, WeChat, DingTalk, WeCom, QQ, Telegram, Discord, and WhatsApp).
+> GitHub description: Connect IM bots to DeepSeek Harness by QR code, App Manifest, or bot credentials (supports Feishu, WeChat, DingTalk, WeCom, QQ, Slack, Telegram, Discord, and WhatsApp).
 
 ## Interface
 
@@ -100,6 +103,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code or entering existing b
 - DingTalk: create a bot by QR code or bind an existing bot with Client ID + Client Secret, receive messages through DingTalk Stream, and stream Harness replies through AI Cards.
 - WeCom: create an intelligent bot by QR code or bind an existing bot with Bot ID + Secret, receive messages over the official WebSocket connection, and natively show a thinking state, tool progress, and streaming replies.
 - QQ: create a bot by QR code or bind an existing bot with AppID + AppSecret, receive messages over a WebSocket connection, stream private-chat replies with a native typing indicator, and reply in groups when mentioned.
+- Slack: use the bundled App Manifest to create and configure an app, enter its Bot Token (`xoxb-`) and App Token (`xapp-`), receive events over Socket Mode, reply directly in DMs and only when mentioned in channels, and prefer Slack's native streaming-message API for Harness output.
 - Telegram: bind a BotFather-created bot with its Bot Token, receive messages through Bot API long polling, reply directly in private chats, require a mention or reply in groups, and stream Harness output by editing the reply.
 - Discord: bind a Developer Portal bot with its Bot Token, receive events through Gateway v10, reply directly in DMs, require a mention in server channels, and stream Harness output by editing the reply.
 - WhatsApp: scan a QR code to link a WhatsApp device, receive messages over WhatsApp Web, show a native read receipt and typing indicator, and then send the final Harness answer.
@@ -124,6 +128,8 @@ Feishu, QQ, DingTalk, and WeCom each provide two entry points. The blue **QR acc
 
 Telegram and Discord do not provide an official QR flow for creating bots, so their pages expose only the key-marked **Manual access** action and request a Bot Token. Generate the Telegram token with BotFather; an existing webhook must be removed by its current service before Bot API long polling can receive updates. Generate the Discord token on the Developer Portal's Bot page, invite the bot to the target server, and grant View Channel, Send Messages, and Read Message History. The plugin reads DMs and server messages that explicitly mention the bot, so it does not request the privileged Message Content intent.
 
+Slack provides Manifest-assisted creation with dual-Token access. Choose **Start setup**, copy the bundled App Manifest, open Slack's create page, and select **From a manifest**. Under **Basic Information → App-Level Tokens**, generate an App Token with `connections:write`; then install the app to the workspace under **OAuth & Permissions** to obtain the Bot Token. The plugin validates both Tokens before opening Socket Mode. Slack has no official QR-based bot-creation flow. Both Tokens are sent only to the local Harness Host and stored through its protected credential provider; status responses and bot lists never return them.
+
 WhatsApp exposes only **QR access**. On the phone, open **WhatsApp → Settings → Linked devices → Link a device**, then scan the QR code shown by Harness. No Meta console, Cloud API, Webhook, Phone Number ID, or Access Token is required. Linked-device state stays under `~/.dsh/integrations/dsh-whatsapp/auth`; the browser receives only the one-time QR code and redacted account status. Personal accounts can use WhatsApp's **Message yourself** chat directly; the plugin suppresses only its own exact reply message IDs to prevent reply loops.
 
 Use a dedicated WhatsApp number for the bot when possible. Linking a personal account makes DMs sent to that account eligible Harness input; group messages trigger only when they mention or reply to the linked account. Limit the number to trusted contacts, and remove the device from both Harness and the phone's **Linked devices** list when it is no longer used.
@@ -139,10 +145,10 @@ Feishu QR binding records the scanner as an allowed user. Manual credentials can
 ## Design
 
 - Registers a single **IM Bot** settings page in Harness.
-- Maintains all eight channel Host, client, and runtime sources in this repository without external standalone channel plugins.
-- Uses channel logos for WeChat, Feishu, DingTalk, WeCom, QQ, Telegram, Discord, and WhatsApp navigation without enable/disable switches.
+- Maintains all nine channel Host, client, and runtime sources in this repository without external standalone channel plugins.
+- Uses channel logos for WeChat, Feishu, DingTalk, WeCom, QQ, Slack, Telegram, Discord, and WhatsApp navigation without enable/disable switches.
 - Keeps RPC endpoints, credentials, connection supervision, and session mappings isolated by channel.
-- Returns only QR codes and redacted status data to the browser. Manually entered secrets and Bot Tokens travel one way to the local Host; no RPC response returns App Secrets, `bot_token`, DingTalk `client_secret`, WeCom Secrets, QQ `app_secret`, Telegram/Discord Bot Tokens, WhatsApp linked-device keys, or raw user identifiers.
+- Returns only QR codes, the public Slack Manifest, and redacted status data to the browser. Manually entered secrets and Tokens travel one way to the local Host; no RPC response returns App Secrets, `bot_token`, DingTalk `client_secret`, WeCom Secrets, QQ `app_secret`, Slack Bot/App Tokens, Telegram/Discord Bot Tokens, WhatsApp linked-device keys, or raw user identifiers.
 
 ## Local development
 

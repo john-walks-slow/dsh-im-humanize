@@ -2,6 +2,7 @@ import { apply as applyDingtalk } from './channels/dingtalk/index.mjs';
 import { apply as applyDiscord } from './channels/discord/index.mjs';
 import { apply as applyFeishu } from './channels/feishu/index.mjs';
 import { apply as applyQq } from './channels/qq/index.mjs';
+import { apply as applySlack } from './channels/slack/index.mjs';
 import { apply as applyTelegram } from './channels/telegram/index.mjs';
 import { apply as applyWecom } from './channels/wecom/index.mjs';
 import { apply as applyWeixin } from './channels/weixin/index.mjs';
@@ -23,6 +24,7 @@ export function createImHostPlugin(internals = {}) {
   const startDingtalk = internals.applyDingtalk ?? applyDingtalk;
   const startWecom = internals.applyWecom ?? applyWecom;
   const startQq = internals.applyQq ?? applyQq;
+  const startSlack = internals.applySlack ?? applySlack;
   const startTelegram = internals.applyTelegram ?? applyTelegram;
   const startDiscord = internals.applyDiscord ?? applyDiscord;
   const startWhatsapp = internals.applyWhatsapp ?? applyWhatsapp;
@@ -35,6 +37,7 @@ export function createImHostPlugin(internals = {}) {
       await startDingtalk(ctx, channelConfig(config, 'dingtalk'));
       await startWecom(ctx, channelConfig(config, 'wecom'));
       await startQq(ctx, channelConfig(config, 'qq'));
+      await startSlack(ctx, channelConfig(config, 'slack'));
       await startTelegram(ctx, channelConfig(config, 'telegram'));
       await startDiscord(ctx, channelConfig(config, 'discord'));
       await startWhatsapp(ctx, channelConfig(config, 'whatsapp'));

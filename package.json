@@ -1,7 +1,7 @@
 {
   "name": "@xmanrui/dsh-im",
   "version": "0.2.2",
-  "description": "通过扫码或机器人凭据把IM机器人接入DeepSeek Harness（支持飞书、微信、钉钉、企业微信、QQ、Telegram、Discord和WhatsApp）。",
+  "description": "通过扫码、App Manifest或机器人凭据把IM机器人接入DeepSeek Harness（支持飞书、微信、钉钉、企业微信、QQ、Slack、Telegram、Discord和WhatsApp）。",
   "license": "MIT",
   "type": "module",
   "repository": {

@@ -106,6 +106,19 @@ export function DiscordLogoGlyph({ size } = {}) {
   }));
 }
 
+export function SlackLogoGlyph({ size } = {}) {
+  return h('svg', {
+    ...dimensions(size),
+    viewBox: '0 0 24 24',
+    focusable: 'false',
+    'aria-hidden': 'true',
+    'data-im-channel-logo': 'slack',
+  }, h('path', {
+    fill: 'currentColor',
+    d: 'M6 15a2 2 0 1 1-2-2h2v2Zm1 0a2 2 0 1 1 4 0v5a2 2 0 1 1-4 0v-5Zm2-8a2 2 0 1 1 2-2v2H9Zm0 1a2 2 0 1 1 0 4H4a2 2 0 1 1 0-4h5Zm8 2a2 2 0 1 1 2 2h-2v-2Zm-1 0a2 2 0 1 1-4 0V5a2 2 0 1 1 4 0v5Zm-2 8a2 2 0 1 1-2 2v-2h2Zm0-1a2 2 0 1 1 0-4h5a2 2 0 1 1 0 4h-5Z',
+  }));
+}
+
 export function WhatsappLogoGlyph({ size } = {}) {
   return h('svg', {
     ...dimensions(size),

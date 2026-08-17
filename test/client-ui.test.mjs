@@ -65,7 +65,7 @@ const QQ_SOURCE_URL = new URL(
   import.meta.url,
 );
 
-test('IM settings renders eight compact logo channel tabs without enable switches', async () => {
+test('IM settings renders nine compact logo channel tabs without enable switches', async () => {
   const styles = await readFile(STYLES_URL, 'utf8');
   const markup = renderToStaticMarkup(React.createElement(IMSettingsTab, {
     feishuRpcCall: async () => ({ ok: true, value: {} }),
@@ -73,6 +73,7 @@ test('IM settings renders eight compact logo channel tabs without enable switche
     dingtalkRpcCall: async () => ({ ok: true, value: {} }),
     wecomRpcCall: async () => ({ ok: true, value: {} }),
     qqRpcCall: async () => ({ ok: true, value: {} }),
+    slackRpcCall: async () => ({ ok: true, value: {} }),
     telegramRpcCall: async () => ({ ok: true, value: {} }),
     discordRpcCall: async () => ({ ok: true, value: {} }),
     whatsappRpcCall: async () => ({ ok: true, value: {} }),
@@ -86,6 +87,7 @@ test('IM settings renders eight compact logo channel tabs without enable switche
   assert.match(markup, />钉钉</);
   assert.match(markup, />企业微信</);
   assert.match(markup, />QQ</);
+  assert.match(markup, />Slack</);
   assert.match(markup, />Telegram</);
   assert.match(markup, />Discord</);
   assert.match(markup, />WhatsApp</);
@@ -94,11 +96,12 @@ test('IM settings renders eight compact logo channel tabs without enable switche
   assert.match(markup, /dim-logoDingtalk/);
   assert.match(markup, /dim-logoWecom/);
   assert.match(markup, /dim-logoQq/);
+  assert.match(markup, /dim-logoSlack/);
   assert.match(markup, /dim-logoTelegram/);
   assert.match(markup, /dim-logoDiscord/);
   assert.match(markup, /dim-logoWhatsapp/);
   assert.match(styles, /\.dim-logoFeishu svg \{ width: 28px; height: 28px; \}/);
-  assert.equal((markup.match(/role="tab"/g) ?? []).length, 8);
+  assert.equal((markup.match(/role="tab"/g) ?? []).length, 9);
   assert.equal((markup.match(/aria-selected="true"/g) ?? []).length, 1);
   assert.doesNotMatch(markup, /role="switch"|type="checkbox"/);
   assert.doesNotMatch(markup, /dim-chevron|扫码绑定<\/small>|扫码接入<\/small>/);
