@@ -1,6 +1,5 @@
 import * as React from 'react';
-
-const h = React.createElement;
+import { h } from './i18n.js';
 
 function ActionIcon({ children }) {
   return h('svg', {

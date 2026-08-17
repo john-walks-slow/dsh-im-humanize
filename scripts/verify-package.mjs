@@ -12,6 +12,7 @@ const required = [
   'THIRD_PARTY_NOTICES.md',
   'plugin-src/client/channels/dingtalk/index.js',
   'plugin-src/client/channels/slack/index.js',
+  'plugin-src/client/i18n.js',
   'plugin-src/host/channels/feishu/index.mjs',
   'plugin-src/host/channels/weixin/index.mjs',
   'plugin-src/host/channels/dingtalk/index.mjs',
@@ -50,8 +51,11 @@ const lock = JSON.parse(lockText);
 if (!client.includes('id: "@xmanrui/dsh-im"')) {
   throw new Error('client bundle does not register the dsh-im loader id');
 }
-if (!client.includes('id: "im"') || !client.includes('label: "IM\\u673A\\u5668\\u4EBA"')) {
-  throw new Error('client bundle does not register the IM机器人 settings tab');
+if (!client.includes('id: "im"')
+  || !client.includes('label: () => t("IM\\u673A\\u5668\\u4EBA")')
+  || !client.includes('locale: IM_LOCALE_NAMESPACE')
+  || !client.includes('IM_LOCALE_NAMESPACE = "dsh-im"')) {
+  throw new Error('client bundle does not register the localized IM settings tab');
 }
 if ((client.match(/ctx\.slots\.inject\("settings\.plugins\.tab"/g) ?? []).length !== 1) {
   throw new Error('client bundle must register exactly one settings tab');

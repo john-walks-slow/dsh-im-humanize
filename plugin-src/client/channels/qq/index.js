@@ -2,6 +2,7 @@ import * as React from 'react';
 
 import { QqLogoGlyph } from '../../channel-logos.js';
 import { CredentialActionIcon, CredentialBindingPanel, QrActionIcon } from '../../credential-binding.js';
+import { h } from '../../i18n.js';
 import { installDingtalkStyles } from '../dingtalk/styles.js';
 import {
   QQ_ENDPOINTS,
@@ -15,7 +16,6 @@ import {
 } from './api.js';
 import { installQqStyles } from './styles.js';
 
-const h = React.createElement;
 const ACTIVE_STATES = new Set(['pending', 'refreshing', 'connecting']);
 
 const Button = React.forwardRef(function Button({ children, kind = 'secondary', className = '', ...props }, ref) {

@@ -1,9 +1,8 @@
 import * as React from 'react';
 
 import { CredentialActionIcon, CredentialBindingPanel } from '../../credential-binding.js';
+import { h } from '../../i18n.js';
 import { installDingtalkStyles } from '../dingtalk/styles.js';
-
-const h = React.createElement;
 
 const Button = React.forwardRef(function Button(
   { children, kind = 'secondary', className = '', ...props },

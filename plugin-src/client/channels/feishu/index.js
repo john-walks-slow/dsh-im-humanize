@@ -2,6 +2,7 @@ import * as React from "react";
 
 import { FeishuLogoGlyph } from "../../channel-logos.js";
 import { CredentialActionIcon, CredentialBindingPanel, QrActionIcon } from "../../credential-binding.js";
+import { h } from "../../i18n.js";
 import {
   FEISHU_ENDPOINTS,
   FEISHU_RPC_CHANNEL,
@@ -14,8 +15,6 @@ import {
 } from "./api.js";
 import { useAnimationFrameScheduler } from "../../lifecycle.js";
 import { installFeishuStyles } from "./styles.js";
-
-const h = React.createElement;
 
 export const name = "feishu-settings";
 export const inject = ["slots", "connection"];

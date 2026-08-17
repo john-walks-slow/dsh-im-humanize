@@ -37,12 +37,11 @@ import { installWeixinStyles } from './channels/weixin/styles.js';
 import { WHATSAPP_RPC_CHANNEL } from './channels/whatsapp/api.js';
 import { WhatsappSettingsTab } from './channels/whatsapp/index.js';
 import { installWhatsappStyles } from './channels/whatsapp/styles.js';
+import { en, h, IM_LOCALE_NAMESPACE, setImTranslator, zh } from './i18n.js';
 import { installImStyles } from './styles.js';
 
-const h = React.createElement;
-
 export const name = 'im-settings';
-export const inject = ['slots', 'connection'];
+export const inject = ['slots', 'connection', 'locale'];
 
 const CHANNELS = Object.freeze([
   { id: 'weixin', label: '微信' },
@@ -172,6 +171,13 @@ export function IMSettingsTab({
 }
 
 export function apply(ctx) {
+  ctx.effect(
+    () => ctx.locale.register(IM_LOCALE_NAMESPACE, { zh, en }),
+    'im-settings: bilingual dictionaries',
+  );
+  const t = ctx.locale.bind(IM_LOCALE_NAMESPACE);
+  setImTranslator(t);
+
   ctx.effect(() => {
     const disposers = [
       installFeishuStyles(),
@@ -212,7 +218,8 @@ export function apply(ctx) {
     name: 'settings.plugins.tab',
     id: 'im',
     order: 20,
-    label: 'IM机器人',
+    label: () => t('IM机器人'),
+    locale: IM_LOCALE_NAMESPACE,
     inject: () => ({
       dingtalkRpcCall,
       discordRpcCall,

@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import { CredentialActionIcon, CredentialBindingPanel, QrActionIcon } from '../../credential-binding.js';
+import { h } from '../../i18n.js';
 import {
   DINGTALK_ENDPOINTS,
   DINGTALK_RPC_CHANNEL,
@@ -13,7 +14,6 @@ import {
 } from './api.js';
 import { installDingtalkStyles } from './styles.js';
 
-const h = React.createElement;
 const ACTIVE_PROVISION_STATES = new Set(['pending', 'scanned', 'authorizing', 'creating', 'connecting']);
 
 export const name = 'dingtalk-settings';

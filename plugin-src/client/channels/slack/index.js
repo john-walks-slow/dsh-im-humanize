@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import { SlackLogoGlyph } from '../../channel-logos.js';
+import { h } from '../../i18n.js';
 import { createTokenChannelSettings } from '../shared/token-channel.js';
 import {
   SLACK_CREATE_APP_URL,
@@ -8,8 +9,6 @@ import {
 } from '../../../../src/channels/slack/manifest.mjs';
 import { SLACK_ENDPOINTS, slackClientApi } from './api.js';
 import { installSlackStyles } from './styles.js';
-
-const h = React.createElement;
 
 export function SlackCredentialPanel({ busy, error, onSubmit, onCancel }) {
   const [botToken, setBotToken] = React.useState('');

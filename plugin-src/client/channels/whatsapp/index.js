@@ -2,6 +2,7 @@ import * as React from 'react';
 
 import { WhatsappLogoGlyph } from '../../channel-logos.js';
 import { QrActionIcon } from '../../credential-binding.js';
+import { h } from '../../i18n.js';
 import { installDingtalkStyles } from '../dingtalk/styles.js';
 import {
   WHATSAPP_ENDPOINTS,
@@ -14,7 +15,6 @@ import {
 } from './api.js';
 import { installWhatsappStyles } from './styles.js';
 
-const h = React.createElement;
 const ACTIVE_STATES = new Set(['pending', 'connecting']);
 
 const Button = React.forwardRef(function Button(

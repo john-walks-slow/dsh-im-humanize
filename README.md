@@ -60,6 +60,7 @@ QQ 扫码接入使用腾讯 QQBot v2 官方流程。默认腾讯授权页会把�
 
 - Harness 中只注册一个「IM机器人」设置页；
 - 九个渠道的 Host、客户端与运行时源码都在本仓库维护，不依赖外部独立渠道插件；
+- 设置页跟随 DeepSeek Harness 的语言选择，在中文和 English 之间即时切换；
 - 左侧使用渠道 Logo 切换微信、飞书、钉钉、企业微信、QQ、Slack、Telegram、Discord 和 WhatsApp，不使用启用/停用开关；
 - 九个渠道保持独立的 RPC、凭据、连接监督和会话映射；
 - 浏览器只获得二维码、Manifest 和脱敏状态；手动输入的 Secret 或 Token 仅单向提交给本机 Host，任何 RPC 响应都不会返回 App Secret、`bot_token`、钉钉 `client_secret`、企业微信 Secret、QQ `app_secret`、Slack Bot/App Token、Telegram/Discord Bot Token、WhatsApp 关联设备密钥或原始用户标识。
@@ -146,6 +147,7 @@ Feishu QR binding records the scanner as an allowed user. Manual credentials can
 
 - Registers a single **IM Bot** settings page in Harness.
 - Maintains all nine channel Host, client, and runtime sources in this repository without external standalone channel plugins.
+- Follows the DeepSeek Harness language preference and switches the settings UI live between Chinese and English.
 - Uses channel logos for WeChat, Feishu, DingTalk, WeCom, QQ, Slack, Telegram, Discord, and WhatsApp navigation without enable/disable switches.
 - Keeps RPC endpoints, credentials, connection supervision, and session mappings isolated by channel.
 - Returns only QR codes, the public Slack Manifest, and redacted status data to the browser. Manually entered secrets and Tokens travel one way to the local Host; no RPC response returns App Secrets, `bot_token`, DingTalk `client_secret`, WeCom Secrets, QQ `app_secret`, Slack Bot/App Tokens, Telegram/Discord Bot Tokens, WhatsApp linked-device keys, or raw user identifiers.

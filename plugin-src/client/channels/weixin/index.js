@@ -2,6 +2,7 @@ import * as React from 'react';
 
 import { WeixinLogoGlyph } from '../../channel-logos.js';
 import { QrActionIcon } from '../../credential-binding.js';
+import { h } from '../../i18n.js';
 import {
   WEIXIN_ENDPOINTS,
   WEIXIN_RPC_CHANNEL,
@@ -15,8 +16,6 @@ import {
 } from './api.js';
 import { createPollScheduler, useAnimationFrameScheduler } from '../../lifecycle.js';
 import { installWeixinStyles } from './styles.js';
-
-const h = React.createElement;
 
 export const name = 'weixin-settings';
 export const inject = ['slots', 'connection'];

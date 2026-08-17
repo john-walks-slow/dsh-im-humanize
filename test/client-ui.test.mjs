@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
 
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { IMSettingsTab } from '../plugin-src/client/index.js';
+import {
+  apply as applyClient,
+  IMSettingsTab,
+  inject as clientInject,
+} from '../plugin-src/client/index.js';
 import { CredentialBindingPanel } from '../plugin-src/client/credential-binding.js';
 import { DINGTALK_ENDPOINTS } from '../plugin-src/client/channels/dingtalk/api.js';
 import {
@@ -24,7 +28,33 @@ import {
   AccountCard as WecomAccountCard,
   WecomSettingsTab,
 } from '../plugin-src/client/channels/wecom/index.js';
-import { QqSettingsTab } from '../plugin-src/client/channels/qq/index.js';
+import {
+  AccountCard as QqAccountCard,
+  QqSettingsTab,
+} from '../plugin-src/client/channels/qq/index.js';
+import {
+  SlackAccountCard,
+  SlackSettingsTab,
+} from '../plugin-src/client/channels/slack/index.js';
+import {
+  TelegramAccountCard,
+  TelegramSettingsTab,
+} from '../plugin-src/client/channels/telegram/index.js';
+import {
+  DiscordAccountCard,
+  DiscordSettingsTab,
+} from '../plugin-src/client/channels/discord/index.js';
+import {
+  WhatsappAccountCard,
+  WhatsappSettingsTab,
+} from '../plugin-src/client/channels/whatsapp/index.js';
+import {
+  en,
+  IM_LOCALE_NAMESPACE,
+  localizeText,
+  setImTranslator,
+  zh,
+} from '../plugin-src/client/i18n.js';
 
 const STYLES_URL = new URL('../plugin-src/client/styles.js', import.meta.url);
 const FEISHU_STYLES_URL = new URL(
@@ -52,6 +82,7 @@ const WEIXIN_SOURCE_URL = new URL(
   import.meta.url,
 );
 const CLIENT_BUNDLE_URL = new URL('../lib/client.js', import.meta.url);
+const CLIENT_SOURCE_DIRECTORY_URL = new URL('../plugin-src/client/', import.meta.url);
 const DINGTALK_CLIENT_SOURCE_URL = new URL(
   '../plugin-src/client/channels/dingtalk/index.js',
   import.meta.url,
@@ -263,7 +294,10 @@ test('scan actions align left while online totals align right in every channel',
     readFile(WECOM_SOURCE_URL, 'utf8'),
   ]);
 
-  assert.match(imStyles, /\.dim-panel \.bxf-headingTools, \.dim-panel \.dxw-tools, \.dim-panel \.ddt-tools \{[^}]*justify-content: space-between;/);
+  assert.match(imStyles, /\.dim-panel \.bxf-headingTools, \.dim-panel \.dxw-tools, \.dim-panel \.ddt-tools \{[^}]*display: grid;[^}]*grid-template-columns: minmax\(0, 1fr\) max-content;[^}]*justify-content: stretch;/);
+  assert.match(imStyles, /\.dim-panel \.dim-bindActions > button \{[^}]*min-width: 0;/);
+  assert.match(imStyles, /\.dim-panel \.bxf-headingTools \.dim-scanButton,[^}]*justify-self: start;/);
+  assert.match(imStyles, /\.dim-panel \.bxf-headingTools \.dim-onlineBadge,[^}]*justify-self: end;/);
   assert.match(feishuStyles, /\.bxf-headingTools \{[^}]*justify-content: space-between;/);
   assert.match(weixinStyles, /\.dxw-tools \{[^}]*justify-content: space-between;/);
   assert.match(dingtalkStyles, /\.ddt-tools \{[^}]*justify-content: space-between;/);
@@ -481,4 +515,161 @@ test('the bundled DingTalk channel has no local sender approval workflow', async
     bundle,
     /bot\.sender\.approve|bot\.sender\.revoke|允许使用机器人的钉钉账号|批准使用/,
   );
+});
+
+test('every shipped Chinese client string has an English projection', async () => {
+  const paths = (await readdir(CLIENT_SOURCE_DIRECTORY_URL, { recursive: true }))
+    .filter((path) => path.endsWith('.js') && path !== 'i18n.js');
+  const sources = await Promise.all(paths.map((path) =>
+    readFile(new URL(path, CLIENT_SOURCE_DIRECTORY_URL), 'utf8')));
+  const strings = new Set();
+  for (const source of sources) {
+    for (const match of source.matchAll(/(['"`])((?:\\.|(?!\1)[\s\S])*?)\1/g)) {
+      if (/[\p{Script=Han}]/u.test(match[2])) strings.add(match[2]);
+    }
+  }
+
+  setImTranslator((key) => en[key] ?? key);
+  try {
+    const untranslated = [...strings].filter((value) =>
+      /[\p{Script=Han}]/u.test(localizeText(value)));
+    assert.deepEqual(untranslated, []);
+    assert.ok(strings.size > 350);
+  } finally {
+    setImTranslator(null);
+  }
+});
+
+test('client registers a live bilingual locale seat for the IM settings tab', () => {
+  const effects = [];
+  const registrations = [];
+  const dictionaries = [];
+  const rpcCall = async () => ({ ok: true, value: {} });
+  const ctx = {
+    effect(install, label) {
+      effects.push({ install, label });
+    },
+    locale: {
+      bind(namespace) {
+        assert.equal(namespace, IM_LOCALE_NAMESPACE);
+        return (key) => en[key] ?? key;
+      },
+      register(namespace, value) {
+        dictionaries.push({ namespace, value });
+        return () => {};
+      },
+    },
+    connection: { rpc: { call: rpcCall } },
+    slots: {
+      inject(name, install) {
+        assert.equal(name, 'settings.plugins.tab');
+        install();
+      },
+      register(options, component) {
+        registrations.push({ options, component });
+        return () => {};
+      },
+    },
+  };
+
+  try {
+    applyClient(ctx);
+    const dictionaryEffect = effects.find((entry) => entry.label === 'im-settings: bilingual dictionaries');
+    assert.ok(dictionaryEffect);
+    dictionaryEffect.install();
+
+    assert.deepEqual(clientInject, ['slots', 'connection', 'locale']);
+    assert.equal(dictionaries[0].namespace, IM_LOCALE_NAMESPACE);
+    assert.deepEqual(Object.keys(dictionaries[0].value.en).sort(), Object.keys(dictionaries[0].value.zh).sort());
+    assert.equal(registrations.length, 1);
+    assert.equal(registrations[0].options.locale, IM_LOCALE_NAMESPACE);
+    assert.equal(registrations[0].options.label(), 'IM bots');
+
+    const markup = renderToStaticMarkup(React.createElement(
+      registrations[0].component,
+      registrations[0].options.inject(),
+    ));
+    assert.match(markup, /Connect bots to DeepSeek Harness/);
+    assert.match(markup, />WeChat<|>Feishu<|>DingTalk<|>WeCom</);
+    assert.match(markup, />QQ<[^]*>Slack<[^]*>Telegram<[^]*>Discord<[^]*>WhatsApp</);
+    assert.doesNotMatch(markup, /[\p{Script=Han}]/u);
+  } finally {
+    setImTranslator(null);
+  }
+});
+
+test('all nine channel settings and connected cards render English copy', () => {
+  const rpcCall = async () => ({ ok: true, value: {} });
+  const noop = () => {};
+  const account = {
+    botId: 'bot-english',
+    state: 'connected',
+    connected: true,
+    bot: {
+      name: 'Demo Bot',
+      accountIdMasked: 'account••01',
+      appIdMasked: 'app••01',
+      clientIdMasked: 'client••01',
+      idMasked: 'bot••01',
+      username: 'demo_bot',
+    },
+    health: { summary: 'Connection is healthy', lastCheckedAt: '2026-08-16T08:00:00.000Z' },
+  };
+
+  setImTranslator((key) => en[key] ?? key);
+  try {
+    const pages = [
+      WeixinSettingsTab,
+      FeishuSettingsTab,
+      DingtalkSettingsTab,
+      WecomSettingsTab,
+      QqSettingsTab,
+      SlackSettingsTab,
+      TelegramSettingsTab,
+      DiscordSettingsTab,
+      WhatsappSettingsTab,
+    ];
+    const pageMarkup = pages.map((Component) =>
+      renderToStaticMarkup(React.createElement(Component, { rpcCall }))).join('\n');
+    assert.match(pageMarkup, /Scan QR code/);
+    assert.match(pageMarkup, /Manual setup/);
+    assert.match(pageMarkup, /Loading WeChat connection status/);
+    assert.match(pageMarkup, /Loading Feishu bots/);
+    assert.match(pageMarkup, /Loading DingTalk connection status/);
+    assert.match(pageMarkup, /Loading WeCom bot status/);
+    assert.match(pageMarkup, /Loading QQ bot status/);
+    assert.match(pageMarkup, /Loading Slack bot status/);
+    assert.match(pageMarkup, /Loading Telegram bot status/);
+    assert.match(pageMarkup, /Loading Discord bot status/);
+    assert.match(pageMarkup, /Loading WhatsApp bot status/);
+    assert.doesNotMatch(pageMarkup, /[\p{Script=Han}]/u);
+
+    const sharedCardProps = {
+      removing: true,
+      onReconnect: noop,
+      onRequestRemove: noop,
+      onConfirmRemove: noop,
+      onCancelRemove: noop,
+    };
+    const cards = [
+      React.createElement(WeixinAccountCard, { ...sharedCardProps, account }),
+      React.createElement(FeishuBotCard, { ...sharedCardProps, connection: account }),
+      React.createElement(DingtalkAccountCard, { ...sharedCardProps, account }),
+      React.createElement(WecomAccountCard, { ...sharedCardProps, account }),
+      React.createElement(QqAccountCard, { ...sharedCardProps, account }),
+      React.createElement(SlackAccountCard, { ...sharedCardProps, account }),
+      React.createElement(TelegramAccountCard, { ...sharedCardProps, account }),
+      React.createElement(DiscordAccountCard, { ...sharedCardProps, account }),
+      React.createElement(WhatsappAccountCard, { ...sharedCardProps, account }),
+    ];
+    const cardMarkup = cards.map(renderToStaticMarkup).join('\n');
+    assert.match(cardMarkup, /Connected/);
+    assert.match(cardMarkup, /Message channel/);
+    assert.match(cardMarkup, /Last checked/);
+    assert.match(cardMarkup, /Check connection/);
+    assert.match(cardMarkup, /Remove connection/);
+    assert.doesNotMatch(cardMarkup, /[\p{Script=Han}]/u);
+  } finally {
+    setImTranslator(null);
+  }
 });
