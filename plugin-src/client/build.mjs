@@ -17,7 +17,7 @@ const result = await build({
   format: 'cjs',
   platform: 'browser',
   target: ['chrome100'],
-  external: ['react'],
+  external: ['react', 'react-dom'],
   define: {
     'globalThis.__DSH_IM_LOGO_DATA_URL__': JSON.stringify(logoDataUrl),
   },

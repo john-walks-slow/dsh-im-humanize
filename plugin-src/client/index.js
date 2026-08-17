@@ -39,9 +39,10 @@ import { WhatsappSettingsTab } from './channels/whatsapp/index.js';
 import { installWhatsappStyles } from './channels/whatsapp/styles.js';
 import { en, h, IM_LOCALE_NAMESPACE, setImTranslator, zh } from './i18n.js';
 import { installImStyles } from './styles.js';
+import { WorkspaceDirectoryPickerContext } from './workspace-editor.js';
 
 export const name = 'im-settings';
-export const inject = ['slots', 'connection', 'locale'];
+export const inject = ['slots', 'connection', 'locale', 'workspaces'];
 
 const IM_PLUGIN_LOGO_URL = globalThis.__DSH_IM_LOGO_DATA_URL__ ?? 'assets/logo-icon.png';
 
@@ -122,11 +123,13 @@ export function IMSettingsTab({
   wecomRpcCall,
   weixinRpcCall,
   whatsappRpcCall,
+  workspaceDirectoryPicker,
 }) {
   const [selected, setSelected] = React.useState('weixin');
   const githubTooltipId = React.useId();
   const active = CHANNELS.find((channel) => channel.id === selected) ?? CHANNELS[0];
-  return h('section', { className: 'dim-page', 'aria-label': 'IM机器人设置' },
+  return h(WorkspaceDirectoryPickerContext.Provider, { value: workspaceDirectoryPicker },
+    h('section', { className: 'dim-page', 'aria-label': 'IM机器人设置' },
     h('header', { className: 'dim-title' },
       h('div', { className: 'dim-brand' },
         h('img', {
@@ -194,7 +197,7 @@ export function IMSettingsTab({
                     ? h(DiscordSettingsTab, { rpcCall: discordRpcCall })
                     : h(WhatsappSettingsTab, { rpcCall: whatsappRpcCall })),
     ),
-  );
+  ));
 }
 
 export function apply(ctx) {
@@ -240,6 +243,10 @@ export function apply(ctx) {
     ctx.connection.rpc.call(WHATSAPP_RPC_CHANNEL, endpoint, payload, signal);
   const slackRpcCall = (endpoint, payload, signal) =>
     ctx.connection.rpc.call(SLACK_RPC_CHANNEL, endpoint, payload, signal);
+  const workspaceDirectoryPicker = Object.freeze({
+    listDirectory: (path, signal) => ctx.workspaces.listDirectory(path, signal),
+    pickDirectory: () => ctx.workspaces.pickDirectory(),
+  });
 
   ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
     name: 'settings.plugins.tab',
@@ -257,6 +264,7 @@ export function apply(ctx) {
       wecomRpcCall,
       weixinRpcCall,
       whatsappRpcCall,
+      workspaceDirectoryPicker,
     }),
   }, IMSettingsTab));
 }
