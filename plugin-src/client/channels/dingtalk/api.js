@@ -8,6 +8,7 @@ export const DINGTALK_ENDPOINTS = Object.freeze({
   bindCredentials: 'bot.bind-credentials',
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
+  setWorkspace: 'bot.workspace.set',
 });
 
 const ACCOUNT_STATES = new Set(['connected', 'connecting', 'offline', 'error']);
@@ -145,6 +146,7 @@ function normalizeBot(value) {
     state,
     connected,
     configured: value.configured !== false,
+    workspace: optionalString(value.workspace, 4_096) ?? '',
     bot: {
       name: optionalString(bot.name, 100) ?? '钉钉机器人',
       clientIdMasked: optionalString(bot.clientIdMasked, 140) ?? '已安全保存',

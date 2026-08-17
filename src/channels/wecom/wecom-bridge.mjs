@@ -1,10 +1,13 @@
 import { generateReqId } from '@wecom/aibot-node-sdk';
+import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
+import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 
 const HELP_TEXT = [
   '企业微信机器人已连接 DeepSeek Harness。',
   '',
   '直接发送文字即可继续当前会话。',
   '/new  开启一个全新会话',
+  '/workspace 工作区绝对路径  切换工作区',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');
@@ -182,11 +185,11 @@ export class WecomHarnessBridge {
         await this.#state.markSeen(messageId);
         return;
       }
-
-      let sessionId = this.#state.sessionFor(key);
-      if (!sessionId || !(await this.#harness.sessionExists(sessionId))) {
-        sessionId = await this.#harness.createSession();
-        await this.#state.setSession(key, sessionId);
+      const workspaceCommand = await runWorkspaceCommand(text, this.#harness);
+      if (workspaceCommand) {
+        await this.#sendImmediate(frame, chatId, workspaceCommand.message);
+        await this.#state.markSeen(messageId);
+        return;
       }
 
       streamId = this.#generateReqId('stream');
@@ -197,14 +200,20 @@ export class WecomHarnessBridge {
         this.#logger.warn?.('[dsh-im:wecom] unable to start a stream; using an active reply:', error);
       }
 
-      const answer = await this.#harness.ask(sessionId, text, {
-        timeoutMs: this.#replyTimeoutMs,
-        onUpdate: streamStarted && typeof this.#client.replyStreamNonBlocking === 'function'
-          ? async (update) => {
-              const progress = splitUtf8(progressText(update))[0];
-              if (progress) await this.#client.replyStreamNonBlocking(frame, streamId, progress, false);
-            }
-          : undefined,
+      const { answer } = await askInWorkspaceSession({
+        harness: this.#harness,
+        state: this.#state,
+        key,
+        text,
+        askOptions: {
+          timeoutMs: this.#replyTimeoutMs,
+          onUpdate: streamStarted && typeof this.#client.replyStreamNonBlocking === 'function'
+            ? async (update) => {
+                const progress = splitUtf8(progressText(update))[0];
+                if (progress) await this.#client.replyStreamNonBlocking(frame, streamId, progress, false);
+              }
+            : undefined,
+        },
       });
 
       const chunks = splitUtf8(answer || '任务已完成，但没有生成可显示的文本。');

@@ -197,17 +197,18 @@ export class HarnessClient {
     throw new Error(`Harness did not become ready: ${lastError?.message ?? 'timeout'}`);
   }
 
-  async workspaceId() {
+  async workspaceId(options = {}) {
+    const workspace = options.workspace ?? this.#workspace;
     const { items } = await this.rpc('workspace.list', {});
-    const existing = items.find((item) => item.path === this.#workspace);
+    const existing = items.find((item) => item.path === workspace);
     if (existing) return existing.workspaceId;
-    const created = await this.rpc('workspace.create', { path: this.#workspace });
+    const created = await this.rpc('workspace.create', { path: workspace });
     return created.workspace.workspaceId;
   }
 
-  async createSession() {
+  async createSession(options = {}) {
     await this.ensureRunning();
-    const workspaceId = await this.workspaceId();
+    const workspaceId = await this.workspaceId(options);
     const created = await this.rpc('session.create', {
       workspaceId,
       agentPreset: this.#agentPreset,

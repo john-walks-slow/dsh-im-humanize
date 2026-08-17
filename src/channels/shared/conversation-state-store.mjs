@@ -57,6 +57,11 @@ export class ConversationStateStore {
     await this.#persist();
   }
 
+  async clearSessions() {
+    this.#state.sessions = {};
+    await this.#persist();
+  }
+
   hasSeen(messageId) {
     return this.#state.seenMessageIds.includes(messageId);
   }

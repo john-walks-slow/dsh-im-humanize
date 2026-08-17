@@ -8,6 +8,12 @@ import { DingtalkController } from '../../../../src/channels/dingtalk/dingtalk-c
 import { DingtalkRuntime } from '../../../../src/channels/dingtalk/dingtalk-runtime.mjs';
 import { HarnessClient } from '../../../../src/channels/dingtalk/harness-client.mjs';
 import { DingtalkStateStore } from '../../../../src/channels/dingtalk/state-store.mjs';
+import {
+  BotWorkspaceStore,
+  createBotWorkspaceScope,
+  createWorkspaceAwareController,
+  observeBotWorkspaceRemovals,
+} from '../../../../src/channels/shared/bot-workspace-store.mjs';
 import { createConnectionSupervisor } from './connection-supervisor.mjs';
 
 function harnessOrigin(webServer, configured) {
@@ -26,6 +32,7 @@ function pluginPaths(config) {
     root,
     config: resolve(config.configPath ?? join(root, 'config.json')),
     bots: resolve(config.botsDir ?? join(root, 'bots')),
+    workspaces: resolve(config.workspacesPath ?? join(root, 'workspaces.json')),
   };
 }
 
@@ -45,6 +52,19 @@ export async function createProductionController(ctx, config = {}, internals = {
     : (ctx.logger ?? console);
   const paths = pluginPaths(config);
   const configStore = await new ConfigStore(paths.config).load();
+  const defaultWorkspace = resolve(config.workspace ?? process.cwd());
+  const WorkspaceStore = internals.WorkspaceStore ?? BotWorkspaceStore;
+  const workspaces = internals.workspaces
+    ?? await new WorkspaceStore(paths.workspaces, { defaultWorkspace }).load();
+  const canListConfiguredBots = typeof configStore.list === 'function';
+  const configuredBots = canListConfiguredBots ? configStore.list() : [];
+  if (canListConfiguredBots) {
+    await workspaces.reconcile(configuredBots.map((bot) => bot.botId));
+  }
+  await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.botId)));
+  const observedConfigStore = typeof configStore.remove === 'function'
+    ? observeBotWorkspaceRemovals(configStore, { workspaces })
+    : configStore;
   const deviceAuth = internals.deviceAuth ?? new DeviceAuth({
     baseUrl: config.registrationBaseUrl,
   });
@@ -61,23 +81,25 @@ export async function createProductionController(ctx, config = {}, internals = {
   };
   const harness = new Harness({
     baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
-    workspace: resolve(config.workspace ?? process.cwd()),
+    workspace: defaultWorkspace,
     agentPreset: config.agentPreset ?? 'standard',
     autostart: false,
     dshBin: config.dshBin ?? 'dsh',
   });
-  const controller = new Controller({
+  const coreController = new Controller({
     deviceAuth,
     credentials: ctx.credentials,
-    configStore,
+    configStore: observedConfigStore,
     logger,
     createRuntime: async ({ botId, config: botConfig, clientSecret }) => {
       const state = await stateFor(botId);
+      await workspaces.ensure(botId);
+      const workspaceScope = createBotWorkspaceScope(harness, { botId, workspaces, state });
       return new Runtime({
         config: botConfig,
         clientSecret,
-        harness,
-        state,
+        harness: workspaceScope.harness,
+        state: workspaceScope.state,
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
         maxMessageChars: config.maxMessageChars ?? 4_000,
         connectTimeoutMs: config.connectTimeoutMs ?? 15_000,
@@ -94,15 +116,16 @@ export async function createProductionController(ctx, config = {}, internals = {
       stateStores.delete(botId);
       if (state && typeof state.remove === 'function') {
         await state.remove();
-        return;
-      }
-      try {
-        await unlink(statePath(botId));
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
+      } else {
+        try {
+          await unlink(statePath(botId));
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
       }
     },
   });
+  const controller = createWorkspaceAwareController(coreController, { workspaces, stateFor });
   const supervisor = createSupervisor({
     controller,
     harness,

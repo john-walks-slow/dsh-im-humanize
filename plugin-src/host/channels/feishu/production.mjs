@@ -12,6 +12,12 @@ import {
 } from '../../../../src/channels/feishu/plugin-config-store.mjs';
 import { MultiBotDshFeishuController } from '../../../../src/channels/feishu/multi-bot-controller.mjs';
 import { StateStore } from '../../../../src/channels/feishu/state-store.mjs';
+import {
+  BotWorkspaceStore,
+  createBotWorkspaceScope,
+  createWorkspaceAwareController,
+  observeBotWorkspaceRemovals,
+} from '../../../../src/channels/shared/bot-workspace-store.mjs';
 
 function harnessOrigin(webServer, configured) {
   if (configured !== undefined) return new URL(configured);
@@ -34,6 +40,7 @@ function pluginPaths(config) {
     config: resolve(config.configPath ?? join(root, 'config.json')),
     legacyState: resolve(config.statePath ?? join(root, 'state.json')),
     bots: resolve(config.botsDir ?? join(root, 'bots')),
+    workspaces: resolve(config.workspacesPath ?? join(root, 'workspaces.json')),
   };
 }
 
@@ -58,6 +65,24 @@ export async function createProductionController(ctx, config = {}, internals = {
     : (ctx.logger ?? console);
   const paths = pluginPaths(config);
   const configStore = await new ConfigStore(paths.config).load();
+  const defaultWorkspace = resolve(config.workspace ?? process.cwd());
+  const WorkspaceStore = internals.WorkspaceStore ?? BotWorkspaceStore;
+  const workspaces = internals.workspaces
+    ?? await new WorkspaceStore(paths.workspaces, { defaultWorkspace }).load();
+  const canListConfiguredBots = typeof configStore.list === 'function';
+  const listConfiguredBots = () => canListConfiguredBots ? configStore.list() : [];
+  const configuredBots = listConfiguredBots();
+  if (canListConfiguredBots) {
+    await workspaces.reconcile(configuredBots.map((bot) => bot.id));
+  }
+  await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.id)));
+  const observedConfigStore = typeof configStore.removeBot === 'function'
+    ? observeBotWorkspaceRemovals(configStore, {
+        workspaces,
+        method: 'removeBot',
+        botIdFromRemoved: (removed) => removed.id,
+      })
+    : configStore;
   // State is lazy per bot. A corrupt legacy file can therefore fail only the
   // migrated bot and cannot prevent healthy v2 bots from starting.
   const stateStores = new Map();
@@ -75,9 +100,14 @@ export async function createProductionController(ctx, config = {}, internals = {
     }
     return state;
   };
+  const stateForBotId = async (botId) => {
+    const botConfig = listConfiguredBots().find((bot) => bot.id === botId);
+    if (!botConfig) throw new Error('Unknown Feishu bot');
+    return stateFor(botConfig);
+  };
   const harness = new Harness({
     baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
-    workspace: resolve(config.workspace ?? process.cwd()),
+    workspace: defaultWorkspace,
     agentPreset: config.agentPreset ?? 'standard',
     // This plugin is already hosted by a running DSH process. Starting a
     // second DSH would create a competing server and lifecycle.
@@ -85,21 +115,24 @@ export async function createProductionController(ctx, config = {}, internals = {
     dshBin: config.dshBin ?? 'dsh',
   });
 
-  const controller = new Controller({
+  const coreController = new Controller({
     registerApp: (options) => lark.registerApp(options),
     verifyApp,
     credentials: ctx.credentials,
-    configStore,
+    configStore: observedConfigStore,
     createRuntime: async ({ botId, config: botConfig, appSecret }) => {
       const state = await stateFor(botConfig);
+      const id = botId ?? botConfig.id ?? botConfig.appId;
+      await workspaces.ensure(id);
+      const workspaceScope = createBotWorkspaceScope(harness, { botId: id, workspaces, state });
       return new Runtime({
         lark,
         appId: botConfig.appId,
         appSecret,
         domain: botConfig.domain,
         ownerOpenIds: botConfig.ownerOpenIds ?? [botConfig.ownerOpenId],
-        harness,
-        state,
+        harness: workspaceScope.harness,
+        state: workspaceScope.state,
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
         logger: {
           error: (...args) => logger.error?.(`[${botId ?? botConfig.id}]`, ...args),
@@ -117,6 +150,10 @@ export async function createProductionController(ctx, config = {}, internals = {
         if (error?.code !== 'ENOENT') throw error;
       }
     },
+  });
+  const controller = createWorkspaceAwareController(coreController, {
+    workspaces,
+    stateFor: stateForBotId,
   });
 
   const supervisor = createSupervisor({

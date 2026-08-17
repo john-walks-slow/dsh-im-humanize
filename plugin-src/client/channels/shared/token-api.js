@@ -24,6 +24,7 @@ export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   bindCredentials: 'bot.bind-credentials',
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
+  setWorkspace: 'bot.workspace.set',
 });
 
 export function createTokenChannelApi(channel, connectionSummary) {
@@ -47,6 +48,7 @@ export function createTokenChannelApi(channel, connectionSummary) {
       botId: id(value.botId),
       connected,
       state: connected ? 'connected' : state,
+      workspace: text(value.workspace, '', 4_096),
       bot: {
         name: text(value.bot?.name, `${channel}机器人`, 100),
         username: text(value.bot?.username, '', 100),

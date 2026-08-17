@@ -1,5 +1,6 @@
 import QRCode from 'qrcode';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
+import { publicWorkspaceError, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
 import {
   FEISHU_ENDPOINTS,
   FEISHU_RPC_CHANNEL,
@@ -174,6 +175,7 @@ function publicBotEntry(entry) {
     bot: publicBot(source.bot),
     health: publicHealth(source, connected),
   };
+  if (typeof source.workspace === 'string' && source.workspace) result.workspace = source.workspace;
   const error = publicError(source.error);
   if (error) result.error = error;
   return result;
@@ -267,6 +269,10 @@ function validPayload(endpoint, payload) {
       && safeOpaqueId(payload.botId) && payload.confirm === true
       ? null
       : 'Deleting a bot requires a valid botId and confirm=true.';
+  }
+  if (endpoint === FEISHU_ENDPOINTS.setWorkspace) {
+    return validWorkspacePayload(payload)
+      ? null : '请输入工作区绝对路径。';
   }
   return 'Unknown Feishu endpoint.';
 }
@@ -429,14 +435,23 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
       } else if (endpoint === FEISHU_MULTI_ENDPOINTS.disconnectBot) {
         if (typeof controller.disconnectBot !== 'function') throw new Error('Multi-bot disconnect is unavailable');
         value = await toPublicFeishuStatus(await controller.disconnectBot(payload.botId), { encodeQr: cachedEncodeQr });
+      } else if (endpoint === FEISHU_ENDPOINTS.setWorkspace) {
+        if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
+        value = await toPublicFeishuStatus(
+          await controller.updateWorkspace(payload.botId, payload.workspace),
+          { encodeQr: cachedEncodeQr },
+        );
       } else {
         if (typeof controller.deleteBot !== 'function') throw new Error('Multi-bot delete is unavailable');
         value = await toPublicFeishuStatus(await controller.deleteBot(payload.botId), { encodeQr: cachedEncodeQr });
       }
       if (signal?.aborted) return cancelled();
       return { ok: true, value };
-    } catch {
-      return signal?.aborted ? cancelled() : internalFailure();
+    } catch (error) {
+      const workspaceError = publicWorkspaceError(error);
+      return signal?.aborted ? cancelled() : workspaceError
+        ? { ok: false, error: { ...workspaceError, details: {} } }
+        : internalFailure();
     }
   };
 }

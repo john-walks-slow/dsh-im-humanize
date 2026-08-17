@@ -7,6 +7,7 @@ export const WHATSAPP_ENDPOINTS = Object.freeze({
   cancelProvisioning: 'provision.cancel',
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
+  setWorkspace: 'bot.workspace.set',
 });
 
 const PROVISION_STATES = new Set(['starting', 'pending', 'connecting', 'connected', 'failed', 'cancelled']);
@@ -80,6 +81,7 @@ function normalizeBot(value) {
     botId: id(value.botId),
     connected,
     state: connected ? 'connected' : state,
+    workspace: text(value.workspace, '', 4_096),
     bot: {
       name: text(value.bot?.name, 'WhatsApp机器人', 100),
       idMasked: text(value.bot?.idMasked, 'WhatsApp账号', 140),

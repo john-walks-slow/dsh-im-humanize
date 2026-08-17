@@ -8,6 +8,12 @@ import { QqController } from '../../../../src/channels/qq/qq-controller.mjs';
 import { QqRuntime } from '../../../../src/channels/qq/qq-runtime.mjs';
 import { QqQrAuth } from '../../../../src/channels/qq/qr-auth.mjs';
 import { QqStateStore } from '../../../../src/channels/qq/state-store.mjs';
+import {
+  BotWorkspaceStore,
+  createBotWorkspaceScope,
+  createWorkspaceAwareController,
+  observeBotWorkspaceRemovals,
+} from '../../../../src/channels/shared/bot-workspace-store.mjs';
 import { createConnectionSupervisor } from './connection-supervisor.mjs';
 
 function harnessOrigin(webServer, configured) {
@@ -25,6 +31,7 @@ function pluginPaths(config) {
   return {
     config: resolve(config.configPath ?? join(root, 'config.json')),
     bots: resolve(config.botsDir ?? join(root, 'bots')),
+    workspaces: resolve(config.workspacesPath ?? join(root, 'workspaces.json')),
   };
 }
 
@@ -42,6 +49,16 @@ export async function createProductionController(ctx, config = {}, internals = {
   const logger = typeof ctx.logger === 'function' ? ctx.logger('dsh-im:qq') : (ctx.logger ?? console);
   const paths = pluginPaths(config);
   const configStore = await new ConfigStore(paths.config).load();
+  const defaultWorkspace = resolve(config.workspace ?? process.cwd());
+  const WorkspaceStore = internals.WorkspaceStore ?? BotWorkspaceStore;
+  const workspaces = internals.workspaces
+    ?? await new WorkspaceStore(paths.workspaces, { defaultWorkspace }).load();
+  const configuredBots = configStore.list();
+  await workspaces.reconcile(configuredBots.map((bot) => bot.botId));
+  await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.botId)));
+  const observedConfigStore = typeof configStore.remove === 'function'
+    ? observeBotWorkspaceRemovals(configStore, { workspaces })
+    : configStore;
   const qrAuth = internals.qrAuth ?? new QrAuth({ source: config.qrSource ?? 'deepseek-harness' });
   const stateStores = new Map();
   const statePath = (botId) => resolve(paths.bots, botId, 'state.json');
@@ -55,41 +72,50 @@ export async function createProductionController(ctx, config = {}, internals = {
   };
   const harness = new Harness({
     baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
-    workspace: resolve(config.workspace ?? process.cwd()),
+    workspace: defaultWorkspace,
     agentPreset: config.agentPreset ?? 'standard',
     autostart: false,
     dshBin: config.dshBin ?? 'dsh',
   });
-  const controller = new Controller({
+  const coreController = new Controller({
     qrAuth,
     credentials: ctx.credentials,
-    configStore,
+    configStore: observedConfigStore,
     logger,
-    createRuntime: async ({ botId, config: botConfig, appSecret }) => new Runtime({
-      config: botConfig,
-      appSecret,
-      harness,
-      state: await stateFor(botId),
-      replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
-      connectTimeoutMs: config.connectTimeoutMs ?? 20_000,
-      logger: {
-        error: (...args) => logger.error?.(`[${botId}]`, ...args),
-        warn: (...args) => logger.warn?.(`[${botId}]`, ...args),
-        info: (...args) => logger.info?.(`[${botId}]`, ...args),
-        debug: (...args) => logger.debug?.(`[${botId}]`, ...args),
-      },
-    }),
+    createRuntime: async ({ botId, config: botConfig, appSecret }) => {
+      const state = await stateFor(botId);
+      await workspaces.ensure(botId);
+      const workspaceScope = createBotWorkspaceScope(harness, { botId, workspaces, state });
+      return new Runtime({
+        config: botConfig,
+        appSecret,
+        harness: workspaceScope.harness,
+        state: workspaceScope.state,
+        replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
+        connectTimeoutMs: config.connectTimeoutMs ?? 20_000,
+        logger: {
+          error: (...args) => logger.error?.(`[${botId}]`, ...args),
+          warn: (...args) => logger.warn?.(`[${botId}]`, ...args),
+          info: (...args) => logger.info?.(`[${botId}]`, ...args),
+          debug: (...args) => logger.debug?.(`[${botId}]`, ...args),
+        },
+      });
+    },
     deleteState: async ({ botId }) => {
       const state = stateStores.get(botId);
       stateStores.delete(botId);
-      if (state && typeof state.remove === 'function') return state.remove();
-      try {
-        await unlink(statePath(botId));
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
+      if (state && typeof state.remove === 'function') {
+        await state.remove();
+      } else {
+        try {
+          await unlink(statePath(botId));
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
       }
     },
   });
+  const controller = createWorkspaceAwareController(coreController, { workspaces, stateFor });
   const supervisor = createSupervisor({
     controller,
     harness,

@@ -3,6 +3,8 @@ import * as React from 'react';
 import { WhatsappLogoGlyph } from '../../channel-logos.js';
 import { QrActionIcon } from '../../credential-binding.js';
 import { h } from '../../i18n.js';
+import { WorkspaceEditor } from '../../workspace-editor.js';
+import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import { installDingtalkStyles } from '../dingtalk/styles.js';
 import {
   WHATSAPP_ENDPOINTS,
@@ -159,6 +161,7 @@ export function WhatsappAccountCard({
   busy,
   removing,
   onReconnect,
+  onWorkspaceSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -186,6 +189,11 @@ export function WhatsappAccountCard({
           h('dd', null, account.connected ? 'WhatsApp Web' : '离线')),
         h('div', { className: 'ddt-metric dim-botMetric' },
           h('dt', null, '最近检查'), h('dd', null, checkedTime(account.health.lastCheckedAt)))),
+      h(WorkspaceEditor, {
+        workspace: account.workspace,
+        disabled: Boolean(busy),
+        onSave: onWorkspaceSave,
+      }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
         h('div', { className: 'ddt-actions dim-cardActions' },
@@ -213,6 +221,7 @@ export function WhatsappSettingsTab({ rpcCall }) {
   const [removeTarget, setRemoveTarget] = React.useState(null);
   const [now, setNow] = React.useState(Date.now());
   const mounted = React.useRef(true);
+  const workspaceFence = useWorkspaceSnapshotFence();
   const addButtonRef = React.useRef(null);
 
   React.useEffect(() => {
@@ -232,10 +241,13 @@ export function WhatsappSettingsTab({ rpcCall }) {
   }, [rpcCall]);
 
   const loadStatus = React.useCallback(async ({ signal, silent = false, restore = false } = {}) => {
+    const workspaceVersion = workspaceFence.beginStatus();
+    if (workspaceVersion === null) return undefined;
     if (!silent && mounted.current) setModel((current) => ({ ...current, phase: 'loading', error: null }));
     try {
       const snapshot = normalizeSnapshot(await invoke(WHATSAPP_ENDPOINTS.status, {}, signal));
-      if (!mounted.current || signal?.aborted) return undefined;
+      if (!mounted.current || signal?.aborted
+        || !workspaceFence.canCommitStatus(workspaceVersion)) return undefined;
       setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
       if (restore && snapshot.provisioning) setProvision({
         ...snapshot.provisioning,
@@ -243,7 +255,8 @@ export function WhatsappSettingsTab({ rpcCall }) {
       });
       return snapshot;
     } catch (error) {
-      if (error?.name !== 'AbortError' && mounted.current && !signal?.aborted) {
+      if (error?.name !== 'AbortError' && mounted.current && !signal?.aborted
+        && workspaceFence.canCommitStatus(workspaceVersion)) {
         setModel((current) => ({
           ...current,
           phase: silent ? current.phase : 'error',
@@ -252,7 +265,7 @@ export function WhatsappSettingsTab({ rpcCall }) {
       }
       return undefined;
     }
-  }, [invoke]);
+  }, [invoke, workspaceFence]);
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -350,20 +363,23 @@ export function WhatsappSettingsTab({ rpcCall }) {
   }, [invoke, loadStatus, provision?.attemptId, provision?.status]);
 
   const botAction = React.useCallback(async (account, operation, endpoint, payload) => {
+    const snapshotVersion = workspaceFence.beginMutation();
     setBusyByBot((current) => ({ ...current, [account.botId]: operation }));
     try {
       const snapshot = normalizeSnapshot(await invoke(endpoint, payload));
-      if (mounted.current) {
+      if (mounted.current && workspaceFence.canCommitMutation(snapshotVersion)) {
         setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
       }
     } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mounted.current) void loadStatus({ silent: true });
       if (mounted.current) setBusyByBot((current) => {
         const next = { ...current };
         delete next[account.botId];
         return next;
       });
     }
-  }, [invoke]);
+  }, [invoke, loadStatus, workspaceFence]);
 
   const botList = model.bots.length > 0
     ? h('section', { className: 'dim-listSection' },
@@ -379,6 +395,12 @@ export function WhatsappSettingsTab({ rpcCall }) {
               'reconnect',
               WHATSAPP_ENDPOINTS.reconnectBot,
               { botId: account.botId },
+            ),
+            onWorkspaceSave: (workspace) => botAction(
+              account,
+              'workspace',
+              WHATSAPP_ENDPOINTS.setWorkspace,
+              { botId: account.botId, workspace },
             ),
             onRequestRemove: () => setRemoveTarget(account.botId),
             onCancelRemove: () => setRemoveTarget(null),

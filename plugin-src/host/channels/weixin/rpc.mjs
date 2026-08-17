@@ -1,5 +1,10 @@
 import QRCode from 'qrcode';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
+import {
+  publicWorkspaceError,
+  SET_WORKSPACE_ENDPOINT,
+  validWorkspacePayload,
+} from '../shared/workspace-rpc.mjs';
 
 export const WEIXIN_RPC_CHANNEL = '/weixin';
 export const WEIXIN_ENDPOINTS = Object.freeze({
@@ -10,6 +15,7 @@ export const WEIXIN_ENDPOINTS = Object.freeze({
   cancelProvisioning: 'provision.cancel',
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
+  setWorkspace: SET_WORKSPACE_ENDPOINT,
 });
 export const WEIXIN_RPC_ENDPOINTS = Object.freeze(Object.values(WEIXIN_ENDPOINTS));
 
@@ -57,6 +63,10 @@ function payloadFailure(endpoint, payload) {
     return exactKeys(payload, ['botId', 'confirm']) && validId(payload.botId) && payload.confirm === true
       ? null
       : 'bot.delete requires a botId and confirm=true.';
+  }
+  if (endpoint === WEIXIN_ENDPOINTS.setWorkspace) {
+    return validWorkspacePayload(payload)
+      ? null : '请输入工作区绝对路径。';
   }
   return 'Unknown Weixin endpoint.';
 }
@@ -156,12 +166,21 @@ export function createWeixinRpcHandler(controller, { encodeQr = qrDataUrl } = {}
         if (!value) return badRequest('The provisioning attempt no longer exists.');
       } else if (endpoint === WEIXIN_ENDPOINTS.reconnectBot) {
         value = await publicStatus(await controller.reconnectBot(payload.botId), cachedEncode);
+      } else if (endpoint === WEIXIN_ENDPOINTS.setWorkspace) {
+        if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
+        value = await publicStatus(
+          await controller.updateWorkspace(payload.botId, payload.workspace),
+          cachedEncode,
+        );
       } else {
         value = await publicStatus(await controller.deleteBot(payload.botId), cachedEncode);
       }
       return signal?.aborted ? cancelled() : { ok: true, value };
-    } catch {
-      return signal?.aborted ? cancelled() : internalFailure();
+    } catch (error) {
+      const workspaceError = publicWorkspaceError(error);
+      return signal?.aborted ? cancelled() : workspaceError
+        ? { ok: false, error: workspaceError }
+        : internalFailure();
     }
   };
 }

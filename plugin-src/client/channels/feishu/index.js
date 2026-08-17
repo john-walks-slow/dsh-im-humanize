@@ -14,6 +14,8 @@ import {
   unwrapRpcResult,
 } from "./api.js";
 import { useAnimationFrameScheduler } from "../../lifecycle.js";
+import { WorkspaceEditor } from "../../workspace-editor.js";
+import { useWorkspaceSnapshotFence } from "../../workspace-snapshot-fence.js";
 import { installFeishuStyles } from "./styles.js";
 
 export const name = "feishu-settings";
@@ -364,6 +366,7 @@ export function BotCard({
   actionError,
   removing,
   onReconnect,
+  onWorkspaceSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -409,6 +412,11 @@ export function BotCard({
         h("div", { className: "bxf-metric dim-botMetric" }, h("dt", null, "最近检查"),
           h("dd", null, formatCheckedTime(health.lastCheckedAt))),
       ),
+      h(WorkspaceEditor, {
+        workspace: connection.workspace,
+        disabled: Boolean(busy),
+        onSave: onWorkspaceSave,
+      }),
       h("div", { className: "bxf-connectedFooter dim-cardFooter" },
         summary ? h("div", { className: "bxf-healthSummary dim-cardSummary", "data-error": actionError || connection.error ? "true" : undefined },
           summary) : null,
@@ -448,6 +456,7 @@ function BotList(props) {
           actionError: props.errorsByBot[bot.botId],
           removing: props.removeTargetId === bot.botId,
           onReconnect: () => props.onReconnect(bot),
+          onWorkspaceSave: (workspace) => props.onWorkspaceSave(bot, workspace),
           onRequestRemove: () => props.onRequestRemove(bot),
           onConfirmRemove: () => props.onConfirmRemove(bot),
           onCancelRemove: props.onCancelRemove,
@@ -525,7 +534,14 @@ export function FeishuSettingsTab({ rpcCall }) {
   const cardRefs = React.useRef(new Map());
   const removeButtonRefs = React.useRef(new Map());
   const addButtonRef = React.useRef(null);
+  const mountedRef = React.useRef(true);
+  const workspaceFence = useWorkspaceSnapshotFence();
   const scheduleAnimationFrame = useAnimationFrameScheduler();
+
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const announce = React.useCallback((message) => {
     setAnnouncement("");
@@ -548,23 +564,27 @@ export function FeishuSettingsTab({ rpcCall }) {
   }, []);
 
   const loadStatus = React.useCallback(async ({ signal, silent = false, restoreProvisioning = false } = {}) => {
+    const workspaceVersion = workspaceFence.beginStatus();
+    if (workspaceVersion === null || !mountedRef.current) return undefined;
     if (!silent) setPageBusy(true);
     try {
       const snapshot = normalizeBotsSnapshot(await invoke(FEISHU_ENDPOINTS.status, {}, signal));
-      if (signal?.aborted) return undefined;
+      if (signal?.aborted || !mountedRef.current
+        || !workspaceFence.canCommitStatus(workspaceVersion)) return undefined;
       mergeSnapshot(snapshot, { restoreProvisioning });
       return snapshot;
     } catch (error) {
-      if (signal?.aborted || error?.name === "AbortError") return undefined;
+      if (signal?.aborted || error?.name === "AbortError" || !mountedRef.current
+        || !workspaceFence.canCommitStatus(workspaceVersion)) return undefined;
       const presented = presentError(error);
       setModel((current) => current.phase === "loading" || !silent
         ? { ...current, phase: "error", pageError: presented }
         : { ...current, statusError: presented });
       return undefined;
     } finally {
-      if (!silent && !signal?.aborted) setPageBusy(false);
+      if (!silent && !signal?.aborted && mountedRef.current) setPageBusy(false);
     }
-  }, [invoke, mergeSnapshot]);
+  }, [invoke, mergeSnapshot, workspaceFence]);
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -645,6 +665,7 @@ export function FeishuSettingsTab({ rpcCall }) {
   }, [announce, invoke, model.provisioning?.attemptId]);
 
   const bindCredentials = React.useCallback(async ({ identity, secret }) => {
+    const snapshotVersion = workspaceFence.beginMutation();
     setCredentialBusy(true);
     setCredentialError(null);
     try {
@@ -652,15 +673,19 @@ export function FeishuSettingsTab({ rpcCall }) {
         FEISHU_ENDPOINTS.bindCredentials,
         { appId: identity, appSecret: secret },
       ));
-      mergeSnapshot(snapshot);
+      if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
+        mergeSnapshot(snapshot);
+      }
       setCredentialOpen(false);
       announce("飞书机器人凭据已绑定。");
     } catch (error) {
       setCredentialError(presentError(error));
     } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
       setCredentialBusy(false);
     }
-  }, [announce, invoke, mergeSnapshot]);
+  }, [announce, invoke, loadStatus, mergeSnapshot, workspaceFence]);
 
   const cancelProvisioning = React.useCallback(async () => {
     const attemptId = model.provisioning?.attemptId;
@@ -798,11 +823,14 @@ export function FeishuSettingsTab({ rpcCall }) {
 
   const reconnectOneBot = React.useCallback(async (connection) => {
     const { botId, bot } = connection;
+    const snapshotVersion = workspaceFence.beginMutation();
     setBotBusy(botId, "reconnect");
     setBotError(botId, null);
     try {
       const snapshot = normalizeBotsSnapshot(await invoke(FEISHU_ENDPOINTS.reconnectBot, { botId }));
-      mergeSnapshot(snapshot);
+      if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
+        mergeSnapshot(snapshot);
+      }
       const refreshed = snapshot.bots.find((item) => item.botId === botId);
       if (!refreshed?.connected) {
         const error = new Error(
@@ -818,9 +846,31 @@ export function FeishuSettingsTab({ rpcCall }) {
       setBotError(botId, error);
       announce(`${bot.name}操作失败，请查看机器人状态。`);
     } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
       setBotBusy(botId, null);
     }
-  }, [announce, invoke, mergeSnapshot, setBotBusy, setBotError]);
+  }, [announce, invoke, loadStatus, mergeSnapshot, setBotBusy, setBotError, workspaceFence]);
+
+  const saveWorkspace = React.useCallback(async (connection, workspace) => {
+    const { botId } = connection;
+    const workspaceVersion = workspaceFence.beginMutation();
+    setBotBusy(botId, "workspace");
+    setBotError(botId, null);
+    try {
+      const snapshot = normalizeBotsSnapshot(await invoke(
+        FEISHU_ENDPOINTS.setWorkspace,
+        { botId, workspace },
+      ));
+      if (mountedRef.current && workspaceFence.canCommitMutation(workspaceVersion)) {
+        mergeSnapshot(snapshot);
+      }
+    } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
+      if (mountedRef.current) setBotBusy(botId, null);
+    }
+  }, [invoke, loadStatus, mergeSnapshot, setBotBusy, setBotError, workspaceFence]);
 
   const requestRemove = React.useCallback((connection) => {
     setRemoveTargetId(connection.botId);
@@ -834,32 +884,29 @@ export function FeishuSettingsTab({ rpcCall }) {
 
   const confirmRemove = React.useCallback(async (connection) => {
     const { botId, bot } = connection;
+    const snapshotVersion = workspaceFence.beginMutation();
     setBotBusy(botId, "delete");
     setBotError(botId, null);
     try {
-      await invoke(FEISHU_ENDPOINTS.deleteBot, { botId, confirm: true });
+      const snapshot = normalizeBotsSnapshot(await invoke(
+        FEISHU_ENDPOINTS.deleteBot,
+        { botId, confirm: true },
+      ));
       setRemoveTargetId(null);
-      setModel((current) => {
-        const bots = current.bots.filter((item) => item.botId !== botId);
-        return {
-          ...current,
-          bots,
-          totals: {
-            configured: bots.length,
-            connected: bots.filter((item) => item.connected).length,
-          },
-        };
-      });
+      if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
+        mergeSnapshot(snapshot);
+      }
       announce(`${bot.name}已从此 DeepSeek Harness 移除；飞书开放平台中的应用未被删除。`);
-      await loadStatus({ silent: true });
       scheduleAnimationFrame(() => addButtonRef.current?.focus(), "focus");
     } catch (error) {
       setBotError(botId, error);
       announce(`${bot.name}移除失败，请重试。`);
     } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
       setBotBusy(botId, null);
     }
-  }, [announce, invoke, loadStatus, scheduleAnimationFrame, setBotBusy, setBotError]);
+  }, [announce, invoke, loadStatus, mergeSnapshot, scheduleAnimationFrame, setBotBusy, setBotError, workspaceFence]);
 
   const provision = model.provisioning;
   let provisionContent = null;
@@ -950,6 +997,7 @@ export function FeishuSettingsTab({ rpcCall }) {
                   errorsByBot,
                   removeTargetId,
                   onReconnect: (bot) => void reconnectOneBot(bot),
+                  onWorkspaceSave: saveWorkspace,
                   onRequestRemove: requestRemove,
                   onConfirmRemove: (bot) => void confirmRemove(bot),
                   onCancelRemove: cancelRemove,

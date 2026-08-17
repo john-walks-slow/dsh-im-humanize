@@ -133,6 +133,19 @@ const CSS = String.raw`
 .dim-panel .dim-confirm strong, .dim-panel .dim-confirm h4 { margin: 0; color: var(--dsw-alias-label-primary, #1f2329); font-size: 14px; line-height: 1.4; font-weight: 650; }
 .dim-panel .dim-confirm p { margin: 7px 0 0; color: var(--dsw-alias-label-secondary, #646a73); line-height: 1.6; }
 .dim-panel .dim-cardFooter { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding-top: 8px; border-top: 1px solid var(--dsw-alias-border-l1, #eef0f3); }
+.dim-panel .dim-workspace { min-width: 0; display: grid; gap: 7px; margin-top: 14px; padding: 11px 12px; border: 1px solid var(--dsw-alias-border-l1, #eef0f3); border-radius: 9px; background: var(--dsw-alias-bg-module-platform, #f7f8fa); }
+.dim-panel .dim-workspaceHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; line-height: normal; }
+.dim-panel .dim-workspaceEdit { padding: 0; border: 0; color: #1677ff; background: transparent; font: inherit; font-weight: 560; cursor: pointer; }
+.dim-panel .dim-workspaceEdit:disabled { cursor: not-allowed; opacity: .55; }
+.dim-panel .dim-workspacePath { min-width: 0; display: block; overflow: hidden; color: var(--dsw-alias-label-primary, #1f2329); font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.dim-panel .dim-workspaceForm { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: 8px; }
+.dim-panel .dim-workspaceForm input { width: 100%; min-width: 0; height: 34px; padding: 0 10px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 7px; outline: none; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-layer-1, #fff); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.dim-panel .dim-workspaceForm input:focus { border-color: #1677ff; box-shadow: 0 0 0 2px rgb(22 119 255 / 10%); }
+.dim-panel .dim-workspaceActions { display: flex; gap: 6px; }
+.dim-panel .dim-workspaceActions button { min-height: 34px; padding: 0 10px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 7px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-layer-1, #fff); font: inherit; font-size: 12px; cursor: pointer; }
+.dim-panel .dim-workspaceActions button[type="submit"] { border-color: #1677ff; color: white; background: #1677ff; }
+.dim-panel .dim-workspaceActions button:disabled { cursor: not-allowed; opacity: .55; }
+.dim-panel .dim-workspaceError { grid-column: 1 / -1; margin: 0; color: var(--dsw-alias-state-error-primary, #d54941); font-size: 12px; line-height: 1.5; }
 .dim-panel .dim-cardSummary { min-width: 0; color: var(--dsw-alias-label-secondary, #646a73); font: inherit; font-size: 12px; font-weight: 400; line-height: normal; }
 .dim-panel .dim-cardActions { flex: none; display: flex; align-items: center; flex-wrap: nowrap; gap: 8px; margin: 0 0 0 auto; }
 .dim-panel .dim-cardActions .dim-cardAction { flex: none; min-height: 34px; padding: 0 13px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 8px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-layer-1, #fff); font: inherit; font-size: 13px; font-weight: 560; line-height: normal; white-space: nowrap; }

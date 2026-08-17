@@ -5,12 +5,15 @@ import {
   isBotSender,
   splitText,
 } from './message-utils.mjs';
+import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
+import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 
 const HELP_TEXT = [
   '北汇星河 AIOS 已连接 DeepSeek Harness。',
   '',
   '直接发送问题即可继续当前会话。',
   '/new  开启一个全新会话',
+  '/workspace 工作区绝对路径  切换工作区',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');
@@ -106,25 +109,30 @@ export class FeishuHarnessBridge {
       await this.#send(event.message.chat_id, '飞书机器人与 DeepSeek Harness 连接正常。');
       return;
     }
-
-    let sessionId = this.#state.sessionFor(key);
-    if (!sessionId || !(await this.#harness.sessionExists(sessionId))) {
-      sessionId = await this.#harness.createSession();
-      await this.#state.setSession(key, sessionId);
+    const workspaceCommand = await runWorkspaceCommand(text, this.#harness);
+    if (workspaceCommand) {
+      await this.#send(event.message.chat_id, workspaceCommand.message);
+      return;
     }
 
-    console.info(`[bridge] processing ${event.message.chat_type} message ${messageId} in ${sessionId}`);
-    await this.#answerWithStream(event, sessionId, text);
+    console.info(`[bridge] processing ${event.message.chat_type} message ${messageId}`);
+    await this.#answerWithStream(event, key, text);
     this.#status.messagesReplied += 1;
     this.#status.lastReplyAt = new Date().toISOString();
     this.#status.lastError = null;
   }
 
-  async #answerWithStream(event, sessionId, text) {
+  async #answerWithStream(event, key, text) {
     const chatId = event.message.chat_id;
     const messageId = event.message.message_id;
     if (!this.#channel?.stream) {
-      const answer = await this.#harness.ask(sessionId, text, { timeoutMs: this.#replyTimeoutMs });
+      const { answer } = await askInWorkspaceSession({
+        harness: this.#harness,
+        state: this.#state,
+        key,
+        text,
+        askOptions: { timeoutMs: this.#replyTimeoutMs },
+      });
       for (const chunk of splitText(answer)) await this.#send(chatId, chunk);
       this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
       return;
@@ -136,13 +144,19 @@ export class FeishuHarnessBridge {
       await this.#channel.stream(chatId, {
         markdown: async (controller) => {
           promptStarted = true;
-          completedAnswer = await this.#harness.ask(sessionId, text, {
-            timeoutMs: this.#replyTimeoutMs,
-            onUpdate: async (update) => {
-              await controller.setContent(this.#progressText(update));
-              this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
+          ({ answer: completedAnswer } = await askInWorkspaceSession({
+            harness: this.#harness,
+            state: this.#state,
+            key,
+            text,
+            askOptions: {
+              timeoutMs: this.#replyTimeoutMs,
+              onUpdate: async (update) => {
+                await controller.setContent(this.#progressText(update));
+                this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
+              },
             },
-          });
+          }));
           await controller.setContent(completedAnswer);
         },
       }, { replyTo: messageId });
@@ -158,7 +172,13 @@ export class FeishuHarnessBridge {
       if (promptStarted) throw error;
 
       console.warn('[bridge] native Feishu stream unavailable; using text fallback:', error.message);
-      const answer = await this.#harness.ask(sessionId, text, { timeoutMs: this.#replyTimeoutMs });
+      const { answer } = await askInWorkspaceSession({
+        harness: this.#harness,
+        state: this.#state,
+        key,
+        text,
+        askOptions: { timeoutMs: this.#replyTimeoutMs },
+      });
       for (const chunk of splitText(answer)) await this.#send(chatId, chunk);
       this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
     }

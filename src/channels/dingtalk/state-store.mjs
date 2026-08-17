@@ -117,6 +117,11 @@ export class DingtalkStateStore {
     await this.#persist();
   }
 
+  async clearSessions() {
+    this.#state.sessions = {};
+    await this.#persist();
+  }
+
   hasSeen(messageId) {
     const id = nonEmptyString(messageId);
     return Boolean(id && this.#state.seenMessageIds.includes(id));

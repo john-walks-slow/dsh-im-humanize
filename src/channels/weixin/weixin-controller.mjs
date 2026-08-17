@@ -468,7 +468,12 @@ export class WeixinController {
         await this.#stopRuntime(identity.botId);
         if (previousConfig) await this.#configStore.save(previousConfig).catch(() => undefined);
         else if (this.#configStore.get(identity.botId)) {
-          await this.#configStore.remove(identity.botId).catch(() => undefined);
+          const removed = await this.#configStore.remove(identity.botId).catch(() => null);
+          if (removed) {
+            await this.#deleteState({ botId: identity.botId, config }).catch((cleanupError) => {
+              this.#logger.warn?.('[dsh-weixin] failed to clean up cancelled bot state:', cleanupError);
+            });
+          }
         }
         await this.#restoreCredential(identity.tokenRef, previousToken);
         if (previousConfig && previousToken?.value) {

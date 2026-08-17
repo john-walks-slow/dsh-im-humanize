@@ -63,6 +63,8 @@ QQ 扫码接入使用腾讯 QQBot v2 官方流程。默认腾讯授权页会把�
 
 飞书扫码绑定会把扫码者作为允许使用者；手动凭据同样无法识别扫码人，因此使用飞书应用的可见范围作为入站访问范围。请在飞书开放平台中只向信任的租户、群或成员开放应用。
 
+每个机器人维护独立的 Harness 工作区。新接入机器人会把 Harness Host 进程当时的工作目录（`process.cwd()`）记录为默认值；该路径会持久化，不会因为以后从其他目录重启 Host 而改变。设置页的机器人卡片会显示当前路径，并可直接修改。任何已在对应平台可见范围内、能够正常向机器人发消息的用户都可以发送 `/workspace /工作区绝对路径` 切换工作区，不再区分管理员和普通用户。插件只接受存在的绝对目录；切换成功后会清除该机器人的旧 Harness 会话映射，其他机器人不受影响。切换只对后续消息生效；已经开始生成的回复会继续完成。
+
 ## 设计
 
 - Harness 中只注册一个「IM机器人」设置页；
@@ -149,6 +151,8 @@ For WeCom QR binding, scan with an account that belongs to an enterprise and can
 QQ QR binding uses Tencent's official QQBot v2 flow. Tencent's default authorization page labels the integration as a third-party bot. Scanning creates a QQ Open Platform bot; it does not give the plugin direct control of a personal QQ account. QR binding accepts only the scanner's messages. Manual credentials cannot identify a scanner, so the bot's QQ Open Platform visibility becomes its inbound access scope.
 
 Feishu QR binding records the scanner as an allowed user. Manual credentials cannot identify a scanner, so the Feishu application's visibility becomes its inbound access scope. Restrict the application to trusted tenants, groups, or members.
+
+Each bot maintains an independent Harness workspace. A newly connected bot records the Harness Host process's current working directory (`process.cwd()`) as its default; the path is persisted and does not change when the Host is later restarted from another directory. Every bot card shows the current path and lets it be edited. Any user who is already within that platform bot's visibility scope and can normally message the bot can send `/workspace /absolute/path` to switch it, with no additional administrator/ordinary-user distinction. Only existing absolute directories are accepted. A successful switch clears that bot's old Harness session mappings without affecting other bots. The switch applies to subsequent messages; a reply that has already started generating is allowed to finish.
 
 ## Design
 

@@ -1,4 +1,9 @@
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
+import {
+  publicWorkspaceError,
+  SET_WORKSPACE_ENDPOINT,
+  validWorkspacePayload,
+} from '../shared/workspace-rpc.mjs';
 
 export const SLACK_RPC_CHANNEL = '/slack';
 export const SLACK_ENDPOINTS = Object.freeze({
@@ -6,6 +11,7 @@ export const SLACK_ENDPOINTS = Object.freeze({
   bindCredentials: 'bot.bind-credentials',
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
+  setWorkspace: SET_WORKSPACE_ENDPOINT,
 });
 export const SLACK_RPC_ENDPOINTS = Object.freeze(Object.values(SLACK_ENDPOINTS));
 
@@ -54,6 +60,10 @@ function payloadFailure(endpoint, payload) {
     return exactKeys(payload, ['botId', 'confirm']) && validId(payload.botId) && payload.confirm === true
       ? null : 'bot.delete requires a botId and confirm=true.';
   }
+  if (endpoint === SLACK_ENDPOINTS.setWorkspace) {
+    return validWorkspacePayload(payload)
+      ? null : '请输入工作区绝对路径。';
+  }
   return 'Unknown Slack endpoint.';
 }
 
@@ -68,6 +78,8 @@ function sanitizePublic(value) {
 }
 
 function operationError(error) {
+  const workspaceError = publicWorkspaceError(error);
+  if (workspaceError) return workspaceError;
   if (error?.code === 'slack-invalid-bot-token') {
     return { code: 'invalid-bot-token', message: 'Slack Bot Token 无效，请确认使用以 xoxb- 开头的令牌。' };
   }
@@ -103,6 +115,10 @@ export function createSlackRpcHandler(controller) {
       if (endpoint === SLACK_ENDPOINTS.status) value = await controller.status();
       else if (endpoint === SLACK_ENDPOINTS.bindCredentials) value = await controller.bindCredentials(payload);
       else if (endpoint === SLACK_ENDPOINTS.reconnectBot) value = await controller.reconnectBot(payload.botId);
+      else if (endpoint === SLACK_ENDPOINTS.setWorkspace) {
+        if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
+        value = await controller.updateWorkspace(payload.botId, payload.workspace);
+      }
       else value = await controller.deleteBot(payload.botId);
       return signal?.aborted
         ? { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } }

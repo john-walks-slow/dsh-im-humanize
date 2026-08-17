@@ -3,12 +3,15 @@ import {
   splitWeixinText,
   weixinMessageId,
 } from './weixin-api.mjs';
+import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
+import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 
 const HELP_TEXT = [
   '微信已连接 DeepSeek Harness。',
   '',
   '直接发送文字或带文字识别结果的语音即可继续当前会话。',
   '/new  开启一个全新会话',
+  '/workspace 工作区绝对路径  切换工作区',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');
@@ -133,14 +136,21 @@ export class WeixinHarnessBridge {
         await this.#state.markSeen(messageId);
         return;
       }
+      const workspaceCommand = await runWorkspaceCommand(text, this.#harness);
+      if (workspaceCommand) {
+        await this.#send(sender, workspaceCommand.message, contextToken, runId);
+        await this.#state.markSeen(messageId);
+        return;
+      }
 
       const key = conversationKey(sender);
-      let sessionId = this.#state.sessionFor(key);
-      if (!sessionId || !(await this.#harness.sessionExists(sessionId))) {
-        sessionId = await this.#harness.createSession();
-        await this.#state.setSession(key, sessionId);
-      }
-      const answer = await this.#harness.ask(sessionId, text, { timeoutMs: this.#replyTimeoutMs });
+      const { answer } = await askInWorkspaceSession({
+        harness: this.#harness,
+        state: this.#state,
+        key,
+        text,
+        askOptions: { timeoutMs: this.#replyTimeoutMs },
+      });
       await this.#send(sender, answer, contextToken, runId);
       await this.#state.markSeen(messageId);
       this.#status.messagesReplied += 1;

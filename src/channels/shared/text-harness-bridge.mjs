@@ -1,3 +1,6 @@
+import { runWorkspaceCommand } from './workspace-command.mjs';
+import { askInWorkspaceSession } from './workspace-session.mjs';
+
 function cleanText(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -97,6 +100,7 @@ export class TextHarnessBridge {
           '',
           '直接发送文字即可继续当前会话。',
           '/new  开启一个全新会话',
+          '/workspace 工作区绝对路径  切换工作区',
           '/status  检查连接状态',
           '/help  显示本帮助',
         ].join('\n'));
@@ -109,18 +113,18 @@ export class TextHarnessBridge {
         await this.#state.markSeen(messageId);
         return;
       }
+      const workspaceCommand = await runWorkspaceCommand(text, this.#harness);
+      if (workspaceCommand) {
+        await this.#bot.sendText(target, workspaceCommand.message);
+        await this.#state.markSeen(messageId);
+        return;
+      }
       const conversationKey = `${message.kind}:${message.conversationId}`;
       if (command === '/new') {
         await this.#state.clearSession(conversationKey);
         await this.#bot.sendText(target, '已开启新会话。请发送你的问题。');
         await this.#state.markSeen(messageId);
         return;
-      }
-
-      let sessionId = this.#state.sessionFor(conversationKey);
-      if (!sessionId || !(await this.#harness.sessionExists(sessionId))) {
-        sessionId = await this.#harness.createSession();
-        await this.#state.setSession(conversationKey, sessionId);
       }
 
       await this.#bot.sendTyping?.(target).catch((error) => {
@@ -138,13 +142,19 @@ export class TextHarnessBridge {
           );
         }
       }
-      const answer = await this.#harness.ask(sessionId, text, {
-        timeoutMs: this.#replyTimeoutMs,
-        onUpdate: stream ? async (update) => {
-          const progress = update.type === 'text' ? update.text
-            : update.type === 'tool' ? `正在使用${update.name}…` : update.text;
-          if (progress) await stream.update(progress);
-        } : undefined,
+      const { answer } = await askInWorkspaceSession({
+        harness: this.#harness,
+        state: this.#state,
+        key: conversationKey,
+        text,
+        askOptions: {
+          timeoutMs: this.#replyTimeoutMs,
+          onUpdate: stream ? async (update) => {
+            const progress = update.type === 'text' ? update.text
+              : update.type === 'tool' ? `正在使用${update.name}…` : update.text;
+            if (progress) await stream.update(progress);
+          } : undefined,
+        },
       });
       if (stream) {
         try {

@@ -388,7 +388,14 @@ export class QqController {
         if (record.controller.signal.aborted) {
           await this.#stopRuntime(identity.botId);
           if (previousConfig) await this.#configStore.save(previousConfig).catch(() => undefined);
-          else await this.#configStore.remove(identity.botId).catch(() => undefined);
+          else {
+            const removed = await this.#configStore.remove(identity.botId).catch(() => null);
+            if (removed) {
+              await this.#deleteState({ botId: identity.botId, config }).catch((cleanupError) => {
+                this.#logger.warn?.('[dsh-im:qq] cancelled bot state cleanup failed:', cleanupError);
+              });
+            }
+          }
           await this.#restoreCredential(identity.secretRef, previousSecret);
           throw error;
         }

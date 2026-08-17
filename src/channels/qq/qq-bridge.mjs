@@ -1,8 +1,12 @@
+import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
+import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
+
 const HELP_TEXT = [
   'QQ 机器人已连接 DeepSeek Harness。',
   '',
   '直接发送文字即可继续当前会话。',
   '/new  开启一个全新会话',
+  '/workspace 工作区绝对路径  切换工作区',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');
@@ -121,11 +125,11 @@ export class QqHarnessBridge {
         await this.#state.markSeen(messageId);
         return;
       }
-
-      let sessionId = this.#state.sessionFor(key);
-      if (!sessionId || !(await this.#harness.sessionExists(sessionId))) {
-        sessionId = await this.#harness.createSession();
-        await this.#state.setSession(key, sessionId);
+      const workspaceCommand = await runWorkspaceCommand(text, this.#harness);
+      if (workspaceCommand) {
+        await this.#bot.sendText(target, workspaceCommand.message);
+        await this.#state.markSeen(messageId);
+        return;
       }
 
       let stream = null;
@@ -137,16 +141,22 @@ export class QqHarnessBridge {
           this.#logger.warn?.('[dsh-im:qq] unable to start a QQ stream; using a text reply:', error);
         }
       }
-      const answer = await this.#harness.ask(sessionId, text, {
-        timeoutMs: this.#replyTimeoutMs,
-        onUpdate: stream ? async (update) => {
-          const progress = update.type === 'text'
-            ? update.text
-            : update.type === 'tool'
-              ? `正在使用${update.name}…`
-              : update.text;
-          if (progress) await stream.update(progress);
-        } : undefined,
+      const { answer } = await askInWorkspaceSession({
+        harness: this.#harness,
+        state: this.#state,
+        key,
+        text,
+        askOptions: {
+          timeoutMs: this.#replyTimeoutMs,
+          onUpdate: stream ? async (update) => {
+            const progress = update.type === 'text'
+              ? update.text
+              : update.type === 'tool'
+                ? `正在使用${update.name}…`
+                : update.text;
+            if (progress) await stream.update(progress);
+          } : undefined,
+        },
       });
       if (stream) {
         try {

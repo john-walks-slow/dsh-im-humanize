@@ -15,6 +15,8 @@ import {
   unwrapRpcResult,
 } from './api.js';
 import { createPollScheduler, useAnimationFrameScheduler } from '../../lifecycle.js';
+import { WorkspaceEditor } from '../../workspace-editor.js';
+import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import { installWeixinStyles } from './styles.js';
 
 export const name = 'weixin-settings';
@@ -193,7 +195,16 @@ function checkedTime(timestamp) {
   }
 }
 
-export function AccountCard({ account, busy, removing, onReconnect, onRequestRemove, onConfirmRemove, onCancelRemove }) {
+export function AccountCard({
+  account,
+  busy,
+  removing,
+  onReconnect,
+  onWorkspaceSave,
+  onRequestRemove,
+  onConfirmRemove,
+  onCancelRemove,
+}) {
   const state = busy === 'reconnect' ? 'connecting' : account.state;
   const tone = account.connected ? 'success' : state === 'error' ? 'error' : 'warning';
   const summary = account.error?.message ?? (account.connected ? null : account.health.summary);
@@ -211,6 +222,11 @@ export function AccountCard({ account, busy, removing, onReconnect, onRequestRem
           h('dd', null, account.connected ? 'iLink 长轮询' : '离线')),
         h('div', { className: 'dxw-metric dim-botMetric' }, h('dt', null, '最近检查'),
           h('dd', null, checkedTime(account.health.lastCheckedAt)))),
+      h(WorkspaceEditor, {
+        workspace: account.workspace,
+        disabled: Boolean(busy),
+        onSave: onWorkspaceSave,
+      }),
       h('div', { className: 'dxw-accountFooter dim-cardFooter' },
         summary ? h('div', { className: 'dxw-summary dim-cardSummary' }, summary) : null,
         h('div', { className: 'dxw-actions dim-cardActions' },
@@ -236,6 +252,7 @@ function AccountList(props) {
         busy: props.busyByBot[account.botId],
         removing: props.removeTarget === account.botId,
         onReconnect: () => props.onReconnect(account),
+        onWorkspaceSave: (workspace) => props.onWorkspaceSave(account, workspace),
         onRequestRemove: () => props.onRequestRemove(account),
         onConfirmRemove: () => props.onConfirmRemove(account),
         onCancelRemove: props.onCancelRemove,
@@ -269,7 +286,14 @@ export function WeixinSettingsTab({ rpcCall }) {
   const [notice, setNotice] = React.useState('');
   const [now, setNow] = React.useState(() => Date.now());
   const addButtonRef = React.useRef(null);
+  const mountedRef = React.useRef(true);
+  const workspaceFence = useWorkspaceSnapshotFence();
   const scheduleAnimationFrame = useAnimationFrameScheduler();
+
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const announce = React.useCallback((value) => {
     setNotice('');
@@ -285,10 +309,13 @@ export function WeixinSettingsTab({ rpcCall }) {
     silent = false,
     restoreProvisioning = false,
   } = {}) => {
+    const workspaceVersion = workspaceFence.beginStatus();
+    if (workspaceVersion === null || !mountedRef.current) return undefined;
     if (!silent) setModel((current) => ({ ...current, phase: 'loading', error: null }));
     try {
       const snapshot = normalizeSnapshot(await invoke(WEIXIN_ENDPOINTS.status, {}, signal));
-      if (signal?.aborted) return undefined;
+      if (signal?.aborted || !mountedRef.current
+        || !workspaceFence.canCommitStatus(workspaceVersion)) return undefined;
       setModel({
         phase: 'ready', bots: snapshot.bots, totals: snapshot.totals,
         revision: snapshot.revision, error: null,
@@ -302,7 +329,8 @@ export function WeixinSettingsTab({ rpcCall }) {
       }
       return snapshot;
     } catch (error) {
-      if (signal?.aborted || error?.name === 'AbortError') return undefined;
+      if (signal?.aborted || error?.name === 'AbortError' || !mountedRef.current
+        || !workspaceFence.canCommitStatus(workspaceVersion)) return undefined;
       setModel((current) => ({
         ...current,
         phase: silent && current.phase === 'ready' ? 'ready' : 'error',
@@ -310,7 +338,7 @@ export function WeixinSettingsTab({ rpcCall }) {
       }));
       return undefined;
     }
-  }, [invoke]);
+  }, [invoke, workspaceFence]);
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -466,35 +494,66 @@ export function WeixinSettingsTab({ rpcCall }) {
   }, []);
 
   const reconnect = React.useCallback(async (account) => {
+    const snapshotVersion = workspaceFence.beginMutation();
     setBotBusy(account.botId, 'reconnect');
     try {
       const snapshot = normalizeSnapshot(await invoke(WEIXIN_ENDPOINTS.reconnectBot, { botId: account.botId }));
-      setModel((current) => ({ ...current, bots: snapshot.bots, totals: snapshot.totals, revision: snapshot.revision }));
+      if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
+        setModel((current) => ({ ...current, bots: snapshot.bots, totals: snapshot.totals, revision: snapshot.revision }));
+      }
       const refreshed = snapshot.bots.find((bot) => bot.botId === account.botId);
       announce(refreshed?.connected ? '微信连接检查完成。' : '微信仍未连接，插件会继续自动重试。');
     } catch (error) {
       announce(`连接检查失败：${presentError(error).message}`);
     } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
       setBotBusy(account.botId, null);
     }
-  }, [announce, invoke, setBotBusy]);
+  }, [announce, invoke, loadStatus, setBotBusy, workspaceFence]);
+
+  const saveWorkspace = React.useCallback(async (account, workspace) => {
+    const workspaceVersion = workspaceFence.beginMutation();
+    setBotBusy(account.botId, 'workspace');
+    try {
+      const snapshot = normalizeSnapshot(await invoke(
+        WEIXIN_ENDPOINTS.setWorkspace,
+        { botId: account.botId, workspace },
+      ));
+      if (mountedRef.current && workspaceFence.canCommitMutation(workspaceVersion)) {
+        setModel({
+          phase: 'ready', bots: snapshot.bots, totals: snapshot.totals,
+          revision: snapshot.revision, error: null,
+        });
+      }
+    } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
+      if (mountedRef.current) setBotBusy(account.botId, null);
+    }
+  }, [invoke, loadStatus, setBotBusy, workspaceFence]);
 
   const remove = React.useCallback(async (account) => {
+    const snapshotVersion = workspaceFence.beginMutation();
     setBotBusy(account.botId, 'delete');
     try {
       const snapshot = normalizeSnapshot(await invoke(WEIXIN_ENDPOINTS.deleteBot, {
         botId: account.botId,
         confirm: true,
       }));
-      setModel((current) => ({ ...current, bots: snapshot.bots, totals: snapshot.totals, revision: snapshot.revision }));
+      if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
+        setModel((current) => ({ ...current, bots: snapshot.bots, totals: snapshot.totals, revision: snapshot.revision }));
+      }
       setRemoveTarget(null);
       announce('微信账号及本机凭据已移除。');
     } catch (error) {
       announce(`移除失败：${presentError(error).message}`);
     } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
       setBotBusy(account.botId, null);
     }
-  }, [announce, invoke, setBotBusy]);
+  }, [announce, invoke, loadStatus, setBotBusy, workspaceFence]);
 
   let provisionView = null;
   if (provision?.status === 'starting') {
@@ -554,6 +613,7 @@ export function WeixinSettingsTab({ rpcCall }) {
                   busyByBot,
                   removeTarget,
                   onReconnect: (account) => void reconnect(account),
+                  onWorkspaceSave: saveWorkspace,
                   onRequestRemove: (account) => setRemoveTarget(account.botId),
                   onConfirmRemove: (account) => void remove(account),
                   onCancelRemove: () => setRemoveTarget(null),

@@ -1,5 +1,6 @@
 import QRCode from 'qrcode';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
+import { publicWorkspaceError, SET_WORKSPACE_ENDPOINT, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
 
 export const QQ_RPC_CHANNEL = '/qq';
 export const QQ_ENDPOINTS = Object.freeze({
@@ -10,6 +11,7 @@ export const QQ_ENDPOINTS = Object.freeze({
   bindCredentials: 'bot.bind-credentials',
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
+  setWorkspace: SET_WORKSPACE_ENDPOINT,
 });
 export const QQ_RPC_ENDPOINTS = Object.freeze(Object.values(QQ_ENDPOINTS));
 
@@ -56,6 +58,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === QQ_ENDPOINTS.deleteBot) {
     return exactKeys(payload, ['botId', 'confirm']) && validId(payload.botId) && payload.confirm === true
       ? null : 'bot.delete requires a botId and confirm=true.';
+  }
+  if (endpoint === QQ_ENDPOINTS.setWorkspace) {
+    return validWorkspacePayload(payload)
+      ? null : '请输入工作区绝对路径。';
   }
   return 'Unknown QQ endpoint.';
 }
@@ -120,16 +126,24 @@ export function createQqRpcHandler(controller, { encodeQr = qrDataUrl } = {}) {
         value = await publicStatus(await controller.bindCredentials(payload), cachedEncode);
       } else if (endpoint === QQ_ENDPOINTS.reconnectBot) {
         value = await publicStatus(await controller.reconnectBot(payload.botId), cachedEncode);
+      } else if (endpoint === QQ_ENDPOINTS.setWorkspace) {
+        if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
+        value = await publicStatus(
+          await controller.updateWorkspace(payload.botId, payload.workspace),
+          cachedEncode,
+        );
       } else {
         value = await publicStatus(await controller.deleteBot(payload.botId), cachedEncode);
       }
       return signal?.aborted
         ? { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } }
         : { ok: true, value };
-    } catch {
+    } catch (error) {
+      const workspaceError = publicWorkspaceError(error);
       return signal?.aborted
         ? { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } }
-        : { ok: false, error: { code: 'qq-operation-failed', message: 'QQ 操作失败，请稍后重试。' } };
+        : { ok: false, error: workspaceError
+          ?? { code: 'qq-operation-failed', message: 'QQ 操作失败，请稍后重试。' } };
     }
   };
 }

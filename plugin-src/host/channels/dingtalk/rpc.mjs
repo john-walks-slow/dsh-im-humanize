@@ -1,5 +1,6 @@
 import QRCode from 'qrcode';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
+import { publicWorkspaceError, SET_WORKSPACE_ENDPOINT, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
 
 export const DINGTALK_RPC_CHANNEL = '/dingtalk';
 export const DINGTALK_ENDPOINTS = Object.freeze({
@@ -10,6 +11,7 @@ export const DINGTALK_ENDPOINTS = Object.freeze({
   bindCredentials: 'bot.bind-credentials',
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
+  setWorkspace: SET_WORKSPACE_ENDPOINT,
   approveSender: 'bot.sender.approve',
   revokeSender: 'bot.sender.revoke',
 });
@@ -75,6 +77,10 @@ function payloadFailure(endpoint, payload) {
     return exactKeys(payload, ['botId', 'confirm']) && validId(payload.botId) && payload.confirm === true
       ? null
       : 'bot.delete requires a botId and confirm=true.';
+  }
+  if (endpoint === DINGTALK_ENDPOINTS.setWorkspace) {
+    return validWorkspacePayload(payload)
+      ? null : '请输入工作区绝对路径。';
   }
   if (endpoint === DINGTALK_ENDPOINTS.approveSender) {
     return exactKeys(payload, ['botId', 'requestId', 'confirm'])
@@ -207,6 +213,12 @@ export function createDingtalkRpcHandler(controller, { encodeQr = qrDataUrl } = 
         value = await publicStatus(await controller.reconnectBot(payload.botId), cachedEncode);
       } else if (endpoint === DINGTALK_ENDPOINTS.deleteBot) {
         value = await publicStatus(await controller.deleteBot(payload.botId), cachedEncode);
+      } else if (endpoint === DINGTALK_ENDPOINTS.setWorkspace) {
+        if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
+        value = await publicStatus(
+          await controller.updateWorkspace(payload.botId, payload.workspace),
+          cachedEncode,
+        );
       } else if (endpoint === DINGTALK_ENDPOINTS.approveSender) {
         value = await publicStatus(
           await controller.approveSender(payload.botId, payload.requestId),
@@ -219,8 +231,11 @@ export function createDingtalkRpcHandler(controller, { encodeQr = qrDataUrl } = 
         );
       }
       return signal?.aborted ? cancelled() : { ok: true, value };
-    } catch {
-      return signal?.aborted ? cancelled() : internalFailure();
+    } catch (error) {
+      const workspaceError = publicWorkspaceError(error);
+      return signal?.aborted ? cancelled() : workspaceError
+        ? { ok: false, error: workspaceError }
+        : internalFailure();
     }
   };
 }

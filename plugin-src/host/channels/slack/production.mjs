@@ -6,6 +6,12 @@ import { SlackController } from '../../../../src/channels/slack/slack-controller
 import { SlackHarnessClient } from '../../../../src/channels/slack/harness-client.mjs';
 import { SlackRuntime } from '../../../../src/channels/slack/slack-runtime.mjs';
 import { SlackStateStore } from '../../../../src/channels/slack/state-store.mjs';
+import {
+  BotWorkspaceStore,
+  createBotWorkspaceScope,
+  createWorkspaceAwareController,
+  observeBotWorkspaceRemovals,
+} from '../../../../src/channels/shared/bot-workspace-store.mjs';
 import { createTokenConnectionSupervisor } from '../shared/connection-supervisor.mjs';
 import { harnessOrigin, pluginPaths } from '../shared/production.mjs';
 
@@ -23,6 +29,16 @@ export async function createProductionController(ctx, config = {}, internals = {
     ? ctx.logger('dsh-im:slack') : (ctx.logger ?? console);
   const paths = pluginPaths(config, 'slack');
   const configStore = await new ResolvedConfigStore(paths.config).load();
+  const defaultWorkspace = resolve(config.workspace ?? process.cwd());
+  const WorkspaceStore = internals.WorkspaceStore ?? BotWorkspaceStore;
+  const workspaces = internals.workspaces
+    ?? await new WorkspaceStore(paths.workspaces, { defaultWorkspace }).load();
+  const configuredBots = configStore.list();
+  await workspaces.reconcile(configuredBots.map((bot) => bot.botId));
+  await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.botId)));
+  const observedConfigStore = typeof configStore.remove === 'function'
+    ? observeBotWorkspaceRemovals(configStore, { workspaces })
+    : configStore;
   const stateStores = new Map();
   const statePath = (botId) => resolve(paths.bots, botId, 'state.json');
   const stateFor = async (botId) => {
@@ -35,42 +51,51 @@ export async function createProductionController(ctx, config = {}, internals = {
   };
   const harness = new ResolvedHarness({
     baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
-    workspace: resolve(config.workspace ?? process.cwd()),
+    workspace: defaultWorkspace,
     agentPreset: config.agentPreset ?? 'standard',
     autostart: false,
     dshBin: config.dshBin ?? 'dsh',
   });
-  const controller = new ResolvedController({
+  const coreController = new ResolvedController({
     credentials: ctx.credentials,
-    configStore,
+    configStore: observedConfigStore,
     logger,
     ...(internals.inspectCredentials ? { inspectCredentials: internals.inspectCredentials } : {}),
-    createRuntime: async ({ botId, config: botConfig, botToken, appToken }) => new ResolvedRuntime({
-      config: botConfig,
-      botToken,
-      appToken,
-      harness,
-      state: await stateFor(botId),
-      replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
-      connectTimeoutMs: config.connectTimeoutMs ?? 20_000,
-      logger: {
-        error: (...args) => logger.error?.(`[${botId}]`, ...args),
-        warn: (...args) => logger.warn?.(`[${botId}]`, ...args),
-        info: (...args) => logger.info?.(`[${botId}]`, ...args),
-        debug: (...args) => logger.debug?.(`[${botId}]`, ...args),
-      },
-    }),
+    createRuntime: async ({ botId, config: botConfig, botToken, appToken }) => {
+      const state = await stateFor(botId);
+      await workspaces.ensure(botId);
+      const workspaceScope = createBotWorkspaceScope(harness, { botId, workspaces, state });
+      return new ResolvedRuntime({
+        config: botConfig,
+        botToken,
+        appToken,
+        harness: workspaceScope.harness,
+        state: workspaceScope.state,
+        replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
+        connectTimeoutMs: config.connectTimeoutMs ?? 20_000,
+        logger: {
+          error: (...args) => logger.error?.(`[${botId}]`, ...args),
+          warn: (...args) => logger.warn?.(`[${botId}]`, ...args),
+          info: (...args) => logger.info?.(`[${botId}]`, ...args),
+          debug: (...args) => logger.debug?.(`[${botId}]`, ...args),
+        },
+      });
+    },
     deleteState: async ({ botId }) => {
       const state = stateStores.get(botId);
       stateStores.delete(botId);
-      if (state && typeof state.remove === 'function') return state.remove();
-      try {
-        await unlink(statePath(botId));
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
+      if (state && typeof state.remove === 'function') {
+        await state.remove();
+      } else {
+        try {
+          await unlink(statePath(botId));
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
       }
     },
   });
+  const controller = createWorkspaceAwareController(coreController, { workspaces, stateFor });
   const supervisor = createSupervisor({
     channel: 'slack',
     controller,

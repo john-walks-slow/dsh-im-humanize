@@ -311,7 +311,14 @@ export class WhatsappController {
       if (record.controller.signal.aborted || this.#closed || error?.name === 'AbortError') {
         await this.#stopRuntime(botId);
         if (previous) await this.#configStore.save(previous).catch(() => undefined);
-        else await this.#configStore.remove(botId).catch(() => undefined);
+        else {
+          const removed = await this.#configStore.remove(botId).catch(() => null);
+          if (removed) {
+            await this.#deleteState({ botId, config }).catch((cleanupError) => {
+              this.#logger.warn?.('[dsh-im:whatsapp] cancelled bot state cleanup failed:', cleanupError);
+            });
+          }
+        }
         await this.#deleteAuth(record.authDirectory).catch(() => undefined);
         if (previous) await this.#startRuntime(previous).catch(() => undefined);
         record.state = 'cancelled';

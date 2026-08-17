@@ -2,6 +2,8 @@ import * as React from 'react';
 
 import { CredentialActionIcon, CredentialBindingPanel, QrActionIcon } from '../../credential-binding.js';
 import { h } from '../../i18n.js';
+import { WorkspaceEditor } from '../../workspace-editor.js';
+import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import {
   DINGTALK_ENDPOINTS,
   DINGTALK_RPC_CHANNEL,
@@ -208,6 +210,7 @@ export function AccountCard({
   busy,
   removing,
   onReconnect,
+  onWorkspaceSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -231,6 +234,11 @@ export function AccountCard({
           h('dd', null, account.connected ? 'Stream 长连接' : '离线')),
         h('div', { className: 'ddt-metric dim-botMetric' }, h('dt', null, '最近检查'),
           h('dd', null, checkedTime(account.health.lastCheckedAt)))),
+      h(WorkspaceEditor, {
+        workspace: account.workspace,
+        disabled: Boolean(busy),
+        onSave: onWorkspaceSave,
+      }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
         h('div', { className: 'ddt-actions dim-cardActions' },
@@ -256,6 +264,7 @@ function AccountList(props) {
         busy: props.busyByBot[account.botId],
         removing: props.removeTarget === account.botId,
         onReconnect: () => props.onReconnect(account),
+        onWorkspaceSave: (workspace) => props.onWorkspaceSave(account, workspace),
         onRequestRemove: () => props.onRequestRemove(account),
         onConfirmRemove: () => props.onConfirmRemove(account),
         onCancelRemove: props.onCancelRemove,
@@ -279,6 +288,7 @@ export function DingtalkSettingsTab({ rpcCall }) {
   const addButtonRef = React.useRef(null);
   const mountedRef = React.useRef(true);
   const statusRequestRef = React.useRef(0);
+  const workspaceFence = useWorkspaceSnapshotFence();
   const noticeFrameRef = React.useRef(null);
   const focusFrameRef = React.useRef(null);
 
@@ -335,11 +345,14 @@ export function DingtalkSettingsTab({ rpcCall }) {
     restoreProvisioning = false,
   } = {}) => {
     if (!mountedRef.current || signal?.aborted) return undefined;
+    const workspaceVersion = workspaceFence.beginStatus();
+    if (workspaceVersion === null) return undefined;
     const requestId = statusRequestRef.current + 1;
     statusRequestRef.current = requestId;
     const canCommit = () => mountedRef.current
       && !signal?.aborted
-      && statusRequestRef.current === requestId;
+      && statusRequestRef.current === requestId
+      && workspaceFence.canCommitStatus(workspaceVersion);
     if (!silent && canCommit()) {
       setModel((current) => ({ ...current, phase: 'loading', error: null }));
     }
@@ -373,7 +386,7 @@ export function DingtalkSettingsTab({ rpcCall }) {
       }));
       return undefined;
     }
-  }, [invoke]);
+  }, [invoke, workspaceFence]);
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -450,6 +463,7 @@ export function DingtalkSettingsTab({ rpcCall }) {
 
   const bindCredentials = React.useCallback(async ({ identity, secret }) => {
     if (!mountedRef.current) return;
+    const snapshotVersion = workspaceFence.beginMutation();
     setBusy(true);
     setCredentialError(null);
     try {
@@ -458,21 +472,25 @@ export function DingtalkSettingsTab({ rpcCall }) {
         { clientId: identity, clientSecret: secret },
       ));
       if (!mountedRef.current) return;
-      setModel({
-        phase: 'ready',
-        bots: snapshot.bots,
-        totals: snapshot.totals,
-        revision: snapshot.revision,
-        error: null,
-      });
+      if (workspaceFence.canCommitMutation(snapshotVersion)) {
+        setModel({
+          phase: 'ready',
+          bots: snapshot.bots,
+          totals: snapshot.totals,
+          revision: snapshot.revision,
+          error: null,
+        });
+      }
       setCredentialOpen(false);
       announce('钉钉机器人凭据已绑定。');
     } catch (error) {
       if (mountedRef.current) setCredentialError(presentError(error));
     } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
       if (mountedRef.current) setBusy(false);
     }
-  }, [announce, invoke]);
+  }, [announce, invoke, loadStatus, workspaceFence]);
 
   const cancelProvisioning = React.useCallback(async () => {
     if (!mountedRef.current) return;
@@ -575,12 +593,20 @@ export function DingtalkSettingsTab({ rpcCall }) {
 
   const runBotAction = React.useCallback(async ({ account, operation, endpoint, payload, success }) => {
     if (!mountedRef.current) return undefined;
+    const snapshotVersion = workspaceFence.beginMutation();
     setBotBusy(account.botId, operation);
     try {
-      await invoke(endpoint, payload);
+      const snapshot = normalizeSnapshot(await invoke(endpoint, payload));
       if (!mountedRef.current) return undefined;
-      const snapshot = await loadStatus({ silent: true, restoreProvisioning: false });
-      if (!mountedRef.current) return undefined;
+      if (workspaceFence.canCommitMutation(snapshotVersion)) {
+        setModel({
+          phase: 'ready',
+          bots: snapshot.bots,
+          totals: snapshot.totals,
+          revision: snapshot.revision,
+          error: null,
+        });
+      }
       announce(typeof success === 'function' ? success(snapshot) : success);
       return snapshot;
     } catch (error) {
@@ -588,9 +614,11 @@ export function DingtalkSettingsTab({ rpcCall }) {
       announce(`操作失败：${presentError(error).message}`);
       return undefined;
     } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true, restoreProvisioning: false });
       if (mountedRef.current) setBotBusy(account.botId, null);
     }
-  }, [announce, invoke, loadStatus, setBotBusy]);
+  }, [announce, invoke, loadStatus, setBotBusy, workspaceFence]);
 
   const reconnect = React.useCallback((account) => runBotAction({
     account,
@@ -601,6 +629,30 @@ export function DingtalkSettingsTab({ rpcCall }) {
       ? '钉钉连接检查完成。'
       : '钉钉仍未连接，插件会继续自动重试。',
   }), [runBotAction]);
+
+  const saveWorkspace = React.useCallback(async (account, workspace) => {
+    const workspaceVersion = workspaceFence.beginMutation();
+    setBotBusy(account.botId, 'workspace');
+    try {
+      const snapshot = normalizeSnapshot(await invoke(
+        DINGTALK_ENDPOINTS.setWorkspace,
+        { botId: account.botId, workspace },
+      ));
+      if (mountedRef.current && workspaceFence.canCommitMutation(workspaceVersion)) {
+        setModel({
+          phase: 'ready',
+          bots: snapshot.bots,
+          totals: snapshot.totals,
+          revision: snapshot.revision,
+          error: null,
+        });
+      }
+    } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
+      if (mountedRef.current) setBotBusy(account.botId, null);
+    }
+  }, [invoke, loadStatus, setBotBusy, workspaceFence]);
 
   const remove = React.useCallback(async (account) => {
     const snapshot = await runBotAction({
@@ -688,6 +740,7 @@ export function DingtalkSettingsTab({ rpcCall }) {
                   busyByBot,
                   removeTarget,
                   onReconnect: (account) => void reconnect(account),
+                  onWorkspaceSave: saveWorkspace,
                   onRequestRemove: (account) => setRemoveTarget(account.botId),
                   onConfirmRemove: (account) => void remove(account),
                   onCancelRemove: () => setRemoveTarget(null),

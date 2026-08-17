@@ -3,6 +3,8 @@ import {
   splitDingtalkText,
 } from './dingtalk-api.mjs';
 import { createDingTalkCardStream } from './dingtalk-card-stream.mjs';
+import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
+import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 
 const CARD_INITIAL_TEXT = '已连接 DeepSeek Harness，正在思考…';
 const CARD_ERROR_TEXT = '消息处理失败，请稍后重试。';
@@ -12,6 +14,7 @@ const HELP_TEXT = [
   '',
   '直接发送文字即可继续当前会话。',
   '/new  开启一个全新会话',
+  '/workspace 工作区绝对路径  切换工作区',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');
@@ -213,12 +216,12 @@ export class DingtalkHarnessBridge {
         await this.#send(sessionWebhook, '已开启新会话。请发送你的问题。');
         return;
       }
-
-      let sessionId = this.#state.sessionFor(key);
-      if (!sessionId || !(await this.#harness.sessionExists(sessionId, { signal: this.#signal }))) {
-        sessionId = await this.#harness.createSession({ signal: this.#signal });
-        await this.#state.setSession(key, sessionId);
+      const workspaceCommand = await runWorkspaceCommand(text, this.#harness);
+      if (workspaceCommand) {
+        await this.#send(sessionWebhook, workspaceCommand.message);
+        return;
       }
+
       if (typeof this.#api.createAiCard === 'function'
         && typeof this.#api.updateAiCard === 'function'
         && typeof this.#api.finishAiCard === 'function') {
@@ -232,12 +235,20 @@ export class DingtalkHarnessBridge {
         });
         cardStarted = await cardStream.start(CARD_INITIAL_TEXT);
       }
-      const answer = await this.#harness.ask(sessionId, text, {
-        timeoutMs: this.#replyTimeoutMs,
-        signal: this.#signal,
-        onUpdate: cardStarted
-          ? (update) => cardStream.push(progressText(update))
-          : undefined,
+      const { answer } = await askInWorkspaceSession({
+        harness: this.#harness,
+        state: this.#state,
+        key,
+        text,
+        createOptions: { signal: this.#signal },
+        existsOptions: { signal: this.#signal },
+        askOptions: {
+          timeoutMs: this.#replyTimeoutMs,
+          signal: this.#signal,
+          onUpdate: cardStarted
+            ? (update) => cardStream.push(progressText(update))
+            : undefined,
+        },
       });
       const streamed = cardStarted && await cardStream.finish(answer);
       if (!streamed) await this.#send(sessionWebhook, answer);

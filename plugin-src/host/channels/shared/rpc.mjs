@@ -1,10 +1,16 @@
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
+import {
+  publicWorkspaceError,
+  SET_WORKSPACE_ENDPOINT,
+  validWorkspacePayload,
+} from './workspace-rpc.mjs';
 
 export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   status: 'connection.status',
   bindCredentials: 'bot.bind-credentials',
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
+  setWorkspace: SET_WORKSPACE_ENDPOINT,
 });
 
 const ENDPOINTS = Object.freeze(Object.values(TOKEN_BOT_ENDPOINTS));
@@ -45,6 +51,10 @@ function payloadFailure(endpoint, payload) {
     return exactKeys(payload, ['botId', 'confirm']) && validId(payload.botId) && payload.confirm === true
       ? null : 'bot.delete requires a botId and confirm=true.';
   }
+  if (endpoint === TOKEN_BOT_ENDPOINTS.setWorkspace) {
+    return validWorkspacePayload(payload)
+      ? null : '请输入工作区绝对路径。';
+  }
   return 'Unknown bot endpoint.';
 }
 
@@ -59,6 +69,8 @@ function sanitizePublic(value) {
 }
 
 function operationError(channel, error) {
+  const workspaceError = publicWorkspaceError(error);
+  if (workspaceError) return workspaceError;
   if (error?.code === 'webhook-configured') {
     return { code: 'webhook-configured', message: error.message };
   }
@@ -93,6 +105,9 @@ export function createTokenBotRpcHandler(controller, { channel }) {
         value = await controller.bindCredentials(payload);
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.reconnectBot) {
         value = await controller.reconnectBot(payload.botId);
+      } else if (endpoint === TOKEN_BOT_ENDPOINTS.setWorkspace) {
+        if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
+        value = await controller.updateWorkspace(payload.botId, payload.workspace);
       } else {
         value = await controller.deleteBot(payload.botId);
       }

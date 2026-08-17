@@ -1,0 +1,584 @@
+import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, resolve } from 'node:path';
+
+import { WORKSPACE_SESSION_STALE } from './workspace-session.mjs';
+
+const EMPTY_DOCUMENT = Object.freeze({ version: 1, workspaces: Object.freeze({}) });
+
+function botIdOf(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+    throw new TypeError('Invalid bot id');
+  }
+  return value;
+}
+
+function normalizeDocument(value) {
+  if (!value || value.version !== 1 || !value.workspaces
+    || typeof value.workspaces !== 'object' || Array.isArray(value.workspaces)) return null;
+  const workspaces = {};
+  for (const [botId, workspace] of Object.entries(value.workspaces)) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(botId)
+      || typeof workspace !== 'string' || !isAbsolute(workspace)) return null;
+    workspaces[botId] = resolve(workspace);
+  }
+  return { version: 1, workspaces };
+}
+
+export async function validateWorkspacePath(value) {
+  if (typeof value !== 'string' || !value.trim() || !isAbsolute(value.trim())) {
+    const error = new Error('工作区必须是绝对路径。');
+    error.code = 'workspace-not-absolute';
+    throw error;
+  }
+  const workspace = resolve(value.trim());
+  let info;
+  try {
+    info = await stat(workspace);
+  } catch (cause) {
+    const error = new Error('工作区路径不存在。', { cause });
+    error.code = 'workspace-not-found';
+    throw error;
+  }
+  if (!info.isDirectory()) {
+    const error = new Error('工作区路径必须指向一个目录。');
+    error.code = 'workspace-not-directory';
+    throw error;
+  }
+  return workspace;
+}
+
+export class BotWorkspaceStore {
+  #path;
+  #defaultWorkspace;
+  #workspaces = {};
+  #generations = new Map();
+  #nextGeneration = 1;
+  #incarnations = new Map();
+  #nextIncarnation = 1;
+  #removals = new Map();
+  #removalDetails = new WeakMap();
+  #dirtyRemovals = new Set();
+  #writeQueue = Promise.resolve();
+  #botQueues = new Map();
+
+  constructor(path, { defaultWorkspace = process.cwd() } = {}) {
+    if (typeof path !== 'string' || !path) throw new TypeError('workspace store path is required');
+    this.#path = path;
+    this.#defaultWorkspace = resolve(defaultWorkspace);
+  }
+
+  async load() {
+    try {
+      const normalized = normalizeDocument(JSON.parse(await readFile(this.#path, 'utf8')));
+      if (!normalized) throw new Error('dsh-im workspace config is invalid');
+      this.#workspaces = normalized.workspaces;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      this.#workspaces = {};
+    }
+    this.#generations.clear();
+    this.#nextGeneration = 1;
+    this.#incarnations.clear();
+    this.#nextIncarnation = 1;
+    this.#removals.clear();
+    this.#dirtyRemovals.clear();
+    for (const botId of Object.keys(this.#workspaces)) {
+      this.#generations.set(botId, this.#freshGeneration());
+      this.#incarnations.set(botId, this.#freshIncarnation());
+    }
+    return this;
+  }
+
+  has(botId) {
+    const id = botIdOf(botId);
+    return Object.hasOwn(this.#workspaces, id) && !this.#removals.has(id);
+  }
+
+  incarnationFor(botId) {
+    return this.#incarnations.get(botIdOf(botId)) ?? null;
+  }
+
+  workspaceFor(botId) {
+    return this.#workspaces[botIdOf(botId)] ?? this.#defaultWorkspace;
+  }
+
+  generationFor(botId) {
+    return this.#generations.get(botIdOf(botId)) ?? null;
+  }
+
+  async whenIdle() {
+    await this.#writeQueue;
+  }
+
+  async whenBotIdle(botId) {
+    const id = botIdOf(botId);
+    while (true) {
+      const pending = this.#botQueues.get(id);
+      if (!pending) return;
+      await pending;
+      if (this.#botQueues.get(id) === pending) return;
+    }
+  }
+
+  async ensure(botId, { workspace = this.#defaultWorkspace } = {}) {
+    const id = botIdOf(botId);
+    const initialWorkspace = resolve(workspace);
+    return this.#enqueue(id, async () => {
+      if (!this.#workspaces[id]) {
+        this.#workspaces[id] = initialWorkspace;
+        this.#generations.set(id, this.#freshGeneration());
+        this.#incarnations.set(id, this.#freshIncarnation());
+        try {
+          await this.#persist();
+        } catch (error) {
+          delete this.#workspaces[id];
+          this.#generations.delete(id);
+          this.#incarnations.delete(id);
+          throw error;
+        }
+      } else if (!this.#generations.has(id)) {
+        this.#generations.set(id, this.#freshGeneration());
+      }
+      return this.#workspaces[id];
+    });
+  }
+
+  async setWorkspace(botId, value, { clearSessions, incarnation } = {}) {
+    const id = botIdOf(botId);
+    if (!this.has(id)
+      || (incarnation !== undefined && incarnation !== this.incarnationFor(id))) {
+      const error = new Error('找不到要修改的机器人。');
+      error.code = 'workspace-bot-not-found';
+      throw error;
+    }
+    const workspace = await validateWorkspacePath(value);
+    return this.#enqueue(id, async () => {
+      if (!this.has(id)
+        || (incarnation !== undefined && incarnation !== this.incarnationFor(id))) {
+        const error = new Error('找不到要修改的机器人。');
+        error.code = 'workspace-bot-not-found';
+        throw error;
+      }
+      if (workspace === this.workspaceFor(id)) return workspace;
+      const previous = this.#workspaces[id];
+      // Advance first so a session creation that started before this queued
+      // transition can never be written back after the clear.
+      this.#generations.set(id, this.#freshGeneration());
+      // Clear the old session mapping before publishing the new workspace.
+      // A crash can then lose conversation continuity, but can never pair the
+      // new workspace with sessions created in the old one.
+      await clearSessions?.();
+      this.#workspaces[id] = workspace;
+      try {
+        await this.#persist();
+      } catch (error) {
+        this.#workspaces[id] = previous;
+        throw error;
+      }
+      return workspace;
+    });
+  }
+
+  async invalidateSessions(botId, { clearSessions } = {}) {
+    const id = botIdOf(botId);
+    return this.#enqueue(id, async () => {
+      this.#generations.set(id, this.#freshGeneration());
+      await clearSessions?.();
+    });
+  }
+
+  /** Fence one lifecycle and return the opaque token required to abort/finish it. */
+  async beginRemoval(botId, { clearSessions } = {}) {
+    const id = botIdOf(botId);
+    return this.#enqueue(id, async () => {
+      const existing = this.#removals.get(id);
+      if (existing) return existing;
+      const transaction = Object.freeze({});
+      this.#removals.set(id, transaction);
+      this.#removalDetails.set(transaction, {
+        botId: id,
+        incarnation: this.incarnationFor(id),
+      });
+      this.#generations.set(id, this.#freshGeneration());
+      try {
+        await clearSessions?.();
+      } catch (error) {
+        if (this.#removals.get(id) === transaction) this.#removals.delete(id);
+        throw error;
+      }
+      return transaction;
+    });
+  }
+
+  /** Re-open only the lifecycle represented by transaction; stale tokens are no-ops. */
+  async abortRemoval(transaction) {
+    const { botId: id } = this.#removalDetailsFor(transaction);
+    return this.#enqueue(id, async () => {
+      if (this.#removals.get(id) !== transaction) return false;
+      this.#removals.delete(id);
+      if (Object.hasOwn(this.#workspaces, id)) {
+        this.#generations.set(id, this.#freshGeneration());
+        if (!this.#incarnations.has(id)) {
+          this.#incarnations.set(id, this.#freshIncarnation());
+        }
+      }
+      return true;
+    });
+  }
+
+  /** Retire only the lifecycle represented by transaction; stale tokens are no-ops. */
+  async finishRemoval(transaction) {
+    const { botId: id, incarnation } = this.#removalDetailsFor(transaction);
+    return this.#enqueue(id, async () => {
+      if (this.#removals.get(id) !== transaction) {
+        return { removed: false, persisted: true, error: null, stale: true };
+      }
+      if (this.incarnationFor(id) !== incarnation) {
+        this.#removals.delete(id);
+        return { removed: false, persisted: true, error: null, stale: true };
+      }
+      this.#removals.delete(id);
+      return this.#retireCurrentIncarnation(id);
+    });
+  }
+
+  /** Commit the workspace lifecycle after the config store durably removed a bot. */
+  async retireAfterConfigCommit(botId) {
+    const id = botIdOf(botId);
+    return this.#enqueue(id, async () => {
+      this.#removals.delete(id);
+      return this.#retireCurrentIncarnation(id);
+    });
+  }
+
+  async remove(botId) {
+    const result = await this.retireAfterConfigCommit(botId);
+    if (result.error) throw result.error;
+    return result.removed;
+  }
+
+  async reconcile(activeBotIds) {
+    const active = new Set([...activeBotIds].map(botIdOf));
+    const candidates = new Set([...Object.keys(this.#workspaces), ...this.#dirtyRemovals]);
+    for (const botId of candidates) {
+      if (!active.has(botId)) await this.remove(botId);
+    }
+  }
+
+  decorateStatus(status) {
+    if (!status || typeof status !== 'object' || !Array.isArray(status.bots)) return status;
+    return {
+      ...status,
+      bots: status.bots.map((bot) => bot?.botId
+        ? { ...bot, workspace: this.workspaceFor(bot.botId) }
+        : bot),
+    };
+  }
+
+  #freshGeneration() {
+    const generation = this.#nextGeneration;
+    this.#nextGeneration += 1;
+    return generation;
+  }
+
+  #freshIncarnation() {
+    const incarnation = this.#nextIncarnation;
+    this.#nextIncarnation += 1;
+    return incarnation;
+  }
+
+  #removalDetailsFor(transaction) {
+    if (!transaction || typeof transaction !== 'object') {
+      throw new TypeError('Invalid workspace removal transaction');
+    }
+    const details = this.#removalDetails.get(transaction);
+    if (!details) throw new TypeError('Invalid workspace removal transaction');
+    return details;
+  }
+
+  async #retireCurrentIncarnation(id) {
+    const hadWorkspace = Object.hasOwn(this.#workspaces, id);
+    const needsCleanup = hadWorkspace || this.#dirtyRemovals.has(id);
+    delete this.#workspaces[id];
+    this.#generations.delete(id);
+    this.#incarnations.delete(id);
+    if (!needsCleanup) return {
+      removed: false, persisted: true, error: null, stale: false,
+    };
+    try {
+      await this.#persistCurrentDocument();
+      return {
+        removed: hadWorkspace, persisted: true, error: null, stale: false,
+      };
+    } catch (error) {
+      this.#dirtyRemovals.add(id);
+      return {
+        removed: hadWorkspace, persisted: false, error, stale: false,
+      };
+    }
+  }
+
+  async #enqueue(botId, operation) {
+    const queued = this.#writeQueue.then(operation, operation);
+    const settled = queued.then(() => undefined, () => undefined);
+    this.#writeQueue = settled;
+    this.#botQueues.set(botId, settled);
+    void settled.finally(() => {
+      if (this.#botQueues.get(botId) === settled) this.#botQueues.delete(botId);
+    });
+    return queued;
+  }
+
+  async #persist() {
+    const document = { version: 1, workspaces: this.#workspaces };
+    await mkdir(dirname(this.#path), { recursive: true, mode: 0o700 });
+    const temporary = `${this.#path}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    await rename(temporary, this.#path);
+    this.#dirtyRemovals.clear();
+  }
+
+  async #persistCurrentDocument() {
+    if (Object.keys(this.#workspaces).length > 0) {
+      await this.#persist();
+      return;
+    }
+    try {
+      await unlink(this.#path);
+      this.#dirtyRemovals.clear();
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      this.#dirtyRemovals.clear();
+    }
+  }
+}
+
+function decorateResult(workspaces, result) {
+  return result && typeof result.then === 'function'
+    ? result.then((value) => workspaces.decorateStatus(value))
+    : workspaces.decorateStatus(result);
+}
+
+function targetStatus(controller) {
+  return Promise.resolve(controller.status());
+}
+
+/** Observe the config store's durable removal commit without changing its API. */
+export function observeBotWorkspaceRemovals(
+  configStore,
+  { workspaces, method = 'remove', botIdFromRemoved = (removed) => removed?.botId },
+) {
+  if (!configStore || !workspaces || typeof configStore[method] !== 'function') {
+    throw new TypeError('configStore removal observer dependencies are required');
+  }
+  return new Proxy(configStore, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (property === method) {
+        return async (...args) => {
+          const removed = await value.apply(target, args);
+          const botId = removed ? botIdFromRemoved(removed, args) : null;
+          if (botId) await workspaces.retireAfterConfigCommit(botId);
+          return removed;
+        };
+      }
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+export function createBotWorkspaceScope(harness, { botId, workspaces, state }) {
+  if (!harness || !workspaces || !state) throw new TypeError('harness, workspaces, and state are required');
+  const incarnation = workspaces.incarnationFor(botId);
+  const isCurrentScope = () => workspaces.has(botId)
+    && workspaces.incarnationFor(botId) === incarnation;
+  const sessionGenerations = new Map();
+  const scopedHarness = new Proxy(harness, {
+    get(target, property) {
+      if (property === 'currentWorkspace') return () => workspaces.workspaceFor(botId);
+      if (property === 'switchWorkspace') {
+        return (workspace) => {
+          if (!isCurrentScope()) {
+            const error = new Error('找不到要修改的机器人。');
+            error.code = 'workspace-bot-not-found';
+            return Promise.reject(error);
+          }
+          return workspaces.setWorkspace(botId, workspace, {
+            clearSessions: () => state.clearSessions(),
+            incarnation,
+          });
+        };
+      }
+      if (property === 'createSession') {
+        return async (options = {}) => {
+          await workspaces.whenBotIdle(botId);
+          if (!isCurrentScope()) {
+            const error = new Error('找不到要修改的机器人。');
+            error.code = 'workspace-bot-not-found';
+            throw error;
+          }
+          const generation = workspaces.generationFor(botId);
+          const sessionId = await target.createSession({
+            ...options,
+            workspace: workspaces.workspaceFor(botId),
+          });
+          sessionGenerations.set(sessionId, generation);
+          return sessionId;
+        };
+      }
+      if (property === 'sessionExists') {
+        return (sessionId, ...args) => {
+          if (!isCurrentScope()) return false;
+          const generation = sessionGenerations.get(sessionId);
+          if (generation !== undefined && generation !== workspaces.generationFor(botId)) {
+            sessionGenerations.delete(sessionId);
+            return false;
+          }
+          return target.sessionExists(sessionId, ...args);
+        };
+      }
+      if (property === 'ask') {
+        return (sessionId, ...args) => {
+          const generation = sessionGenerations.get(sessionId);
+          sessionGenerations.delete(sessionId);
+          if (!isCurrentScope()
+            || (generation !== undefined && generation !== workspaces.generationFor(botId))) {
+            const error = new Error('The bot workspace changed before this prompt started.');
+            error.code = WORKSPACE_SESSION_STALE;
+            throw error;
+          }
+          return target.ask(sessionId, ...args);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const scopedState = new Proxy(state, {
+    get(target, property) {
+      if (property === 'sessionFor') {
+        return (key, ...args) => {
+          if (!isCurrentScope()) return null;
+          const sessionId = target.sessionFor(key, ...args);
+          if (sessionId && !sessionGenerations.has(sessionId)) {
+            sessionGenerations.set(sessionId, workspaces.generationFor(botId));
+          }
+          return sessionId;
+        };
+      }
+      if (property === 'setSession') {
+        return (key, sessionId, ...args) => {
+          const generation = sessionGenerations.get(sessionId);
+          if (!isCurrentScope()
+            || (generation !== undefined && generation !== workspaces.generationFor(botId))) {
+            sessionGenerations.delete(sessionId);
+            return false;
+          }
+          return target.setSession(key, sessionId, ...args);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return Object.freeze({ harness: scopedHarness, state: scopedState });
+}
+
+export function createBotScopedHarness(harness, options) {
+  return createBotWorkspaceScope(harness, options).harness;
+}
+
+export function createWorkspaceAwareController(controller, { workspaces, stateFor }) {
+  if (!controller || !workspaces || typeof stateFor !== 'function') {
+    throw new TypeError('controller, workspaces, and stateFor are required');
+  }
+  const transitions = new Map();
+  const withBotTransition = (botId, operation) => {
+    const previous = transitions.get(botId) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(operation);
+    transitions.set(botId, current);
+    return current.finally(() => {
+      if (transitions.get(botId) === current) transitions.delete(botId);
+    });
+  };
+  const updateWorkspace = (botId, workspace) => {
+    // Capture at API invocation, before even waiting for an older outer
+    // transition. A queued request still belongs to the incarnation that the
+    // caller observed, not a deterministic same-id rebind that appears later.
+    const incarnation = workspaces.incarnationFor(botId);
+    return withBotTransition(botId, async () => {
+      const snapshot = await controller.status();
+      if (!snapshot?.bots?.some((bot) => bot?.botId === botId)) {
+        const error = new Error('找不到要修改的机器人。');
+        error.code = 'workspace-bot-not-found';
+        throw error;
+      }
+      const state = await stateFor(botId);
+      await workspaces.setWorkspace(botId, workspace, {
+        clearSessions: () => state.clearSessions(),
+        incarnation,
+      });
+      return workspaces.decorateStatus(await controller.status());
+    });
+  };
+  const deleteWithWorkspace = (botId, invokeDelete) => withBotTransition(botId, async () => {
+    // Fence the old runtime without changing the durable mapping. A crash
+    // before the controller removes its config therefore keeps the bot's
+    // workspace, while a crash after that commit is healed by startup
+    // reconciliation.
+    const removal = await workspaces.beginRemoval(botId, {
+      clearSessions: async () => {
+        try {
+          const state = await stateFor(botId);
+          if (!state || typeof state.clearSessions !== 'function') {
+            throw new TypeError('bot state does not support session cleanup');
+          }
+          await state.clearSessions();
+        } catch (error) {
+          console.warn(
+            `[dsh-im] ignored session cleanup failure while deleting bot ${botId}:`,
+            error?.message ?? error,
+          );
+        }
+      },
+    });
+    try {
+      const result = await invokeDelete();
+      await workspaces.finishRemoval(removal);
+      return workspaces.decorateStatus(result);
+    } catch (error) {
+      const after = await targetStatus(controller).catch(() => null);
+      const knownAbsent = Array.isArray(after?.bots)
+        && !after.bots.some((bot) => bot?.botId === botId);
+      if (knownAbsent) await workspaces.finishRemoval(removal);
+      else await workspaces.abortRemoval(removal);
+      throw error;
+    }
+  });
+
+  return new Proxy(controller, {
+    get(target, property) {
+      if (property === 'updateWorkspace') return updateWorkspace;
+      const value = Reflect.get(target, property, target);
+      if (typeof value !== 'function') return value;
+      if (property === 'deleteBot') {
+        return (botId, ...args) => deleteWithWorkspace(
+          botId,
+          () => value.call(target, botId, ...args),
+        );
+      }
+      if (property === 'disconnect') {
+        return async (...args) => {
+          const before = await target.status();
+          const botId = before?.bots?.[0]?.botId;
+          if (!botId) return decorateResult(workspaces, value.apply(target, args));
+          return deleteWithWorkspace(botId, () => value.apply(target, args));
+        };
+      }
+      return (...args) => decorateResult(workspaces, value.apply(target, args));
+    },
+  });
+}

@@ -17,6 +17,7 @@ export const FEISHU_ENDPOINTS = Object.freeze({
   reconnectBot: "bot.reconnect",
   disconnectBot: "bot.disconnect",
   deleteBot: "bot.delete",
+  setWorkspace: "bot.workspace.set",
   // Kept for rolling upgrades. The multi-bot UI never calls these endpoints.
   testConnection: "connection.test",
   disconnect: "connection.disconnect",
@@ -159,6 +160,7 @@ export function normalizeBotConnection(value, fallbackBotId) {
     state: authoritativeState(value.state, connected),
     connected,
     configured: value.configured !== false,
+    workspace: optionalString(value.workspace)?.slice(0, 4_096) ?? "",
     bot: normalizeBot(value.bot),
     health: normalizeHealth(value.health, connected),
     error: normalizeError(value.error),

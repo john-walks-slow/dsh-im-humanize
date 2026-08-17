@@ -3,6 +3,8 @@ import * as React from 'react';
 import { WecomLogoGlyph } from '../../channel-logos.js';
 import { CredentialActionIcon, CredentialBindingPanel, QrActionIcon } from '../../credential-binding.js';
 import { h } from '../../i18n.js';
+import { WorkspaceEditor } from '../../workspace-editor.js';
+import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import { installDingtalkStyles } from '../dingtalk/styles.js';
 import {
   WECOM_ENDPOINTS,
@@ -146,7 +148,16 @@ function RemoveConfirmation({ account, busy, onConfirm, onCancel }) {
       h(Button, { kind: 'danger', onClick: onConfirm, disabled: busy }, busy ? '正在移除…' : '确认移除接入')));
 }
 
-export function AccountCard({ account, busy, removing, onReconnect, onRequestRemove, onConfirmRemove, onCancelRemove }) {
+export function AccountCard({
+  account,
+  busy,
+  removing,
+  onReconnect,
+  onWorkspaceSave,
+  onRequestRemove,
+  onConfirmRemove,
+  onCancelRemove,
+}) {
   const tone = account.connected ? 'success' : account.state === 'error' ? 'error' : 'warning';
   const stateLabel = account.connected ? '运行正常' : account.state === 'connecting' ? '正在连接' : '连接未就绪';
   const summary = account.error?.message ?? (account.connected ? null : account.health.summary);
@@ -162,6 +173,11 @@ export function AccountCard({ account, busy, removing, onReconnect, onRequestRem
       h('dl', { className: 'ddt-metrics dim-botMetrics' },
         h('div', { className: 'ddt-metric dim-botMetric' }, h('dt', null, '消息通道'), h('dd', null, account.connected ? 'WebSocket 长连接' : '离线')),
         h('div', { className: 'ddt-metric dim-botMetric' }, h('dt', null, '最近检查'), h('dd', null, checkedTime(account.health.lastCheckedAt)))),
+      h(WorkspaceEditor, {
+        workspace: account.workspace,
+        disabled: Boolean(busy),
+        onSave: onWorkspaceSave,
+      }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
         h('div', { className: 'ddt-actions dim-cardActions' },
@@ -182,6 +198,7 @@ export function WecomSettingsTab({ rpcCall }) {
   const [credentialError, setCredentialError] = React.useState(null);
   const [now, setNow] = React.useState(Date.now());
   const mounted = React.useRef(true);
+  const workspaceFence = useWorkspaceSnapshotFence();
   const addButtonRef = React.useRef(null);
 
   React.useEffect(() => {
@@ -201,10 +218,13 @@ export function WecomSettingsTab({ rpcCall }) {
   }, [rpcCall]);
 
   const loadStatus = React.useCallback(async ({ signal, silent = false, restore = false } = {}) => {
+    const workspaceVersion = workspaceFence.beginStatus();
+    if (workspaceVersion === null) return undefined;
     if (!silent && mounted.current) setModel((current) => ({ ...current, phase: 'loading', error: null }));
     try {
       const snapshot = normalizeSnapshot(await invoke(WECOM_ENDPOINTS.status, {}, signal));
-      if (!mounted.current || signal?.aborted) return undefined;
+      if (!mounted.current || signal?.aborted
+        || !workspaceFence.canCommitStatus(workspaceVersion)) return undefined;
       setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
       if (restore && snapshot.provisioning) setProvision({
         ...snapshot.provisioning,
@@ -212,12 +232,13 @@ export function WecomSettingsTab({ rpcCall }) {
       });
       return snapshot;
     } catch (error) {
-      if (error?.name !== 'AbortError' && mounted.current && !signal?.aborted) {
+      if (error?.name !== 'AbortError' && mounted.current && !signal?.aborted
+        && workspaceFence.canCommitStatus(workspaceVersion)) {
         setModel((current) => ({ ...current, phase: silent ? current.phase : 'error', error: presentError(error) }));
       }
       return undefined;
     }
-  }, [invoke]);
+  }, [invoke, workspaceFence]);
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -258,6 +279,7 @@ export function WecomSettingsTab({ rpcCall }) {
   }, [invoke, provision?.attemptId]);
 
   const bindCredentials = React.useCallback(async ({ identity, secret }) => {
+    const snapshotVersion = workspaceFence.beginMutation();
     setBusy(true);
     setCredentialError(null);
     try {
@@ -266,14 +288,18 @@ export function WecomSettingsTab({ rpcCall }) {
         { botId: identity, secret },
       ));
       if (!mounted.current) return;
-      setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+      if (workspaceFence.canCommitMutation(snapshotVersion)) {
+        setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+      }
       setCredentialOpen(false);
     } catch (error) {
       if (mounted.current) setCredentialError(presentError(error));
     } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mounted.current) void loadStatus({ silent: true });
       if (mounted.current) setBusy(false);
     }
-  }, [invoke]);
+  }, [invoke, loadStatus, workspaceFence]);
 
   const closeProvision = React.useCallback(async () => {
     setBusy(true);
@@ -318,17 +344,22 @@ export function WecomSettingsTab({ rpcCall }) {
   }, [invoke, loadStatus, provision?.attemptId, provision?.pollIntervalMs, provision?.status]);
 
   const botAction = React.useCallback(async (account, operation, endpoint, payload) => {
+    const snapshotVersion = workspaceFence.beginMutation();
     setBusyByBot((current) => ({ ...current, [account.botId]: operation }));
     try {
       const snapshot = normalizeSnapshot(await invoke(endpoint, payload));
-      if (mounted.current) setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+      if (mounted.current && workspaceFence.canCommitMutation(snapshotVersion)) {
+        setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+      }
       return snapshot;
     } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mounted.current) void loadStatus({ silent: true });
       if (mounted.current) setBusyByBot((current) => {
         const next = { ...current }; delete next[account.botId]; return next;
       });
     }
-  }, [invoke]);
+  }, [invoke, loadStatus, workspaceFence]);
 
   let provisionView = null;
   if (provision?.status === 'starting') provisionView = h('div', { className: 'ddt-card ddt-loading dim-surfaceCard' }, h('div', { className: 'ddt-spinner' }), '正在申请企业微信二维码…');
@@ -349,6 +380,12 @@ export function WecomSettingsTab({ rpcCall }) {
             busy: busyByBot[account.botId],
             removing: removeTarget === account.botId,
             onReconnect: () => void botAction(account, 'reconnect', WECOM_ENDPOINTS.reconnectBot, { botId: account.botId }),
+            onWorkspaceSave: (workspace) => botAction(
+              account,
+              'workspace',
+              WECOM_ENDPOINTS.setWorkspace,
+              { botId: account.botId, workspace },
+            ),
             onRequestRemove: () => setRemoveTarget(account.botId),
             onCancelRemove: () => setRemoveTarget(null),
             onConfirmRemove: async () => {

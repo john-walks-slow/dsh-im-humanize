@@ -7,6 +7,7 @@ export const WEIXIN_ENDPOINTS = Object.freeze({
   cancelProvisioning: 'provision.cancel',
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
+  setWorkspace: 'bot.workspace.set',
 });
 
 const ACCOUNT_STATES = new Set(['connected', 'connecting', 'offline', 'error']);
@@ -103,6 +104,7 @@ function normalizeBot(value) {
     state: connected ? 'connected' : state,
     connected,
     configured: value.configured === true,
+    workspace: string(value.workspace).slice(0, 4_096),
     bot: {
       name: string(value.bot.name, '微信机器人'),
       accountIdMasked: string(value.bot.accountIdMasked, '已安全保存'),

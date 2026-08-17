@@ -8,6 +8,7 @@ export const QQ_ENDPOINTS = Object.freeze({
   bindCredentials: 'bot.bind-credentials',
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
+  setWorkspace: 'bot.workspace.set',
 });
 
 const PROVISION_STATES = new Set(['starting', 'pending', 'refreshing', 'connecting', 'connected', 'failed', 'cancelled']);
@@ -79,6 +80,7 @@ function normalizeBot(value) {
     botId: id(value.botId),
     connected,
     state: connected ? 'connected' : state,
+    workspace: text(value.workspace, '', 4_096),
     bot: {
       name: text(value.bot?.name, 'QQ机器人', 100),
       appIdMasked: text(value.bot?.appIdMasked, '应用标识已安全保存', 140),

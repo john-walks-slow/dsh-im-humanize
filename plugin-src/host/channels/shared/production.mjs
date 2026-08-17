@@ -3,6 +3,12 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { createTokenConnectionSupervisor } from './connection-supervisor.mjs';
+import {
+  BotWorkspaceStore,
+  createBotWorkspaceScope,
+  createWorkspaceAwareController,
+  observeBotWorkspaceRemovals,
+} from '../../../../src/channels/shared/bot-workspace-store.mjs';
 
 export function harnessOrigin(webServer, configured) {
   if (configured !== undefined) return new URL(configured);
@@ -19,6 +25,7 @@ export function pluginPaths(config, channel) {
   return {
     config: resolve(config.configPath ?? join(root, 'config.json')),
     bots: resolve(config.botsDir ?? join(root, 'bots')),
+    workspaces: resolve(config.workspacesPath ?? join(root, 'workspaces.json')),
   };
 }
 
@@ -37,6 +44,16 @@ export async function createTokenProductionController(ctx, config, internals, de
     ? ctx.logger(`dsh-im:${channel}`) : (ctx.logger ?? console);
   const paths = pluginPaths(config, channel);
   const configStore = await new ResolvedConfigStore(paths.config).load();
+  const defaultWorkspace = resolve(config.workspace ?? process.cwd());
+  const WorkspaceStore = internals.WorkspaceStore ?? BotWorkspaceStore;
+  const workspaces = internals.workspaces
+    ?? await new WorkspaceStore(paths.workspaces, { defaultWorkspace }).load();
+  const configuredBots = configStore.list();
+  await workspaces.reconcile(configuredBots.map((bot) => bot.botId));
+  await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.botId)));
+  const observedConfigStore = typeof configStore.remove === 'function'
+    ? observeBotWorkspaceRemovals(configStore, { workspaces })
+    : configStore;
   const stateStores = new Map();
   const statePath = (botId) => resolve(paths.bots, botId, 'state.json');
   const stateFor = async (botId) => {
@@ -49,41 +66,50 @@ export async function createTokenProductionController(ctx, config, internals, de
   };
   const harness = new ResolvedHarness({
     baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
-    workspace: resolve(config.workspace ?? process.cwd()),
+    workspace: defaultWorkspace,
     agentPreset: config.agentPreset ?? 'standard',
     autostart: false,
     dshBin: config.dshBin ?? 'dsh',
   });
-  const controller = new ResolvedController({
+  const coreController = new ResolvedController({
     credentials: ctx.credentials,
-    configStore,
+    configStore: observedConfigStore,
     logger,
     ...(internals.inspectToken ? { inspectToken: internals.inspectToken } : {}),
-    createRuntime: async ({ botId, config: botConfig, token }) => new ResolvedRuntime({
-      config: botConfig,
-      token,
-      harness,
-      state: await stateFor(botId),
-      replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
-      connectTimeoutMs: config.connectTimeoutMs ?? 20_000,
-      logger: {
-        error: (...args) => logger.error?.(`[${botId}]`, ...args),
-        warn: (...args) => logger.warn?.(`[${botId}]`, ...args),
-        info: (...args) => logger.info?.(`[${botId}]`, ...args),
-        debug: (...args) => logger.debug?.(`[${botId}]`, ...args),
-      },
-    }),
+    createRuntime: async ({ botId, config: botConfig, token }) => {
+      const state = await stateFor(botId);
+      await workspaces.ensure(botId);
+      const workspaceScope = createBotWorkspaceScope(harness, { botId, workspaces, state });
+      return new ResolvedRuntime({
+        config: botConfig,
+        token,
+        harness: workspaceScope.harness,
+        state: workspaceScope.state,
+        replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
+        connectTimeoutMs: config.connectTimeoutMs ?? 20_000,
+        logger: {
+          error: (...args) => logger.error?.(`[${botId}]`, ...args),
+          warn: (...args) => logger.warn?.(`[${botId}]`, ...args),
+          info: (...args) => logger.info?.(`[${botId}]`, ...args),
+          debug: (...args) => logger.debug?.(`[${botId}]`, ...args),
+        },
+      });
+    },
     deleteState: async ({ botId }) => {
       const state = stateStores.get(botId);
       stateStores.delete(botId);
-      if (state && typeof state.remove === 'function') return state.remove();
-      try {
-        await unlink(statePath(botId));
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
+      if (state && typeof state.remove === 'function') {
+        await state.remove();
+      } else {
+        try {
+          await unlink(statePath(botId));
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
       }
     },
   });
+  const controller = createWorkspaceAwareController(coreController, { workspaces, stateFor });
   const supervisor = createSupervisor({
     channel,
     controller,

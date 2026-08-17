@@ -3,6 +3,8 @@ import * as React from 'react';
 import { CredentialActionIcon, CredentialBindingPanel } from '../../credential-binding.js';
 import { h } from '../../i18n.js';
 import { installDingtalkStyles } from '../dingtalk/styles.js';
+import { WorkspaceEditor } from '../../workspace-editor.js';
+import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 
 const Button = React.forwardRef(function Button(
   { children, kind = 'secondary', className = '', ...props },
@@ -51,7 +53,7 @@ export function createTokenChannelSettings(definition) {
     emptyActionLabel = '填写 Bot Token',
   } = definition;
 
-  function AccountCard({ account, busy, removing, onReconnect, onRequestRemove, onConfirmRemove, onCancelRemove }) {
+  function AccountCard({ account, busy, removing, onReconnect, onWorkspaceSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
     const state = busy === 'reconnect' ? 'connecting' : account.state;
     const tone = account.connected ? 'success' : state === 'error' ? 'error' : 'warning';
     const stateLabel = account.connected ? '运行正常' : state === 'connecting' ? '正在连接' : '连接未就绪';
@@ -73,6 +75,11 @@ export function createTokenChannelSettings(definition) {
             h('dt', null, '消息通道'), h('dd', null, account.connected ? connectionLabel : '离线')),
           h('div', { className: 'ddt-metric dim-botMetric' },
             h('dt', null, '最近检查'), h('dd', null, checkedTime(account.health.lastCheckedAt)))),
+        h(WorkspaceEditor, {
+          workspace: account.workspace,
+          disabled: Boolean(busy),
+          onSave: onWorkspaceSave,
+        }),
         h('div', { className: 'ddt-accountFooter dim-cardFooter' },
           summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
           h('div', { className: 'ddt-actions dim-cardActions' },
@@ -106,6 +113,7 @@ export function createTokenChannelSettings(definition) {
     const [busyByBot, setBusyByBot] = React.useState({});
     const [removeTarget, setRemoveTarget] = React.useState(null);
     const mounted = React.useRef(true);
+    const workspaceFence = useWorkspaceSnapshotFence();
 
     React.useEffect(() => {
       const disposeDingtalk = installDingtalkStyles();
@@ -124,13 +132,17 @@ export function createTokenChannelSettings(definition) {
     }, [rpcCall]);
 
     const loadStatus = React.useCallback(async ({ signal, silent = false } = {}) => {
+      const workspaceVersion = workspaceFence.beginStatus();
+      if (workspaceVersion === null) return;
       if (!silent && mounted.current) setModel((current) => ({ ...current, phase: 'loading', error: null }));
       try {
         const snapshot = api.normalizeSnapshot(await invoke(endpoints.status, {}, signal));
-        if (!mounted.current || signal?.aborted) return;
+        if (!mounted.current || signal?.aborted
+          || !workspaceFence.canCommitStatus(workspaceVersion)) return;
         setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
       } catch (error) {
-        if (error?.name !== 'AbortError' && mounted.current && !signal?.aborted) {
+        if (error?.name !== 'AbortError' && mounted.current && !signal?.aborted
+          && workspaceFence.canCommitStatus(workspaceVersion)) {
           setModel((current) => ({
             ...current,
             phase: silent ? current.phase : 'error',
@@ -138,7 +150,7 @@ export function createTokenChannelSettings(definition) {
           }));
         }
       }
-    }, [invoke]);
+    }, [invoke, workspaceFence]);
 
     React.useEffect(() => {
       const controller = new AbortController();
@@ -160,6 +172,7 @@ export function createTokenChannelSettings(definition) {
     }, [loadStatus, model.phase]);
 
     const bindCredentials = React.useCallback(async (values) => {
+      const snapshotVersion = workspaceFence.beginMutation();
       setBusy(true);
       setCredentialError(null);
       try {
@@ -168,30 +181,37 @@ export function createTokenChannelSettings(definition) {
           credentialPayload(values),
         ));
         if (!mounted.current) return;
-        setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+        if (workspaceFence.canCommitMutation(snapshotVersion)) {
+          setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+        }
         setCredentialOpen(false);
       } catch (error) {
         if (mounted.current) setCredentialError(api.presentError(error));
       } finally {
+        const shouldRefresh = workspaceFence.endMutation();
+        if (shouldRefresh && mounted.current) void loadStatus({ silent: true });
         if (mounted.current) setBusy(false);
       }
-    }, [invoke]);
+    }, [invoke, loadStatus, workspaceFence]);
 
     const botAction = React.useCallback(async (account, operation, endpoint, payload) => {
+      const snapshotVersion = workspaceFence.beginMutation();
       setBusyByBot((current) => ({ ...current, [account.botId]: operation }));
       try {
         const snapshot = api.normalizeSnapshot(await invoke(endpoint, payload));
-        if (mounted.current) {
+        if (mounted.current && workspaceFence.canCommitMutation(snapshotVersion)) {
           setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
         }
       } finally {
+        const shouldRefresh = workspaceFence.endMutation();
+        if (shouldRefresh && mounted.current) void loadStatus({ silent: true });
         if (mounted.current) setBusyByBot((current) => {
           const next = { ...current };
           delete next[account.botId];
           return next;
         });
       }
-    }, [invoke]);
+    }, [invoke, loadStatus, workspaceFence]);
 
     const botList = model.bots.length > 0
       ? h('section', { className: 'dim-listSection' },
@@ -207,6 +227,12 @@ export function createTokenChannelSettings(definition) {
                 'reconnect',
                 endpoints.reconnectBot,
                 { botId: account.botId },
+              ),
+              onWorkspaceSave: (workspace) => botAction(
+                account,
+                'workspace',
+                endpoints.setWorkspace,
+                { botId: account.botId, workspace },
               ),
               onRequestRemove: () => setRemoveTarget(account.botId),
               onCancelRemove: () => setRemoveTarget(null),

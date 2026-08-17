@@ -217,10 +217,11 @@ export class HarnessClient {
   }
 
   async workspaceId(options = {}) {
-    const { items } = await this.rpc('workspace.list', {}, 30_000, options);
-    const existing = items.find((item) => item.path === this.#workspace);
+    const { workspace = this.#workspace, ...rpcOptions } = options;
+    const { items } = await this.rpc('workspace.list', {}, 30_000, rpcOptions);
+    const existing = items.find((item) => item.path === workspace);
     if (existing) return existing.workspaceId;
-    const created = await this.rpc('workspace.create', { path: this.#workspace }, 30_000, options);
+    const created = await this.rpc('workspace.create', { path: workspace }, 30_000, rpcOptions);
     return created.workspace.workspaceId;
   }
 
