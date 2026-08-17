@@ -111,7 +111,13 @@ test('IM settings renders nine compact logo channel tabs without enable switches
   }));
 
   assert.match(markup, /IM机器人/);
-  assert.match(markup, /把机器人接入 DeepSeek Harness/);
+  assert.match(markup, /让聊天机器人轻松接入 DeepSeek Harness/);
+  assert.match(markup, /href="https:\/\/github\.com\/xmanrui\/dsh-im"/);
+  assert.match(markup, /target="_blank"/);
+  assert.match(markup, /rel="noopener noreferrer"/);
+  assert.match(markup, /aria-label="dsh-im GitHub"/);
+  assert.match(styles, /\.dim-title p \{[^}]*color: var\(--dsw-alias-label-primary, #1f2329\);[^}]*font-size: 14px;[^}]*font-weight: 700;/);
+  assert.match(styles, /\.dim-githubLink \{[^}]*border: 1px solid var\(--dsw-alias-border-l2, #dfe1e5\);[^}]*text-decoration: none;/);
   assert.doesNotMatch(markup, /\d+ 个渠道|dim-channelCount/);
   assert.match(markup, />微信</);
   assert.match(markup, />飞书</);
@@ -589,7 +595,7 @@ test('client registers a live bilingual locale seat for the IM settings tab', ()
       registrations[0].component,
       registrations[0].options.inject(),
     ));
-    assert.match(markup, /Connect bots to DeepSeek Harness/);
+    assert.match(markup, /Connect chatbots to DeepSeek Harness with ease/);
     assert.match(markup, />WeChat<|>Feishu<|>DingTalk<|>WeCom</);
     assert.match(markup, />QQ<[^]*>Slack<[^]*>Telegram<[^]*>Discord<[^]*>WhatsApp</);
     assert.doesNotMatch(markup, /[\p{Script=Han}]/u);
