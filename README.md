@@ -183,9 +183,9 @@ IM management RPCs accept loopback browsers by default. When a Web profile is de
 
 ## 联系方式 / Contact
 
-欢迎通过邮箱、微信或小红书联系我。点击二维码图片可查看原图。
+欢迎通过邮箱、微信或小红书联系我。
 
-You can reach me by email, WeChat, or Xiaohongshu. Click either QR image to view it at full resolution.
+You can reach me by email, WeChat, or Xiaohongshu.
 
 <table>
   <tr>
