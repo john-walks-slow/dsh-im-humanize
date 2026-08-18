@@ -277,6 +277,51 @@ test('bridge downloads an inbound Feishu image once and submits structured Harne
   assert.deepEqual(sent, ['看到了一张图片']);
 });
 
+test('bridge tells users to grant im:message:readonly when Feishu rejects image access', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-image-permission']]);
+  const sent = [];
+  const providerError = new Error('Request failed with status code 400');
+  providerError.code = 'ERR_BAD_REQUEST';
+  providerError.response = {
+    status: 400,
+    data: Readable.from([Buffer.from(JSON.stringify({
+      code: 99991672,
+      msg: 'secret-shaped provider detail /private/path',
+    }))]),
+  };
+  const client = {
+    im: { v1: {
+      messageResource: { get: async () => { throw providerError; } },
+      message: { create: async (request) => {
+        sent.push(JSON.parse(request.data.content).text);
+        return { code: 0, data: { message_id: 'om_permission_reply' } };
+      } },
+    } },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => assert.fail('permission failures must not reach Harness'),
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  await bridge.accept(event('om_image_permission', '', {
+    message_type: 'image',
+    content: JSON.stringify({ image_key: 'img_permission' }),
+  }));
+  await bridge.waitForIdle();
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /im:message:readonly/);
+  assert.match(sent[0], /发布新版本/);
+  assert.doesNotMatch(sent[0], /99991672|HTTP 400|secret-shaped|private\/path/);
+});
+
 test('bridge sends Feishu post text and all embedded images as one structured prompt', async () => {
   const fixture = stateFixture([['group:oc_post_group', 'session-post']]);
   const downloaded = [];

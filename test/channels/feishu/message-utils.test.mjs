@@ -132,6 +132,53 @@ test('Feishu image loading rejects declared or streamed data above the caller li
   }
 });
 
+test('Feishu image loading maps the missing message scope to an actionable error', async () => {
+  const providerError = new Error('Request failed with status code 400');
+  const body = Buffer.from(JSON.stringify({
+    code: 99991672,
+    msg: 'missing required tenant scope',
+  }));
+  providerError.response = {
+    status: 400,
+    data: Readable.from([body.subarray(0, 9), body.subarray(9)]),
+  };
+  const message = extractInboundMessage({
+    message: {
+      message_id: 'om_permission',
+      message_type: 'image',
+      content: JSON.stringify({ image_key: 'img_permission' }),
+    },
+  }, { im: { v1: { messageResource: { get: async () => { throw providerError; } } } } });
+
+  await assert.rejects(message.images[0].load({ maxBytes: 1024 }), (error) => {
+    assert.equal(error.code, 'feishu-image-permission-required');
+    assert.match(error.userMessage, /im:message:readonly/);
+    assert.match(error.userMessage, /发布新版本/);
+    assert.equal(error.cause, providerError);
+    return true;
+  });
+});
+
+test('Feishu image loading leaves unrelated provider failures on the generic path', async () => {
+  const providerError = new Error('Request failed with status code 400');
+  providerError.response = {
+    status: 400,
+    data: Readable.from([Buffer.from(JSON.stringify({ code: 99991400 }))]),
+  };
+  const message = extractInboundMessage({
+    message: {
+      message_id: 'om_other_error',
+      message_type: 'image',
+      content: JSON.stringify({ image_key: 'img_other_error' }),
+    },
+  }, { im: { v1: { messageResource: { get: async () => { throw providerError; } } } } });
+
+  await assert.rejects(
+    message.images[0].load({ maxBytes: 1024 }),
+    (error) => error === providerError,
+  );
+});
+
 test('malformed Feishu image content does not create a downloadable image reference', () => {
   assert.deepEqual(extractInboundMessage({
     message: { message_type: 'image', content: '{not-json' },
