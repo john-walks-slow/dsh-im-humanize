@@ -33,6 +33,7 @@ export async function askInWorkspaceSession({
   state,
   key,
   text,
+  content,
   createOptions,
   existsOptions,
   askOptions,
@@ -48,7 +49,7 @@ export async function askInWorkspaceSession({
       }
       return {
         sessionId,
-        answer: await session.ask(text, askOptions),
+        answer: await session.ask(content ?? text, askOptions),
       };
     } catch (error) {
       if (error?.code !== WORKSPACE_SESSION_STALE) throw error;

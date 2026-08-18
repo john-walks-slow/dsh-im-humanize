@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
+import { createCipheriv, randomBytes } from 'node:crypto';
 import test from 'node:test';
 
 import {
   createWeixinApi,
+  decryptWeixinImage,
   extractWeixinText,
   normalizeWeixinApiBaseUrl,
+  parseWeixinImageAesKey,
   splitWeixinText,
+  weixinImageDownloadUrl,
   WeixinApiError,
 } from '../../../src/channels/weixin/weixin-api.mjs';
 
@@ -16,6 +20,76 @@ function jsonResponse(value, init) {
     ...init,
   });
 }
+
+function encryptImage(plaintext, key) {
+  const cipher = createCipheriv('aes-128-ecb', key, null);
+  return Buffer.concat([cipher.update(plaintext), cipher.final()]);
+}
+
+test('iLink image references download lazily from the canonical CDN and decrypt AES-128-ECB', async () => {
+  const key = randomBytes(16);
+  const plaintext = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x01, 0x02, 0x03,
+  ]);
+  const ciphertext = encryptImage(plaintext, key);
+  const calls = [];
+  const api = createWeixinApi({
+    fetchImpl: async (url, init) => {
+      calls.push({ url: url.toString(), init });
+      return new Response(ciphertext, {
+        headers: { 'content-length': String(ciphertext.length) },
+      });
+    },
+  });
+  const images = api.inboundImages({
+    item_list: [{
+      type: 2,
+      image_item: {
+        aeskey: key.toString('hex'),
+        media: { encrypt_query_param: 'one=two&three=four' },
+      },
+    }],
+  });
+
+  assert.equal(images.length, 1);
+  assert.equal(calls.length, 0);
+  const loaded = await images[0].load({ maxBytes: 1_024 });
+
+  assert.equal(loaded.equals(plaintext), true);
+  assert.equal(
+    calls[0].url,
+    'https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=one%3Dtwo%26three%3Dfour',
+  );
+  assert.equal(calls[0].init.method, 'GET');
+  assert.equal(calls[0].init.redirect, 'manual');
+});
+
+test('Weixin image keys support both documented CDN encodings and reject unsafe URLs', () => {
+  const key = randomBytes(16);
+  assert.equal(parseWeixinImageAesKey({ aeskey: key.toString('hex') }).equals(key), true);
+  assert.equal(parseWeixinImageAesKey({
+    media: { aes_key: key.toString('base64') },
+  }).equals(key), true);
+  assert.equal(parseWeixinImageAesKey({
+    media: { aes_key: Buffer.from(key.toString('hex'), 'ascii').toString('base64') },
+  }).equals(key), true);
+  assert.throws(
+    () => parseWeixinImageAesKey({ aeskey: 'not-a-key' }),
+    (error) => error instanceof WeixinApiError && error.code === 'invalid-image-key',
+  );
+  assert.equal(
+    weixinImageDownloadUrl({ full_url: 'https://novac2c.cdn.weixin.qq.com/c2c/download?id=one#fragment' }),
+    'https://novac2c.cdn.weixin.qq.com/c2c/download?id=one',
+  );
+  assert.throws(
+    () => weixinImageDownloadUrl({ full_url: 'https://attacker.example/c2c/download?id=one' }),
+    (error) => error instanceof WeixinApiError && error.code === 'untrusted-image-url',
+  );
+
+  const encrypted = encryptImage(Buffer.from('image payload'), key);
+  assert.equal(decryptWeixinImage(encrypted, key).toString(), 'image payload');
+});
 
 test('QR login uses the Tencent iLink headers and keeps local tokens out of the URL', async () => {
   const calls = [];

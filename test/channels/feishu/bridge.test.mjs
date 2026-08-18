@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { Readable } from 'node:stream';
 import { FeishuHarnessBridge } from '../../../src/channels/feishu/bridge.mjs';
+import { DEFAULT_IMAGE_PROMPT } from '../../../src/channels/shared/image-prompt.mjs';
+
+const PNG_1X1 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+);
 
 function deferred() {
   let resolve;
@@ -204,6 +211,177 @@ test('bridge maps a Feishu conversation to a persistent Harness session and repl
   await bridge.waitForIdle();
   assert.equal(asked.length, 1);
   assert.equal(status.messagesRejected, 1);
+});
+
+test('bridge downloads an inbound Feishu image once and submits structured Harness content', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-image']]);
+  const downloaded = [];
+  const asked = [];
+  const sent = [];
+  const client = {
+    im: { v1: {
+      messageResource: { get: async (request) => {
+        downloaded.push(request);
+        return {
+          headers: { 'content-length': String(PNG_1X1.length) },
+          getReadableStream: () => Readable.from([PNG_1X1]),
+        };
+      } },
+      message: { create: async (request) => {
+        sent.push(JSON.parse(request.data.content).text);
+        return { code: 0, data: { message_id: 'om_image_reply' } };
+      } },
+    } },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, content) => {
+        asked.push({ sessionId, content });
+        return '看到了一张图片';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+  const imageEvent = event('om_image_input', '', {
+    message_type: 'image',
+    content: JSON.stringify({ image_key: 'img_input' }),
+  });
+
+  await bridge.accept(imageEvent);
+  await bridge.accept(imageEvent);
+  await bridge.accept({
+    ...event('om_image_unauthorized', '', {
+      message_type: 'image',
+      content: JSON.stringify({ image_key: 'img_unauthorized' }),
+    }),
+    sender: { sender_type: 'user', sender_id: { open_id: 'ou_other' } },
+  });
+  await bridge.waitForIdle();
+
+  assert.deepEqual(downloaded, [{
+    path: { message_id: 'om_image_input', file_key: 'img_input' },
+    params: { type: 'image' },
+  }]);
+  assert.deepEqual(asked, [{
+    sessionId: 'session-image',
+    content: [
+      { type: 'text', text: DEFAULT_IMAGE_PROMPT },
+      { type: 'image', mediaType: 'image/png', data: PNG_1X1.toString('base64') },
+    ],
+  }]);
+  assert.deepEqual(sent, ['看到了一张图片']);
+});
+
+test('bridge sends Feishu post text and all embedded images as one structured prompt', async () => {
+  const fixture = stateFixture([['group:oc_post_group', 'session-post']]);
+  const downloaded = [];
+  const asked = [];
+  const sent = [];
+  const client = {
+    im: { v1: {
+      messageResource: { get: async (request) => {
+        downloaded.push(request);
+        return {
+          headers: { 'content-length': String(PNG_1X1.length) },
+          getReadableStream: () => Readable.from([PNG_1X1]),
+        };
+      } },
+      message: { create: async (request) => {
+        sent.push(JSON.parse(request.data.content).text);
+        return { code: 0, data: { message_id: 'om_post_reply' } };
+      } },
+    } },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, content) => {
+        asked.push({ sessionId, content });
+        return '两张图片都已收到';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+  const postEvent = event('om_post_input', '', {
+    message_type: 'post',
+    chat_type: 'group',
+    chat_id: 'oc_post_group',
+    mentions: [{ key: '@_bot_1' }],
+    content: JSON.stringify({
+      title: '比较截图',
+      content: [
+        [
+          { tag: 'at', user_id: '@_bot_1', user_name: '机器人' },
+          { tag: 'text', text: '@_bot_1 请比较 ' },
+          { tag: 'a', text: '这两张图', href: 'https://example.com' },
+        ],
+        [{ tag: 'img', image_key: 'img_post_first' }],
+        [{ tag: 'img', image_key: 'img_post_second' }],
+      ],
+    }),
+  });
+
+  await bridge.accept(postEvent);
+  await bridge.waitForIdle();
+
+  assert.deepEqual(downloaded, [
+    {
+      path: { message_id: 'om_post_input', file_key: 'img_post_first' },
+      params: { type: 'image' },
+    },
+    {
+      path: { message_id: 'om_post_input', file_key: 'img_post_second' },
+      params: { type: 'image' },
+    },
+  ]);
+  assert.deepEqual(asked, [{
+    sessionId: 'session-post',
+    content: [
+      { type: 'text', text: '比较截图\n请比较 这两张图' },
+      { type: 'image', mediaType: 'image/png', data: PNG_1X1.toString('base64') },
+      { type: 'image', mediaType: 'image/png', data: PNG_1X1.toString('base64') },
+    ],
+  }]);
+  assert.deepEqual(sent, ['两张图片都已收到']);
+});
+
+test('text inside a Feishu post is a model prompt rather than a local command', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-post-command']]);
+  const asked = [];
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, content) => {
+        asked.push({ sessionId, content });
+        return '按普通内容处理';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  await bridge.accept(event('om_post_command', '', {
+    message_type: 'post',
+    content: JSON.stringify({ content: [[{ tag: 'text', text: '/new' }]] }),
+  }));
+  await bridge.waitForIdle();
+
+  assert.equal(fixture.sessions.get('p2p:ou_user'), 'session-post-command');
+  assert.deepEqual(asked, [{ sessionId: 'session-post-command', content: '/new' }]);
+  assert.deepEqual(sent, ['按普通内容处理']);
 });
 
 test('a threaded Feishu reply answers a pending Harness question before the original turn queue', async () => {
@@ -676,7 +854,7 @@ test('a queued next prompt stays separate while a failed interaction response is
   assert.deepEqual(sent.slice(-2).map(({ text }) => text), ['第一轮完成', '第二轮完成']);
 });
 
-test('a non-text pending reply does not block the valid answer behind it', async () => {
+test('a rich-post pending reply does not block the valid text answer behind it', async () => {
   const fixture = stateFixture([['p2p:ou_user', 'session-invalid-reply']]);
   const sent = [];
   const invalidNoticeStarted = deferred();
@@ -722,9 +900,14 @@ test('a non-text pending reply does not block the valid answer behind it', async
 
   const first = bridge.accept(event('invalid-reply-start', '启动交互'));
   await eventually(() => sent.some(({ text }) => text.includes('请给出有效文字答案')));
-  const invalid = bridge.accept(event('invalid-reply-image', '', {
-    message_type: 'image',
-    content: JSON.stringify({ image_key: 'img-test' }),
+  const invalid = bridge.accept(event('invalid-reply-post', '', {
+    message_type: 'post',
+    content: JSON.stringify({
+      content: [
+        [{ tag: 'text', text: '这不是文字回答' }],
+        [{ tag: 'img', image_key: 'img-test' }],
+      ],
+    }),
   }));
   await invalidNoticeStarted.promise;
   const valid = bridge.accept(event('invalid-reply-valid', '真正的答案'));

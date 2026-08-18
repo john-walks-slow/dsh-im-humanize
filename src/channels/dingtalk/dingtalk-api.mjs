@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
+import { fetchImageBuffer, ImagePromptError } from '../shared/image-prompt.mjs';
+
 export const DINGTALK_REGISTRATION_BASE_URL = 'https://oapi.dingtalk.com/';
 export const DINGTALK_API_BASE_URL = 'https://api.dingtalk.com/';
 export const DINGTALK_REGISTRATION_SOURCE = 'DING_DWS_CLAW';
@@ -14,11 +16,31 @@ export class DingtalkApiError extends Error {
     this.name = 'DingtalkApiError';
     this.code = code;
     this.status = options.status;
+    this.providerCode = options.providerCode;
   }
 }
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function safeProviderCode(value) {
+  const code = nonEmptyString(value);
+  return code && /^[A-Za-z0-9_.:-]{1,160}$/.test(code) ? code : undefined;
+}
+
+function secureDingtalkDownloadUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch (error) {
+    throw new DingtalkApiError('invalid-image-download', '钉钉服务返回了无效的图片下载地址。', { cause: error });
+  }
+  if (url.protocol === 'http:' && (!url.port || url.port === '80')) {
+    url.protocol = 'https:';
+    url.port = '';
+  }
+  return url;
 }
 
 function isDingtalkHost(hostname) {
@@ -123,10 +145,17 @@ async function requestJson(fetchImpl, url, {
       signal: controller.signal,
     });
     if (!response.ok) {
+      let providerCode;
+      try {
+        const errorBody = await response.json();
+        providerCode = safeProviderCode(errorBody?.code ?? errorBody?.errcode);
+      } catch {
+        // DingTalk occasionally returns an empty or non-JSON error body.
+      }
       throw new DingtalkApiError(
         'http-error',
         `钉钉服务请求失败（HTTP ${response.status}）。`,
-        { status: response.status },
+        { status: response.status, providerCode },
       );
     }
     try {
@@ -402,6 +431,58 @@ export function createDingtalkApi({
     },
 
     accessToken,
+
+    async downloadImage({
+      clientId,
+      clientSecret,
+      robotCode,
+      downloadCode,
+      signal,
+      maxBytes,
+    }) {
+      const botCode = nonEmptyString(robotCode);
+      const fileCode = nonEmptyString(downloadCode);
+      if (!botCode || !fileCode) throw new TypeError('robotCode and downloadCode are required');
+      const token = await accessToken({ clientId, clientSecret, signal });
+      let response;
+      try {
+        response = await requestJson(
+          fetchImpl,
+          endpoint(apiBase, 'v1.0/robot/messageFiles/download'),
+          {
+            body: { downloadCode: fileCode, robotCode: botCode },
+            headers: { 'x-acs-dingtalk-access-token': token },
+            signal,
+            action: '图片下载地址',
+          },
+        );
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        throw new DingtalkApiError(
+          'image-download-address-failed',
+          '钉钉图片下载地址获取失败。',
+          { cause: error, status: error?.status, providerCode: error?.providerCode },
+        );
+      }
+      const downloadUrl = nonEmptyString(response?.downloadUrl ?? response?.download_url);
+      if (!downloadUrl) {
+        throw new DingtalkApiError('invalid-image-download', '钉钉服务没有返回图片下载地址。');
+      }
+      try {
+        return await fetchImageBuffer(secureDingtalkDownloadUrl(downloadUrl), {
+          fetchImpl,
+          signal,
+          maxBytes,
+        });
+      } catch (error) {
+        if (signal?.aborted || error instanceof ImagePromptError) throw error;
+        throw new DingtalkApiError(
+          'image-content-download-failed',
+          '钉钉图片内容下载失败。',
+          { cause: error },
+        );
+      }
+    },
 
     async createAiCard({ clientId, clientSecret, target, initialText, signal }) {
       const appKey = nonEmptyString(clientId);

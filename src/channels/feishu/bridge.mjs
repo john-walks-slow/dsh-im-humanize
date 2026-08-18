@@ -1,10 +1,16 @@
 import {
   conversationKey,
+  extractInboundMessage,
   extractText,
   isAllowedSender,
   isBotSender,
   splitText,
 } from './message-utils.mjs';
+import {
+  hasInboundImages,
+  imagePromptUserMessage,
+  promptContentForMessage,
+} from '../shared/image-prompt.mjs';
 import {
   harnessAnswerForQuestion,
   harnessQuestionText,
@@ -21,7 +27,7 @@ const RESOLVED_REPLY_TTL_MS = 30 * 60_000;
 const HELP_TEXT = [
   '北汇星河 AIOS 已连接 DeepSeek Harness。',
   '',
-  '直接发送问题即可继续当前会话。',
+  '直接发送文字或图片即可继续当前会话。',
   '/new  开启一个全新会话',
   '/compact  压缩当前会话的较早上下文',
   '/workspace 工作区绝对路径  切换工作区',
@@ -273,7 +279,8 @@ export class FeishuHarnessBridge {
     await this.#finishReaction(messageId, processingReaction, 'ERROR');
     await this.#send(
       event.message.chat_id,
-      '处理失败，请稍后重试。如果问题持续，请在 DeepSeek Harness 的飞书插件页面检查连接状态。',
+      imagePromptUserMessage(error)
+        ?? '处理失败，请稍后重试。如果问题持续，请在 DeepSeek Harness 的飞书插件页面检查连接状态。',
     ).catch(() => undefined);
   }
 
@@ -297,40 +304,47 @@ export class FeishuHarnessBridge {
       this.#status.messagesReceived += 1;
     }
 
-    const text = extractText(event);
-    if (!text) {
-      await this.#send(event.message.chat_id, '目前仅支持文字消息。');
+    const message = extractInboundMessage(event, this.#client);
+    const text = message.content;
+    const hasImages = hasInboundImages(message);
+    const commandText = event.message.message_type === 'text' && !hasImages ? text : null;
+    if (!text && !hasImages) {
+      await this.#send(event.message.chat_id, '目前支持文字和图片消息。');
       return;
     }
 
-    if (text === '/help') {
+    if (commandText === '/help') {
       await this.#send(event.message.chat_id, HELP_TEXT);
       return;
     }
-    if (text === '/new') {
+    if (commandText === '/new') {
       await this.#state.clearSession(key);
       await this.#send(event.message.chat_id, '已开启全新 Harness 会话。');
       return;
     }
-    if (text === '/status') {
+    if (commandText === '/status') {
       await this.#harness.ensureRunning({ signal: this.#signal });
       await this.#send(event.message.chat_id, '飞书机器人与 DeepSeek Harness 连接正常。');
       return;
     }
-    const workspaceCommand = await runWorkspaceCommand(text, this.#harness, key);
+    const workspaceCommand = commandText === null
+      ? null
+      : await runWorkspaceCommand(text, this.#harness, key);
     if (workspaceCommand) {
       for (const reply of workspaceCommand.messages ?? [workspaceCommand.message]) {
         await this.#send(event.message.chat_id, reply);
       }
       return;
     }
-    const compactCommand = await runCompactCommand(
-      text,
-      this.#harness,
-      this.#state,
-      key,
-      { signal: this.#signal },
-    );
+    const compactCommand = commandText === null
+      ? null
+      : await runCompactCommand(
+          commandText,
+          this.#harness,
+          this.#state,
+          key,
+          { signal: this.#signal },
+        );
     if (compactCommand) {
       await this.#send(event.message.chat_id, compactCommand.message);
       return;
@@ -338,7 +352,7 @@ export class FeishuHarnessBridge {
 
     this.#logger.info?.(`[dsh-feishu] processing ${event.message.chat_type} message ${messageId}`);
     try {
-      await this.#answerWithStream(event, key, text);
+      await this.#answerWithStream(event, key, message);
       this.#status.messagesReplied += 1;
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
@@ -362,15 +376,20 @@ export class FeishuHarnessBridge {
     };
   }
 
-  async #answerWithStream(event, key, text) {
+  async #answerWithStream(event, key, message) {
     const chatId = event.message.chat_id;
     const messageId = event.message.message_id;
+    const text = message.content;
+    const content = hasInboundImages(message)
+      ? await promptContentForMessage(message, { signal: this.#signal })
+      : undefined;
     if (!this.#channel?.stream) {
       const { answer } = await askInWorkspaceSession({
         harness: this.#harness,
         state: this.#state,
         key,
         text,
+        content,
         createOptions: { signal: this.#signal },
         existsOptions: { signal: this.#signal },
         askOptions: this.#interactionAskOptions(event, key),
@@ -398,6 +417,7 @@ export class FeishuHarnessBridge {
             state: this.#state,
             key,
             text,
+            content,
             createOptions: { signal: this.#signal },
             existsOptions: { signal: this.#signal },
             askOptions,
@@ -425,6 +445,7 @@ export class FeishuHarnessBridge {
         state: this.#state,
         key,
         text,
+        content,
         createOptions: { signal: this.#signal },
         existsOptions: { signal: this.#signal },
         askOptions: this.#interactionAskOptions(event, key),

@@ -113,6 +113,145 @@ test('session replies use the fixed token endpoint, reject redirects, and cache 
   });
 });
 
+test('DingTalk image downloads exchange downloadCode with the callback robotCode and do not forward auth', async () => {
+  const imageBytes = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x01, 0x02,
+  ]);
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    const href = url.toString();
+    calls.push({ url: href, options });
+    if (href === `${DINGTALK_API_BASE_URL}v1.0/oauth2/accessToken`) {
+      return jsonResponse({ accessToken: 'image-access-token', expireIn: 7_200 });
+    }
+    if (href === `${DINGTALK_API_BASE_URL}v1.0/robot/messageFiles/download`) {
+      return jsonResponse({ downloadUrl: 'https://download.oss-cn-hangzhou.aliyuncs.com/opaque-image' });
+    }
+    return new Response(imageBytes, {
+      headers: { 'content-length': String(imageBytes.length) },
+    });
+  };
+  const api = createDingtalkApi({ fetchImpl });
+
+  const loaded = await api.downloadImage({
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    robotCode: 'robot-from-callback',
+    downloadCode: 'opaque-download-code',
+    maxBytes: 1_024,
+  });
+
+  assert.equal(loaded.equals(imageBytes), true);
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    downloadCode: 'opaque-download-code',
+    robotCode: 'robot-from-callback',
+  });
+  assert.equal(
+    calls[1].options.headers['x-acs-dingtalk-access-token'],
+    'image-access-token',
+  );
+  assert.equal(calls[2].options.method, 'GET');
+  assert.equal(calls[2].options.redirect, 'manual');
+  assert.equal(calls[2].options.headers?.['x-acs-dingtalk-access-token'], undefined);
+});
+
+test('DingTalk upgrades its HTTP temporary image URL to HTTPS without changing the signed request', async () => {
+  const imageBytes = Buffer.from([0xff, 0xd8, 0xff, 0x01]);
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url: url.toString(), options });
+    if (url.toString() === `${DINGTALK_API_BASE_URL}v1.0/oauth2/accessToken`) {
+      return jsonResponse({ accessToken: 'image-access-token', expireIn: 7_200 });
+    }
+    if (url.toString() === `${DINGTALK_API_BASE_URL}v1.0/robot/messageFiles/download`) {
+      return jsonResponse({
+        downloadUrl: 'http://download.example.test:80/private/image?signature=opaque%2Bvalue',
+      });
+    }
+    return new Response(imageBytes, { status: 200 });
+  };
+  const api = createDingtalkApi({ fetchImpl });
+
+  assert.deepEqual(await api.downloadImage({
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    robotCode: 'robot-from-callback',
+    downloadCode: 'opaque-download-code',
+    maxBytes: 1_024,
+  }), imageBytes);
+
+  assert.equal(
+    calls[2].url,
+    'https://download.example.test/private/image?signature=opaque%2Bvalue',
+  );
+  assert.equal(calls[2].options.headers?.['content-type'], undefined);
+  assert.equal(calls[2].options.headers?.['x-acs-dingtalk-access-token'], undefined);
+});
+
+test('DingTalk image exchange errors preserve the provider code without exposing its message', async () => {
+  const fetchImpl = async (url) => {
+    if (url.toString() === `${DINGTALK_API_BASE_URL}v1.0/oauth2/accessToken`) {
+      return jsonResponse({ accessToken: 'image-access-token', expireIn: 7_200 });
+    }
+    return jsonResponse({
+      code: 'invalidParameter.robotCode.auth',
+      message: 'response may contain platform details',
+    }, { status: 400 });
+  };
+  const api = createDingtalkApi({ fetchImpl });
+
+  await assert.rejects(
+    api.downloadImage({
+      clientId: 'ding-client',
+      clientSecret: 'host-secret',
+      robotCode: 'robot-from-callback',
+      downloadCode: 'opaque-download-code',
+      maxBytes: 1_024,
+    }),
+    (error) => {
+      assert.equal(error.code, 'image-download-address-failed');
+      assert.equal(error.status, 400);
+      assert.equal(error.providerCode, 'invalidParameter.robotCode.auth');
+      assert.equal(error.cause?.code, 'http-error');
+      assert.doesNotMatch(error.message, /platform details/);
+      return true;
+    },
+  );
+});
+
+test('DingTalk image content failures do not expose network or signed-URL details', async () => {
+  const fetchImpl = async (url) => {
+    if (url.toString() === `${DINGTALK_API_BASE_URL}v1.0/oauth2/accessToken`) {
+      return jsonResponse({ accessToken: 'image-access-token', expireIn: 7_200 });
+    }
+    if (url.toString() === `${DINGTALK_API_BASE_URL}v1.0/robot/messageFiles/download`) {
+      return jsonResponse({ downloadUrl: 'https://download.example.test/private?signature=hidden' });
+    }
+    const cause = new Error('socket details must stay private');
+    cause.code = 'ECONNRESET';
+    throw new TypeError('fetch failed', { cause });
+  };
+  const api = createDingtalkApi({ fetchImpl });
+
+  await assert.rejects(
+    api.downloadImage({
+      clientId: 'ding-client',
+      clientSecret: 'host-secret',
+      robotCode: 'robot-from-callback',
+      downloadCode: 'opaque-download-code',
+      maxBytes: 1_024,
+    }),
+    (error) => {
+      assert.equal(error.code, 'image-content-download-failed');
+      assert.equal(error.providerCode, undefined);
+      assert.equal(error.cause?.cause?.code, 'ECONNRESET');
+      assert.doesNotMatch(error.message, /private|signature|socket details|hidden/);
+      return true;
+    },
+  );
+});
+
 test('session webhook validation accepts only HTTPS DingTalk hosts on the default port', () => {
   assert.equal(
     normalizeDingtalkSessionWebhook('https://dingtalk.com/reply?ticket=one'),

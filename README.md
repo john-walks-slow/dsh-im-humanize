@@ -41,6 +41,8 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 其他 IM 平台可继续按同一渠道适配器结构接入。
 
+九个内置渠道均支持把 JPEG、PNG、WebP 图片，以及以图片文件方式发送的 GIF，连同可选文字说明发送给 Harness；单张图片上限为 5 MB，单条消息中的图片总大小上限为 20 MB。
+
 ## 安装
 
 ```sh
@@ -59,19 +61,19 @@ dsh plugin --profile web add @xmanrui/dsh-im
 
 Telegram 和 Discord 没有官方扫码创建机器人流程，因此页面只显示带钥匙图标的「手动接入」入口，并只要求 Bot Token。Telegram Token 由 @BotFather 生成；若该机器人已经配置 Webhook，需要先由原服务移除 Webhook，Bot API 长轮询才能接管消息。Discord Token 来自 Developer Portal 的 Bot 页面；还需把机器人邀请到目标服务器，并授予查看频道、发送消息和读取历史消息权限。本插件只读取私信和明确提及机器人的服务器消息，因此不要求 Message Content 特权 Intent。
 
-Slack 页面提供 Manifest 辅助创建与双 Token 接入。点击「开始接入」，复制页面提供的 App Manifest，再打开 Slack 创建页并选择 **From a manifest**；创建后在 **Basic Information → App-Level Tokens** 生成包含 `connections:write` 的 App Token，并在 **OAuth & Permissions** 将应用安装到工作区以取得 Bot Token。插件会验证两个 Token，再通过 Socket Mode 建立连接；Slack 没有官方扫码创建机器人流程。两个 Token 只提交到本机 Harness Host 并写入受保护的凭据存储，状态接口和机器人列表不会回传 Token。
+Slack 页面提供 Manifest 辅助创建与双 Token 接入。点击「开始接入」，复制页面提供的 App Manifest，再打开 Slack 创建页并选择 **From a manifest**；创建后在 **Basic Information → App-Level Tokens** 生成包含 `connections:write` 的 App Token，并在 **OAuth & Permissions** 将应用安装到工作区以取得 Bot Token。插件会验证两个 Token，再通过 Socket Mode 建立连接；Slack 没有官方扫码创建机器人流程。图片读取使用 Manifest 中的 `files:read`；升级前已安装的 Slack App 需要重新安装或重新授权，才能获得该权限。两个 Token 只提交到本机 Harness Host 并写入受保护的凭据存储，状态接口和机器人列表不会回传 Token。
 
 WhatsApp 页面只显示「扫码接入机器人」。打开手机 WhatsApp 的「设置 → 已关联设备 → 关联设备」，扫描 Harness 页面中的二维码即可，不需要 Meta 控制台、Cloud API、Webhook、Phone Number ID 或 Access Token。关联设备状态只保存在本机 `~/.dsh/integrations/dsh-whatsapp/auth`，浏览器只会收到一次性二维码和脱敏后的账号状态。个人账号可在 WhatsApp 的「给自己发消息」会话中直接使用；插件按消息 ID 过滤自己的回复，避免形成回复循环。
 
 建议为机器人准备独立 WhatsApp 号码。关联个人常用账号会让发给该账号的私聊消息成为 Harness 输入；群聊只有明确提及该账号或回复该账号消息时才会触发。请只把机器人号码开放给可信联系人，并在不再使用时同时从 Harness 和手机「已关联设备」中移除。
 
-钉钉扫码接入时，请使用已加入企业/组织且有权创建机器人的钉钉账号扫描页面二维码，再在钉钉授权页点击「一键创建新机器人」。若提示“该账号还未加入组织”，请先创建组织或换用已加入组织的账号后重新扫码。插件不设置本机二次批准流程，钉钉中的机器人可见范围就是入站访问范围，请只开放给信任的组织、群或成员。
+钉钉扫码接入时，请使用已加入企业/组织且有权创建机器人的钉钉账号扫描页面二维码，再在钉钉授权页点击「一键创建新机器人」。若提示“该账号还未加入组织”，请先创建组织或换用已加入组织的账号后重新扫码。插件不设置本机二次批准流程，钉钉中的机器人可见范围就是入站访问范围，请只开放给信任的组织、群或成员。图片下载不会新增独立权限，但依赖机器人已有的“企业内机器人发送消息权限”；手动绑定的已有应用若未开启该权限，可以收到图片回调，但无法换取临时下载地址。
 
 企业微信扫码接入时，请使用已加入企业且具有机器人创建或管理权限的企业微信账号，并在手机端确认创建智能机器人。扫码创建的是企业微信智能机器人，不是让插件直接登录个人微信账号。无论扫码还是凭据绑定，企业微信中的机器人可见范围就是入站访问范围，请只开放给信任的企业成员和群聊。
 
 QQ 扫码接入使用腾讯 QQBot v2 官方流程。默认腾讯授权页会把接入方显示为“第三方机器人”；扫码成功后创建的是 QQ 开放平台机器人，并不是让插件直接控制个人 QQ 账号。扫码绑定只接受扫码者的消息；手动凭据无法识别扫码人，因此使用 QQ 开放平台中的机器人可见范围作为入站访问范围。
 
-飞书扫码绑定会把扫码者作为允许使用者；手动凭据同样无法识别扫码人，因此使用飞书应用的可见范围作为入站访问范围。请在飞书开放平台中只向信任的租户、群或成员开放应用。
+飞书扫码绑定会把扫码者作为允许使用者；手动凭据同样无法识别扫码人，因此使用飞书应用的可见范围作为入站访问范围。请在飞书开放平台中只向信任的租户、群或成员开放应用。读取用户发送的图片需要租户权限 `im:message:readonly`；新扫码创建的应用会申请该权限，升级前已存在的应用需要在飞书开放平台手动添加权限、发布版本并完成必要的管理员审批。
 
 每个机器人维护独立的 Harness 工作区。新接入机器人会把 Harness Host 进程当时的工作目录（`process.cwd()`）记录为默认值；该路径会持久化，不会因为以后从其他目录重启 Host 而改变。设置页的机器人卡片会显示当前路径，并可直接修改。
 

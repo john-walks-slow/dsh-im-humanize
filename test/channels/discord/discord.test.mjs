@@ -210,6 +210,63 @@ test('Discord normalizes DMs and only addressed server messages', () => {
   assert.equal(unmentionedReply.addressed, false);
 });
 
+test('Discord exposes image attachments through bounded CDN loaders', async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const calls = [];
+  const message = normalizeDiscordMessage({
+    id: '111111111111111120',
+    channel_id: '222222222222222220',
+    author: { id: '333333333333333330', bot: false },
+    content: '',
+    attachments: [{
+      id: '555555555555555550',
+      filename: 'screen.png',
+      content_type: 'image/png',
+      size: png.length,
+      url: 'https://cdn.discordapp.com/attachments/222/555/screen.png?ex=test',
+    }, {
+      id: '555555555555555551',
+      filename: 'notes.txt',
+      content_type: 'text/plain',
+      size: 4,
+      url: 'https://cdn.discordapp.com/attachments/222/555/notes.txt',
+    }, {
+      id: '555555555555555552',
+      filename: 'camera.jpg',
+      size: png.length,
+      url: 'https://cdn.discordapp.com/attachments/222/555/camera.jpg',
+    }],
+  }, '1234567890123456789', {
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(png, { status: 200, headers: { 'content-length': String(png.length) } });
+    },
+  });
+
+  assert.equal(message.content, '');
+  assert.equal(message.images.length, 2);
+  assert.deepEqual({
+    name: message.images[0].name,
+    mediaType: message.images[0].mediaType,
+    size: message.images[0].size,
+  }, { name: 'screen.png', mediaType: 'image/png', size: png.length });
+  assert.equal(message.images[1].mediaType, 'image/jpeg');
+  assert.deepEqual(await message.images[0].load({ maxBytes: 100 }), png);
+  assert.equal(calls[0].url.hostname, 'cdn.discordapp.com');
+  assert.equal(calls[0].options.redirect, 'manual');
+
+  const unsafe = normalizeDiscordMessage({
+    id: '111111111111111121',
+    channel_id: '222222222222222220',
+    author: { id: '333333333333333330', bot: false },
+    attachments: [{
+      filename: 'screen.png', content_type: 'image/png', size: 8,
+      url: 'https://example.com/internal.png',
+    }],
+  }, '1234567890123456789', { fetchImpl: async () => assert.fail('must not fetch') });
+  await assert.rejects(() => unsafe.images[0].load({ maxBytes: 100 }), /messaging platform/);
+});
+
 class FakeSocket {
   #listeners = new Map();
   sent = [];

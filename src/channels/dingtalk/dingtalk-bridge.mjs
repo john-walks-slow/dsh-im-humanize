@@ -12,6 +12,11 @@ import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
 import { runCompactCommand } from '../shared/compact-command.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
+import {
+  hasInboundImages,
+  imagePromptUserMessage,
+  promptContentForMessage,
+} from '../shared/image-prompt.mjs';
 
 const CARD_INITIAL_TEXT = '已连接 DeepSeek Harness，正在思考…';
 const CARD_ERROR_TEXT = '消息处理失败，请稍后重试。';
@@ -20,7 +25,7 @@ const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无
 const HELP_TEXT = [
   '钉钉机器人已连接 DeepSeek Harness。',
   '',
-  '直接发送文字即可继续当前会话。',
+  '直接发送文字或图片即可继续当前会话。',
   '/new  开启一个全新会话',
   '/compact  压缩当前会话的较早上下文',
   '/workspace 工作区绝对路径  切换工作区',
@@ -35,8 +40,121 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function safeErrorDiagnostic(error) {
+  const chain = [];
+  const seen = new Set();
+  let current = error;
+  while (current && typeof current === 'object' && chain.length < 3 && !seen.has(current)) {
+    seen.add(current);
+    const name = nonEmptyString(current.name)?.slice(0, 80);
+    const code = nonEmptyString(current.code)?.slice(0, 80);
+    const providerCode = nonEmptyString(current.providerCode)?.slice(0, 160);
+    const status = Number.isInteger(current.status) ? current.status : undefined;
+    chain.push({
+      ...(name ? { name } : {}),
+      ...(code ? { code } : {}),
+      ...(providerCode ? { providerCode } : {}),
+      ...(status ? { status } : {}),
+    });
+    current = current.cause;
+  }
+  return chain;
+}
+
+function dingtalkImageErrorUserMessage(error) {
+  let current = error;
+  const seen = new Set();
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    if (current.code === 'image-download-address-failed') {
+      return '钉钉未能换取图片下载地址，请重新发送；若持续失败，请检查机器人的“企业内机器人发送消息权限”。';
+    }
+    if (current.code === 'invalid-image-download') {
+      return '钉钉没有返回图片下载地址，请重新发送。';
+    }
+    if (current.code === 'image-content-download-failed') {
+      return '钉钉返回的图片临时地址无法读取，请重新发送。';
+    }
+    current = current.cause;
+  }
+  return imagePromptUserMessage(error);
+}
+
 function senderStaffId(message) {
   return nonEmptyString(message?.senderStaffId) ?? nonEmptyString(message?.senderId);
+}
+
+function parsedMessageContent(message) {
+  if (message?.content && typeof message.content === 'object') return message.content;
+  if (typeof message?.content !== 'string') return null;
+  try {
+    const parsed = JSON.parse(message.content);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function richTextEntries(content) {
+  const entries = content?.richText ?? content?.rich_text;
+  return Array.isArray(entries) ? entries : [];
+}
+
+function richTextEntryText(entry) {
+  if (typeof entry?.text === 'string') return nonEmptyString(entry.text);
+  if (typeof entry?.text?.content === 'string') return nonEmptyString(entry.text.content);
+  if (String(entry?.type).toLowerCase() === 'text' && typeof entry?.content === 'string') {
+    return nonEmptyString(entry.content);
+  }
+  return null;
+}
+
+function downloadCodeFor(value) {
+  return nonEmptyString(value?.downloadCode) ?? nonEmptyString(value?.pictureDownloadCode);
+}
+
+/** Normalize DingTalk picture and richText callbacks into lazy image references. */
+export function dingtalkInboundMessage(message, {
+  api,
+  clientId,
+  clientSecret,
+} = {}) {
+  const msgtype = String(message?.msgtype ?? '').toLowerCase();
+  const content = parsedMessageContent(message);
+  const richEntries = msgtype === 'richtext' ? richTextEntries(content) : [];
+  const text = msgtype === 'text'
+    ? nonEmptyString(message?.text?.content) ?? ''
+    : richEntries.map(richTextEntryText).filter(Boolean).join('\n');
+  const imageCodes = [];
+  if (msgtype === 'picture') {
+    const code = downloadCodeFor(content);
+    if (code) imageCodes.push(code);
+  } else if (msgtype === 'richtext') {
+    for (const entry of richEntries) {
+      if (String(entry?.type ?? '').toLowerCase() !== 'picture') continue;
+      const code = downloadCodeFor(entry);
+      if (code) imageCodes.push(code);
+    }
+  }
+  return {
+    content: text,
+    images: imageCodes.map((downloadCode, index) => ({
+      name: index === 0 ? 'image' : `image-${index + 1}`,
+      load: ({ signal, maxBytes }) => {
+        if (typeof api?.downloadImage !== 'function') {
+          throw new Error('DingTalk API does not support image downloads');
+        }
+        return api.downloadImage({
+          clientId,
+          clientSecret,
+          robotCode: message?.robotCode,
+          downloadCode,
+          signal,
+          maxBytes,
+        });
+      },
+    })),
+  };
 }
 
 function conversationKey(message, sender) {
@@ -317,49 +435,63 @@ export class DingtalkHarnessBridge {
       return;
     }
 
-    const text = message?.msgtype === 'text' ? nonEmptyString(message?.text?.content) : null;
+    const promptMessage = dingtalkInboundMessage(message, {
+      api: this.#api,
+      clientId: this.#clientId,
+      clientSecret: this.#clientSecret,
+    });
+    const text = promptMessage.content;
+    const hasImages = hasInboundImages(promptMessage);
+    const isPlainText = String(message?.msgtype).toLowerCase() === 'text';
     let cardStream = null;
     let cardStarted = false;
     try {
-      if (!text) {
-        await this.#send(sessionWebhook, '目前仅支持文字消息。');
+      if (!text && !hasImages) {
+        await this.#send(sessionWebhook, '目前支持文字和图片消息。');
         return;
       }
 
       const command = text.toLowerCase();
-      if (command === '/help') {
+      if (isPlainText && !hasImages && command === '/help') {
         await this.#send(sessionWebhook, HELP_TEXT);
         return;
       }
-      if (command === '/status') {
+      if (isPlainText && !hasImages && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#send(sessionWebhook, '钉钉机器人与 DeepSeek Harness 连接正常。');
         return;
       }
-      if (command === '/new') {
+      if (isPlainText && !hasImages && command === '/new') {
         await this.#state.clearSession(key);
         await this.#send(sessionWebhook, '已开启新会话。请发送你的问题。');
         return;
       }
-      const workspaceCommand = await runWorkspaceCommand(text, this.#harness, key);
+      const workspaceCommand = isPlainText && !hasImages
+        ? await runWorkspaceCommand(text, this.#harness, key)
+        : null;
       if (workspaceCommand) {
         for (const reply of workspaceCommand.messages ?? [workspaceCommand.message]) {
           await this.#send(sessionWebhook, reply);
         }
         return;
       }
-      const compactCommand = await runCompactCommand(
-        text,
-        this.#harness,
-        this.#state,
-        key,
-        { signal: this.#signal },
-      );
+      const compactCommand = isPlainText && !hasImages
+        ? await runCompactCommand(
+            text,
+            this.#harness,
+            this.#state,
+            key,
+            { signal: this.#signal },
+          )
+        : null;
       if (compactCommand) {
         await this.#send(sessionWebhook, compactCommand.message);
         return;
       }
 
+      const content = hasImages
+        ? await promptContentForMessage(promptMessage, { signal: this.#signal })
+        : undefined;
       if (typeof this.#api.createAiCard === 'function'
         && typeof this.#api.updateAiCard === 'function'
         && typeof this.#api.finishAiCard === 'function') {
@@ -377,7 +509,7 @@ export class DingtalkHarnessBridge {
         harness: this.#harness,
         state: this.#state,
         key,
-        text,
+        ...(hasImages ? { content } : { text }),
         createOptions: { signal: this.#signal },
         existsOptions: { signal: this.#signal },
         askOptions: {
@@ -400,13 +532,17 @@ export class DingtalkHarnessBridge {
       increment(this.#status, 'messagesReplied');
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
-    } catch {
+    } catch (error) {
       if (this.#signal?.aborted) return;
       this.#status.lastError = '钉钉消息处理失败。';
-      this.#logger.error?.('[dsh-dingtalk] failed to process an inbound message');
+      this.#logger.error?.(
+        '[dsh-dingtalk] failed to process an inbound message',
+        safeErrorDiagnostic(error),
+      );
       try {
-        const streamed = cardStarted && await cardStream.finish(CARD_ERROR_TEXT);
-        if (!streamed) await this.#send(sessionWebhook, CARD_ERROR_TEXT);
+        const errorText = dingtalkImageErrorUserMessage(error) ?? CARD_ERROR_TEXT;
+        const streamed = cardStarted && await cardStream.finish(errorText);
+        if (!streamed) await this.#send(sessionWebhook, errorText);
       } catch {
         this.#logger.error?.('[dsh-dingtalk] failed to send the safe error reply');
       }

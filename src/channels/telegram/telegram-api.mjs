@@ -1,4 +1,7 @@
+import { fetchImageBuffer } from '../shared/image-prompt.mjs';
+
 const DEFAULT_BASE_URL = 'https://api.telegram.org/';
+const TELEGRAM_FILE_HOSTS = Object.freeze(['api.telegram.org']);
 
 function cleanString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -44,6 +47,40 @@ export class TelegramApi {
     return this.#call('getUpdates', payload, {
       signal,
       timeoutMs: Math.max(10_000, (timeout + 10) * 1_000),
+    });
+  }
+
+  async getFile({ fileId, signal } = {}) {
+    const id = cleanString(fileId);
+    if (!id || !/^[A-Za-z0-9_-]{1,512}$/.test(id)) {
+      throw new TypeError('Telegram file id is invalid');
+    }
+    return this.#call('getFile', { file_id: id }, { signal });
+  }
+
+  async downloadFile({ fileId, signal, maxBytes } = {}) {
+    const file = await this.getFile({ fileId, signal });
+    const filePath = cleanString(file?.file_path);
+    if (!filePath || filePath.startsWith('/') || filePath.includes('\\')
+      || filePath.includes('?') || filePath.includes('#')) {
+      throw new Error('Telegram returned an invalid file path');
+    }
+    let decodedSegments;
+    try {
+      decodedSegments = filePath.split('/').map((segment) => decodeURIComponent(segment));
+    } catch {
+      throw new Error('Telegram returned an invalid file path');
+    }
+    if (decodedSegments.some((segment) => !segment || segment === '.' || segment === '..')) {
+      throw new Error('Telegram returned an invalid file path');
+    }
+    const url = new URL(this.#baseUrl);
+    url.pathname = `/file/bot${this.#token}/${filePath}`;
+    return fetchImageBuffer(url, {
+      fetchImpl: this.#fetch,
+      signal,
+      maxBytes,
+      allowedHosts: TELEGRAM_FILE_HOSTS,
     });
   }
 

@@ -188,6 +188,33 @@ test('the next message continues the bound Session without creating a new one', 
   assert.equal(createCalls, 0);
 });
 
+test('workspace sessions forward structured multimodal prompt content unchanged', async (t) => {
+  const { path, defaultWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await workspaces.ensure('bot_multimodal');
+  const state = memoryState({ conversation: 'session-image' });
+  const prompts = [];
+  const content = [
+    { type: 'text', text: '这是什么？' },
+    { type: 'image', mediaType: 'image/png', data: 'AAAA' },
+  ];
+  const scope = createBotWorkspaceScope({
+    async sessionExists() { return true; },
+    async ask(sessionId, prompt) {
+      prompts.push({ sessionId, prompt });
+      return 'image answer';
+    },
+  }, { botId: 'bot_multimodal', workspaces, state });
+
+  assert.deepEqual(await askInWorkspaceSession({
+    harness: scope.harness,
+    state: scope.state,
+    key: 'conversation',
+    content,
+  }), { sessionId: 'session-image', answer: 'image answer' });
+  assert.deepEqual(prompts, [{ sessionId: 'session-image', prompt: content }]);
+});
+
 test('adoption errors and invalid adoption responses leave local state unchanged', async (t) => {
   const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
   const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();

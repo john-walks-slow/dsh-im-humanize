@@ -1,4 +1,10 @@
+import { fetchImageBuffer, ImagePromptError } from '../shared/image-prompt.mjs';
+
 const DEFAULT_BASE_URL = 'https://slack.com/api/';
+const SLACK_FILE_HOST = 'files.slack.com';
+const LEGACY_SLACK_FILE_HOST = 'slack.com';
+const SLACK_FILE_PATH_PREFIX = '/files-pri/';
+const SLACK_FILE_HOSTS = Object.freeze([SLACK_FILE_HOST]);
 
 function cleanString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -7,6 +13,61 @@ function cleanString(value) {
 function requestSignal(signal, timeoutMs) {
   const timeout = AbortSignal.timeout(timeoutMs);
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+function isRedirectStatus(status) {
+  return Number.isInteger(status) && status >= 300 && status < 400;
+}
+
+async function cancelResponseBody(response) {
+  try {
+    await response?.body?.cancel?.();
+  } catch {
+    // Preserve the download failure when response cleanup also fails.
+  }
+}
+
+function secureSlackFileUrl(value) {
+  const url = new URL(value);
+  if (url.protocol !== 'https:') throw new Error('Image download URL must use HTTPS');
+  if (url.username || url.password || (url.port && url.port !== '443')) {
+    throw new Error('Image download URL is not hosted by the messaging platform');
+  }
+  if (url.hostname === LEGACY_SLACK_FILE_HOST && url.pathname.startsWith(SLACK_FILE_PATH_PREFIX)) {
+    url.hostname = SLACK_FILE_HOST;
+  }
+  if (url.hostname !== SLACK_FILE_HOST || !url.pathname.startsWith(SLACK_FILE_PATH_PREFIX)) {
+    throw new Error('Image download URL is not hosted by the messaging platform');
+  }
+  url.hash = '';
+  return url;
+}
+
+function redirectUrl(response, source) {
+  const location = response?.headers?.get?.('location');
+  if (!location) return null;
+  try {
+    return new URL(location, source);
+  } catch {
+    return null;
+  }
+}
+
+function responseOAuthScopes(response) {
+  const raw = response?.headers?.get?.('x-oauth-scopes');
+  if (raw === null || raw === undefined) return null;
+  return new Set(raw.split(',').map((scope) => scope.trim()).filter(Boolean));
+}
+
+function isSlackWorkspaceRedirect(target) {
+  return target?.protocol === 'https:'
+    && !target.username
+    && !target.password
+    && (!target.port || target.port === '443')
+    && target.hostname.endsWith('.slack.com')
+    && target.hostname !== SLACK_FILE_HOST
+    && target.pathname === '/'
+    && target.searchParams.has('redir');
 }
 
 function delay(ms, signal) {
@@ -79,6 +140,7 @@ export class SlackApi {
   #appToken;
   #fetch;
   #baseUrl;
+  #botScopes = null;
 
   constructor({ botToken, appToken, fetchImpl = fetch, baseUrl = DEFAULT_BASE_URL }) {
     if (botToken !== undefined && !validSlackBotToken(botToken)) {
@@ -177,6 +239,34 @@ export class SlackApi {
     });
   }
 
+  async downloadFile({ url, signal, maxBytes }) {
+    if (!this.#botToken) throw new TypeError('Slack bot token is required for file download');
+    const target = secureSlackFileUrl(url);
+    const fetchSlackFile = async (requestUrl, options) => {
+      const response = await this.#fetch(requestUrl, options);
+      if (!isRedirectStatus(response?.status)) return response;
+
+      const next = redirectUrl(response, requestUrl);
+      if ((this.#botScopes && !this.#botScopes.has('files:read'))
+        || isSlackWorkspaceRedirect(next)) {
+        await cancelResponseBody(response);
+        throw new ImagePromptError(
+          'slack-file-access-required',
+          'Slack redirected a private file request to the workspace because file access was not granted',
+          'Slack 未授权机器人读取该文件。请为应用添加 files:read 后重新安装，再重新发送图片。',
+        );
+      }
+      return response;
+    };
+    return fetchImageBuffer(target, {
+      fetchImpl: fetchSlackFile,
+      headers: { authorization: `Bearer ${this.#botToken}` },
+      signal,
+      maxBytes,
+      allowedHosts: SLACK_FILE_HOSTS,
+    });
+  }
+
   async #request(method, {
     tokenKind,
     body,
@@ -204,6 +294,11 @@ export class SlackApi {
     } catch (error) {
       if (error?.name === 'AbortError' || error?.name === 'TimeoutError') throw error;
       throw new Error(`Slack ${method} transport failed`);
+    }
+
+    if (tokenKind === 'bot') {
+      const scopes = responseOAuthScopes(response);
+      if (scopes) this.#botScopes = scopes;
     }
 
     let payload;

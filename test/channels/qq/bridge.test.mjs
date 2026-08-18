@@ -51,6 +51,189 @@ function message(overrides = {}) {
   };
 }
 
+const PNG_BYTES = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x00,
+]);
+
+test('QQ sends image-only attachments to Harness and accepts the SDK file MIME fallback', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-image']]);
+  const prompts = [];
+  const downloads = [];
+  const sent = [];
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, content) => {
+        prompts.push({ sessionId, content });
+        return '看到图片了';
+      },
+    },
+    state: fixture.state,
+    fetchImpl: async (url, init) => {
+      downloads.push({ url: url.toString(), init });
+      return new Response(PNG_BYTES, { headers: { 'content-type': 'application/octet-stream' } });
+    },
+  });
+
+  await bridge.accept(message({
+    messageId: 'qq-image',
+    content: '',
+    attachments: [{
+      content_type: 'file',
+      filename: 'diagram.PNG',
+      size: PNG_BYTES.length,
+      url: 'https://multimedia.nt.qq.com.cn/download/opaque',
+    }],
+  }));
+
+  assert.equal(downloads.length, 1);
+  assert.equal(downloads[0].init.method, 'GET');
+  assert.equal(downloads[0].init.redirect, 'manual');
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].sessionId, 'session-image');
+  assert.deepEqual(prompts[0].content.map(({ type }) => type), ['text', 'image']);
+  assert.equal(prompts[0].content[0].text, '请分析这张图片。');
+  assert.equal(prompts[0].content[1].mediaType, 'image/png');
+  assert.equal(prompts[0].content[1].name, 'diagram.PNG');
+  assert.equal(Buffer.from(prompts[0].content[1].data, 'base64').equals(PNG_BYTES), true);
+  assert.deepEqual(sent, ['看到图片了']);
+  assert.equal(fixture.seen.has('qq-image'), true);
+});
+
+test('QQ checks sender and group mention before downloading image attachments', async () => {
+  let downloads = 0;
+  let asks = 0;
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async () => {} },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => { asks += 1; return 'unexpected'; },
+    },
+    state: stateFixture().state,
+    fetchImpl: async () => { downloads += 1; return new Response(PNG_BYTES); },
+  });
+  const attachment = {
+    content_type: 'image/png',
+    filename: 'private.png',
+    url: 'https://multimedia.nt.qq.com.cn/download/private',
+  };
+
+  await bridge.accept(message({
+    messageId: 'qq-image-other',
+    senderId: 'other-openid',
+    content: '',
+    attachments: [attachment],
+  }));
+  await bridge.accept(message({
+    kind: 'group',
+    rawEventType: 'GROUP_MESSAGE_CREATE',
+    groupOpenid: 'group-1',
+    messageId: 'qq-image-unmentioned',
+    content: '',
+    attachments: [attachment],
+    replyTarget: { scope: 'group', targetId: 'group-1', msgId: 'qq-image-unmentioned' },
+  }));
+
+  assert.equal(downloads, 0);
+  assert.equal(asks, 0);
+});
+
+test('QQ rejects non-platform image URLs without fetching and returns a retryable image error', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-image']]);
+  const sent = [];
+  let downloads = 0;
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => assert.fail('an untrusted image must not reach Harness'),
+    },
+    state: fixture.state,
+    logger: { error() {} },
+    fetchImpl: async () => { downloads += 1; return new Response(PNG_BYTES); },
+  });
+
+  await bridge.accept(message({
+    messageId: 'qq-image-untrusted',
+    content: '这是什么',
+    attachments: [{
+      content_type: 'image/png',
+      filename: 'photo.png',
+      url: 'https://attacker.example/photo.png',
+    }],
+  }));
+
+  assert.equal(downloads, 0);
+  assert.deepEqual(sent, ['图片下载失败，请重新发送后再试。']);
+  assert.equal(fixture.seen.has('qq-image-untrusted'), true);
+});
+
+test('QQ does not use an image caption as a pending Harness answer', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-question-image']]);
+  const sent = [];
+  const answered = deferred();
+  let submitted;
+  let downloads = 0;
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      async ask(sessionId, _text, options) {
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'qq-question-image',
+          rpcId: 'qq-question-image',
+          sessionId,
+          payload: {
+            questions: [{
+              id: 'environment',
+              question: '请选择环境',
+              options: [{ label: '生产环境' }],
+            }],
+          },
+          async respond(result) {
+            submitted = result;
+            answered.resolve();
+            return { accepted: true };
+          },
+        });
+        await answered.promise;
+        return '已完成';
+      },
+    },
+    state: fixture.state,
+    fetchImpl: async () => { downloads += 1; return new Response(PNG_BYTES); },
+  });
+
+  const first = bridge.accept(message({ messageId: 'qq-question-start', content: '开始提问' }));
+  await eventually(() => sent.some((text) => text.includes('请选择环境')));
+  await bridge.accept(message({
+    messageId: 'qq-question-image-answer',
+    content: '生产环境',
+    attachments: [{
+      content_type: 'image/png',
+      filename: 'answer.png',
+      url: 'https://multimedia.nt.qq.com.cn/download/answer',
+    }],
+  }));
+  assert.equal(downloads, 0);
+  assert.equal(submitted, undefined);
+  assert.equal(sent.at(-1), '请用文字回答当前问题。');
+
+  await bridge.accept(message({ messageId: 'qq-question-text-answer', content: '生产环境' }));
+  await first;
+  assert.deepEqual(submitted.value.answer.answers, [{
+    id: 'environment',
+    selected: ['生产环境'],
+  }]);
+});
+
 test('QQ executes /compact for the bound Session without prompting the model', async () => {
   const fixture = stateFixture([['c2c:owner-openid', 'session-compact']]);
   const sent = [];

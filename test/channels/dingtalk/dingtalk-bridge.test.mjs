@@ -76,6 +76,193 @@ function stateFixture() {
   };
 }
 
+const PNG_BYTES = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x01, 0x02, 0x03,
+]);
+
+test('DingTalk resolves picture downloadCode lazily and sends image-only content to Harness', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:staff-approved', 'session-image');
+  const downloads = [];
+  const prompts = [];
+  const sent = [];
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      downloadImage: async (request) => {
+        downloads.push(request);
+        return PNG_BYTES;
+      },
+      sendText: async (request) => sent.push(request),
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, content) => {
+        prompts.push({ sessionId, content });
+        return '钉钉图片已识别';
+      },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('dingtalk-picture', '', {
+    msgtype: 'picture',
+    text: undefined,
+    content: JSON.stringify({ downloadCode: 'opaque-picture-code' }),
+    robotCode: 'robot-from-callback',
+  }));
+
+  assert.equal(downloads.length, 1);
+  assert.equal(downloads[0].clientId, 'ding-client');
+  assert.equal(downloads[0].clientSecret, 'host-secret');
+  assert.equal(downloads[0].robotCode, 'robot-from-callback');
+  assert.equal(downloads[0].downloadCode, 'opaque-picture-code');
+  assert.equal(downloads[0].maxBytes, 5 * 1024 * 1024);
+  assert.equal(prompts[0].sessionId, 'session-image');
+  assert.deepEqual(prompts[0].content.map(({ type }) => type), ['text', 'image']);
+  assert.equal(prompts[0].content[0].text, '请分析这张图片。');
+  assert.equal(prompts[0].content[1].mediaType, 'image/png');
+  assert.equal(Buffer.from(prompts[0].content[1].data, 'base64').equals(PNG_BYTES), true);
+  assert.equal(sent.at(-1).text, '钉钉图片已识别');
+});
+
+test('DingTalk richText preserves its caption and all picture download codes', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:staff-approved', 'session-rich-image');
+  const codes = [];
+  let prompt;
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      downloadImage: async ({ downloadCode }) => {
+        codes.push(downloadCode);
+        return PNG_BYTES;
+      },
+      sendText: async () => {},
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, content) => { prompt = content; return '完成'; },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('dingtalk-rich-picture', '', {
+    msgtype: 'richText',
+    text: undefined,
+    robotCode: 'robot-from-callback',
+    content: {
+      richText: [
+        { type: 'text', text: '请对比' },
+        { type: 'picture', pictureDownloadCode: 'picture-one' },
+        { type: 'text', text: { content: '这两张图' } },
+        { type: 'picture', downloadCode: 'picture-two' },
+      ],
+    },
+  }));
+
+  assert.deepEqual(codes, ['picture-one', 'picture-two']);
+  assert.deepEqual(prompt.map(({ type }) => type), ['text', 'image', 'image']);
+  assert.equal(prompt[0].text, '请对比\n这两张图');
+});
+
+test('DingTalk checks the group mention before downloading a picture', async () => {
+  let downloads = 0;
+  let asks = 0;
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      downloadImage: async () => { downloads += 1; return PNG_BYTES; },
+      sendText: async () => {},
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: { ask: async () => { asks += 1; return 'unexpected'; } },
+    state: stateFixture().state,
+  });
+
+  await bridge.accept(message('dingtalk-unmentioned-picture', '', {
+    msgtype: 'picture',
+    text: undefined,
+    content: { downloadCode: 'private-picture' },
+    robotCode: 'robot-from-callback',
+    conversationType: '2',
+    conversationId: 'group-image',
+    isInAtList: false,
+  }));
+
+  assert.equal(downloads, 0);
+  assert.equal(asks, 0);
+});
+
+test('DingTalk returns a specific retry message when picture download fails', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:staff-approved', 'session-image');
+  const sent = [];
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      downloadImage: async () => { throw new Error('temporary URL expired'); },
+      sendText: async (request) => sent.push(request),
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => assert.fail('a failed image must not reach Harness'),
+    },
+    state: fixture.state,
+    logger: { error() {} },
+  });
+
+  await bridge.accept(message('dingtalk-picture-error', '', {
+    msgtype: 'picture',
+    text: undefined,
+    content: { downloadCode: 'expired-picture' },
+    robotCode: 'robot-from-callback',
+  }));
+
+  assert.equal(sent.at(-1).text, '图片下载失败，请重新发送后再试。');
+});
+
+test('DingTalk distinguishes download-address failures from temporary-file failures', async () => {
+  for (const [code, expected] of [
+    [
+      'image-download-address-failed',
+      '钉钉未能换取图片下载地址，请重新发送；若持续失败，请检查机器人的“企业内机器人发送消息权限”。',
+    ],
+    ['image-content-download-failed', '钉钉返回的图片临时地址无法读取，请重新发送。'],
+  ]) {
+    const fixture = stateFixture();
+    const sent = [];
+    const bridge = new DingtalkHarnessBridge({
+      api: {
+        downloadImage: async () => {
+          const error = new Error('safe stage marker');
+          error.code = code;
+          throw error;
+        },
+        sendText: async (request) => sent.push(request),
+      },
+      clientId: 'ding-client',
+      clientSecret: 'host-secret',
+      harness: { ask: async () => assert.fail('a failed image must not reach Harness') },
+      state: fixture.state,
+      logger: { error() {} },
+    });
+
+    await bridge.accept(message(`dingtalk-${code}`, '', {
+      msgtype: 'picture',
+      text: undefined,
+      content: { downloadCode: 'opaque-picture-code' },
+      robotCode: 'robot-from-callback',
+    }));
+
+    assert.equal(sent.at(-1).text, expected);
+  }
+});
+
 test('DingTalk executes /compact for the bound Session without prompting the model', async () => {
   const fixture = stateFixture();
   fixture.sessions.set('p2p:staff-approved', 'session-compact');

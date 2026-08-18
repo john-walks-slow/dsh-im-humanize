@@ -120,6 +120,37 @@ test('Telegram API validates a Bot Token without exposing it in requests or erro
   });
 });
 
+test('Telegram API resolves and downloads files without exposing arbitrary paths', async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const calls = [];
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      if (url.pathname.endsWith('/getFile')) {
+        return jsonResponse({ ok: true, result: { file_path: 'photos/file_1.png' } });
+      }
+      return new Response(png, { status: 200, headers: { 'content-length': String(png.length) } });
+    },
+  });
+  assert.deepEqual(await api.downloadFile({ fileId: 'AgAC_test-file', maxBytes: 100 }), png);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].options.method, 'POST');
+  assert.equal(calls[1].options.method, 'GET');
+  assert.equal(calls[1].url.hostname, 'api.telegram.org');
+  assert.match(calls[1].url.pathname, /\/file\/bot.+\/photos\/file_1\.png$/);
+
+  const unsafeApi = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async () => jsonResponse({ ok: true, result: { file_path: '../secret' } }),
+  });
+  await assert.rejects(() => unsafeApi.downloadFile({ fileId: 'AgAC_test-file' }), (error) => {
+    assert.match(error.message, /invalid file path/);
+    assert.doesNotMatch(error.message, new RegExp(TOKEN.replaceAll(':', '\\:')));
+    return true;
+  });
+});
+
 test('Telegram config and controller store only a credential reference in bot data', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-im-telegram-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -250,6 +281,73 @@ test('Telegram normalizes private messages and requires an explicit group addres
   assert.notEqual(topicOne.conversationId, topicTwo.conversationId);
   assert.equal(topicOne.replyTarget.messageThreadId, 100);
   assert.equal(topicTwo.replyTarget.messageThreadId, 200);
+});
+
+test('Telegram normalizes photo captions and image documents into one downloadable image', async () => {
+  const loads = [];
+  const groupPhoto = normalizeTelegramUpdate({
+    update_id: 20,
+    message: {
+      message_id: 10,
+      chat: { id: -1001, type: 'supergroup' },
+      from: { id: 43, is_bot: false },
+      caption: '@HarnessBot 看看这张图',
+      caption_entities: [{ type: 'mention', offset: 0, length: 11 }],
+      photo: [
+        { file_id: 'small', file_unique_id: 'photo', width: 90, height: 90, file_size: 500 },
+        { file_id: 'large', file_unique_id: 'photo', width: 1280, height: 720, file_size: 2_000 },
+      ],
+    },
+  }, {
+    botId: '123456789',
+    username: 'HarnessBot',
+    loadFile: async (fileId, options) => {
+      loads.push({ fileId, options });
+      return Buffer.from('image');
+    },
+  });
+  assert.equal(groupPhoto.addressed, true);
+  assert.equal(groupPhoto.content, '看看这张图');
+  assert.equal(groupPhoto.images.length, 1);
+  assert.equal(groupPhoto.images[0].size, 2_000);
+  await groupPhoto.images[0].load({ maxBytes: 5_000 });
+  assert.equal(loads[0].fileId, 'large');
+
+  const document = normalizeTelegramUpdate({
+    update_id: 21,
+    message: {
+      message_id: 11,
+      chat: { id: 88, type: 'private' },
+      from: { id: 42, is_bot: false },
+      document: {
+        file_id: 'png-document', file_name: 'diagram.png', mime_type: 'image/png', file_size: 3_000,
+      },
+    },
+  }, { botId: '123456789', username: 'HarnessBot' });
+  assert.equal(document.images[0].name, 'diagram.png');
+  assert.equal(document.images[0].mediaType, 'image/png');
+
+  const documentWithoutMime = normalizeTelegramUpdate({
+    update_id: 23,
+    message: {
+      message_id: 13,
+      chat: { id: 88, type: 'private' },
+      from: { id: 42, is_bot: false },
+      document: { file_id: 'webp-document', file_name: 'diagram.webp', file_size: 2_000 },
+    },
+  }, { botId: '123456789', username: 'HarnessBot' });
+  assert.equal(documentWithoutMime.images[0].mediaType, 'image/webp');
+
+  const pdf = normalizeTelegramUpdate({
+    update_id: 22,
+    message: {
+      message_id: 12,
+      chat: { id: 88, type: 'private' },
+      from: { id: 42, is_bot: false },
+      document: { file_id: 'pdf-document', file_name: 'file.pdf', mime_type: 'application/pdf' },
+    },
+  }, { botId: '123456789', username: 'HarnessBot' });
+  assert.deepEqual(pdf.images, []);
 });
 
 test('Telegram bridge ignores unaddressed groups and streams direct replies', async () => {

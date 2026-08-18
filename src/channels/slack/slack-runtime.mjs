@@ -5,6 +5,7 @@ import { createSlackBridgeStatus, SlackHarnessBridge } from './slack-bridge.mjs'
 const RECONNECT_DELAYS_MS = Object.freeze([1_000, 3_000, 5_000, 10_000, 30_000]);
 const SLACK_MESSAGE_LIMIT = 38_000;
 const SLACK_STREAM_CHUNK_LIMIT = 11_000;
+const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
 function addSocketListener(socket, event, listener) {
   if (typeof socket.addEventListener === 'function') socket.addEventListener(event, listener);
@@ -42,13 +43,28 @@ function stripBotMention(value, botUserId) {
     .trim();
 }
 
-export function normalizeSlackEvent(payload, botUserId) {
+function slackImageSource(file, loadFile) {
+  const mediaType = typeof file?.mimetype === 'string' ? file.mimetype.toLowerCase() : '';
+  const url = typeof file?.url_private_download === 'string' && file.url_private_download
+    ? file.url_private_download : file?.url_private;
+  if (!IMAGE_MEDIA_TYPES.has(mediaType) || typeof url !== 'string' || !url) return null;
+  return {
+    name: typeof file.name === 'string' ? file.name : undefined,
+    mediaType,
+    size: Number.isSafeInteger(file.size) && file.size >= 0 ? file.size : undefined,
+    load: (options) => loadFile(url, options),
+  };
+}
+
+export function normalizeSlackEvent(payload, botUserId, { loadFile = async () => {
+  throw new Error('Slack file downloader is unavailable');
+} } = {}) {
   const event = payload?.event;
   if (!event || !payload?.event_id || !event.channel || !event.user || !event.ts) return null;
   const direct = event.type === 'message' && event.channel_type === 'im';
   const mentioned = event.type === 'app_mention';
   if (!direct && !mentioned) return null;
-  if (event.subtype || event.bot_id || event.app_id) return null;
+  if ((event.subtype && event.subtype !== 'file_share') || event.bot_id || event.app_id) return null;
   const threadTs = String(event.thread_ts ?? event.ts);
   return {
     messageId: String(payload.event_id),
@@ -57,6 +73,9 @@ export function normalizeSlackEvent(payload, botUserId) {
     kind: direct ? 'direct' : 'group',
     conversationId: direct ? String(event.channel) : `${event.channel}:${threadTs}`,
     content: stripBotMention(event.text ?? '', botUserId),
+    images: Array.isArray(event.files)
+      ? event.files.map((file) => slackImageSource(file, loadFile)).filter(Boolean)
+      : [],
     addressed: direct || mentioned,
     replyTarget: {
       channelId: String(event.channel),
@@ -389,7 +408,9 @@ export class SlackRuntime {
         if (packet.type !== 'events_api' || packet.payload?.type !== 'event_callback') return;
         if (this.#appId && packet.payload.api_app_id
           && packet.payload.api_app_id !== this.#appId) return;
-        const message = normalizeSlackEvent(packet.payload, this.#config.platformId.split(':')[1]);
+        const message = normalizeSlackEvent(packet.payload, this.#config.platformId.split(':')[1], {
+          loadFile: (url, options) => this.#api.downloadFile({ url, ...options }),
+        });
         const bridge = this.#bridge;
         if (message && bridge) {
           void bridge.accept(message).catch((error) => {

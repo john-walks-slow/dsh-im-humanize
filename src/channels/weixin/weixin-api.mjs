@@ -1,8 +1,13 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
+
+import { fetchImageBuffer } from '../shared/image-prompt.mjs';
 
 export const WEIXIN_QR_BASE_URL = 'https://ilinkai.weixin.qq.com/';
 export const WEIXIN_PROTOCOL_VERSION = '2.4.6';
 export const DEFAULT_BOT_TYPE = '3';
+export const WEIXIN_CDN_BASE_URL = 'https://novac2c.cdn.weixin.qq.com/c2c';
+
+const WEIXIN_CDN_HOST = 'novac2c.cdn.weixin.qq.com';
 
 const ILINK_APP_ID = 'bot';
 const ILINK_CLIENT_VERSION = (2 << 16) | (4 << 8) | 6;
@@ -30,6 +35,93 @@ export class WeixinApiError extends Error {
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function strictBase64(value) {
+  const text = nonEmptyString(value);
+  if (!text || text.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(text)) return null;
+  return Buffer.from(text, 'base64');
+}
+
+/** Parse the two AES key encodings used by Weixin iLink image messages. */
+export function parseWeixinImageAesKey(imageItem) {
+  const directHex = nonEmptyString(imageItem?.aeskey);
+  if (directHex) {
+    if (!/^[0-9a-fA-F]{32}$/.test(directHex)) {
+      throw new WeixinApiError('invalid-image-key', '微信图片的加密密钥无效。');
+    }
+    return Buffer.from(directHex, 'hex');
+  }
+
+  const encoded = strictBase64(imageItem?.media?.aes_key);
+  if (encoded?.length === 16) return encoded;
+  if (encoded?.length === 32 && /^[0-9a-fA-F]{32}$/.test(encoded.toString('ascii'))) {
+    return Buffer.from(encoded.toString('ascii'), 'hex');
+  }
+  throw new WeixinApiError('invalid-image-key', '微信图片的加密密钥无效。');
+}
+
+export function decryptWeixinImage(ciphertext, key) {
+  const encrypted = Buffer.from(ciphertext);
+  const aesKey = Buffer.from(key);
+  if (aesKey.length !== 16 || encrypted.length === 0 || encrypted.length % 16 !== 0) {
+    throw new WeixinApiError('invalid-image-ciphertext', '微信图片的加密数据无效。');
+  }
+  try {
+    const decipher = createDecipheriv('aes-128-ecb', aesKey, null);
+    return Buffer.concat([decipher.update(encrypted), decipher.final()]);
+  } catch (error) {
+    throw new WeixinApiError('image-decryption-failed', '微信图片解密失败。', { cause: error });
+  }
+}
+
+export function weixinImageDownloadUrl(media) {
+  const query = nonEmptyString(media?.encrypt_query_param);
+  if (query) {
+    return `${WEIXIN_CDN_BASE_URL}/download?encrypted_query_param=${encodeURIComponent(query)}`;
+  }
+
+  const fullUrl = nonEmptyString(media?.full_url);
+  if (!fullUrl) throw new WeixinApiError('missing-image-url', '微信图片没有可用的下载地址。');
+  let url;
+  try {
+    url = new URL(fullUrl);
+  } catch {
+    throw new WeixinApiError('invalid-image-url', '微信图片的下载地址无效。');
+  }
+  if (url.protocol !== 'https:' || url.hostname !== WEIXIN_CDN_HOST
+    || (url.port && url.port !== '443') || !url.pathname.startsWith('/c2c/')) {
+    throw new WeixinApiError('untrusted-image-url', '微信图片的下载地址不受信任。');
+  }
+  url.username = '';
+  url.password = '';
+  url.hash = '';
+  return url.toString();
+}
+
+/** Convert iLink image items into lazily downloaded, decrypted image references. */
+export function extractWeixinImages(message, { fetchImpl = fetch } = {}) {
+  if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
+  const images = [];
+  for (const item of message?.item_list ?? []) {
+    const imageItem = item?.image_item;
+    if (!imageItem || typeof imageItem !== 'object') continue;
+    images.push({
+      name: images.length === 0 ? 'image' : `image-${images.length + 1}`,
+      load: async ({ signal, maxBytes }) => {
+        const key = parseWeixinImageAesKey(imageItem);
+        const url = weixinImageDownloadUrl(imageItem.media);
+        const ciphertext = await fetchImageBuffer(url, {
+          fetchImpl,
+          signal,
+          maxBytes: maxBytes + 16,
+          allowedHosts: [WEIXIN_CDN_HOST],
+        });
+        return decryptWeixinImage(ciphertext, key);
+      },
+    });
+  }
+  return images;
 }
 
 function isWeixinHost(hostname) {
@@ -170,6 +262,10 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
 
   return Object.freeze({
+    inboundImages(message) {
+      return extractWeixinImages(message, { fetchImpl });
+    },
+
     async beginLogin({ localTokens = [], botType = DEFAULT_BOT_TYPE, signal } = {}) {
       const tokens = [...new Set(localTokens.map(nonEmptyString).filter(Boolean))].slice(-10);
       const response = await requestJson(fetchImpl, {

@@ -1,9 +1,19 @@
 import { createEditableMessageStream, splitMessageText } from '../shared/editable-message-stream.mjs';
+import { fetchImageBuffer } from '../shared/image-prompt.mjs';
 import { DiscordApi } from './discord-api.mjs';
 import { createDiscordBridgeStatus, DiscordHarnessBridge } from './discord-bridge.mjs';
 
 const DISCORD_GATEWAY_INTENTS = (1 << 0) | (1 << 9) | (1 << 12);
 const RECONNECT_DELAYS_MS = Object.freeze([1_000, 3_000, 5_000, 10_000, 30_000]);
+const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const IMAGE_FILE_TYPES = new Map([
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.png', 'image/png'],
+  ['.webp', 'image/webp'],
+  ['.gif', 'image/gif'],
+]);
+const DISCORD_IMAGE_HOSTS = Object.freeze(['cdn.discordapp.com']);
 
 function socketUrl(value) {
   const url = new URL(value);
@@ -48,7 +58,37 @@ function stripBotMention(text, botId) {
   return text.replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
 }
 
-export function normalizeDiscordMessage(message, botId) {
+function attachmentMediaType(attachment) {
+  const value = typeof attachment?.content_type === 'string'
+    ? attachment.content_type.split(';', 1)[0].trim().toLowerCase() : '';
+  if (IMAGE_MEDIA_TYPES.has(value)) return value;
+  const filename = typeof attachment?.filename === 'string' ? attachment.filename.toLowerCase() : '';
+  for (const [extension, mediaType] of IMAGE_FILE_TYPES) {
+    if (filename.endsWith(extension)) return mediaType;
+  }
+  return null;
+}
+
+function attachmentSize(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function discordImageSource(attachment, fetchImpl) {
+  const mediaType = attachmentMediaType(attachment);
+  if (!mediaType || typeof attachment?.url !== 'string') return null;
+  return {
+    name: typeof attachment.filename === 'string' ? attachment.filename : undefined,
+    mediaType,
+    size: attachmentSize(attachment.size),
+    load: (options) => fetchImageBuffer(attachment.url, {
+      ...options,
+      fetchImpl,
+      allowedHosts: DISCORD_IMAGE_HOSTS,
+    }),
+  };
+}
+
+export function normalizeDiscordMessage(message, botId, { fetchImpl = fetch } = {}) {
   if (!message?.id || !message?.channel_id || !message?.author?.id) return null;
   const direct = !message.guild_id;
   const addressed = direct
@@ -60,6 +100,9 @@ export function normalizeDiscordMessage(message, botId) {
     kind: direct ? 'direct' : 'group',
     conversationId: String(message.channel_id),
     content: stripBotMention(message.content ?? '', botId),
+    images: Array.isArray(message.attachments)
+      ? message.attachments.map((attachment) => discordImageSource(attachment, fetchImpl)).filter(Boolean)
+      : [],
     addressed,
     replyTarget: {
       channelId: String(message.channel_id),

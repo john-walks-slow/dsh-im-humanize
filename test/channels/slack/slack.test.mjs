@@ -19,6 +19,7 @@ import {
   SlackRuntime,
   normalizeSlackEvent,
 } from '../../../src/channels/slack/slack-runtime.mjs';
+import { SLACK_APP_MANIFEST_YAML } from '../../../src/channels/slack/manifest.mjs';
 import {
   SLACK_ENDPOINTS,
   createSlackRpcHandler,
@@ -131,6 +132,146 @@ test('Slack API uses native streaming methods and suppresses generated mass ment
   ]);
   assert.equal(calls[1].body.markdown_text, 'hello ');
   assert.equal(calls[3].body.text, '请通知 @channel 和 @U99999999');
+});
+
+test('Slack downloads private files with the bot token from Slack hosts only', async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const calls = [];
+  const api = new SlackApi({
+    botToken: BOT_TOKEN,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(png, { status: 200, headers: { 'content-length': String(png.length) } });
+    },
+  });
+  assert.deepEqual(await api.downloadFile({
+    url: 'https://files.slack.com/files-pri/T123-F123/download/image.png',
+    maxBytes: 100,
+  }), png);
+  assert.equal(calls[0].options.headers.authorization, `Bearer ${BOT_TOKEN}`);
+  assert.equal(calls[0].options.redirect, 'manual');
+  assert.deepEqual(await api.downloadFile({
+    url: 'https://slack.com/files-pri/T123-F124/download/image.png',
+    maxBytes: 100,
+  }), png);
+  assert.equal(calls[1].options.headers.authorization, `Bearer ${BOT_TOKEN}`);
+  assert.equal(calls[1].url.hostname, 'files.slack.com');
+  await assert.rejects(() => api.downloadFile({
+    url: 'https://example.com/internal.png', maxBytes: 100,
+  }), /messaging platform/);
+  assert.equal(calls.length, 2);
+
+  const redirectCalls = [];
+  const redirectingApi = new SlackApi({
+    botToken: BOT_TOKEN,
+    fetchImpl: async (url, options) => {
+      redirectCalls.push({ url, options });
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'https://example.com/leak-token' },
+      });
+    },
+  });
+  await assert.rejects(() => redirectingApi.downloadFile({
+    url: 'https://slack.com/files-pri/T123-F125/download/image.png',
+    maxBytes: 100,
+  }), (error) => {
+    assert.equal(error.code, 'image-redirect-blocked');
+    return true;
+  });
+  assert.equal(redirectCalls.length, 1);
+  assert.equal(redirectCalls[0].url.hostname, 'files.slack.com');
+  assert.equal(redirectCalls[0].options.headers.authorization, `Bearer ${BOT_TOKEN}`);
+  assert.match(SLACK_APP_MANIFEST_YAML, /\n\s+- files:read\n/);
+});
+
+test('Slack refuses unsafe file redirects and explains stale files:read authorization', async () => {
+  const workspaceCalls = [];
+  const workspaceApi = new SlackApi({
+    botToken: BOT_TOKEN,
+    fetchImpl: async (url, options) => {
+      workspaceCalls.push({ url, options });
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'https://workspace-name.slack.com/?redir=%2Ffiles-pri%2Fsecret' },
+      });
+    },
+  });
+  await assert.rejects(() => workspaceApi.downloadFile({
+    url: 'https://files.slack.com/files-pri/T123-F126/download/image.png',
+    maxBytes: 100,
+  }), (error) => {
+    assert.equal(error.code, 'slack-file-access-required');
+    assert.match(error.userMessage, /files:read/);
+    return true;
+  });
+  assert.equal(workspaceCalls.length, 1);
+
+  const missingScopeCalls = [];
+  const missingScopeApi = new SlackApi({
+    botToken: BOT_TOKEN,
+    fetchImpl: async (url, options) => {
+      missingScopeCalls.push({ url, options });
+      if (url.pathname.endsWith('/auth.test')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          team_id: 'T12345678',
+          user_id: 'U12345678',
+          bot_id: 'B12345678',
+        }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'x-oauth-scopes': 'app_mentions:read,chat:write,im:history',
+          },
+        });
+      }
+      return new Response(null, {
+        status: 302,
+        headers: {
+          location: 'https://files-origin.slack.com/files-pri/T123-F126/download/image.png',
+        },
+      });
+    },
+  });
+  await missingScopeApi.authTest();
+  await assert.rejects(() => missingScopeApi.downloadFile({
+    url: 'https://files.slack.com/files-pri/T123-F126/download/image.png',
+    maxBytes: 100,
+  }), (error) => {
+    assert.equal(error.code, 'slack-file-access-required');
+    assert.match(error.userMessage, /files:read/);
+    return true;
+  });
+  assert.equal(missingScopeCalls.length, 2);
+  assert.deepEqual(missingScopeCalls.map((call) => call.url.hostname), [
+    'slack.com', 'files.slack.com',
+  ]);
+
+  for (const location of [
+    'https://example.com/leak-token',
+    'http://files-origin.slack.com/files-pri/T123-F126/download/image.png',
+    'https://files-origin.slack.com/files-pri/T123-F126/download/image.png',
+    'https://files-origin.slack.com/files-pri/T123-F999/download/image.png',
+    'https://files-origin.slack.com/files-pri/T123-F126/download/image.png?changed=1',
+  ]) {
+    const unsafeCalls = [];
+    const unsafeApi = new SlackApi({
+      botToken: BOT_TOKEN,
+      fetchImpl: async (url, options) => {
+        unsafeCalls.push({ url, options });
+        return new Response(null, { status: 302, headers: { location } });
+      },
+    });
+    await assert.rejects(() => unsafeApi.downloadFile({
+      url: 'https://files.slack.com/files-pri/T123-F126/download/image.png',
+      maxBytes: 100,
+    }), (error) => {
+      assert.equal(error.code, 'image-redirect-blocked');
+      return true;
+    });
+    assert.equal(unsafeCalls.length, 1);
+  }
 });
 
 test('Slack controller stores two protected credential references and exposes neither token', async (t) => {
@@ -258,6 +399,62 @@ test('Slack normalizes direct messages and addressed channel events', () => {
     },
   }, 'U12345678');
   assert.equal(botMessage, null);
+});
+
+test('Slack accepts image file shares and keeps other files out of image prompts', async () => {
+  const loads = [];
+  const direct = normalizeSlackEvent({
+    event_id: 'Ev010',
+    team_id: 'T12345678',
+    event: {
+      type: 'message',
+      subtype: 'file_share',
+      channel_type: 'im',
+      channel: 'D12345678',
+      user: 'U87654321',
+      ts: '1700000000.010',
+      text: '识别一下',
+      files: [{
+        id: 'F12345678', name: 'screen.png', mimetype: 'image/png', size: 2_000,
+        url_private_download: 'https://files.slack.com/files-pri/T123-F123/download/screen.png',
+      }, {
+        id: 'F12345679', name: 'notes.txt', mimetype: 'text/plain', size: 20,
+        url_private: 'https://files.slack.com/files-pri/T123-F124/notes.txt',
+      }],
+    },
+  }, 'U12345678', {
+    loadFile: async (url, options) => {
+      loads.push({ url, options });
+      return Buffer.from('image');
+    },
+  });
+  assert.equal(direct.images.length, 1);
+  assert.equal(direct.images[0].name, 'screen.png');
+  await direct.images[0].load({ maxBytes: 5_000 });
+  assert.match(loads[0].url, /screen\.png$/);
+
+  const group = normalizeSlackEvent({
+    event_id: 'Ev011',
+    team_id: 'T12345678',
+    event: {
+      type: 'app_mention', channel: 'C12345678', user: 'U87654321', ts: '1700000000.011',
+      text: '<@U12345678>',
+      files: [{
+        id: 'F12345680', name: 'photo.jpg', mimetype: 'image/jpeg', size: 1_000,
+        url_private: 'https://files.slack.com/files-pri/T123-F125/photo.jpg',
+      }],
+    },
+  }, 'U12345678');
+  assert.equal(group.addressed, true);
+  assert.equal(group.images.length, 1);
+
+  assert.equal(normalizeSlackEvent({
+    event_id: 'Ev012',
+    event: {
+      type: 'message', subtype: 'message_changed', channel_type: 'im', channel: 'D12345678',
+      user: 'U87654321', ts: '1700000000.012', text: '', files: [],
+    },
+  }, 'U12345678'), null);
 });
 
 class FakeSocket {

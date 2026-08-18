@@ -1,11 +1,44 @@
 import {
   areJidsSameUser,
+  downloadMediaMessage,
   normalizeMessageContent,
 } from '@whiskeysockets/baileys';
 
 import { splitMessageText } from '../shared/editable-message-stream.mjs';
+import { ImagePromptError } from '../shared/image-prompt.mjs';
 import { createWhatsappBridgeStatus, WhatsappHarnessBridge } from './whatsapp-bridge.mjs';
 import { createWhatsappWebSession } from './whatsapp-web-session.mjs';
+
+const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const DEFAULT_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const IMAGE_DOWNLOAD_TIMEOUT_MS = 15_000;
+const MESSAGE_WRAPPER_KEYS = [
+  'ephemeralMessage',
+  'viewOnceMessage',
+  'documentWithCaptionMessage',
+  'viewOnceMessageV2',
+  'viewOnceMessageV2Extension',
+  'editedMessage',
+  'associatedChildMessage',
+  'groupStatusMessage',
+  'groupStatusMessageV2',
+];
+const VIEW_ONCE_WRAPPER_KEYS = new Set([
+  'viewOnceMessage',
+  'viewOnceMessageV2',
+  'viewOnceMessageV2Extension',
+]);
+
+function hasViewOnceWrapper(content) {
+  let current = content;
+  for (let depth = 0; depth < 5 && current && typeof current === 'object'; depth += 1) {
+    const wrapperKey = MESSAGE_WRAPPER_KEYS.find((key) => current[key]?.message);
+    if (!wrapperKey) return false;
+    if (VIEW_ONCE_WRAPPER_KEYS.has(wrapperKey)) return true;
+    current = current[wrapperKey].message;
+  }
+  return false;
+}
 
 function messageContext(content) {
   return content?.extendedTextMessage?.contextInfo
@@ -24,7 +57,114 @@ function messageText(content) {
     ?? '';
 }
 
-export function normalizeWhatsappMessage(message, accountJid) {
+function mediaSize(value) {
+  if (Number.isSafeInteger(value) && value >= 0) return value;
+  let converted;
+  try {
+    converted = Number(value?.toString?.());
+  } catch {
+    return undefined;
+  }
+  return Number.isSafeInteger(converted) && converted >= 0 ? converted : undefined;
+}
+
+async function downloadWhatsappImage(message, download, {
+  signal,
+  maxBytes = DEFAULT_MAX_IMAGE_BYTES,
+} = {}) {
+  signal?.throwIfAborted();
+  const timeout = AbortSignal.timeout(IMAGE_DOWNLOAD_TIMEOUT_MS);
+  const downloadSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  const pendingStream = Promise.resolve().then(() => (
+    download(message, 'stream', { options: { signal: downloadSignal } })
+  ));
+  const stream = await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return false;
+      settled = true;
+      downloadSignal.removeEventListener('abort', onAbort);
+      callback(value);
+      return true;
+    };
+    const onAbort = () => finish(reject, downloadSignal.reason);
+    downloadSignal.addEventListener('abort', onAbort, { once: true });
+    pendingStream.then((value) => {
+      if (!finish(resolve, value)) value?.destroy?.();
+    }, (error) => finish(reject, error));
+    if (downloadSignal.aborted) onAbort();
+  }).catch((error) => {
+    if (signal?.aborted) throw signal.reason ?? error;
+    if (timeout.aborted) {
+      throw new ImagePromptError(
+        'image-download-failed',
+        `WhatsApp image download timed out after ${IMAGE_DOWNLOAD_TIMEOUT_MS} ms`,
+        '图片下载失败，请重新发送后再试。',
+      );
+    }
+    throw error;
+  });
+  const chunks = [];
+  let size = 0;
+  const abortStream = () => stream?.destroy?.(downloadSignal.reason);
+  downloadSignal.addEventListener('abort', abortStream, { once: true });
+  try {
+    for await (const chunk of stream) {
+      downloadSignal.throwIfAborted();
+      const data = Buffer.from(chunk);
+      size += data.length;
+      if (size > maxBytes) {
+        stream.destroy?.();
+        throw new ImagePromptError(
+          'image-too-large',
+          `WhatsApp image exceeded ${maxBytes} bytes`,
+          '图片超过 5 MB，请压缩后重试。',
+        );
+      }
+      chunks.push(data);
+    }
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
+    if (timeout.aborted) {
+      throw new ImagePromptError(
+        'image-download-failed',
+        `WhatsApp image stream timed out after ${IMAGE_DOWNLOAD_TIMEOUT_MS} ms`,
+        '图片下载失败，请重新发送后再试。',
+      );
+    }
+    throw error;
+  } finally {
+    downloadSignal.removeEventListener('abort', abortStream);
+  }
+  return Buffer.concat(chunks, size);
+}
+
+function whatsappImageSource(message, content, download, { viewOnce = false } = {}) {
+  let media;
+  let name;
+  if (!viewOnce && content?.imageMessage && content.imageMessage.viewOnce !== true) {
+    media = content.imageMessage;
+  } else if (content?.documentMessage) {
+    const type = typeof content.documentMessage.mimetype === 'string'
+      ? content.documentMessage.mimetype.toLowerCase() : '';
+    if (!IMAGE_MEDIA_TYPES.has(type)) return null;
+    media = content.documentMessage;
+    name = typeof media.fileName === 'string' ? media.fileName : undefined;
+  }
+  if (!media) return null;
+  const mediaType = typeof media.mimetype === 'string' ? media.mimetype.toLowerCase() : '';
+  if (!IMAGE_MEDIA_TYPES.has(mediaType)) return null;
+  return {
+    name,
+    mediaType,
+    size: mediaSize(media.fileLength),
+    load: (options) => downloadWhatsappImage(message, download, options),
+  };
+}
+
+export function normalizeWhatsappMessage(message, accountJid, {
+  download = downloadMediaMessage,
+} = {}) {
   const remoteJid = typeof message?.key?.remoteJid === 'string' ? message.key.remoteJid : '';
   const alternateRemoteJid = typeof message?.key?.remoteJidAlt === 'string'
     ? message.key.remoteJidAlt : '';
@@ -38,12 +178,14 @@ export function normalizeWhatsappMessage(message, accountJid) {
   if (fromMe && !selfChat) return null;
   const senderJid = selfChat ? accountJid : group ? message.key.participant : remoteJid;
   if (typeof senderJid !== 'string' || !senderJid) return null;
+  const viewOnce = hasViewOnceWrapper(message.message);
   const content = normalizeMessageContent(message.message);
   const context = messageContext(content);
   const mentioned = Array.isArray(context?.mentionedJid)
     && context.mentionedJid.some((jid) => areJidsSameUser(jid, accountJid));
   const replyToSelf = typeof context?.participant === 'string'
     && areJidsSameUser(context.participant, accountJid);
+  const image = whatsappImageSource(message, content, download, { viewOnce });
   return {
     messageId: `${remoteJid}:${messageId}`,
     providerMessageId: messageId,
@@ -52,6 +194,7 @@ export function normalizeWhatsappMessage(message, accountJid) {
     kind: group ? 'group' : 'direct',
     conversationId: remoteJid,
     content: messageText(content),
+    images: image ? [image] : [],
     addressed: !group || mentioned || replyToSelf,
     selfChat,
     replyTarget: { jid: remoteJid, quoted: message, selfChat },

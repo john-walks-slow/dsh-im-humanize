@@ -7,14 +7,17 @@ function escaped(value) {
 }
 
 function mentionedUsername(message, username) {
-  if (!username || typeof message?.text !== 'string' || !Array.isArray(message.entities)) return false;
-  return message.entities.some((entity) => {
-    if (entity?.type !== 'mention' || !Number.isInteger(entity.offset) || !Number.isInteger(entity.length)) {
-      return false;
-    }
-    return message.text.slice(entity.offset, entity.offset + entity.length).toLowerCase()
-      === `@${username.toLowerCase()}`;
-  });
+  if (!username) return false;
+  return [
+    [message?.text, message?.entities],
+    [message?.caption, message?.caption_entities],
+  ].some(([text, entities]) => typeof text === 'string' && Array.isArray(entities)
+    && entities.some((entity) => {
+      if (entity?.type !== 'mention' || !Number.isInteger(entity.offset)
+        || !Number.isInteger(entity.length)) return false;
+      return text.slice(entity.offset, entity.offset + entity.length).toLowerCase()
+        === `@${username.toLowerCase()}`;
+    }));
 }
 
 function withoutBotMention(text, username) {
@@ -22,7 +25,63 @@ function withoutBotMention(text, username) {
   return text.replace(new RegExp(`@${escaped(username)}\\b`, 'ig'), '').trim();
 }
 
-export function normalizeTelegramUpdate(update, { botId, username }) {
+const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const IMAGE_FILE_TYPES = new Map([
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.png', 'image/png'],
+  ['.webp', 'image/webp'],
+  ['.gif', 'image/gif'],
+]);
+
+function imageTypeForDocument(document) {
+  const declaredType = document?.mime_type ?? document?.mimetype;
+  const type = typeof declaredType === 'string' ? declaredType.toLowerCase() : '';
+  if (IMAGE_MEDIA_TYPES.has(type)) return type;
+  const filename = typeof document?.file_name === 'string' ? document.file_name.toLowerCase() : '';
+  for (const [extension, mediaType] of IMAGE_FILE_TYPES) {
+    if (filename.endsWith(extension)) return mediaType;
+  }
+  return null;
+}
+
+function fileSize(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function photoScore(photo) {
+  return fileSize(photo?.file_size) ?? ((Number(photo?.width) || 0) * (Number(photo?.height) || 0));
+}
+
+function telegramImageSource(message, loadFile) {
+  let file;
+  let mediaType;
+  let name;
+  if (Array.isArray(message?.photo) && message.photo.length > 0) {
+    file = message.photo.reduce((largest, candidate) => (
+      photoScore(candidate) > photoScore(largest) ? candidate : largest
+    ));
+    mediaType = 'image/jpeg';
+    name = `${file.file_unique_id ?? file.file_id ?? 'telegram-photo'}.jpg`;
+  } else if (message?.document) {
+    const type = imageTypeForDocument(message.document);
+    if (!type) return null;
+    file = message.document;
+    mediaType = type;
+    name = typeof file.file_name === 'string' ? file.file_name : undefined;
+  }
+  if (!file || typeof file.file_id !== 'string') return null;
+  return {
+    name,
+    mediaType,
+    size: fileSize(file.file_size),
+    load: (options) => loadFile(file.file_id, options),
+  };
+}
+
+export function normalizeTelegramUpdate(update, { botId, username, loadFile = async () => {
+  throw new Error('Telegram file downloader is unavailable');
+} }) {
   const message = update?.message;
   const chatId = message?.chat?.id;
   const senderId = message?.from?.id;
@@ -36,6 +95,7 @@ export function normalizeTelegramUpdate(update, { botId, username }) {
     || mentionedUsername(message, username);
   const messageThreadId = Number.isSafeInteger(message.message_thread_id)
     ? message.message_thread_id : undefined;
+  const image = telegramImageSource(message, loadFile);
   return {
     messageId: String(update.update_id),
     senderId: String(senderId),
@@ -44,6 +104,7 @@ export function normalizeTelegramUpdate(update, { botId, username }) {
     conversationId: messageThreadId === undefined
       ? String(chatId) : `${chatId}:${messageThreadId}`,
     content: withoutBotMention(message.text ?? message.caption ?? '', username),
+    images: image ? [image] : [],
     addressed,
     replyTarget: {
       chatId,
@@ -250,6 +311,7 @@ export class TelegramRuntime {
         const message = normalizeTelegramUpdate(update, {
           botId: this.#config.platformId,
           username: this.#config.username,
+          loadFile: (fileId, options) => this.#api.downloadFile({ fileId, ...options }),
         });
         if (message) {
           void this.#bridge.accept(message).catch((error) => {

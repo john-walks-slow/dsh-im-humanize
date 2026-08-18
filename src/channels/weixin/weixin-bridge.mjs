@@ -1,4 +1,5 @@
 import {
+  extractWeixinImages,
   extractWeixinText,
   splitWeixinText,
   weixinMessageId,
@@ -12,13 +13,18 @@ import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
 import { runCompactCommand } from '../shared/compact-command.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
+import {
+  hasInboundImages,
+  imagePromptUserMessage,
+  promptContentForMessage,
+} from '../shared/image-prompt.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
 
 const HELP_TEXT = [
   '微信已连接 DeepSeek Harness。',
   '',
-  '直接发送文字或带文字识别结果的语音即可继续当前会话。',
+  '直接发送文字、图片或带文字识别结果的语音即可继续当前会话。',
   '/new  开启一个全新会话',
   '/compact  压缩当前会话的较早上下文',
   '/workspace 工作区绝对路径  切换工作区',
@@ -37,9 +43,15 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function hasWeixinImageItems(message) {
+  return Array.isArray(message?.item_list)
+    && message.item_list.some((item) => item?.image_item && typeof item.image_item === 'object');
+}
+
 function canClaimInteractionReply(message, pending) {
   return pending.questions[pending.index]
     && nonEmptyString(message?.from_user_id) === pending.actor
+    && !hasWeixinImageItems(message)
     && nonEmptyString(extractWeixinText(message));
 }
 
@@ -124,7 +136,7 @@ export class WeixinHarnessBridge {
       key,
       actor: sender,
       messageId,
-      text: extractWeixinText(message),
+      text: hasWeixinImageItems(message) ? '' : extractWeixinText(message),
       addressed: true,
       hasPendingQuestion: Boolean(pending),
       questionCompletion: pending?.submitting || pending?.claimedReplyMessageId
@@ -216,33 +228,40 @@ export class WeixinHarnessBridge {
 
     const contextToken = typeof message.context_token === 'string' ? message.context_token : undefined;
     const runId = typeof message.run_id === 'string' ? message.run_id : undefined;
-    const text = extractWeixinText(message);
+    const text = extractWeixinText(message) ?? '';
     try {
-      if (!text) {
-        await this.#send(sender, '目前仅支持文字消息，以及微信已转成文字的语音消息。', contextToken, runId);
+      const images = typeof this.#api.inboundImages === 'function'
+        ? this.#api.inboundImages(message)
+        : extractWeixinImages(message);
+      const promptMessage = { content: text, images };
+      const hasImages = hasInboundImages(promptMessage);
+      if (!text && !hasImages) {
+        await this.#send(sender, '目前支持文字、图片，以及微信已转成文字的语音消息。', contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
 
       const command = text.trim().toLowerCase();
-      if (command === '/help') {
+      if (!hasImages && command === '/help') {
         await this.#send(sender, HELP_TEXT, contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
-      if (command === '/status') {
+      if (!hasImages && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#send(sender, '微信与 DeepSeek Harness 连接正常。', contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
-      if (command === '/new') {
+      if (!hasImages && command === '/new') {
         await this.#state.clearSession(key);
         await this.#send(sender, '已开启新会话。请发送你的问题。', contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
-      const workspaceCommand = await runWorkspaceCommand(text, this.#harness, key);
+      const workspaceCommand = hasImages
+        ? null
+        : await runWorkspaceCommand(text, this.#harness, key);
       if (workspaceCommand) {
         for (const reply of workspaceCommand.messages ?? [workspaceCommand.message]) {
           await this.#send(sender, reply, contextToken, runId);
@@ -250,26 +269,31 @@ export class WeixinHarnessBridge {
         await this.#state.markSeen(messageId);
         return;
       }
-      const compactCommand = await runCompactCommand(
-        text,
-        this.#harness,
-        this.#state,
-        key,
-        { signal: this.#signal },
-      );
+      const compactCommand = hasImages
+        ? null
+        : await runCompactCommand(
+            text,
+            this.#harness,
+            this.#state,
+            key,
+            { signal: this.#signal },
+          );
       if (compactCommand) {
         await this.#send(sender, compactCommand.message, contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
 
+      const content = hasImages
+        ? await promptContentForMessage(promptMessage, { signal: this.#signal })
+        : undefined;
       let answer;
       try {
         ({ answer } = await askInWorkspaceSession({
           harness: this.#harness,
           state: this.#state,
           key,
-          text,
+          ...(hasImages ? { content } : { text }),
           createOptions: { signal: this.#signal },
           existsOptions: { signal: this.#signal },
           askOptions: {
@@ -300,7 +324,12 @@ export class WeixinHarnessBridge {
       this.#status.lastError = error?.message ?? String(error);
       this.#logger.error?.('[dsh-weixin] failed to process an inbound message:', error);
       try {
-        await this.#send(sender, '消息处理失败，请稍后重试。', contextToken, runId);
+        await this.#send(
+          sender,
+          imagePromptUserMessage(error) ?? '消息处理失败，请稍后重试。',
+          contextToken,
+          runId,
+        );
         await this.#state.markSeen(messageId);
       } catch (sendError) {
         this.#logger.error?.('[dsh-weixin] failed to send the safe error reply:', sendError);
@@ -326,7 +355,7 @@ export class WeixinHarnessBridge {
     const text = nonEmptyString(extractWeixinText(message));
     const contextToken = nonEmptyString(message?.context_token) ?? undefined;
     const runId = nonEmptyString(message?.run_id) ?? undefined;
-    if (!text) {
+    if (!text || hasWeixinImageItems(message)) {
       await this.#send(
         expected.actor,
         '请用文字回答当前问题。',

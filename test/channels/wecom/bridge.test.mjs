@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { WecomHarnessBridge } from '../../../src/channels/wecom/wecom-bridge.mjs';
+import {
+  WecomHarnessBridge,
+  wecomInboundMessage,
+} from '../../../src/channels/wecom/wecom-bridge.mjs';
+import { DEFAULT_IMAGE_PROMPT } from '../../../src/channels/shared/image-prompt.mjs';
+
+const PNG_1X1 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+);
 
 function frame(overrides = {}) {
   return {
@@ -150,6 +159,204 @@ test('Enterprise WeChat messages stream Harness progress and finalize once', asy
   assert.deepEqual(active, []);
   assert.equal(store.seen.has('msg-1'), true);
   assert.equal(bridge.status.messagesReplied, 1);
+});
+
+test('Enterprise WeChat downloads an image with its AES key and submits structured content once', async () => {
+  const transport = testClient();
+  const downloads = [];
+  const asked = [];
+  transport.client.downloadFile = async (url, aeskey) => {
+    downloads.push({ url, aeskey });
+    return { buffer: PNG_1X1, filename: 'photo.png' };
+  };
+  const bridge = new WecomHarnessBridge({
+    client: transport.client,
+    generateStreamId: () => 'stream-image',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, content) => {
+        asked.push({ sessionId, content });
+        return '图片识别完成';
+      },
+    },
+    state: state(),
+  });
+  const imageFrame = frame({
+    msgid: 'image-1',
+    msgtype: 'image',
+    text: undefined,
+    image: { url: 'https://wecom.example/image', aeskey: 'aes-image' },
+  });
+
+  await bridge.accept(imageFrame);
+  await bridge.accept(imageFrame);
+
+  assert.deepEqual(downloads, [{
+    url: 'https://wecom.example/image',
+    aeskey: 'aes-image',
+  }]);
+  assert.deepEqual(asked, [{
+    sessionId: 'session-existing',
+    content: [
+      { type: 'text', text: DEFAULT_IMAGE_PROMPT },
+      {
+        type: 'image',
+        mediaType: 'image/png',
+        data: PNG_1X1.toString('base64'),
+        name: 'photo.png',
+      },
+    ],
+  }]);
+  assert.equal(transport.streamed.at(-1).content, '图片识别完成');
+});
+
+test('Enterprise WeChat preserves mixed-message text and image order', async () => {
+  const transport = testClient();
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+  const gif = Buffer.from('GIF89a payload');
+  transport.client.downloadFile = async (url) => ({
+    buffer: url.endsWith('/one') ? jpeg : gif,
+  });
+  let prompt;
+  const bridge = new WecomHarnessBridge({
+    client: transport.client,
+    generateStreamId: () => 'stream-mixed',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, content) => { prompt = content; return 'ok'; },
+    },
+    state: state(),
+  });
+
+  await bridge.accept(frame({
+    msgid: 'mixed-image',
+    msgtype: 'mixed',
+    text: undefined,
+    mixed: { msg_item: [
+      { msgtype: 'text', text: { content: '比较这两张图' } },
+      { msgtype: 'image', image: { url: 'https://wecom.example/one', aeskey: 'one' } },
+      { msgtype: 'image', image: { url: 'https://wecom.example/two', aeskey: 'two' } },
+    ] },
+  }));
+
+  assert.deepEqual(prompt, [
+    { type: 'text', text: '比较这两张图' },
+    { type: 'image', mediaType: 'image/jpeg', data: jpeg.toString('base64') },
+    { type: 'image', mediaType: 'image/gif', data: gif.toString('base64') },
+  ]);
+});
+
+test('Enterprise WeChat starts image download before an earlier conversation turn finishes', async () => {
+  const transport = testClient();
+  const firstStarted = deferred();
+  const releaseFirst = deferred();
+  const downloads = [];
+  const prompts = [];
+  transport.client.downloadFile = async (url, aeskey) => {
+    downloads.push({ url, aeskey });
+    return { buffer: PNG_1X1, filename: 'queued.png' };
+  };
+  const bridge = new WecomHarnessBridge({
+    client: transport.client,
+    generateStreamId: (() => { let index = 0; return () => `queued-${++index}`; })(),
+    harness: {
+      sessionExists: async () => true,
+      async ask(_sessionId, prompt) {
+        prompts.push(prompt);
+        if (prompt === '先处理这个慢任务') {
+          firstStarted.resolve();
+          await releaseFirst.promise;
+        }
+        return 'ok';
+      },
+    },
+    state: state(),
+  });
+
+  const first = bridge.accept(frame({
+    msgid: 'queued-text',
+    text: { content: '先处理这个慢任务' },
+  }));
+  await firstStarted.promise;
+  const second = bridge.accept(frame({
+    msgid: 'queued-image',
+    msgtype: 'image',
+    text: undefined,
+    image: { url: 'https://wecom.example/expiring', aeskey: 'queued-key' },
+  }));
+
+  await eventually(() => downloads.length === 1);
+  assert.deepEqual(prompts, ['先处理这个慢任务']);
+  releaseFirst.resolve();
+  await Promise.all([first, second]);
+  assert.deepEqual(downloads, [{
+    url: 'https://wecom.example/expiring',
+    aeskey: 'queued-key',
+  }]);
+  assert.equal(Array.isArray(prompts[1]), true);
+  assert.equal(prompts[1][1].mediaType, 'image/png');
+});
+
+test('Enterprise WeChat bounds prefetched image memory while a conversation is queued', async () => {
+  const transport = testClient();
+  const firstStarted = deferred();
+  const releaseFirst = deferred();
+  const downloads = [];
+  const prompts = [];
+  transport.client.downloadFile = async (url) => {
+    downloads.push(url);
+    return { buffer: PNG_1X1 };
+  };
+  const bridge = new WecomHarnessBridge({
+    client: transport.client,
+    generateStreamId: (() => { let index = 0; return () => `bounded-${++index}`; })(),
+    harness: {
+      sessionExists: async () => true,
+      async ask(_sessionId, prompt) {
+        prompts.push(prompt);
+        if (prompt === '阻塞队列') {
+          firstStarted.resolve();
+          await releaseFirst.promise;
+        }
+        return 'ok';
+      },
+    },
+    state: state(),
+    logger: { error() {}, warn() {} },
+  });
+
+  const pending = [bridge.accept(frame({
+    msgid: 'bounded-start',
+    text: { content: '阻塞队列' },
+  }))];
+  await firstStarted.promise;
+  for (let index = 0; index < 5; index += 1) {
+    pending.push(bridge.accept(frame({
+      msgid: `bounded-image-${index}`,
+      msgtype: 'image',
+      text: undefined,
+      image: { url: `https://wecom.example/bounded-${index}`, aeskey: `key-${index}` },
+    })));
+  }
+
+  await eventually(() => downloads.length === 4);
+  releaseFirst.resolve();
+  await Promise.all(pending);
+  assert.equal(downloads.length, 4);
+  assert.equal(prompts.length, 5);
+  assert.equal(transport.streamed.some(({ content }) => (
+    content === '当前待处理图片较多，请稍后重新发送。'
+  )), true);
+});
+
+test('Enterprise WeChat image references enforce the caller byte limit after SDK decryption', async () => {
+  const message = wecomInboundMessage(frame({
+    msgtype: 'image',
+    image: { url: 'https://wecom.example/large', aeskey: 'large-key' },
+  }), {
+    downloadFile: async () => ({ buffer: Buffer.alloc(5) }),
+  });
+  await assert.rejects(message.images[0].load({ maxBytes: 4 }), /exceeds/);
 });
 
 test('Enterprise WeChat visibility scope accepts direct and group conversations without local approval', async () => {

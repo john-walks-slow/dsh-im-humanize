@@ -623,7 +623,7 @@ export class HarnessClient {
     return ownership ? { ownership, recovered: true } : null;
   }
 
-  async ask(sessionId, text, options = {}) {
+  async ask(sessionId, prompt, options = {}) {
     if (typeof options === 'number') options = { timeoutMs: options };
     const timeoutMs = options.timeoutMs ?? 600_000;
     const signal = options.signal;
@@ -693,10 +693,16 @@ export class HarnessClient {
         ]);
       }
 
+      const content = typeof prompt === 'string'
+        ? [{ type: 'text', text: prompt }]
+        : prompt;
+      if (!Array.isArray(content) || content.length === 0) {
+        throw new TypeError('Harness prompt content is required');
+      }
       await this.rpc('session.prompt', {
         sessionId,
         mode: 'queue',
-        content: [{ type: 'text', text }],
+        content,
         clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       }, 30_000, { rpcId: promptRpcId, signal });
 
