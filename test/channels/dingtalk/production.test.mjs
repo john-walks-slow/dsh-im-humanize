@@ -58,6 +58,7 @@ test('production assembly keeps secrets in credentials and creates per-bot runti
   assert.equal(seen.controllerOptions.credentials, credentials);
   assert.equal(seen.harnessOptions.baseUrl.href, 'http://127.0.0.1:3080/');
   assert.equal(seen.harnessOptions.autostart, false);
+  assert.equal(Object.hasOwn(seen.harnessOptions, 'agentPreset'), false);
   const runtime = await seen.controllerOptions.createRuntime({
     botId: 'dt_abc',
     config: { botId: 'dt_abc', clientId: 'dingabc' },
@@ -71,4 +72,21 @@ test('production assembly keeps secrets in credentials and creates per-bot runti
   assert.equal(seen.supervisorClosed, true);
   assert.equal(seen.controllerClosed, true);
   assert.equal(seen.harnessStopped, true);
+
+  const productionWithPreset = await createProductionController({
+    credentials,
+    webServer: { port: 3080 },
+    logger: () => console,
+  }, { dataDir: directory, agentPreset: 'router-standard' }, {
+    ConfigStore,
+    DeviceAuth,
+    StateStore,
+    HarnessClient: Harness,
+    Controller,
+    Runtime,
+    createConnectionSupervisor: () => supervisor,
+  });
+
+  assert.equal(seen.harnessOptions.agentPreset, 'router-standard');
+  await productionWithPreset.close();
 });

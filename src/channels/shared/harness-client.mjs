@@ -327,7 +327,7 @@ export class HarnessClient {
   constructor({
     baseUrl,
     workspace,
-    agentPreset = 'standard',
+    agentPreset,
     autostart = false,
     dshBin = 'dsh',
     fetchImpl = fetch,
@@ -354,7 +354,8 @@ export class HarnessClient {
     }
     this.#baseUrl = new URL(baseUrl);
     this.#workspace = workspace;
-    this.#agentPreset = agentPreset;
+    // Keep an omitted preset absent so session.create resolves the Host's current default.
+    this.#agentPreset = agentPreset ?? undefined;
     this.#autostart = autostart;
     this.#dshBin = dshBin;
     this.#fetch = fetchImpl;
@@ -458,10 +459,9 @@ export class HarnessClient {
   async createSession(options = {}) {
     await this.ensureRunning(options);
     const workspaceId = await this.workspaceId(options);
-    const created = await this.rpc('session.create', {
-      workspaceId,
-      agentPreset: this.#agentPreset,
-    }, 30_000, options);
+    const payload = { workspaceId };
+    if (this.#agentPreset !== undefined) payload.agentPreset = this.#agentPreset;
+    const created = await this.rpc('session.create', payload, 30_000, options);
     return created.sessionId;
   }
 

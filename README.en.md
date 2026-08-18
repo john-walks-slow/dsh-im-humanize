@@ -74,6 +74,8 @@ Feishu QR binding records the scanner as an allowed user. Manual credentials can
 
 Each bot maintains an independent Harness workspace. A newly connected bot records the Harness Host process's current working directory (`process.cwd()`) as its default; the path is persisted and does not change when the Host is later restarted from another directory. Every bot card shows the current path and lets it be edited.
 
+When a channel does not explicitly configure `agentPreset`, each new IM session inherits the Harness-wide `agent-presets.default`. Harness reads that default whenever it creates a session, so changing the setting affects only sessions created afterwards; existing sessions and sessions bound with `/session` keep their own preset. An explicit channel `agentPreset` always takes precedence for newly created sessions.
+
 ## Bot commands
 
 | Command | Description |
