@@ -28,6 +28,61 @@ test('/session binds exactly one safe Session ID to the current conversation', a
   assert.match(result.message, /归档：是/);
   assert.equal(result.messages.join(''), result.message);
 });
+
+test('/session N binds the selected position from the current workspace', async () => {
+  const workspace = process.cwd();
+  const calls = [];
+  const harness = {
+    currentWorkspace() { return workspace; },
+    async listWorkspaceSessions(requestedWorkspace) {
+      assert.equal(requestedWorkspace, workspace);
+      return {
+        workspace,
+        sessions: [
+          { sessionId: 'session-first' },
+          { sessionId: 'session-second' },
+        ],
+      };
+    },
+    async bindWorkspaceSession(key, sessionId) {
+      calls.push({ key, sessionId });
+      return { workspace, sessionId, title: 'Selected session' };
+    },
+  };
+
+  const result = await runWorkspaceCommand('/session 2', harness, 'direct:conversation-1');
+  assert.deepEqual(calls, [{ key: 'direct:conversation-1', sessionId: 'session-second' }]);
+  assert.match(result.message, /ID：session-second/);
+
+  const missing = await runWorkspaceCommand('/session 3', harness, 'direct:conversation-1');
+  assert.match(missing.message, /会话序号不存在/);
+  assert.equal(calls.length, 1);
+});
+
+test('/session N maps position lookup failures to safe messages', async () => {
+  const stale = new Error('private old bot lifecycle');
+  stale.code = 'workspace-bot-not-found';
+  const staleCurrent = await runWorkspaceCommand('/session 1', {
+    currentWorkspace() { throw stale; },
+    async listWorkspaceSessions() { throw new Error('must not be called'); },
+  }, 'direct:conversation-1');
+  assert.match(staleCurrent.message, /正在移除或已重新接入/);
+  assert.doesNotMatch(staleCurrent.message, /private old bot lifecycle/);
+
+  const staleList = await runWorkspaceCommand('/session 1', {
+    currentWorkspace() { return process.cwd(); },
+    async listWorkspaceSessions() { throw stale; },
+  }, 'direct:conversation-1');
+  assert.match(staleList.message, /正在移除或已重新接入/);
+
+  const unavailable = await runWorkspaceCommand('/session 1', {
+    currentWorkspace() { return process.cwd(); },
+    async listWorkspaceSessions() { throw new Error('private Harness detail'); },
+  }, 'direct:conversation-1');
+  assert.match(unavailable.message, /暂时无法获取会话列表/);
+  assert.doesNotMatch(unavailable.message, /private Harness detail/);
+});
+
 test('/session strictly rejects missing, multiple, oversized, and unsafe IDs', async () => {
   let bindCalls = 0;
   const harness = {
@@ -156,7 +211,7 @@ test('all nine channel bridges advertise /session and pass their current convers
   ];
   for (const [file, key] of bridgeFamilies) {
     const source = await readFile(new URL(file, import.meta.url), 'utf8');
-    assert.match(source, /\/session Session ID  将当前聊天绑定到指定会话/);
+    assert.match(source, /\/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话/);
     assert.ok(
       source.includes(`runWorkspaceCommand(text, this.#harness, ${key})`),
       `${file} must pass ${key} to the shared command`,

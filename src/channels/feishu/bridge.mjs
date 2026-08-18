@@ -25,7 +25,7 @@ const HELP_TEXT = [
   '/workspace 工作区绝对路径  切换工作区',
   '/workspacelist  列出工作区绝对路径',
   '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
-  '/session Session ID  将当前聊天绑定到指定会话',
+  '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');

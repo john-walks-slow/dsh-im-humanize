@@ -907,11 +907,14 @@ test('/sessionlist supports the current workspace, list numbers, and absolute pa
   assert.doesNotMatch(current.message, /\u202e|\n4\. injected/);
   assert.match(current.message, /2\. 暂无标题（已归档）\n   ID: session-archived/);
   assert.match(current.message, /3\. 标题暂不可用\n   ID: session-missing-summary/);
+  assert.match(current.message, /绑定用法：\/session Session ID 或当前工作区序号（\/session N）/);
   assert.equal(current.messages.join(''), current.message);
 
   const numbered = await runWorkspaceCommand('/sessionlist 2', harness);
   assert.match(numbered.message, new RegExp(`工作区：${alternateWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   assert.match(numbered.message, /Alternate session/);
+  assert.match(numbered.message, /绑定用法：\/session Session ID\n提示：\/session N 只按机器人当前工作区的序号绑定/);
+  assert.doesNotMatch(numbered.message, /Session ID 或当前工作区序号/);
 
   const absolute = await runWorkspaceCommand(`/sessionlist ${thirdWorkspace}`, harness);
   assert.match(absolute.message, /该工作区暂无会话/);
