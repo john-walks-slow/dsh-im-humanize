@@ -9,7 +9,7 @@
   <p>
     <a href="LICENSE"><img src="https://img.shields.io/github/license/xmanrui/dsh-im" alt="MIT 许可证"></a>
     <img src="https://img.shields.io/badge/agent-DeepSeek%20Harness-5865f2" alt="DeepSeek Harness">
-    <img src="https://redirectwizard.com/redirect/MD1G1" alt="滑动变祖器：今天是梁子或今天是梁圣（随机）">
+    <img src="https://dsh-im-random-badge.xmanrui-dsh-im.workers.dev" alt="滑动变祖器：今天是梁子或今天是梁圣（随机）">
   </p>
 
   <p><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
