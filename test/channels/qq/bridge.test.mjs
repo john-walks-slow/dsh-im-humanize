@@ -51,6 +51,30 @@ function message(overrides = {}) {
   };
 }
 
+test('QQ executes /compact for the bound Session without prompting the model', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-compact']]);
+  const sent = [];
+  const executed = [];
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      executeCommand: async (sessionId, line) => {
+        executed.push({ sessionId, line });
+        return { commandId: 'compact-qq', result: { kind: 'success', text: 'Compacted 3 history items (~900 tokens).' } };
+      },
+      ask: async () => assert.fail('/compact must not be submitted to the model'),
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message({ messageId: 'compact-qq', content: '/compact' }));
+
+  assert.deepEqual(executed, [{ sessionId: 'session-compact', line: '/compact' }]);
+  assert.deepEqual(sent, ['已压缩 3 条历史记录（约 900 个 token）。']);
+  assert.equal(fixture.seen.has('compact-qq'), true);
+});
+
 test('QQ private messages stream Harness snapshots and finalize once', async () => {
   const frames = [];
   const sent = [];

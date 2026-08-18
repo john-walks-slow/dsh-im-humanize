@@ -20,7 +20,7 @@ function controller() {
 test('Host exports the DingTalk plugin identity and required services', () => {
   const plugin = createDingtalkHostPlugin({ controller: controller() });
   assert.equal(name, 'dsh-dingtalk-host');
-  assert.deepEqual(inject, ['connection', 'credentials', 'webServer']);
+  assert.deepEqual(inject, ['connection', 'credentials', 'webServer', 'typertGateway']);
   assert.equal(plugin.name, name);
   assert.deepEqual(plugin.inject, inject);
 });

@@ -15,6 +15,7 @@ import {
   observeBotWorkspaceRemovals,
 } from '../../../../src/channels/shared/bot-workspace-store.mjs';
 import { createTokenConnectionSupervisor } from '../shared/connection-supervisor.mjs';
+import { createHarnessCommandExecutor } from '../../harness-command-executor.mjs';
 
 const AUTH_DIRECTORY_PATTERN = /^[a-f0-9-]{36}$/;
 
@@ -76,12 +77,14 @@ export async function createProductionController(ctx, config = {}, internals = {
     }
     return state;
   };
+  const commandExecutor = createHarnessCommandExecutor(ctx, internals.commandExecutor);
   const harness = new Harness({
     baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
     workspace: defaultWorkspace,
     agentPreset: config.agentPreset ?? 'standard',
     autostart: false,
     dshBin: config.dshBin ?? 'dsh',
+    ...(commandExecutor ? { commandExecutor } : {}),
   });
   const coreController = new Controller({
     configStore: observedConfigStore,

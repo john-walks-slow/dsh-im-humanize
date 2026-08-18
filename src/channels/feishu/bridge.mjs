@@ -11,6 +11,7 @@ import {
   validHarnessQuestion,
 } from '../shared/harness-question.mjs';
 import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
+import { runCompactCommand } from '../shared/compact-command.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 
@@ -22,6 +23,7 @@ const HELP_TEXT = [
   '',
   '直接发送问题即可继续当前会话。',
   '/new  开启一个全新会话',
+  '/compact  压缩当前会话的较早上下文',
   '/workspace 工作区绝对路径  切换工作区',
   '/workspacelist  列出工作区绝对路径',
   '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
@@ -320,6 +322,17 @@ export class FeishuHarnessBridge {
       for (const reply of workspaceCommand.messages ?? [workspaceCommand.message]) {
         await this.#send(event.message.chat_id, reply);
       }
+      return;
+    }
+    const compactCommand = await runCompactCommand(
+      text,
+      this.#harness,
+      this.#state,
+      key,
+      { signal: this.#signal },
+    );
+    if (compactCommand) {
+      await this.#send(event.message.chat_id, compactCommand.message);
       return;
     }
 

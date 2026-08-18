@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { unlink } from 'node:fs/promises';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { createConnectionSupervisor } from './connection-supervisor.mjs';
+import { createHarnessCommandExecutor } from '../../harness-command-executor.mjs';
 import { verifyFeishuApp } from '../../../../src/channels/feishu/feishu-app.mjs';
 import { FeishuRuntime } from '../../../../src/channels/feishu/feishu-runtime.mjs';
 import { HarnessClient } from '../../../../src/channels/feishu/harness-client.mjs';
@@ -105,6 +106,7 @@ export async function createProductionController(ctx, config = {}, internals = {
     if (!botConfig) throw new Error('Unknown Feishu bot');
     return stateFor(botConfig);
   };
+  const commandExecutor = createHarnessCommandExecutor(ctx, internals.commandExecutor);
   const harness = new Harness({
     baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
     workspace: defaultWorkspace,
@@ -113,6 +115,7 @@ export async function createProductionController(ctx, config = {}, internals = {
     // second DSH would create a competing server and lifecycle.
     autostart: false,
     dshBin: config.dshBin ?? 'dsh',
+    ...(commandExecutor ? { commandExecutor } : {}),
   });
 
   const coreController = new Controller({

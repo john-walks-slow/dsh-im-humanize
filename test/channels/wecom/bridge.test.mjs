@@ -91,6 +91,31 @@ function questionInteraction({
   };
 }
 
+test('Enterprise WeChat executes /compact for the bound Session without prompting the model', async () => {
+  const store = state();
+  const transport = testClient();
+  const executed = [];
+  const bridge = new WecomHarnessBridge({
+    client: transport.client,
+    generateStreamId: () => 'unused-stream',
+    harness: {
+      executeCommand: async (sessionId, line) => {
+        executed.push({ sessionId, line });
+        return { commandId: 'compact-wecom', result: { kind: 'success', text: 'No compactable history yet.' } };
+      },
+      ask: async () => assert.fail('/compact must not be submitted to the model'),
+    },
+    state: store,
+  });
+
+  await bridge.accept(frame({ msgid: 'compact-wecom', text: { content: '/compact' } }));
+
+  assert.deepEqual(executed, [{ sessionId: 'session-existing', line: '/compact' }]);
+  assert.equal(transport.streamed.at(-1).content, '暂无可压缩的历史记录。');
+  assert.equal(transport.streamed.at(-1).finish, true);
+  assert.deepEqual(transport.active, []);
+});
+
 test('Enterprise WeChat messages stream Harness progress and finalize once', async () => {
   const replies = [];
   const active = [];

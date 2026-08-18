@@ -2,7 +2,7 @@ import { createProductionController } from './production.mjs';
 import { installWhatsappRpc } from './rpc.mjs';
 
 export const name = 'dsh-im-whatsapp-host';
-export const inject = ['connection', 'webServer'];
+export const inject = ['connection', 'webServer', 'typertGateway'];
 
 export async function apply(ctx, config = {}) {
   if (config?.controller) {

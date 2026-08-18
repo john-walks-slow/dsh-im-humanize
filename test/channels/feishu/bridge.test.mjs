@@ -79,6 +79,32 @@ function textClient(sendText) {
   };
 }
 
+test('Feishu executes /compact for the bound Session without prompting the model', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-compact']]);
+  const sent = [];
+  const executed = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness: {
+      executeCommand: async (sessionId, line) => {
+        executed.push({ sessionId, line });
+        return { commandId: 'compact-feishu', result: { kind: 'success', text: 'No compactable history yet.' } };
+      },
+      ask: async () => assert.fail('/compact must not be submitted to the model'),
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  await bridge.accept(event('compact-feishu', '/compact'));
+  await bridge.waitForIdle();
+
+  assert.deepEqual(executed, [{ sessionId: 'session-compact', line: '/compact' }]);
+  assert.deepEqual(sent, ['暂无可压缩的历史记录。']);
+});
+
 test('bridge maps a Feishu conversation to a persistent Harness session and replies', async () => {
   const sent = [];
   const reactions = [];

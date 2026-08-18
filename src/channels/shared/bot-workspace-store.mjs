@@ -668,6 +668,19 @@ export function createBotWorkspaceScope(harness, { botId, workspaces, state }) {
           return target.ask(sessionId, ...args);
         };
       }
+      if (property === 'executeCommand' && typeof target.executeCommand === 'function') {
+        return (sessionId, ...args) => {
+          const generation = sessionGenerations.get(sessionId);
+          sessionGenerations.delete(sessionId);
+          if (!isCurrentScope()
+            || (generation !== undefined && generation !== workspaces.generationFor(botId))) {
+            const error = new Error('The bot workspace changed before this command started.');
+            error.code = WORKSPACE_SESSION_STALE;
+            throw error;
+          }
+          return target.executeCommand(sessionId, ...args);
+        };
+      }
       const value = Reflect.get(target, property, target);
       return typeof value === 'function' ? value.bind(target) : value;
     },

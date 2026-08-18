@@ -76,13 +76,15 @@ Each bot maintains an independent Harness workspace. A newly connected bot recor
 
 | Command | Description |
 | --- | --- |
+| `/compact` | Immediately compact older context in the Session bound to the current chat. |
 | `/workspace <absolute workspace path>` | Switch the current bot's Harness workspace. |
 | `/workspacelist` | List workspace absolute paths that still exist on the current Harness Host. |
 | `/sessionlist [workspace number or absolute path]` | List every registered session ID and title in the selected workspace; omit the argument to use the current workspace. |
 | `/session <Session ID>` | Bind the current chat to an existing Harness session. |
 
-Examples: `/workspace /Users/alice/projects/my-app`, `/sessionlist 2`, `/sessionlist /Users/alice/projects/my-app`, or `/session session-id`
+Examples: `/compact`, `/workspace /Users/alice/projects/my-app`, `/sessionlist 2`, `/sessionlist /Users/alice/projects/my-app`, or `/session session-id`
 
+- `/compact` acts only on the Harness Session already bound to the current chat and is never sent to the model. The bot reports the applicable status when the chat has no Session yet, the Session is generating a reply, or there is no compactable history.
 - The path must be an existing absolute directory. The bot returns an actionable error and the correct usage when validation fails.
 - `/workspacelist` takes no arguments. It combines the Harness global registry with the current bot's path. When that current path still exists and is safe to display, it appears first and is marked as current. Any listed path can be copied directly into `/workspace`.
 - A numeric `/sessionlist` argument uses the same freshly resolved order as `/workspacelist` at command execution time. An absolute path can also select a workspace directly, and the result echoes the resolved path.

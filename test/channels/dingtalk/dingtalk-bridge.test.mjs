@@ -76,6 +76,31 @@ function stateFixture() {
   };
 }
 
+test('DingTalk executes /compact for the bound Session without prompting the model', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:staff-approved', 'session-compact');
+  const sent = [];
+  const executed = [];
+  const bridge = new DingtalkHarnessBridge({
+    api: { sendText: async (request) => sent.push(request) },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      executeCommand: async (sessionId, line) => {
+        executed.push({ sessionId, line });
+        return { commandId: 'compact-dingtalk', result: { kind: 'success', text: 'No compactable history yet.' } };
+      },
+      ask: async () => assert.fail('/compact must not be submitted to the model'),
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('compact-dingtalk', '/compact'));
+
+  assert.deepEqual(executed, [{ sessionId: 'session-compact', line: '/compact' }]);
+  assert.equal(sent.at(-1).text, '暂无可压缩的历史记录。');
+});
+
 test('bridge maps a DingTalk direct conversation to one persistent Harness session', async () => {
   const fixture = stateFixture();
   const sent = [];

@@ -63,6 +63,33 @@ function stateFixture() {
   };
 }
 
+test('Weixin executes /compact for the bound Session without prompting the model', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-compact');
+  const sent = [];
+  const executed = [];
+  const bridge = new WeixinHarnessBridge({
+    api: { sendText: async (request) => sent.push(request) },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      executeCommand: async (sessionId, line) => {
+        executed.push({ sessionId, line });
+        return { commandId: 'compact-weixin', result: { kind: 'success', text: 'No compactable history yet.' } };
+      },
+      ask: async () => assert.fail('/compact must not be submitted to the model'),
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('compact-weixin', '/compact'));
+
+  assert.deepEqual(executed, [{ sessionId: 'session-compact', line: '/compact' }]);
+  assert.equal(sent.at(-1).text, '暂无可压缩的历史记录。');
+  assert.equal(fixture.seen.has('compact-weixin'), true);
+});
+
 test('bridge maps the scanning Weixin user to one persistent Harness session and echoes context_token', async () => {
   const sent = [];
   const asked = [];

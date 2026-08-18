@@ -117,6 +117,38 @@ function createBridge({ harness, state, bot, signal, logger } = {}) {
   });
 }
 
+test('all four shared text channels execute /compact outside the model prompt path', async () => {
+  for (const [name, Bridge] of [
+    ['slack', SlackHarnessBridge],
+    ['telegram', TelegramHarnessBridge],
+    ['discord', DiscordHarnessBridge],
+    ['whatsapp', WhatsappHarnessBridge],
+  ]) {
+    const fixture = stateFixture({ 'direct:chat-a': `session-${name}` });
+    const sent = [];
+    const executed = [];
+    const bridge = new Bridge({
+      bot: { sendText: async (_target, text) => sent.push(text) },
+      state: fixture.state,
+      harness: {
+        executeCommand: async (sessionId, line) => {
+          executed.push({ sessionId, line });
+          return {
+            commandId: `command-${name}`,
+            result: { kind: 'success', text: 'Compacted 12 history items (~3456 tokens).' },
+          };
+        },
+        ask: async () => assert.fail('/compact must not be submitted to the model'),
+      },
+    });
+
+    await bridge.accept(message(`compact-${name}`, '/compact'));
+
+    assert.deepEqual(executed, [{ sessionId: `session-${name}`, line: '/compact' }]);
+    assert.deepEqual(sent, ['已压缩 12 条历史记录（约 3456 个 token）。']);
+  }
+});
+
 test('answers a multi-question interaction on the fast lane with canonical values', async () => {
   const fixture = stateFixture();
   const sent = [];

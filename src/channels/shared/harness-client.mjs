@@ -318,6 +318,7 @@ export class HarnessClient {
   #interactionReconnectDelayMs;
   #rpcIdPrefix;
   #logPrefix;
+  #commandExecutor;
   #managedProcess = null;
   #interactionRegistry;
   #interactionOwnerships;
@@ -334,6 +335,7 @@ export class HarnessClient {
     interactionReconnectDelayMs = 500,
     rpcIdPrefix = 'im',
     logPrefix = 'dsh-im',
+    commandExecutor,
   }) {
     if (typeof createWebSocket !== 'function') {
       throw new TypeError('createWebSocket must be a function');
@@ -347,6 +349,9 @@ export class HarnessClient {
     if (typeof logPrefix !== 'string' || !logPrefix.trim()) {
       throw new TypeError('logPrefix must be a non-empty string');
     }
+    if (commandExecutor !== undefined && typeof commandExecutor !== 'function') {
+      throw new TypeError('commandExecutor must be a function');
+    }
     this.#baseUrl = new URL(baseUrl);
     this.#workspace = workspace;
     this.#agentPreset = agentPreset;
@@ -357,6 +362,7 @@ export class HarnessClient {
     this.#interactionReconnectDelayMs = interactionReconnectDelayMs;
     this.#rpcIdPrefix = rpcIdPrefix.trim();
     this.#logPrefix = logPrefix.trim();
+    this.#commandExecutor = commandExecutor;
     this.#interactionRegistry = interactionRegistry(this.#baseUrl.origin);
     this.#interactionOwnerships = this.#interactionRegistry.ownerships;
     this.#interactionClaims = this.#interactionRegistry.claims;
@@ -457,6 +463,24 @@ export class HarnessClient {
       agentPreset: this.#agentPreset,
     }, 30_000, options);
     return created.sessionId;
+  }
+
+  async executeCommand(sessionId, line, options = {}) {
+    if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('sessionId is required');
+    if (typeof line !== 'string' || !line) throw new TypeError('command line is required');
+    if (!this.#commandExecutor) {
+      const error = new Error('Harness command execution is unavailable');
+      error.code = 'commands-unavailable';
+      throw error;
+    }
+    try {
+      return await this.#commandExecutor(sessionId, line, options);
+    } catch (error) {
+      if (error?.failure && typeof error.failure === 'object') {
+        throw new HarnessRpcError('commands.execute', error.failure);
+      }
+      throw error;
+    }
   }
 
   async sessionExists(sessionId, options = {}) {

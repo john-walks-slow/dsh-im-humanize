@@ -9,7 +9,7 @@ import { apply as applyWeixin } from './channels/weixin/index.mjs';
 import { apply as applyWhatsapp } from './channels/whatsapp/index.mjs';
 
 export const name = 'dsh-im-host';
-export const inject = ['connection', 'credentials', 'webServer'];
+export const inject = ['connection', 'credentials', 'webServer', 'typertGateway'];
 
 function channelConfig(config, name) {
   const channel = config[name] ?? {};
