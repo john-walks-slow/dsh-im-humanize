@@ -1,7 +1,69 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { HarnessClient, HarnessReplyTracker, HarnessRpcError } from '../../../src/channels/dingtalk/harness-client.mjs';
+import {
+  HarnessClient,
+  HarnessInteractionError,
+  HarnessReplyTracker,
+  HarnessRpcError,
+} from '../../../src/channels/dingtalk/harness-client.mjs';
+import {
+  HarnessClient as FeishuHarnessClient,
+} from '../../../src/channels/feishu/harness-client.mjs';
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+async function eventually(predicate, message = 'condition was not met') {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(message);
+}
+
+class FakeSocket {
+  #listeners = new Map();
+  readyState = 0;
+
+  addEventListener(name, listener) {
+    const listeners = this.#listeners.get(name) ?? new Set();
+    listeners.add(listener);
+    this.#listeners.set(name, listeners);
+  }
+
+  removeEventListener(name, listener) {
+    this.#listeners.get(name)?.delete(listener);
+  }
+
+  open() {
+    if (this.readyState !== 0) return;
+    this.readyState = 1;
+    this.emit('open', {});
+  }
+
+  frame(value) {
+    this.emit('message', { data: JSON.stringify(value) });
+  }
+
+  close(code = 1000) {
+    if (this.readyState >= 2) return;
+    this.readyState = 3;
+    this.emit('close', { code });
+  }
+
+  emit(name, event) {
+    for (const listener of [...(this.#listeners.get(name) ?? [])]) listener(event);
+  }
+}
 
 test('HarnessClient lists only absolute workspace paths and forwards request options', async () => {
   const client = new HarnessClient({
@@ -390,4 +452,819 @@ test('Harness client validates the RPC envelope and preserves server error codes
   );
   assert.equal(request.url, 'http://127.0.0.1:3080/api/session.history');
   assert.match(request.body.rpcId, /^dingtalk-/);
+});
+
+test('interaction watcher decodes mux requests, filters sessions, and posts exact responses', async () => {
+  const requests = [];
+  const opened = deferred();
+  let socket;
+  let socketUrl;
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080/base',
+    workspace: '/tmp/workspace',
+    fetchImpl: async (url, options) => {
+      requests.push({
+        url: url.toString(),
+        method: options.method,
+        body: JSON.parse(options.body),
+      });
+      return { ok: true, json: async () => ({ accepted: true }) };
+    },
+    createWebSocket: (url) => {
+      socketUrl = url;
+      socket = new FakeSocket();
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  const controller = new AbortController();
+  const interactions = [];
+  const resolutions = [];
+  const watching = client.watchInteractions('session-one', {
+    signal: controller.signal,
+    onOpen: opened.resolve,
+    onInteraction: (interaction) => interactions.push(interaction),
+    onResolved: (resolution) => resolutions.push(resolution),
+  });
+  await opened.promise;
+
+  socket.frame({
+    type: 'server-request',
+    rpcId: 'other-rpc',
+    method: 'question/requested',
+    payload: {
+      type: 'question/requested',
+      sessionId: 'session-other',
+      questions: [{ id: 'ignored', question: 'ignore me' }],
+    },
+  });
+  socket.frame({
+    type: 'server-request',
+    rpcId: 'approval-rpc',
+    method: 'approval/requested',
+    payload: {
+      type: 'approval/requested',
+      sessionId: 'session-one',
+      approvalId: 'approval-one',
+      toolName: 'bash',
+    },
+  });
+  socket.frame({
+    type: 'server-request',
+    rpcId: 'question-rpc',
+    method: 'question/requested',
+    payload: {
+      type: 'question/requested',
+      sessionId: 'session-one',
+      questions: [{ id: 'language', question: 'Which language?' }],
+    },
+  });
+  socket.frame({
+    type: 'server-request',
+    rpcId: 'resolution-envelope',
+    method: 'question/resolved',
+    payload: {
+      type: 'question/resolved',
+      sessionId: 'session-one',
+      questionRpcId: 'question-rpc',
+      outcome: 'answered',
+    },
+  });
+  socket.frame({
+    type: 'server-request',
+    rpcId: 'approval-resolution-envelope',
+    method: 'approval/resolved',
+    payload: {
+      type: 'approval/resolved',
+      sessionId: 'session-one',
+      approvalId: 'approval-one',
+      outcome: 'rejected',
+    },
+  });
+
+  await eventually(() => interactions.length === 2 && resolutions.length === 2);
+
+  assert.equal(socketUrl, 'ws://127.0.0.1:3080/api/events.mux');
+  assert.equal(interactions.length, 2);
+  assert.deepEqual({
+    kind: interactions[0].kind,
+    interactionId: interactions[0].interactionId,
+    rpcId: interactions[0].rpcId,
+    sessionId: interactions[0].sessionId,
+  }, {
+    kind: 'approval',
+    interactionId: 'approval-one',
+    rpcId: 'approval-rpc',
+    sessionId: 'session-one',
+  });
+  assert.deepEqual({
+    kind: interactions[1].kind,
+    interactionId: interactions[1].interactionId,
+    rpcId: interactions[1].rpcId,
+    sessionId: interactions[1].sessionId,
+  }, {
+    kind: 'question',
+    interactionId: 'question-rpc',
+    rpcId: 'question-rpc',
+    sessionId: 'session-one',
+  });
+  assert.deepEqual(resolutions.map(({ kind, interactionId, outcome }) => ({
+    kind,
+    interactionId,
+    outcome,
+  })), [
+    {
+      kind: 'question',
+      interactionId: 'question-rpc',
+      outcome: 'answered',
+    },
+    {
+      kind: 'approval',
+      interactionId: 'approval-one',
+      outcome: 'rejected',
+    },
+  ]);
+  assert.equal(requests.length, 0, 'receiving an approval must not approve it automatically');
+
+  const result = {
+    ok: true,
+    value: {
+      sessionId: 'session-one',
+      answer: { answers: [{ id: 'language', selected: [], custom: 'Chinese' }] },
+    },
+  };
+  assert.deepEqual(await interactions[1].respond(result), { accepted: true });
+  assert.deepEqual(requests, [{
+    url: 'http://127.0.0.1:3080/api/respond',
+    method: 'POST',
+    body: { type: 'client-response', rpcId: 'question-rpc', result },
+  }]);
+
+  controller.abort();
+  await watching;
+  assert.equal(socket.readyState, 3);
+});
+
+test('interaction watcher reconnects over wss and exposes replayed stable request ids', async () => {
+  const sockets = [];
+  const seen = [];
+  const controller = new AbortController();
+  const client = new HarnessClient({
+    baseUrl: 'https://harness.example/nested',
+    workspace: '/tmp/workspace',
+    interactionReconnectDelayMs: 0,
+    createWebSocket: (url) => {
+      const socket = new FakeSocket();
+      sockets.push({ socket, url });
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  const watching = client.watchInteractions('session-replay', {
+    signal: controller.signal,
+    onInteraction: ({ rpcId }) => seen.push(rpcId),
+  });
+  await eventually(() => sockets[0]?.socket.readyState === 1);
+  const frame = {
+    type: 'server-request',
+    rpcId: 'stable-question-rpc',
+    method: 'question/requested',
+    payload: {
+      type: 'question/requested',
+      sessionId: 'session-replay',
+      questions: [{ id: 'replay', question: 'Still pending?' }],
+    },
+  };
+  sockets[0].socket.frame(frame);
+  sockets[0].socket.close(1006);
+  await eventually(() => sockets[1]?.socket.readyState === 1, 'watcher did not reconnect');
+  sockets[1].socket.frame(frame);
+
+  await eventually(() => seen.length === 2);
+
+  assert.deepEqual(seen, ['stable-question-rpc', 'stable-question-rpc']);
+  assert.deepEqual(sockets.map(({ url }) => url), [
+    'wss://harness.example/api/events.mux',
+    'wss://harness.example/api/events.mux',
+  ]);
+  controller.abort();
+  await watching;
+});
+
+test('interaction response receipts distinguish protocol rejection from invalid transport data', async () => {
+  let receipt = { accepted: false, reason: 'not-pending' };
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/workspace',
+    fetchImpl: async () => ({ ok: true, json: async () => receipt }),
+  });
+  const result = { ok: true, value: { sessionId: 'session-one' } };
+
+  await assert.rejects(
+    client.respondInteraction('question-rpc', result),
+    (error) => error instanceof HarnessInteractionError
+      && error.code === 'interaction-not-pending',
+  );
+  receipt = { accepted: false, reason: 'bad-response' };
+  await assert.rejects(
+    client.respondInteraction('question-rpc', result),
+    (error) => error instanceof HarnessInteractionError
+      && error.code === 'interaction-bad-response',
+  );
+  receipt = { type: 'server-response', accepted: false };
+  await assert.rejects(
+    client.respondInteraction('question-rpc', result),
+    /invalid interaction response receipt/,
+  );
+});
+
+test('ask opens the interaction watcher before prompting and closes it with the turn', async () => {
+  let socket;
+  let promptRpcId;
+  let historyCalls = 0;
+  const responses = [];
+  const interactions = [];
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/workspace',
+    fetchImpl: async (_url, options) => {
+      responses.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ accepted: true }) };
+    },
+    createWebSocket: () => {
+      const createdSocket = new FakeSocket();
+      socket = createdSocket;
+      queueMicrotask(() => createdSocket.open());
+      return createdSocket;
+    },
+  });
+  client.ensureRunning = async () => true;
+  client.rpc = async (method, payload, _timeoutMs, options) => {
+    if (method === 'session.history') {
+      historyCalls += 1;
+      if (historyCalls === 1) return { events: [] };
+      return {
+        events: [
+          { event: { seq: 1, type: 'turn/start', data: { turn: 1 } } },
+          { event: {
+            seq: 2,
+            type: 'user/message',
+            data: { turn: 1, source: { rpcId: promptRpcId } },
+          } },
+          { event: {
+            seq: 3,
+            type: 'assistant/message',
+            data: {
+              turn: 1,
+              message: { content: [{ type: 'text', text: '已收到回答' }] },
+            },
+          } },
+          { event: { seq: 4, type: 'turn/end', data: { turn: 1, reason: 'completed' } } },
+        ],
+      };
+    }
+    assert.equal(method, 'session.prompt');
+    assert.equal(socket.readyState, 1, 'interaction watcher must open before session.prompt');
+    assert.equal(payload.sessionId, 'session-one');
+    promptRpcId = options.rpcId;
+    socket.frame({
+      type: 'server-request',
+      rpcId: 'turn-start-frame',
+      method: 'session/event',
+      payload: {
+        type: 'session/event',
+        sessionId: 'session-one',
+        event: { seq: 1, type: 'turn/start', data: { turn: 1 } },
+      },
+    });
+    socket.frame({
+      type: 'server-request',
+      rpcId: 'user-message-frame',
+      method: 'session/event',
+      payload: {
+        type: 'session/event',
+        sessionId: 'session-one',
+        event: {
+          seq: 2,
+          type: 'user/message',
+          data: { turn: 1, source: { rpcId: promptRpcId } },
+        },
+      },
+    });
+    socket.frame({
+      type: 'server-request',
+      rpcId: 'question-during-ask',
+      method: 'question/requested',
+      payload: {
+        type: 'question/requested',
+        sessionId: 'session-one',
+        questions: [{
+          id: 'ready',
+          question: 'Ready?',
+          options: [{ label: 'Yes' }, { label: 'No' }],
+        }],
+      },
+    });
+    return {};
+  };
+
+  const answer = await client.ask('session-one', '请先提问', {
+    onInteraction: async (interaction) => {
+      interactions.push(interaction.rpcId);
+      await interaction.respond({
+        ok: true,
+        value: {
+          sessionId: interaction.sessionId,
+          answer: { answers: [{ id: 'ready', selected: ['Yes'] }] },
+        },
+      });
+    },
+  });
+
+  assert.equal(answer, '已收到回答');
+  assert.deepEqual(interactions, ['question-during-ask']);
+  assert.deepEqual(responses, [{
+    type: 'client-response',
+    rpcId: 'question-during-ask',
+    result: {
+      ok: true,
+      value: {
+        sessionId: 'session-one',
+        answer: { answers: [{ id: 'ready', selected: ['Yes'] }] },
+      },
+    },
+  }]);
+  assert.equal(socket.readyState, 3);
+});
+
+test('interaction callbacks preserve frame order and watcher shutdown drains them', async () => {
+  const opened = deferred();
+  const releaseRequested = deferred();
+  const order = [];
+  let socket;
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/workspace',
+    createWebSocket: () => {
+      socket = new FakeSocket();
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  const controller = new AbortController();
+  const watching = client.watchInteractions('session-ordered', {
+    signal: controller.signal,
+    onOpen: opened.resolve,
+    onInteraction: async () => {
+      order.push('requested:start');
+      await releaseRequested.promise;
+      order.push('requested:end');
+    },
+    onResolved: () => order.push('resolved'),
+  });
+  await opened.promise;
+
+  socket.frame({
+    type: 'server-request',
+    rpcId: 'ordered-question',
+    method: 'question/requested',
+    payload: {
+      type: 'question/requested',
+      sessionId: 'session-ordered',
+      questions: [{ id: 'ordered', question: 'Wait for delivery' }],
+    },
+  });
+  socket.frame({
+    type: 'server-request',
+    rpcId: 'ordered-resolution',
+    method: 'question/resolved',
+    payload: {
+      type: 'question/resolved',
+      sessionId: 'session-ordered',
+      questionRpcId: 'ordered-question',
+      outcome: 'cancelled',
+    },
+  });
+  controller.abort();
+
+  await eventually(() => order.length > 0);
+  assert.deepEqual(order, ['requested:start']);
+  let settled = false;
+  void watching.finally(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(settled, false);
+
+  releaseRequested.resolve();
+  await watching;
+  assert.deepEqual(order, ['requested:start', 'requested:end', 'resolved']);
+});
+
+test('concurrent asks on one Harness session receive interactions only for their own active turn', async () => {
+  const sockets = [];
+  const prompts = [];
+  const received = { first: [], second: [] };
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/workspace',
+    createWebSocket: () => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  client.ensureRunning = async () => true;
+  client.rpc = async (method, payload, _timeoutMs, options) => {
+    if (method === 'session.history') return { events: [] };
+    assert.equal(method, 'session.prompt');
+    prompts.push({ text: payload.content[0].text, rpcId: options.rpcId });
+    return {};
+  };
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  const first = client.ask('shared-session', 'first', {
+    signal: firstController.signal,
+    onInteraction: ({ rpcId }) => received.first.push(rpcId),
+  });
+  const second = client.ask('shared-session', 'second', {
+    signal: secondController.signal,
+    onInteraction: ({ rpcId }) => received.second.push(rpcId),
+  });
+  await eventually(() => prompts.length === 2 && sockets.length === 2);
+
+  const active = prompts[0];
+  const frames = [
+    {
+      type: 'server-request',
+      rpcId: 'shared-turn-start',
+      method: 'session/event',
+      payload: {
+        type: 'session/event',
+        sessionId: 'shared-session',
+        event: { seq: 1, type: 'turn/start', data: { turn: 1 } },
+      },
+    },
+    {
+      type: 'server-request',
+      rpcId: 'shared-user-message',
+      method: 'session/event',
+      payload: {
+        type: 'session/event',
+        sessionId: 'shared-session',
+        event: {
+          seq: 2,
+          type: 'user/message',
+          data: { source: { rpcId: active.rpcId } },
+        },
+      },
+    },
+    {
+      type: 'server-request',
+      rpcId: 'shared-plugin-context',
+      method: 'session/event',
+      payload: {
+        type: 'session/event',
+        sessionId: 'shared-session',
+        event: {
+          seq: 3,
+          type: 'user/message',
+          data: { source: { kind: 'plugin', pluginId: 'time-context' } },
+        },
+      },
+    },
+    {
+      type: 'server-request',
+      rpcId: 'shared-question',
+      method: 'question/requested',
+      payload: {
+        type: 'question/requested',
+        sessionId: 'shared-session',
+        questions: [{ id: 'owner', question: 'Who owns this turn?' }],
+      },
+    },
+  ];
+  for (const frame of frames) {
+    for (const socket of sockets) socket.frame(frame);
+  }
+  await eventually(() => received.first.length + received.second.length === 1);
+
+  assert.deepEqual(received[active.text], ['shared-question']);
+  assert.deepEqual(received[active.text === 'first' ? 'second' : 'first'], []);
+  firstController.abort();
+  secondController.abort();
+  await Promise.allSettled([first, second]);
+});
+
+test('channel-specific clients share interaction ownership for the same Harness origin', async () => {
+  const sockets = [];
+  const prompts = [];
+  const received = { dingtalk: [], feishu: [] };
+  const makeClient = (Client, channel) => {
+    const client = new Client({
+      baseUrl: 'http://127.0.0.1:3080',
+      workspace: '/tmp/workspace',
+      createWebSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push({ channel, socket });
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    client.ensureRunning = async () => true;
+    client.rpc = async (method, payload, _timeoutMs, options) => {
+      if (method === 'session.history') return { events: [] };
+      assert.equal(method, 'session.prompt');
+      prompts.push({ channel, rpcId: options.rpcId, text: payload.content[0].text });
+      return {};
+    };
+    return client;
+  };
+  const dingtalk = makeClient(HarnessClient, 'dingtalk');
+  const feishu = makeClient(FeishuHarnessClient, 'feishu');
+  const dingtalkController = new AbortController();
+  const feishuController = new AbortController();
+  const first = dingtalk.ask('cross-channel-session', 'dingtalk prompt', {
+    signal: dingtalkController.signal,
+    onInteraction: ({ rpcId }) => received.dingtalk.push(rpcId),
+  });
+  await eventually(() => prompts.length === 1);
+  const second = feishu.ask('cross-channel-session', 'feishu prompt', {
+    signal: feishuController.signal,
+    onInteraction: ({ rpcId }) => received.feishu.push(rpcId),
+  });
+  await eventually(() => prompts.length === 2 && sockets.length === 2);
+
+  const activePrompt = prompts[0];
+  const frames = [
+    {
+      type: 'server-request', rpcId: 'cross-start', method: 'session/event',
+      payload: {
+        type: 'session/event', sessionId: 'cross-channel-session',
+        event: { seq: 1, type: 'turn/start', data: { turn: 1 } },
+      },
+    },
+    {
+      type: 'server-request', rpcId: 'cross-user', method: 'session/event',
+      payload: {
+        type: 'session/event', sessionId: 'cross-channel-session',
+        event: {
+          seq: 2,
+          type: 'user/message',
+          data: { source: { rpcId: activePrompt.rpcId } },
+        },
+      },
+    },
+    {
+      type: 'server-request', rpcId: 'cross-question', method: 'question/requested',
+      payload: {
+        type: 'question/requested', sessionId: 'cross-channel-session',
+        questions: [{ id: 'owner', question: 'Which channel owns this turn?' }],
+      },
+    },
+  ];
+  for (const frame of frames) {
+    for (const { socket } of sockets) socket.frame(frame);
+  }
+  await eventually(() => received.dingtalk.length + received.feishu.length === 1);
+
+  assert.deepEqual(received, { dingtalk: ['cross-question'], feishu: [] });
+  dingtalkController.abort();
+  feishuController.abort();
+  await Promise.allSettled([first, second]);
+});
+
+test('a reconnect revalidates same-session ownership before accepting replayed questions', async () => {
+  const sockets = [];
+  const prompts = [];
+  const received = { first: [], second: [] };
+  let historyEvents = [];
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/workspace',
+    interactionReconnectDelayMs: 0,
+    createWebSocket: () => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  client.ensureRunning = async () => true;
+  client.rpc = async (method, payload, _timeoutMs, options) => {
+    if (method === 'session.history') return { events: historyEvents };
+    assert.equal(method, 'session.prompt');
+    prompts.push({ text: payload.content[0].text, rpcId: options.rpcId });
+    return {};
+  };
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  const first = client.ask('handoff-session', 'first', {
+    signal: firstController.signal,
+    onInteraction: ({ rpcId }) => received.first.push(rpcId),
+  });
+  await eventually(() => prompts.length === 1 && sockets.length === 1);
+  const second = client.ask('handoff-session', 'second', {
+    signal: secondController.signal,
+    onInteraction: ({ rpcId }) => received.second.push(rpcId),
+  });
+  await eventually(() => prompts.length === 2 && sockets.length === 2);
+
+  const firstPrompt = prompts.find(({ text }) => text === 'first');
+  const secondPrompt = prompts.find(({ text }) => text === 'second');
+  const firstTurnFrames = [
+    {
+      type: 'server-request', rpcId: 'handoff-start-one', method: 'session/event',
+      payload: {
+        type: 'session/event', sessionId: 'handoff-session',
+        event: { seq: 1, type: 'turn/start', data: { turn: 1 } },
+      },
+    },
+    {
+      type: 'server-request', rpcId: 'handoff-user-one', method: 'session/event',
+      payload: {
+        type: 'session/event', sessionId: 'handoff-session',
+        event: {
+          seq: 2,
+          type: 'user/message',
+          data: { source: { rpcId: firstPrompt.rpcId } },
+        },
+      },
+    },
+    {
+      type: 'server-request', rpcId: 'handoff-plugin-one', method: 'session/event',
+      payload: {
+        type: 'session/event', sessionId: 'handoff-session',
+        event: {
+          seq: 3,
+          type: 'user/message',
+          data: { source: { kind: 'plugin', pluginId: 'time-context' } },
+        },
+      },
+    },
+  ];
+  for (const frame of firstTurnFrames) {
+    historyEvents.push({ event: frame.payload.event });
+    for (const socket of sockets.slice(0, 2)) socket.frame(frame);
+  }
+  const firstQuestion = {
+    type: 'server-request', rpcId: 'handoff-question-one', method: 'question/requested',
+    payload: {
+      type: 'question/requested', sessionId: 'handoff-session',
+      questions: [{ id: 'one', question: 'First turn question' }],
+    },
+  };
+  for (const socket of sockets.slice(0, 2)) socket.frame(firstQuestion);
+  await eventually(() => received.first.length === 1);
+
+  sockets[0].close(1006);
+  const secondTurnEvents = [
+    { seq: 4, type: 'turn/end', data: { turn: 1, reason: 'completed' } },
+    { seq: 5, type: 'turn/start', data: { turn: 2 } },
+    {
+      seq: 6,
+      type: 'user/message',
+      data: { source: { rpcId: secondPrompt.rpcId } },
+    },
+  ];
+  historyEvents.push(...secondTurnEvents.map((event) => ({ event })));
+  for (const event of secondTurnEvents) {
+    sockets[1].frame({
+      type: 'server-request',
+      rpcId: `handoff-event-${event.seq}`,
+      method: 'session/event',
+      payload: { type: 'session/event', sessionId: 'handoff-session', event },
+    });
+  }
+  const secondQuestion = {
+    type: 'server-request', rpcId: 'handoff-question-two', method: 'question/requested',
+    payload: {
+      type: 'question/requested', sessionId: 'handoff-session',
+      questions: [{ id: 'two', question: 'Second turn question' }],
+    },
+  };
+  sockets[1].frame(secondQuestion);
+  await eventually(() => received.second.length === 1);
+  await eventually(() => sockets.length >= 3 && sockets[2].readyState === 1);
+  sockets[2].frame(secondQuestion);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.deepEqual(received, {
+    first: ['handoff-question-one'],
+    second: ['handoff-question-two'],
+  });
+  firstController.abort();
+  secondController.abort();
+  await Promise.allSettled([first, second]);
+});
+
+test('a new ask adopts a replayed orphan question before its queued prompt can run', async () => {
+  const oldHistory = [
+    { event: { seq: 1, type: 'turn/start', data: { turn: 1 } } },
+    {
+      event: {
+        seq: 2,
+        type: 'user/message',
+        data: { turn: 1, source: { rpcId: 'prompt-from-old-runtime' } },
+      },
+    },
+  ];
+  const received = [];
+  const prompted = deferred();
+  let socket;
+  const controller = new AbortController();
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/workspace',
+    createWebSocket: () => {
+      socket = new FakeSocket();
+      queueMicrotask(() => {
+        socket.open();
+        socket.frame({
+          type: 'server-request',
+          rpcId: 'orphan-question',
+          method: 'question/requested',
+          payload: {
+            type: 'question/requested',
+            sessionId: 'orphan-session',
+            questions: [{ id: 'orphan', question: 'Recovered question' }],
+          },
+        });
+      });
+      return socket;
+    },
+  });
+  client.ensureRunning = async () => true;
+  client.rpc = async (method) => {
+    if (method === 'session.history') return { events: oldHistory };
+    assert.equal(method, 'session.prompt');
+    prompted.resolve();
+    return {};
+  };
+
+  const asking = client.ask('orphan-session', 'new queued prompt', {
+    signal: controller.signal,
+    onInteraction: ({ rpcId, recovered }) => received.push({ rpcId, recovered }),
+  });
+  await prompted.promise;
+  await eventually(() => received.length === 1);
+  assert.deepEqual(received, [{ rpcId: 'orphan-question', recovered: true }]);
+
+  controller.abort();
+  await Promise.allSettled([asking]);
+});
+
+test('an orphan approval remains fail-closed for the future approval handler', async () => {
+  const oldHistory = [
+    { event: { seq: 1, type: 'turn/start', data: { turn: 1 } } },
+    {
+      event: {
+        seq: 2,
+        type: 'user/message',
+        data: { source: { rpcId: 'approval-prompt-from-old-runtime' } },
+      },
+    },
+  ];
+  const received = [];
+  const prompted = deferred();
+  const controller = new AbortController();
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/workspace',
+    createWebSocket: () => {
+      const socket = new FakeSocket();
+      queueMicrotask(() => {
+        socket.open();
+        socket.frame({
+          type: 'server-request',
+          rpcId: 'orphan-approval-rpc',
+          method: 'approval/requested',
+          payload: {
+            type: 'approval/requested',
+            sessionId: 'orphan-approval-session',
+            approvalId: 'orphan-approval-id',
+            toolName: 'bash',
+          },
+        });
+      });
+      return socket;
+    },
+  });
+  client.ensureRunning = async () => true;
+  client.rpc = async (method) => {
+    if (method === 'session.history') return { events: oldHistory };
+    assert.equal(method, 'session.prompt');
+    prompted.resolve();
+    return {};
+  };
+
+  const asking = client.ask('orphan-approval-session', 'new queued prompt', {
+    signal: controller.signal,
+    onInteraction: (interaction) => received.push(interaction),
+  });
+  await prompted.promise;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(received, []);
+
+  controller.abort();
+  await Promise.allSettled([asking]);
 });

@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FeishuRuntime } from '../../../src/channels/feishu/feishu-runtime.mjs';
 
-class FakeClient {}
+class FakeClient {
+  static instances = [];
+
+  constructor(options) {
+    this.options = options;
+    FakeClient.instances.push(this);
+  }
+}
 
 class FakeDispatcher {
   register(handlers) {
@@ -40,24 +47,39 @@ class FakeWSClient {
 
 function fakeLark() {
   FakeWSClient.instances.length = 0;
+  FakeClient.instances.length = 0;
   return {
     Domain: { Feishu: 'feishu-domain', Lark: 'lark-domain' },
     LoggerLevel: { info: 'info' },
     Client: FakeClient,
     EventDispatcher: FakeDispatcher,
     WSClient: FakeWSClient,
+    defaultHttpInstance: {
+      request: async (options) => options,
+      get: async (_url, options) => options,
+      delete: async (_url, options) => options,
+      head: async (_url, options) => options,
+      options: async (_url, options) => options,
+      post: async (_url, _data, options) => options,
+      put: async (_url, _data, options) => options,
+      patch: async (_url, _data, options) => options,
+    },
   };
 }
 
 test('FeishuRuntime becomes chat-ready only after Harness and Feishu are connected', async () => {
   let harnessChecks = 0;
+  let harnessSignal;
   const runtime = new FeishuRuntime({
     lark: fakeLark(),
     appId: 'cli_test',
     appSecret: 'secret',
     ownerOpenId: 'ou_owner',
     harness: {
-      async ensureRunning() { harnessChecks += 1; },
+      async ensureRunning(options) {
+        harnessChecks += 1;
+        harnessSignal = options.signal;
+      },
     },
     state: { hasSeen: () => false },
   });
@@ -77,11 +99,16 @@ test('FeishuRuntime becomes chat-ready only after Harness and Feishu are connect
   assert.equal(status.ready, true);
   assert.equal(status.feishuLongConnectionState, 'connected');
   assert.equal(status.harnessReachable, true);
+  assert.equal(harnessSignal.aborted, false);
+  assert.equal((await FakeClient.instances[0].options.httpInstance.request({
+    url: 'https://open.feishu.cn/test',
+  })).timeout, 15_000);
 
   const stopped = await runtime.stop();
   assert.equal(stopped.ready, false);
   assert.equal(stopped.feishuLongConnectionState, 'idle');
   assert.equal(FakeWSClient.instances[0].state, 'closed');
+  assert.equal(harnessSignal.aborted, true);
 });
 
 test('FeishuRuntime fails closed when the initial WebSocket handshake times out', async () => {

@@ -5,8 +5,16 @@ import {
   isBotSender,
   splitText,
 } from './message-utils.mjs';
+import {
+  harnessAnswerForQuestion,
+  harnessQuestionText,
+  validHarnessQuestion,
+} from '../shared/harness-question.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
+
+const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
+const RESOLVED_REPLY_TTL_MS = 30 * 60_000;
 
 const HELP_TEXT = [
   '北汇星河 AIOS 已连接 DeepSeek Harness。',
@@ -21,16 +29,49 @@ const HELP_TEXT = [
   '/help  显示本帮助',
 ].join('\n');
 
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function senderOpenId(event) {
+  return nonEmptyString(event?.sender?.sender_id?.open_id)
+    ?? nonEmptyString(event?.sender?.sender_id?.user_id);
+}
+
+function canClaimInteractionReply(event, pending) {
+  return pending.needsPresentation !== true
+    && pending.questions[pending.index]
+    && senderOpenId(event) === pending.actor
+    && event?.message?.message_type === 'text'
+    && nonEmptyString(extractText(event));
+}
+
+function ensureStatus(status) {
+  for (const key of ['messagesReceived', 'messagesReplied', 'messagesRejected']) {
+    status[key] ??= 0;
+  }
+  status.lastMessageAt ??= null;
+  status.lastReplyAt ??= null;
+  status.lastRejectedAt ??= null;
+  status.lastError ??= null;
+}
+
 export class FeishuHarnessBridge {
   #client;
   #channel;
   #harness;
   #state;
   #queues = new Map();
+  #pendingInteractions = new Map();
+  #interactionKeys = new Map();
+  #resolvedQuestionReplies = new Map();
   #acceptedMessageIds = new Set();
+  #interactionTasks = new Set();
   #status;
   #allowedSenderOpenIds;
   #replyTimeoutMs;
+  #logger;
+  #signal;
 
   constructor({
     client,
@@ -39,8 +80,13 @@ export class FeishuHarnessBridge {
     state,
     status,
     allowedSenderOpenIds = new Set(),
-    replyTimeoutMs = 600000,
+    replyTimeoutMs = 600_000,
+    logger = console,
+    signal,
   }) {
+    if (!client || !harness || !state || !status) {
+      throw new TypeError('Feishu bridge dependencies are required');
+    }
     this.#client = client;
     this.#channel = channel;
     this.#harness = harness;
@@ -48,55 +94,171 @@ export class FeishuHarnessBridge {
     this.#status = status;
     this.#allowedSenderOpenIds = allowedSenderOpenIds;
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#logger = logger;
+    this.#signal = signal;
+    ensureStatus(this.#status);
   }
 
   accept(event) {
-    const messageId = event?.message?.message_id;
-    if (!messageId || isBotSender(event) || event?.message?.message_type !== 'text') return;
+    if (this.#signal?.aborted) return Promise.resolve();
+    const messageId = nonEmptyString(event?.message?.message_id);
+    if (!messageId || isBotSender(event)) return Promise.resolve();
     if (!isAllowedSender(event, this.#allowedSenderOpenIds)) {
       this.#status.messagesRejected += 1;
       this.#status.lastRejectedAt = new Date().toISOString();
-      console.warn('[bridge] ignored a message from a sender outside the allowlist');
-      return;
+      this.#logger.warn?.('[dsh-feishu] ignored a message from a sender outside the allowlist');
+      return Promise.resolve();
     }
-    if (this.#state.hasSeen(messageId) || this.#acceptedMessageIds.has(messageId)) return;
+    if (this.#state.hasSeen(messageId) || this.#acceptedMessageIds.has(messageId)) {
+      return Promise.resolve();
+    }
+
+    let key;
+    try {
+      key = conversationKey(event);
+    } catch {
+      this.#status.messagesRejected += 1;
+      this.#status.lastRejectedAt = new Date().toISOString();
+      return Promise.resolve();
+    }
+
     this.#acceptedMessageIds.add(messageId);
     const processingReaction = this.#addReaction(messageId, 'OnIt');
+    if (this.#isResolvedQuestionReply(event, key)) {
+      const current = Promise.resolve()
+        .then(() => this.#discardResolvedInteractionReply(event, messageId))
+        .then(() => this.#finishReaction(messageId, processingReaction, 'DONE'))
+        .catch((error) => this.#handleMessageFailure(
+          event,
+          messageId,
+          processingReaction,
+          error,
+        ))
+        .finally(() => this.#acceptedMessageIds.delete(messageId));
+      return current;
+    }
+    const pending = this.#pendingInteractions.get(key);
+    if (pending && senderOpenId(event) !== pending.actor) {
+      return this.#enqueueMessage(event, messageId, key, processingReaction);
+    }
+    if (pending?.submitting || pending?.claimedReplyMessageId) {
+      return this.#enqueueMessage(event, messageId, key, processingReaction);
+    }
+    if (pending) {
+      if (canClaimInteractionReply(event, pending)) pending.claimedReplyMessageId = messageId;
+      const previous = pending.queue ?? Promise.resolve();
+      const processing = previous
+        .catch(() => undefined)
+        .then(() => this.#processInteractionReply(
+          event,
+          messageId,
+          key,
+          pending,
+          processingReaction,
+        ));
+      pending.queue = processing;
 
-    const key = conversationKey(event);
+      const releaseInteraction = () => {
+        if (pending.claimedReplyMessageId === messageId) {
+          pending.claimedReplyMessageId = null;
+        }
+        if (pending.queue === processing) pending.queue = null;
+      };
+      let current;
+      current = processing
+        .then(
+          () => {
+            releaseInteraction();
+            return this.#finishReaction(messageId, processingReaction, 'DONE');
+          },
+          (error) => {
+            releaseInteraction();
+            return this.#handleMessageFailure(
+              event,
+              messageId,
+              processingReaction,
+              error,
+            );
+          },
+        )
+        .finally(() => {
+          releaseInteraction();
+          this.#acceptedMessageIds.delete(messageId);
+          this.#interactionTasks.delete(current);
+        });
+      this.#interactionTasks.add(current);
+      return current;
+    }
+    return this.#enqueueMessage(event, messageId, key, processingReaction);
+  }
+
+  #enqueueMessage(event, messageId, key, processingReaction, {
+    releaseMessageId = true,
+    alreadyRecorded = false,
+    finalize = true,
+  } = {}) {
     const previous = this.#queues.get(key) ?? Promise.resolve();
-    const task = previous
+    const work = previous
       .catch(() => undefined)
-      .then(() => this.#handle(event, key))
-      .then(() => this.#finishReaction(messageId, processingReaction, 'DONE'))
-      .catch(async (error) => {
-        console.error('[bridge] message handling failed:', error.message);
-        this.#status.lastError = error.message;
-        await this.#finishReaction(messageId, processingReaction, 'ERROR');
-        await this.#send(
-          event.message.chat_id,
-          '处理失败，请稍后重试。如果问题持续，请在 DeepSeek Harness 的飞书插件页面检查连接状态。',
-        ).catch(() => undefined);
-      })
-      .finally(() => {
-        this.#acceptedMessageIds.delete(messageId);
-        if (this.#queues.get(key) === task) this.#queues.delete(key);
-      });
-    this.#queues.set(key, task);
+      .then(() => this.#handle(event, key, { alreadyRecorded }));
+    const settled = finalize
+      ? work
+        .then(() => this.#finishReaction(messageId, processingReaction, 'DONE'))
+        .catch((error) => this.#handleMessageFailure(
+          event,
+          messageId,
+          processingReaction,
+          error,
+        ))
+      : work;
+    let current;
+    current = settled.finally(() => {
+      if (releaseMessageId) this.#acceptedMessageIds.delete(messageId);
+      if (this.#queues.get(key) === current) this.#queues.delete(key);
+    });
+    this.#queues.set(key, current);
+    return current;
+  }
+
+  async #handleMessageFailure(event, messageId, processingReaction, error) {
+    if (this.#signal?.aborted) {
+      await this.#removeProcessingReaction(messageId, processingReaction);
+      return;
+    }
+    this.#logger.error?.('[dsh-feishu] message handling failed:', error?.message ?? String(error));
+    this.#status.lastError = error?.message ?? String(error);
+    await this.#finishReaction(messageId, processingReaction, 'ERROR');
+    await this.#send(
+      event.message.chat_id,
+      '处理失败，请稍后重试。如果问题持续，请在 DeepSeek Harness 的飞书插件页面检查连接状态。',
+    ).catch(() => undefined);
   }
 
   async waitForIdle() {
-    await Promise.allSettled([...this.#queues.values()]);
+    await Promise.allSettled([
+      ...this.#queues.values(),
+      ...[...this.#pendingInteractions.values()].flatMap((pending) => (
+        pending.queue ? [pending.queue] : []
+      )),
+      ...this.#interactionTasks,
+    ]);
   }
 
-  async #handle(event, key) {
+  async #handle(event, key, { alreadyRecorded = false } = {}) {
+    this.#signal?.throwIfAborted();
     const messageId = event.message.message_id;
-    await this.#state.markSeen(messageId);
-    this.#status.lastMessageAt = new Date().toISOString();
-    this.#status.messagesReceived += 1;
+    if (!alreadyRecorded) {
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      this.#status.lastMessageAt = new Date().toISOString();
+      this.#status.messagesReceived += 1;
+    }
 
     const text = extractText(event);
-    if (!text) return;
+    if (!text) {
+      await this.#send(event.message.chat_id, '目前仅支持文字消息。');
+      return;
+    }
 
     if (text === '/help') {
       await this.#send(event.message.chat_id, HELP_TEXT);
@@ -108,7 +270,7 @@ export class FeishuHarnessBridge {
       return;
     }
     if (text === '/status') {
-      await this.#harness.ensureRunning();
+      await this.#harness.ensureRunning({ signal: this.#signal });
       await this.#send(event.message.chat_id, '飞书机器人与 DeepSeek Harness 连接正常。');
       return;
     }
@@ -120,11 +282,29 @@ export class FeishuHarnessBridge {
       return;
     }
 
-    console.info(`[bridge] processing ${event.message.chat_type} message ${messageId}`);
-    await this.#answerWithStream(event, key, text);
-    this.#status.messagesReplied += 1;
-    this.#status.lastReplyAt = new Date().toISOString();
-    this.#status.lastError = null;
+    this.#logger.info?.(`[dsh-feishu] processing ${event.message.chat_type} message ${messageId}`);
+    try {
+      await this.#answerWithStream(event, key, text);
+      this.#status.messagesReplied += 1;
+      this.#status.lastReplyAt = new Date().toISOString();
+      this.#status.lastError = null;
+    } finally {
+      await this.#cancelPendingInteraction(key);
+    }
+  }
+
+  #interactionAskOptions(event, key) {
+    return {
+      timeoutMs: this.#replyTimeoutMs,
+      signal: this.#signal,
+      onInteraction: (interaction) => this.#handleInteraction(interaction, {
+        key,
+        actor: senderOpenId(event),
+        chatId: event.message.chat_id,
+        requiresMention: event.message.chat_type !== 'p2p',
+      }),
+      onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
+    };
   }
 
   async #answerWithStream(event, key, text) {
@@ -136,7 +316,9 @@ export class FeishuHarnessBridge {
         state: this.#state,
         key,
         text,
-        askOptions: { timeoutMs: this.#replyTimeoutMs },
+        createOptions: { signal: this.#signal },
+        existsOptions: { signal: this.#signal },
+        askOptions: this.#interactionAskOptions(event, key),
       });
       for (const chunk of splitText(answer)) await this.#send(chatId, chunk);
       this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
@@ -149,18 +331,21 @@ export class FeishuHarnessBridge {
       await this.#channel.stream(chatId, {
         markdown: async (controller) => {
           promptStarted = true;
+          const askOptions = {
+            ...this.#interactionAskOptions(event, key),
+            onUpdate: async (update) => {
+              await controller.setContent(this.#progressText(update));
+              this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
+            },
+          };
           ({ answer: completedAnswer } = await askInWorkspaceSession({
             harness: this.#harness,
             state: this.#state,
             key,
             text,
-            askOptions: {
-              timeoutMs: this.#replyTimeoutMs,
-              onUpdate: async (update) => {
-                await controller.setContent(this.#progressText(update));
-                this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
-              },
-            },
+            createOptions: { signal: this.#signal },
+            existsOptions: { signal: this.#signal },
+            askOptions,
           }));
           await controller.setContent(completedAnswer);
         },
@@ -169,23 +354,305 @@ export class FeishuHarnessBridge {
     } catch (error) {
       this.#status.streamErrors = (this.#status.streamErrors ?? 0) + 1;
       if (completedAnswer) {
-        console.warn('[bridge] native Feishu stream failed after generation; sending final text:', error.message);
+        this.#logger.warn?.(
+          '[dsh-feishu] native stream failed after generation; sending final text:',
+          error.message,
+        );
         for (const chunk of splitText(completedAnswer)) await this.#send(chatId, chunk);
         this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
         return;
       }
       if (promptStarted) throw error;
 
-      console.warn('[bridge] native Feishu stream unavailable; using text fallback:', error.message);
+      this.#logger.warn?.('[dsh-feishu] native stream unavailable; using text fallback:', error.message);
       const { answer } = await askInWorkspaceSession({
         harness: this.#harness,
         state: this.#state,
         key,
         text,
-        askOptions: { timeoutMs: this.#replyTimeoutMs },
+        createOptions: { signal: this.#signal },
+        existsOptions: { signal: this.#signal },
+        askOptions: this.#interactionAskOptions(event, key),
       });
       for (const chunk of splitText(answer)) await this.#send(chatId, chunk);
       this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
+    }
+  }
+
+  async #processInteractionReply(event, messageId, key, expected, processingReaction) {
+    this.#signal?.throwIfAborted();
+    const current = this.#pendingInteractions.get(key);
+    const claimed = expected.claimedReplyMessageId === messageId;
+    if (!current || current !== expected || current.submitting) {
+      if (this.#isResolvedQuestionReply(event, key)) {
+        return this.#discardResolvedInteractionReply(event, messageId);
+      }
+      if (claimed && (!current || current !== expected)) {
+        return this.#discardResolvedInteractionReply(event, messageId);
+      }
+      return this.#enqueueMessage(event, messageId, key, processingReaction, {
+        releaseMessageId: false,
+        finalize: false,
+      });
+    }
+    if (this.#state.hasSeen(messageId)) return;
+    await this.#state.markSeen(messageId);
+    this.#status.lastMessageAt = new Date().toISOString();
+    this.#status.messagesReceived += 1;
+
+    const text = extractText(event);
+    if (!text) {
+      await this.#send(event.message.chat_id, '请用文字回答当前问题。');
+      return;
+    }
+
+    const pending = this.#pendingInteractions.get(key);
+    if (!pending || pending !== expected || pending.submitting) {
+      if (this.#isResolvedQuestionReply(event, key)) {
+        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT).catch(() => undefined);
+        return;
+      }
+      if (claimed && (!pending || pending !== expected)) {
+        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT);
+        return;
+      }
+      return this.#enqueueMessage(event, messageId, key, processingReaction, {
+        releaseMessageId: false,
+        alreadyRecorded: true,
+        finalize: false,
+      });
+    }
+    pending.chatId = event.message.chat_id;
+    if (pending.needsPresentation) {
+      try {
+        await this.#presentInteraction(pending);
+      } catch {
+        this.#status.lastError = '飞书交互问题发送失败。';
+        this.#logger.error?.('[dsh-feishu] failed to retry an interaction question');
+        pending.interaction.reconnect?.();
+      }
+      return;
+    }
+    const question = pending.questions[pending.index];
+    if (!question) return;
+
+    pending.answers.push(harnessAnswerForQuestion(question, text));
+    pending.index += 1;
+    if (pending.index < pending.questions.length) {
+      if (pending.claimedReplyMessageId === messageId) {
+        pending.claimedReplyMessageId = null;
+      }
+      pending.needsPresentation = true;
+      try {
+        await this.#presentInteraction(pending);
+      } catch {
+        this.#status.lastError = '飞书交互问题发送失败。';
+        this.#logger.error?.('[dsh-feishu] failed to send the next interaction question');
+        pending.interaction.reconnect?.();
+      }
+      return;
+    }
+
+    pending.submitting = true;
+    try {
+      await pending.interaction.respond({
+        ok: true,
+        value: {
+          sessionId: pending.sessionId,
+          answer: { answers: pending.answers },
+        },
+      });
+      this.#rememberResolvedInteraction(key, pending);
+      this.#clearPendingInteraction(key, pending.interactionId);
+      this.#status.lastError = null;
+    } catch (error) {
+      if (this.#signal?.aborted) return;
+      if (this.#pendingInteractions.get(key) !== pending) return;
+      if (error?.code === 'interaction-not-pending') {
+        this.#rememberResolvedInteraction(key, pending);
+        this.#clearPendingInteraction(key, pending.interactionId);
+        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT).catch(() => undefined);
+        return;
+      }
+      pending.submitting = false;
+      pending.answers.pop();
+      pending.index -= 1;
+      this.#status.lastError = '回答提交失败。';
+      this.#logger.error?.('[dsh-feishu] failed to answer a Harness interaction');
+      await this.#send(event.message.chat_id, '回答提交失败，请重新发送当前问题的答案。')
+        .catch(() => undefined);
+    }
+  }
+
+  async #handleInteraction(interaction, {
+    key,
+    actor,
+    chatId,
+    requiresMention,
+  }) {
+    // Approval is deliberately exposed by the transport but remains
+    // unanswered until #5 adds an authenticated policy and renderer.
+    if (interaction?.kind !== 'question') return;
+    const questions = interaction?.payload?.questions;
+    const interactionId = typeof interaction?.interactionId === 'string'
+      ? interaction.interactionId
+      : interaction?.rpcId;
+    if (typeof interaction.rpcId !== 'string'
+      || typeof interactionId !== 'string'
+      || typeof interaction.sessionId !== 'string'
+      || !Array.isArray(questions)
+      || questions.length === 0
+      || questions.some((question) => !validHarnessQuestion(question))) {
+      this.#logger.warn?.('[dsh-feishu] ignored an invalid Harness question interaction');
+      return;
+    }
+
+    if (interaction.recovered === true) {
+      await interaction.respond({
+        ok: false,
+        error: {
+          code: 'cancelled',
+          message: 'Feishu safely cancelled an interaction left by an earlier client.',
+          details: {},
+        },
+      });
+      await this.#send(
+        chatId,
+        '检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。',
+      ).catch(() => undefined);
+      return;
+    }
+
+    const existing = this.#pendingInteractions.get(key);
+    if (existing?.interactionId === interactionId) {
+      existing.interaction = interaction;
+      if (existing.needsPresentation) await this.#presentInteraction(existing);
+      return;
+    }
+    if (this.#interactionKeys.has(interactionId)) return;
+    if (existing) {
+      await interaction.respond({
+        ok: false,
+        error: {
+          code: 'cancelled',
+          message: 'Feishu is already handling another user interaction.',
+          details: {},
+        },
+      });
+      return;
+    }
+
+    const pending = {
+      kind: 'question',
+      interactionId,
+      sessionId: interaction.sessionId,
+      interaction,
+      key,
+      actor,
+      requiresMention,
+      questions,
+      answers: [],
+      index: 0,
+      chatId,
+      queue: null,
+      claimedReplyMessageId: null,
+      submitting: false,
+      needsPresentation: true,
+      questionMessageIds: new Set(),
+      inactive: false,
+    };
+    this.#pendingInteractions.set(key, pending);
+    this.#interactionKeys.set(pending.interactionId, key);
+    await this.#presentInteraction(pending);
+  }
+
+  #handleInteractionResolved(resolution) {
+    const interactionId = resolution?.interactionId;
+    if (resolution?.kind !== 'question' || typeof interactionId !== 'string') return;
+    const key = this.#interactionKeys.get(interactionId);
+    if (!key) return;
+    const pending = this.#pendingInteractions.get(key);
+    if (pending) this.#rememberResolvedInteraction(key, pending);
+    this.#clearPendingInteraction(key, interactionId);
+  }
+
+  async #presentInteraction(pending) {
+    const question = pending.questions[pending.index];
+    if (!question) return;
+    const messageId = await this.#send(
+      pending.chatId,
+      harnessQuestionText(
+        question,
+        pending.index,
+        pending.questions.length,
+        { requiresMention: pending.requiresMention },
+      ),
+    );
+    if (messageId) {
+      pending.questionMessageIds.add(messageId);
+      if (pending.inactive) this.#rememberResolvedInteraction(pending.key, pending);
+    }
+    pending.needsPresentation = false;
+  }
+
+  #rememberResolvedInteraction(key, pending) {
+    const expiresAt = Date.now() + RESOLVED_REPLY_TTL_MS;
+    for (const messageId of pending.questionMessageIds ?? []) {
+      this.#resolvedQuestionReplies.set(messageId, { key, expiresAt });
+    }
+  }
+
+  #isResolvedQuestionReply(event, key) {
+    const now = Date.now();
+    for (const [messageId, resolution] of this.#resolvedQuestionReplies) {
+      if (resolution.expiresAt <= now) this.#resolvedQuestionReplies.delete(messageId);
+    }
+    for (const reference of [event?.message?.parent_id, event?.message?.root_id]) {
+      const resolution = this.#resolvedQuestionReplies.get(reference);
+      if (resolution?.key === key && resolution.expiresAt > now) return true;
+    }
+    return false;
+  }
+
+  async #discardResolvedInteractionReply(event, messageId) {
+    if (this.#state.hasSeen(messageId)) return;
+    await this.#state.markSeen(messageId);
+    this.#status.lastMessageAt = new Date().toISOString();
+    this.#status.messagesReceived += 1;
+    await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT).catch(() => undefined);
+  }
+
+  #takePendingInteraction(key, interactionId) {
+    const pending = this.#pendingInteractions.get(key);
+    if (!pending
+      || (interactionId !== undefined && pending.interactionId !== interactionId)) return null;
+    this.#pendingInteractions.delete(key);
+    this.#interactionKeys.delete(pending.interactionId);
+    pending.inactive = true;
+    return pending;
+  }
+
+  #clearPendingInteraction(key, interactionId) {
+    return this.#takePendingInteraction(key, interactionId) !== null;
+  }
+
+  async #cancelPendingInteraction(key) {
+    const pending = this.#takePendingInteraction(key);
+    if (!pending || pending.kind !== 'question') return;
+    this.#rememberResolvedInteraction(key, pending);
+    try {
+      await pending.interaction.respond({
+        ok: false,
+        error: {
+          code: 'cancelled',
+          message: 'The Feishu interaction ended before the user answered.',
+          details: {},
+        },
+      }, { signal: AbortSignal.timeout(5_000) });
+    } catch (error) {
+      if (error?.code !== 'interaction-not-pending') {
+        this.#logger.warn?.('[dsh-feishu] failed to cancel a pending Harness interaction');
+      }
     }
   }
 
@@ -206,12 +673,12 @@ export class FeishuHarnessBridge {
       return reactionId;
     } catch (error) {
       this.#status.reactionErrors = (this.#status.reactionErrors ?? 0) + 1;
-      console.warn(`[bridge] unable to add ${emojiType} reaction:`, error.message);
+      this.#logger.warn?.(`[dsh-feishu] unable to add ${emojiType} reaction:`, error.message);
       return null;
     }
   }
 
-  async #finishReaction(messageId, processingReaction, finalEmojiType) {
+  async #removeProcessingReaction(messageId, processingReaction) {
     const reactionId = await processingReaction;
     if (reactionId && this.#channel?.removeReaction) {
       try {
@@ -219,9 +686,13 @@ export class FeishuHarnessBridge {
         this.#status.reactionsRemoved = (this.#status.reactionsRemoved ?? 0) + 1;
       } catch (error) {
         this.#status.reactionErrors = (this.#status.reactionErrors ?? 0) + 1;
-        console.warn('[bridge] unable to remove processing reaction:', error.message);
+        this.#logger.warn?.('[dsh-feishu] unable to remove processing reaction:', error.message);
       }
     }
+  }
+
+  async #finishReaction(messageId, processingReaction, finalEmojiType) {
+    await this.#removeProcessingReaction(messageId, processingReaction);
     await this.#addReaction(messageId, finalEmojiType);
   }
 
@@ -237,5 +708,6 @@ export class FeishuHarnessBridge {
     if (response?.code && response.code !== 0) {
       throw new Error(`Feishu send failed: ${response.msg || response.code}`);
     }
+    return nonEmptyString(response?.data?.message_id);
   }
 }

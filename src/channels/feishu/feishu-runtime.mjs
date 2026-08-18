@@ -1,6 +1,26 @@
 import { FeishuHarnessBridge } from './bridge.mjs';
 import { VerifiedFeishuChannel } from './feishu-channel.mjs';
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+
+function httpInstanceWithTimeout(httpInstance, timeoutMs) {
+  if (!httpInstance || typeof httpInstance.request !== 'function') return undefined;
+  const optionsWithTimeout = (options) => ({
+    ...(options ?? {}),
+    timeout: options?.timeout ?? timeoutMs,
+  });
+  return {
+    request: (options) => httpInstance.request(optionsWithTimeout(options)),
+    get: (url, options) => httpInstance.get(url, optionsWithTimeout(options)),
+    delete: (url, options) => httpInstance.delete(url, optionsWithTimeout(options)),
+    head: (url, options) => httpInstance.head(url, optionsWithTimeout(options)),
+    options: (url, options) => httpInstance.options(url, optionsWithTimeout(options)),
+    post: (url, data, options) => httpInstance.post(url, data, optionsWithTimeout(options)),
+    put: (url, data, options) => httpInstance.put(url, data, optionsWithTimeout(options)),
+    patch: (url, data, options) => httpInstance.patch(url, data, optionsWithTimeout(options)),
+  };
+}
+
 export function createBridgeStatus({ allowedSenderCount = 1 } = {}) {
   return {
     startedAt: null,
@@ -43,11 +63,13 @@ export class FeishuRuntime {
   #state;
   #replyTimeoutMs;
   #connectTimeoutMs;
+  #requestTimeoutMs;
   #logger;
   #client = null;
   #bridge = null;
   #wsClient = null;
   #starting = null;
+  #abortController = null;
   #status;
 
   constructor({
@@ -61,6 +83,7 @@ export class FeishuRuntime {
     state,
     replyTimeoutMs = 600000,
     connectTimeoutMs = 15000,
+    requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     logger = console,
   }) {
     if (!lark) throw new Error('FeishuRuntime requires the Feishu SDK');
@@ -70,6 +93,9 @@ export class FeishuRuntime {
     if (normalizedOwners.length === 0) throw new Error('FeishuRuntime requires at least one owner open_id');
     if (!harness) throw new Error('FeishuRuntime requires a Harness client');
     if (!state) throw new Error('FeishuRuntime requires a state store');
+    if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) {
+      throw new TypeError('FeishuRuntime requestTimeoutMs must be a positive number');
+    }
 
     this.#lark = lark;
     this.#appId = appId;
@@ -80,6 +106,7 @@ export class FeishuRuntime {
     this.#state = state;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#connectTimeoutMs = connectTimeoutMs;
+    this.#requestTimeoutMs = requestTimeoutMs;
     this.#logger = logger;
     this.#status = createBridgeStatus({ allowedSenderCount: normalizedOwners.length });
   }
@@ -99,12 +126,15 @@ export class FeishuRuntime {
   }
 
   async #start() {
+    const abortController = new AbortController();
+    this.#abortController = abortController;
+    const { signal } = abortController;
     this.#status.startedAt = new Date().toISOString();
     this.#status.feishuLongConnectionState = 'connecting';
     this.#status.lastError = null;
 
     try {
-      await this.#harness.ensureRunning();
+      await this.#harness.ensureRunning({ signal });
       this.#status.harnessReachable = true;
 
       const sdkDomain = this.#domain === 'lark'
@@ -115,6 +145,11 @@ export class FeishuRuntime {
         appSecret: this.#appSecret,
         domain: sdkDomain,
       };
+      const httpInstance = httpInstanceWithTimeout(
+        this.#lark.defaultHttpInstance,
+        this.#requestTimeoutMs,
+      );
+      if (httpInstance) larkConfig.httpInstance = httpInstance;
       this.#client = new this.#lark.Client(larkConfig);
       const channel = new VerifiedFeishuChannel({
         client: this.#client,
@@ -128,6 +163,8 @@ export class FeishuRuntime {
         status: this.#status,
         allowedSenderOpenIds: new Set(this.#ownerOpenIds),
         replyTimeoutMs: this.#replyTimeoutMs,
+        signal,
+        logger: this.#logger,
       });
 
       const dispatcher = new this.#lark.EventDispatcher({}).register({
@@ -205,6 +242,9 @@ export class FeishuRuntime {
 
   async stop({ preserveError = false } = {}) {
     const error = preserveError ? this.#status.lastError : null;
+    const abortController = this.#abortController;
+    this.#abortController = null;
+    abortController?.abort(new DOMException('Feishu runtime stopped', 'AbortError'));
     this.#status.ready = false;
     if (this.#wsClient) {
       this.#wsClient.close({ force: true });

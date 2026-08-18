@@ -5,6 +5,160 @@ import {
   HarnessReplyTracker,
 } from '../../../src/channels/feishu/harness-client.mjs';
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+async function eventually(predicate, message = 'condition was not met') {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(message);
+}
+
+class FakeSocket {
+  #listeners = new Map();
+  readyState = 0;
+
+  addEventListener(name, listener) {
+    const listeners = this.#listeners.get(name) ?? new Set();
+    listeners.add(listener);
+    this.#listeners.set(name, listeners);
+  }
+
+  removeEventListener(name, listener) {
+    this.#listeners.get(name)?.delete(listener);
+  }
+
+  open() {
+    if (this.readyState !== 0) return;
+    this.readyState = 1;
+    this.#emit('open', {});
+  }
+
+  frame(value) {
+    this.#emit('message', { data: JSON.stringify(value) });
+  }
+
+  close(code = 1000) {
+    if (this.readyState >= 2) return;
+    this.readyState = 3;
+    this.#emit('close', { code });
+  }
+
+  #emit(name, event) {
+    for (const listener of [...(this.#listeners.get(name) ?? [])]) listener(event);
+  }
+}
+
+test('interaction watcher uses the real Harness wire protocol and leaves approvals fail-closed', async () => {
+  const requests = [];
+  const opened = deferred();
+  let socket;
+  let socketUrl;
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080/base',
+    workspace: '/tmp/dsh-feishu-workspace',
+    fetchImpl: async (url, options) => {
+      requests.push({
+        url: url.toString(),
+        method: options.method,
+        body: JSON.parse(options.body),
+      });
+      return { ok: true, json: async () => ({ accepted: true }) };
+    },
+    createWebSocket: (url) => {
+      socketUrl = url;
+      socket = new FakeSocket();
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  const controller = new AbortController();
+  const interactions = [];
+  const watching = client.watchInteractions('session-feishu', {
+    signal: controller.signal,
+    onOpen: opened.resolve,
+    onInteraction: (interaction) => interactions.push(interaction),
+  });
+  await opened.promise;
+
+  socket.frame({
+    type: 'server-request',
+    rpcId: 'approval-rpc',
+    method: 'approval/requested',
+    payload: {
+      type: 'approval/requested',
+      sessionId: 'session-feishu',
+      approvalId: 'approval-one',
+      toolName: 'bash',
+    },
+  });
+  socket.frame({
+    type: 'server-request',
+    rpcId: 'question-rpc',
+    method: 'question/requested',
+    payload: {
+      type: 'question/requested',
+      sessionId: 'session-feishu',
+      questions: [{
+        id: 'environment',
+        question: '请选择测试环境',
+        options: [{ label: '测试环境' }, { label: '生产环境' }],
+      }],
+    },
+  });
+
+  await eventually(() => interactions.length === 2);
+  assert.equal(socketUrl, 'ws://127.0.0.1:3080/api/events.mux');
+  assert.deepEqual(interactions.map((interaction) => ({
+    kind: interaction.kind,
+    interactionId: interaction.interactionId,
+    rpcId: interaction.rpcId,
+    sessionId: interaction.sessionId,
+  })), [
+    {
+      kind: 'approval',
+      interactionId: 'approval-one',
+      rpcId: 'approval-rpc',
+      sessionId: 'session-feishu',
+    },
+    {
+      kind: 'question',
+      interactionId: 'question-rpc',
+      rpcId: 'question-rpc',
+      sessionId: 'session-feishu',
+    },
+  ]);
+  assert.equal(requests.length, 0, 'receiving an approval must never approve it automatically');
+
+  const result = {
+    ok: true,
+    value: {
+      sessionId: 'session-feishu',
+      answer: { answers: [{ id: 'environment', selected: ['测试环境'] }] },
+    },
+  };
+  assert.deepEqual(await interactions[1].respond(result), { accepted: true });
+  assert.deepEqual(requests, [{
+    url: 'http://127.0.0.1:3080/api/respond',
+    method: 'POST',
+    body: { type: 'client-response', rpcId: 'question-rpc', result },
+  }]);
+
+  controller.abort();
+  await watching;
+  assert.equal(socket.readyState, 3);
+});
+
 test('HarnessClient lists only absolute workspace paths', async () => {
   const client = new HarnessClient({
     baseUrl: 'http://127.0.0.1:3080',
