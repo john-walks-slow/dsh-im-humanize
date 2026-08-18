@@ -120,7 +120,36 @@ function consumeInteractionOwnership(ownership, entries) {
     if (event.type === 'turn/end' && event.data?.turn === ownership.turn) {
       ownership.active = false;
       ownership.completed = true;
+      continue;
     }
+    let toolCall = null;
+    if (event.type === 'tool/call'
+      && ownership.active
+      && event.data?.turn === ownership.turn
+      && typeof event.data?.callId === 'string'
+      && event.data.callId) {
+      toolCall = {
+        callId: event.data.callId,
+        name: event.data?.name,
+        arguments: event.data?.arguments,
+      };
+    } else if (event.type === 'tool/code-dispatch-start'
+      && ownership.active
+      && typeof event.data?.subCallId === 'string'
+      && event.data.subCallId) {
+      let argumentsText;
+      try {
+        argumentsText = JSON.stringify(event.data?.arguments);
+      } catch {
+        argumentsText = undefined;
+      }
+      toolCall = {
+        callId: event.data.subCallId,
+        name: event.data?.name,
+        arguments: argumentsText,
+      };
+    }
+    if (toolCall) ownership.toolCalls.set(toolCall.callId, Object.freeze(toolCall));
   }
 }
 
@@ -524,13 +553,12 @@ export class HarnessClient {
       .sort((left, right) => left.order - right.order);
     if (active.length > 0) return { ownership: active[0], recovered: false };
 
-    // Approval recovery must remain fail-closed until #5 can prove the actor
-    // and conversation that originally requested the decision.
-    if (kind !== 'question') return null;
-
     // A newly attached IM conversation may encounter a question left by
     // an earlier runtime before its queued prompt starts. Let the oldest such
     // ask adopt that replay so the Session can recover instead of deadlocking.
+    // Approval adopters receive recovered=true and must reject it without ever
+    // presenting it as approvable; the original actor/route cannot be proven
+    // after a runtime restart.
     const ownership = owners
       .filter((ownership) => !ownership.started && !ownership.completed)
       .sort((left, right) => left.order - right.order)[0] ?? null;
@@ -580,6 +608,7 @@ export class HarnessClient {
           lastSeq: baselineSeq,
           reconnect: null,
           order: -1,
+          toolCalls: new Map(),
         }
       : null;
     let interactionTask = null;
@@ -740,6 +769,9 @@ export class HarnessClient {
             if (claim?.ownership !== ownership) return;
             this.#interactionClaims.set(claimKey, claim);
           }
+          const toolCall = kind === 'approval' && ownership && typeof payload.callId === 'string'
+            ? this.#interactionClaims.get(claimKey)?.ownership.toolCalls.get(payload.callId)
+            : undefined;
           dispatch(onInteraction, Object.freeze({
             kind,
             interactionId,
@@ -749,6 +781,7 @@ export class HarnessClient {
             recovered: ownership
               ? this.#interactionClaims.get(claimKey)?.recovered === true
               : false,
+            ...(toolCall ? { toolCall } : {}),
             reconnect: close,
             respond: (result, options = {}) => this.respondInteraction(
               envelope.rpcId,

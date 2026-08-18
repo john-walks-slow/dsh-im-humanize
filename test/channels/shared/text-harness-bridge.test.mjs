@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { DiscordHarnessBridge } from '../../../src/channels/discord/discord-bridge.mjs';
 import { TextHarnessBridge } from '../../../src/channels/shared/text-harness-bridge.mjs';
+import { SlackHarnessBridge } from '../../../src/channels/slack/slack-bridge.mjs';
+import { TelegramHarnessBridge } from '../../../src/channels/telegram/telegram-bridge.mjs';
+import { WhatsappHarnessBridge } from '../../../src/channels/whatsapp/whatsapp-bridge.mjs';
 
 function deferred() {
   let resolve;
@@ -68,6 +72,35 @@ function questionInteraction({
     rpcId: id,
     sessionId,
     payload: { type: 'question/requested', sessionId, questions },
+    respond,
+    ...rest,
+  };
+}
+
+function approvalInteraction({
+  id = 'approval-one',
+  sessionId = 'session-one',
+  toolName = 'bash',
+  callId = 'call-one',
+  reason = '测试审批链路',
+  argumentsText = JSON.stringify({ command: "printf 'approval-test\\n'" }),
+  respond = async () => ({ accepted: true }),
+  ...rest
+} = {}) {
+  return {
+    kind: 'approval',
+    interactionId: id,
+    rpcId: `rpc-${id}`,
+    sessionId,
+    payload: {
+      type: 'approval/requested',
+      sessionId,
+      approvalId: id,
+      toolName,
+      callId,
+      reason,
+    },
+    toolCall: { callId, name: toolName, arguments: argumentsText },
     respond,
     ...rest,
   };
@@ -144,6 +177,348 @@ test('answers a multi-question interaction on the fast lane with canonical value
   assert.deepEqual(asked, [{ sessionId: 'session-one', text: '请分步提问' }]);
   assert.equal(sent.at(-1).text, '交互已完成');
   assert.deepEqual(sent[1].target, { id: 'target-language' });
+});
+
+test('answers approvals on the interaction fast lane with precise text decisions', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const asked = [];
+  const submitted = [];
+  const cases = [
+    { reply: '批准', outcome: 'allowed-once' },
+    { reply: '同意', outcome: 'allowed-once' },
+    { reply: '  YeS  ', outcome: 'allowed-once' },
+    { reply: '拒绝', outcome: 'rejected' },
+    { reply: '不同意', outcome: 'rejected' },
+    { reply: '  NO  ', outcome: 'rejected' },
+  ];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    harness: {
+      createSession: async () => 'session-one',
+      ask: async (sessionId, text, options) => {
+        asked.push({ sessionId, text });
+        for (const [index, approvalCase] of cases.entries()) {
+          const answered = deferred();
+          await options.onInteraction(approvalInteraction({
+            id: `approval-${index + 1}`,
+            sessionId,
+            toolName: `tool-${index + 1}`,
+            reason: `精准回复测试 ${index + 1}`,
+            respond: async (result) => {
+              submitted.push(result);
+              answered.resolve();
+              return { accepted: true };
+            },
+          }));
+          await answered.promise;
+          assert.equal(submitted.at(-1).value.outcome, approvalCase.outcome);
+        }
+        return '所有审批已完成';
+      },
+    },
+  });
+
+  const processing = bridge.accept(message('approval-start', '启动审批测试'));
+  for (const [index, approvalCase] of cases.entries()) {
+    await eventually(() => sent.some(({ text }) => text.includes(`tool-${index + 1}`)));
+    await bridge.accept(message(`approval-reply-${index + 1}`, approvalCase.reply));
+  }
+  await processing;
+
+  assert.deepEqual(submitted, cases.map(({ outcome }, index) => ({
+    ok: true,
+    value: {
+      sessionId: 'session-one',
+      approvalId: `approval-${index + 1}`,
+      outcome,
+    },
+  })));
+  assert.deepEqual(asked, [{ sessionId: 'session-one', text: '启动审批测试' }]);
+  assert.equal(sent.at(-1).text, '所有审批已完成');
+});
+
+test('all four shared text channel bridges inherit the approval fast lane', async () => {
+  const channels = [
+    ['Slack', SlackHarnessBridge],
+    ['Discord', DiscordHarnessBridge],
+    ['Telegram', TelegramHarnessBridge],
+    ['WhatsApp', WhatsappHarnessBridge],
+  ];
+
+  for (const [label, Bridge] of channels) {
+    const fixture = stateFixture();
+    const sent = [];
+    const submitted = deferred();
+    const asked = [];
+    const bridge = new Bridge({
+      state: fixture.state,
+      logger: { warn() {}, error() {} },
+      bot: { sendText: async (target, text) => sent.push({ target, text }) },
+      harness: {
+        createSession: async () => 'session-one',
+        ask: async (sessionId, text, options) => {
+          asked.push(text);
+          await options.onInteraction(approvalInteraction({
+            id: `${label.toLowerCase()}-approval`,
+            sessionId,
+            toolName: `${label.toLowerCase()}-tool`,
+            respond: async (result) => {
+              submitted.resolve(result);
+              return { accepted: true };
+            },
+          }));
+          await submitted.promise;
+          return `${label} 审批完成`;
+        },
+      },
+    });
+
+    const processing = bridge.accept(message(`${label}-prompt`, `${label} 启动审批`));
+    await eventually(() => sent.some(({ text }) => text.includes(`${label.toLowerCase()}-tool`)));
+    await bridge.accept(message(`${label}-decision`, '批准'));
+    await processing;
+
+    assert.equal((await submitted.promise).value.outcome, 'allowed-once', label);
+    assert.deepEqual(asked, [`${label} 启动审批`], label);
+    assert.equal(sent.at(-1).text, `${label} 审批完成`, label);
+  }
+});
+
+test('keeps an imprecise approval reply out of the Harness prompt queue', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const asked = [];
+  const submitted = deferred();
+  let responseCalls = 0;
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    harness: {
+      createSession: async () => 'session-one',
+      ask: async (sessionId, text, options) => {
+        asked.push(text);
+        await options.onInteraction(approvalInteraction({
+          sessionId,
+          respond: async (result) => {
+            responseCalls += 1;
+            submitted.resolve(result);
+            return { accepted: true };
+          },
+        }));
+        await submitted.promise;
+        return '审批已继续';
+      },
+    },
+  });
+
+  const processing = bridge.accept(message('imprecise-start', '启动精准匹配测试'));
+  await eventually(() => sent.some(({ text }) => text.includes('测试审批链路')));
+  const imprecise = bridge.accept(message('imprecise-reply', '好的'));
+  await imprecise;
+  assert.equal(responseCalls, 0);
+  assert.deepEqual(asked, ['启动精准匹配测试']);
+
+  const approval = bridge.accept(message('precise-reply', '批准'));
+  await Promise.all([processing, approval]);
+
+  assert.deepEqual(await submitted.promise, {
+    ok: true,
+    value: {
+      sessionId: 'session-one',
+      approvalId: 'approval-one',
+      outcome: 'allowed-once',
+    },
+  });
+  assert.deepEqual(asked, ['启动精准匹配测试']);
+});
+
+test('presents parallel approvals from one conversation in fifo order without codes', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const submitted = [];
+  const firstAnswered = deferred();
+  const secondAnswered = deferred();
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    harness: {
+      createSession: async () => 'session-one',
+      ask: async (sessionId, _text, options) => {
+        await Promise.all([
+          options.onInteraction(approvalInteraction({
+            id: 'fifo-first-id',
+            sessionId,
+            toolName: 'first-tool',
+            reason: '第一条审批',
+            respond: async (result) => {
+              submitted.push(result);
+              firstAnswered.resolve();
+              return { accepted: true };
+            },
+          })),
+          options.onInteraction(approvalInteraction({
+            id: 'fifo-second-id',
+            sessionId,
+            toolName: 'second-tool',
+            reason: '第二条审批',
+            respond: async (result) => {
+              submitted.push(result);
+              secondAnswered.resolve();
+              return { accepted: true };
+            },
+          })),
+        ]);
+        await Promise.all([firstAnswered.promise, secondAnswered.promise]);
+        return '并行审批已完成';
+      },
+    },
+  });
+
+  const processing = bridge.accept(message('fifo-start', '启动并行审批'));
+  await eventually(() => sent.some(({ text }) => text.includes('first-tool')));
+  assert.equal(sent.some(({ text }) => text.includes('second-tool')), false);
+
+  await bridge.accept(message('fifo-first-reply', '批准'));
+  await eventually(() => sent.some(({ text }) => text.includes('second-tool')));
+  await bridge.accept(message('fifo-second-reply', '拒绝'));
+  await processing;
+
+  const approvalMessages = sent.filter(({ text }) => (
+    text.includes('first-tool') || text.includes('second-tool')
+  ));
+  assert.equal(approvalMessages.length, 2);
+  assert.match(approvalMessages[0].text, /first-tool/);
+  assert.match(approvalMessages[1].text, /second-tool/);
+  assert.equal(approvalMessages.some(({ text }) => (
+    text.includes('fifo-first-id') || text.includes('fifo-second-id')
+  )), false);
+  assert.deepEqual(submitted.map(({ value }) => ({
+    approvalId: value.approvalId,
+    outcome: value.outcome,
+  })), [
+    { approvalId: 'fifo-first-id', outcome: 'allowed-once' },
+    { approvalId: 'fifo-second-id', outcome: 'rejected' },
+  ]);
+});
+
+test('a completed approval tombstone never steals yes or no from a live question', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const approvalDone = deferred();
+  const questionDone = deferred();
+  let questionResponse;
+  const asked = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    harness: {
+      createSession: async () => 'session-one',
+      ask: async (sessionId, text, options) => {
+        asked.push(text);
+        await options.onInteraction(approvalInteraction({
+          sessionId,
+          respond: async () => {
+            approvalDone.resolve();
+            return { accepted: true };
+          },
+        }));
+        await approvalDone.promise;
+        await options.onInteraction(questionInteraction({
+          id: 'question-after-approval',
+          sessionId,
+          questions: [{ id: 'continue', question: '是否继续？' }],
+          respond: async (result) => {
+            questionResponse = result;
+            questionDone.resolve();
+            return { accepted: true };
+          },
+        }));
+        await questionDone.promise;
+        return '审批和提问均已完成';
+      },
+    },
+  });
+
+  const processing = bridge.accept(message('approval-then-question', '开始组合交互'));
+  await eventually(() => sent.some(({ text }) => text.includes("printf 'approval-test")));
+  await bridge.accept(message('approval-before-question', '批准'));
+  await eventually(() => sent.some(({ text }) => text.includes('是否继续？')));
+  await bridge.accept(message('question-yes', 'yes'));
+  await processing;
+
+  assert.deepEqual(questionResponse.value.answer.answers, [{
+    id: 'continue',
+    selected: [],
+    custom: 'yes',
+  }]);
+  assert.deepEqual(asked, ['开始组合交互']);
+  assert.equal(sent.at(-1).text, '审批和提问均已完成');
+});
+
+test('a sibling approval waits for an in-flight question answer without deadlocking', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const questionResponseStarted = deferred();
+  const releaseQuestionResponse = deferred();
+  const questionDone = deferred();
+  const approvalDone = deferred();
+  const asked = [];
+  const questionResponses = [];
+  const approvalResponses = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    harness: {
+      createSession: async () => 'session-one',
+      ask: async (sessionId, text, options) => {
+        asked.push(text);
+        await options.onInteraction(approvalInteraction({
+          id: 'sibling-approval',
+          sessionId,
+          respond: async (result) => {
+            approvalResponses.push(result);
+            approvalDone.resolve();
+            return { accepted: true };
+          },
+        }));
+        await options.onInteraction(questionInteraction({
+          id: 'sibling-question',
+          sessionId,
+          questions: [{ id: 'continue', question: '是否继续执行？' }],
+          respond: async (result) => {
+            questionResponses.push(result);
+            questionResponseStarted.resolve();
+            await releaseQuestionResponse.promise;
+            questionDone.resolve();
+            return { accepted: true };
+          },
+        }));
+        await Promise.all([questionDone.promise, approvalDone.promise]);
+        return '组合交互已完成';
+      },
+    },
+  });
+
+  const processing = bridge.accept(message('sibling-start', '启动并行交互'));
+  await eventually(() => sent.some(({ text }) => text.includes('是否继续执行？')));
+  const answeringQuestion = bridge.accept(message('sibling-question-answer', 'yes'));
+  await questionResponseStarted.promise;
+  const approving = bridge.accept(message('sibling-approval-answer', '批准'));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(approvalResponses.length, 0);
+
+  releaseQuestionResponse.resolve();
+  await Promise.all([answeringQuestion, approving, processing]);
+  assert.deepEqual(questionResponses[0].value.answer.answers, [{
+    id: 'continue',
+    selected: [],
+    custom: 'yes',
+  }]);
+  assert.equal(approvalResponses[0].value.outcome, 'allowed-once');
+  assert.deepEqual(asked, ['启动并行交互']);
+  assert.equal(sent.at(-1).text, '组合交互已完成');
 });
 
 test('isolates pending questions by normalized conversation key', async () => {
@@ -253,12 +628,12 @@ test('a group question only accepts an addressed reply from the initiating actor
   assert.equal(bridge.status.messagesRejected, 1);
 });
 
-test('deduplicates replays, cancels parallel and recovered questions, and leaves approval pending', async () => {
+test('deduplicates replays and safely closes recovered questions and approvals', async () => {
   const fixture = stateFixture();
   const sent = [];
   let parallelResponse;
   let recoveredResponse;
-  let approvalResponses = 0;
+  let approvalResponse;
   const bridge = createBridge({
     state: fixture.state,
     bot: { sendText: async (target, text) => sent.push({ target, text }) },
@@ -278,14 +653,12 @@ test('deduplicates replays, cancels parallel and recovered questions, and leaves
           questions: [{ id: 'parallel', question: '不应显示的并行问题' }],
           respond: async (result) => { parallelResponse = result; },
         }));
-        await options.onInteraction({
-          kind: 'approval',
-          interactionId: 'approval-one',
-          rpcId: 'approval-rpc',
+        await options.onInteraction(approvalInteraction({
+          id: 'orphan-approval',
           sessionId,
-          payload: { type: 'approval/requested', approvalId: 'approval-one' },
-          respond: async () => { approvalResponses += 1; },
-        });
+          recovered: true,
+          respond: async (result) => { approvalResponse = result; },
+        }));
         await options.onInteraction(questionInteraction({
           id: 'orphan-question',
           sessionId,
@@ -318,7 +691,15 @@ test('deduplicates replays, cancels parallel and recovered questions, and leaves
     message: 'Test safely cancelled an interaction left by an earlier client.',
     details: {},
   });
-  assert.equal(approvalResponses, 0);
+  assert.deepEqual(approvalResponse, {
+    ok: true,
+    value: {
+      sessionId: 'session-one',
+      approvalId: 'orphan-approval',
+      outcome: 'rejected',
+    },
+  });
+  assert.equal(sent.some(({ text }) => text.includes("printf 'approval-test")), false);
 });
 
 test('keeps a failed interaction response pending so the actor can retry', async () => {

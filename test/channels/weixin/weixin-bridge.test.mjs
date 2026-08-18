@@ -191,10 +191,81 @@ test('Weixin answers a multi-question interaction before the original turn queue
   assert.equal(sent.find(({ text }) => text.includes('选择交付物')).contextToken, 'context-multi-language');
 });
 
+test('Weixin consumes an exact rejection as the pending approval response', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-approval');
+  const sent = [];
+  const asked = [];
+  const completed = deferred();
+  const responses = [];
+  const bridge = new WeixinHarnessBridge({
+    api: { sendText: async (request) => sent.push(request) },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      createSession: async () => assert.fail('the existing session should be reused'),
+      ask: async (sessionId, text, options) => {
+        asked.push(text);
+        await options.onInteraction({
+          kind: 'approval',
+          interactionId: 'weixin-approval-exact',
+          rpcId: 'weixin-approval-exact-rpc',
+          sessionId,
+          payload: {
+            type: 'approval/requested',
+            sessionId,
+            approvalId: 'weixin-approval-exact',
+            toolName: 'bash',
+            callId: 'weixin-approval-exact-call',
+            reason: '允许执行微信审批测试',
+          },
+          toolCall: {
+            callId: 'weixin-approval-exact-call',
+            name: 'bash',
+            arguments: JSON.stringify({ command: "printf 'weixin-approval\\n'" }),
+          },
+          respond: async (result) => {
+            responses.push(result);
+            completed.resolve();
+            return { accepted: true };
+          },
+        });
+        await completed.promise;
+        return '审批已拒绝';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const prompt = bridge.accept(message('approval-start', '启动审批'));
+  await eventually(() => sent.some(({ text }) => text.includes('允许执行微信审批测试')));
+  const presentation = sent.find(({ text }) => text.includes('允许执行微信审批测试')).text;
+  assert.match(presentation, /bash/);
+  assert.match(presentation, /批准.*拒绝/s);
+
+  await Promise.all([
+    bridge.accept(message('approval-reject', '  不同意  ')),
+    prompt,
+  ]);
+
+  assert.deepEqual(responses, [{
+    ok: true,
+    value: {
+      sessionId: 'session-approval',
+      approvalId: 'weixin-approval-exact',
+      outcome: 'rejected',
+    },
+  }]);
+  assert.deepEqual(asked, ['启动审批']);
+  assert.equal(sent.at(-1).text, '审批已拒绝');
+});
+
 test('Weixin deduplicates question replays, rejects parallel questions, and keeps approvals fail-closed', async () => {
   const fixture = stateFixture();
   const sent = [];
-  let approvalResponses = 0;
+  let approvalResponse;
   let parallelResponse;
   let orphanResponse;
   const bridge = new WeixinHarnessBridge({
@@ -246,7 +317,7 @@ test('Weixin deduplicates question replays, rejects parallel questions, and keep
             approvalId: 'weixin-approval',
             toolName: 'bash',
           },
-          respond: async () => { approvalResponses += 1; },
+          respond: async (result) => { approvalResponse = result; },
         });
         await options.onInteractionResolved({
           kind: 'question',
@@ -288,7 +359,14 @@ test('Weixin deduplicates question replays, rejects parallel questions, and keep
       details: {},
     },
   });
-  assert.equal(approvalResponses, 0);
+  assert.deepEqual(approvalResponse, {
+    ok: true,
+    value: {
+      sessionId: 'session-replay',
+      approvalId: 'weixin-approval',
+      outcome: 'rejected',
+    },
+  });
   assert.equal(sent.some(({ text }) => text.includes('approval')), false);
   assert.deepEqual(orphanResponse, {
     ok: false,

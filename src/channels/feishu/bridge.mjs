@@ -10,6 +10,7 @@ import {
   harnessQuestionText,
   validHarnessQuestion,
 } from '../shared/harness-question.mjs';
+import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 
@@ -67,6 +68,7 @@ export class FeishuHarnessBridge {
   #resolvedQuestionReplies = new Map();
   #acceptedMessageIds = new Set();
   #interactionTasks = new Set();
+  #approvals;
   #status;
   #allowedSenderOpenIds;
   #replyTimeoutMs;
@@ -95,6 +97,7 @@ export class FeishuHarnessBridge {
     this.#allowedSenderOpenIds = allowedSenderOpenIds;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#logger = logger;
+    this.#approvals = new HarnessApprovalQueue({ label: 'Feishu', logger });
     this.#signal = signal;
     ensureStatus(this.#status);
   }
@@ -138,6 +141,44 @@ export class FeishuHarnessBridge {
       return current;
     }
     const pending = this.#pendingInteractions.get(key);
+    const approvalReply = this.#approvals.claimReply({
+      key,
+      actor: senderOpenId(event),
+      messageId,
+      text: extractText(event) ?? '',
+      addressed: event?.message?.chat_type === 'p2p'
+        || (Array.isArray(event?.message?.mentions) && event.message.mentions.length > 0),
+      hasPendingQuestion: Boolean(pending),
+      questionCompletion: pending?.submitting || pending?.claimedReplyMessageId
+        ? pending.queue
+        : null,
+      isQuestionPending: () => this.#pendingInteractions.has(key),
+      send: (text) => this.#send(event.message.chat_id, text),
+    });
+    if (approvalReply) {
+      const processing = approvalReply.process(async () => {
+        if (this.#state.hasSeen(messageId)) return false;
+        await this.#state.markSeen(messageId);
+        this.#status.lastMessageAt = new Date().toISOString();
+        this.#status.messagesReceived += 1;
+        return true;
+      });
+      let current;
+      current = processing
+        .then(() => this.#finishReaction(messageId, processingReaction, 'DONE'))
+        .catch((error) => this.#handleMessageFailure(
+          event,
+          messageId,
+          processingReaction,
+          error,
+        ))
+        .finally(() => {
+          this.#acceptedMessageIds.delete(messageId);
+          this.#interactionTasks.delete(current);
+        });
+      this.#interactionTasks.add(current);
+      return current;
+    }
     if (pending && senderOpenId(event) !== pending.actor) {
       return this.#enqueueMessage(event, messageId, key, processingReaction);
     }
@@ -290,6 +331,7 @@ export class FeishuHarnessBridge {
       this.#status.lastError = null;
     } finally {
       await this.#cancelPendingInteraction(key);
+      await this.#approvals.closeRoute(key);
     }
   }
 
@@ -490,8 +532,14 @@ export class FeishuHarnessBridge {
     chatId,
     requiresMention,
   }) {
-    // Approval is deliberately exposed by the transport but remains
-    // unanswered until #5 adds an authenticated policy and renderer.
+    if (await this.#approvals.handleRequested(interaction, {
+      key,
+      actor,
+      requiresMention,
+      send: (text) => this.#send(chatId, text),
+    })) return;
+
+    // Approval requests return above; the existing question state machine stays unchanged.
     if (interaction?.kind !== 'question') return;
     const questions = interaction?.payload?.questions;
     const interactionId = typeof interaction?.interactionId === 'string'
@@ -566,7 +614,8 @@ export class FeishuHarnessBridge {
     await this.#presentInteraction(pending);
   }
 
-  #handleInteractionResolved(resolution) {
+  async #handleInteractionResolved(resolution) {
+    if (await this.#approvals.handleResolved(resolution)) return;
     const interactionId = resolution?.interactionId;
     if (resolution?.kind !== 'question' || typeof interactionId !== 'string') return;
     const key = this.#interactionKeys.get(interactionId);

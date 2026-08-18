@@ -797,6 +797,256 @@ test('ask opens the interaction watcher before prompting and closes it with the 
   assert.equal(socket.readyState, 3);
 });
 
+test('approval interactions expose only matching tool calls from the active turn', async () => {
+  let socket;
+  let promptRpcId;
+  let historyCalls = 0;
+  const interactions = [];
+  const currentToolCall = {
+    callId: 'call-current-0',
+    name: 'bash',
+    arguments: JSON.stringify({ cmd: 'pwd-0' }),
+  };
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/workspace',
+    createWebSocket: () => {
+      const createdSocket = new FakeSocket();
+      socket = createdSocket;
+      queueMicrotask(() => createdSocket.open());
+      return createdSocket;
+    },
+  });
+  client.ensureRunning = async () => true;
+  client.rpc = async (method, payload, _timeoutMs, options) => {
+    if (method === 'session.history') {
+      historyCalls += 1;
+      // Baseline and mux-open refresh both precede this new prompt. The mux
+      // session/event frames below establish ownership before approvals arrive.
+      if (historyCalls <= 2) return { events: [] };
+      return {
+        events: [
+          { event: { seq: 1, type: 'turn/start', data: { turn: 7 } } },
+          { event: {
+            seq: 2,
+            type: 'user/message',
+            data: { turn: 7, source: { rpcId: promptRpcId } },
+          } },
+          { event: {
+            seq: 3,
+            type: 'assistant/message',
+            data: {
+              turn: 7,
+              message: { content: [{ type: 'text', text: '审批上下文已捕获' }] },
+            },
+          } },
+          { event: { seq: 4, type: 'turn/end', data: { turn: 7, reason: 'completed' } } },
+        ],
+      };
+    }
+    assert.equal(method, 'session.prompt');
+    assert.equal(socket.readyState, 1);
+    assert.equal(payload.sessionId, 'session-tool-call');
+    promptRpcId = options.rpcId;
+
+    const emitEvent = (rpcId, event) => socket.frame({
+      type: 'server-request',
+      rpcId,
+      method: 'session/event',
+      payload: { type: 'session/event', sessionId: 'session-tool-call', event },
+    });
+    const emitApproval = (rpcId, approvalId, callId) => socket.frame({
+      type: 'server-request',
+      rpcId,
+      method: 'approval/requested',
+      payload: {
+        type: 'approval/requested',
+        sessionId: 'session-tool-call',
+        approvalId,
+        toolName: 'bash',
+        callId,
+        reason: '测试工具调用展示',
+      },
+    });
+
+    emitEvent('turn-start-frame', {
+      seq: 1,
+      type: 'turn/start',
+      data: { turn: 7 },
+    });
+    emitEvent('user-message-frame', {
+      seq: 2,
+      type: 'user/message',
+      data: { turn: 7, source: { rpcId: promptRpcId } },
+    });
+    emitEvent('other-turn-tool-frame', {
+      seq: 3,
+      type: 'tool/call',
+      data: {
+        turn: 6,
+        step: 1,
+        callId: 'call-other-turn',
+        name: 'bash',
+        arguments: JSON.stringify({ cmd: 'whoami' }),
+      },
+    });
+    for (let index = 0; index < 40; index += 1) {
+      emitEvent(`current-tool-frame-${index}`, {
+        seq: 4 + index,
+        type: 'tool/call',
+        data: {
+          turn: 7,
+          step: 1,
+          callId: `call-current-${index}`,
+          name: 'bash',
+          arguments: JSON.stringify({ cmd: `pwd-${index}` }),
+        },
+      });
+    }
+    emitEvent('code-dispatch-tool-frame', {
+      seq: 44,
+      type: 'tool/code-dispatch-start',
+      data: {
+        rootCallId: 'run-code-root',
+        parentCallId: 'run-code-root',
+        subCallId: 'call-code-1',
+        name: 'bash',
+        arguments: { cmd: 'echo code-mode' },
+      },
+    });
+    emitApproval('matching-approval-rpc', 'matching-approval', 'call-current-0');
+    emitApproval('code-mode-approval-rpc', 'code-mode-approval', 'call-code-1');
+    emitApproval('missing-approval-rpc', 'missing-approval', 'call-missing');
+    emitApproval('other-turn-approval-rpc', 'other-turn-approval', 'call-other-turn');
+    return {};
+  };
+
+  const answer = await client.ask('session-tool-call', '请测试审批上下文', {
+    onInteraction: (interaction) => interactions.push(interaction),
+  });
+
+  assert.equal(answer, '审批上下文已捕获');
+  assert.deepEqual(interactions.map((interaction) => ({
+    approvalId: interaction.interactionId,
+    hasToolCall: Object.hasOwn(interaction, 'toolCall'),
+    toolCall: interaction.toolCall,
+  })), [
+    {
+      approvalId: 'matching-approval',
+      hasToolCall: true,
+      toolCall: currentToolCall,
+    },
+    {
+      approvalId: 'code-mode-approval',
+      hasToolCall: true,
+      toolCall: {
+        callId: 'call-code-1',
+        name: 'bash',
+        arguments: JSON.stringify({ cmd: 'echo code-mode' }),
+      },
+    },
+    {
+      approvalId: 'missing-approval',
+      hasToolCall: false,
+      toolCall: undefined,
+    },
+    {
+      approvalId: 'other-turn-approval',
+      hasToolCall: false,
+      toolCall: undefined,
+    },
+  ]);
+  assert.equal(socket.readyState, 3);
+});
+
+test('reconnect history restores a Code Mode sub-call before replaying its approval', async () => {
+  const sockets = [];
+  const controller = new AbortController();
+  let historyEvents = [];
+  let received;
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/workspace',
+    interactionReconnectDelayMs: 0,
+    createWebSocket: () => {
+      const socket = new FakeSocket();
+      const index = sockets.push(socket) - 1;
+      queueMicrotask(() => {
+        socket.open();
+        if (index === 1) {
+          socket.frame({
+            type: 'server-request',
+            rpcId: 'replayed-code-approval-rpc',
+            method: 'approval/requested',
+            payload: {
+              type: 'approval/requested',
+              sessionId: 'code-reconnect-session',
+              approvalId: 'replayed-code-approval',
+              toolName: 'bash',
+              callId: 'root-call:code:1',
+            },
+          });
+        }
+      });
+      return socket;
+    },
+  });
+  client.ensureRunning = async () => true;
+  client.rpc = async (method, _payload, _timeoutMs, options) => {
+    if (method === 'session.history') return { events: historyEvents };
+    assert.equal(method, 'session.prompt');
+    const events = [
+      { seq: 1, type: 'turn/start', data: { turn: 1 } },
+      {
+        seq: 2,
+        type: 'user/message',
+        data: { turn: 1, source: { rpcId: options.rpcId } },
+      },
+      {
+        seq: 3,
+        type: 'tool/code-dispatch-start',
+        data: {
+          rootCallId: 'root-call',
+          parentCallId: 'root-call',
+          subCallId: 'root-call:code:1',
+          name: 'bash',
+          arguments: { command: 'echo restored' },
+        },
+      },
+    ];
+    historyEvents = events.map((event) => ({ event }));
+    sockets[0].frame({
+      type: 'server-request',
+      rpcId: 'code-reconnect-start',
+      method: 'session/event',
+      payload: { type: 'session/event', sessionId: 'code-reconnect-session', event: events[0] },
+    });
+    sockets[0].frame({
+      type: 'server-request',
+      rpcId: 'code-reconnect-user',
+      method: 'session/event',
+      payload: { type: 'session/event', sessionId: 'code-reconnect-session', event: events[1] },
+    });
+    sockets[0].close(1006);
+    return {};
+  };
+
+  const asking = client.ask('code-reconnect-session', '测试 Code Mode 重连', {
+    signal: controller.signal,
+    onInteraction: (interaction) => { received = interaction; },
+  });
+  await eventually(() => received !== undefined);
+
+  assert.equal(received.recovered, false);
+  assert.deepEqual(received.toolCall, {
+    callId: 'root-call:code:1',
+    name: 'bash',
+    arguments: JSON.stringify({ command: 'echo restored' }),
+  });
+  controller.abort();
+  await Promise.allSettled([asking]);
+});
+
 test('interaction callbacks preserve frame order and watcher shutdown drains them', async () => {
   const opened = deferred();
   const releaseRequested = deferred();
@@ -1213,7 +1463,7 @@ test('a new ask adopts a replayed orphan question before its queued prompt can r
   await Promise.allSettled([asking]);
 });
 
-test('an orphan approval remains fail-closed for the future approval handler', async () => {
+test('an orphan approval is delivered only as a recovered interaction for safe rejection', async () => {
   const oldHistory = [
     { event: { seq: 1, type: 'turn/start', data: { turn: 1 } } },
     {
@@ -1262,8 +1512,11 @@ test('an orphan approval remains fail-closed for the future approval handler', a
     onInteraction: (interaction) => received.push(interaction),
   });
   await prompted.promise;
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.deepEqual(received, []);
+  await eventually(() => received.length === 1);
+  assert.equal(received[0].kind, 'approval');
+  assert.equal(received[0].interactionId, 'orphan-approval-id');
+  assert.equal(received[0].recovered, true);
+  assert.equal(Object.hasOwn(received[0], 'toolCall'), false);
 
   controller.abort();
   await Promise.allSettled([asking]);

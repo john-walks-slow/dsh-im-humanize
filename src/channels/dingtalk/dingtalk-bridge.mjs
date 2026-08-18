@@ -8,6 +8,7 @@ import {
   harnessQuestionText,
   validHarnessQuestion,
 } from '../shared/harness-question.mjs';
+import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 
@@ -123,7 +124,9 @@ export class DingtalkHarnessBridge {
   #queues = new Map();
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
+  #interactionTasks = new Set();
   #acceptedMessageIds = new Set();
+  #approvals;
 
   constructor({
     api,
@@ -149,6 +152,7 @@ export class DingtalkHarnessBridge {
     this.#state = state;
     this.#status = status;
     this.#logger = logger;
+    this.#approvals = new HarnessApprovalQueue({ label: 'DingTalk', logger });
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#maxMessageChars = maxMessageChars;
     this.#signal = signal;
@@ -179,7 +183,57 @@ export class DingtalkHarnessBridge {
       return Promise.resolve();
     }
 
+    let sessionWebhook = null;
+    try {
+      sessionWebhook = normalizeDingtalkSessionWebhook(message.sessionWebhook);
+    } catch {
+      // An unsafe reply route must never be able to submit an approval.
+    }
     const pending = this.#pendingInteractions.get(key);
+    const approvalReply = this.#approvals.claimReply({
+      key,
+      actor: sender,
+      messageId,
+      text: sessionWebhook && message?.msgtype === 'text'
+        ? nonEmptyString(message?.text?.content) ?? ''
+        : '',
+      addressed: String(message?.conversationType) !== '2' || message?.isInAtList === true,
+      hasPendingQuestion: Boolean(pending),
+      questionCompletion: pending?.submitting || pending?.claimedReplyMessageId
+        ? pending.queue
+        : null,
+      isQuestionPending: () => this.#pendingInteractions.has(key),
+      send: sessionWebhook
+        ? (reply) => this.#send(sessionWebhook, reply)
+        : async () => undefined,
+    });
+    if (approvalReply) {
+      let current;
+      current = approvalReply.process(async () => {
+          if (this.#state.hasSeen(messageId)) return false;
+          await this.#state.markSeen(messageId);
+          increment(this.#status, 'messagesReceived');
+          this.#status.lastMessageAt = new Date().toISOString();
+          if (!sessionWebhook) {
+            increment(this.#status, 'messagesRejected');
+            this.#status.lastRejectedAt = new Date().toISOString();
+            this.#status.lastError = '钉钉消息没有安全的回复地址。';
+          }
+          return true;
+        })
+        .catch((error) => {
+          if (this.#signal?.aborted) return;
+          this.#status.lastError = '钉钉审批处理失败。';
+          this.#logger.error?.('[dsh-dingtalk] failed to process an approval reply', error);
+        })
+        .finally(() => {
+          this.#acceptedMessageIds.delete(messageId);
+          this.#interactionTasks.delete(current);
+        });
+      this.#interactionTasks.add(current);
+      return current;
+    }
+
     if (pending && pending.actor !== sender) {
       return this.#enqueueMessage(message, messageId, sender, key);
     }
@@ -233,6 +287,7 @@ export class DingtalkHarnessBridge {
       ...[...this.#pendingInteractions.values()].flatMap((pending) => (
         pending.queue ? [pending.queue] : []
       )),
+      ...this.#interactionTasks,
     ]);
   }
 
@@ -344,6 +399,7 @@ export class DingtalkHarnessBridge {
       }
     } finally {
       await this.#cancelPendingInteraction(key);
+      await this.#approvals.closeRoute(key);
     }
   }
 
@@ -475,8 +531,14 @@ export class DingtalkHarnessBridge {
     sessionWebhook,
     requiresMention,
   }) {
-    // The transport deliberately exposes every interaction kind. Approval is
-    // left unanswered until #5 adds its own policy and renderer.
+    if (await this.#approvals.handleRequested(interaction, {
+      key,
+      actor,
+      requiresMention,
+      send: (text) => this.#send(sessionWebhook, text),
+    })) return;
+
+    // Approval requests return above; the existing question state machine stays unchanged.
     if (interaction?.kind !== 'question') return;
     const questions = interaction?.payload?.questions;
     const interactionId = typeof interaction?.interactionId === 'string'
@@ -550,7 +612,8 @@ export class DingtalkHarnessBridge {
     await this.#presentInteraction(pending);
   }
 
-  #handleInteractionResolved(resolution) {
+  async #handleInteractionResolved(resolution) {
+    if (await this.#approvals.handleResolved(resolution)) return;
     const interactionId = resolution?.interactionId;
     if (resolution?.kind !== 'question' || typeof interactionId !== 'string') return;
     const key = this.#interactionKeys.get(interactionId);
