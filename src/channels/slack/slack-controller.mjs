@@ -1,3 +1,4 @@
+import { connectionTestMessage } from '../shared/connection-test.mjs';
 import { deriveSlackBotIdentity, maskSlackBotId } from './config-store.mjs';
 import { inspectSlackCredentials } from './slack-api.mjs';
 import { SLACK_DESCRIPTOR } from './slack-bridge.mjs';
@@ -166,6 +167,24 @@ export class SlackController {
       }
     });
     return this.status();
+  }
+
+  async sendConnectionTest(botId) {
+    const config = this.#configStore.get(botId);
+    if (!config) throw new Error('Unknown Slack bot');
+    return this.#withBotTransition(botId, async () => {
+      const runtime = this.#runtimes.get(botId);
+      if (!runtime?.status?.ready || typeof runtime.sendConnectionTest !== 'function') {
+        const error = new Error('Slack机器人尚未连接');
+        error.code = 'test-target-unavailable';
+        throw error;
+      }
+      await runtime.sendConnectionTest(connectionTestMessage(
+        `${config.name}（${maskSlackBotId(config.platformId)}）`,
+        'Slack机器人',
+      ));
+      return { sent: true };
+    });
   }
 
   async deleteBot(botId) {

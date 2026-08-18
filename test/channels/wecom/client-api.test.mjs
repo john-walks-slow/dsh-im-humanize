@@ -15,6 +15,7 @@ test('Enterprise WeChat client keeps only redacted bot and Host-rendered QR stat
   });
   assert.equal(provision.qrCodeDataUrl, qr);
   const snapshot = normalizeSnapshot({
+    testMessage: { sent: false, code: 'test-target-unavailable', ignored: 'secret' },
     bots: [{
       botId: 'wecom_abc', connected: true, state: 'connected',
       bot: { name: '企业微信机器人', appIdMasked: 'bot••••001' },
@@ -23,4 +24,7 @@ test('Enterprise WeChat client keeps only redacted bot and Host-rendered QR stat
   });
   assert.equal(snapshot.totals.connected, 1);
   assert.equal(snapshot.bots[0].bot.appIdMasked, 'bot••••001');
+  assert.deepEqual(snapshot.testMessage, {
+    sent: false, code: 'test-target-unavailable',
+  });
 });

@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
 import { QqRuntime } from '../../../src/channels/qq/qq-runtime.mjs';
+import { rememberConnectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
 
 function deferred() {
   let resolve;
@@ -12,6 +13,7 @@ function deferred() {
 
 class FakeBot extends EventEmitter {
   middlewares = [];
+  sent = [];
   stopped = false;
   use(value) { this.middlewares.push(value); }
   async start(signal) {
@@ -19,7 +21,7 @@ class FakeBot extends EventEmitter {
     await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
   }
   stop() { this.stopped = true; }
-  async sendText() {}
+  async sendText(target, text) { this.sent.push({ target, text }); }
 }
 
 test('QQ runtime waits for gateway ready, installs typing, and stops its client', async () => {
@@ -75,6 +77,56 @@ test('QQ runtime never reports ready when the gateway does not emit ready', asyn
   });
   await assert.rejects(() => runtime.start(), /did not become ready/);
   assert.equal(runtime.status.ready, false);
+});
+
+test('QQ runtime sends a proactive connection test to the explicit owner fallback', async () => {
+  const bot = new FakeBot();
+  const runtime = new QqRuntime({
+    config: { botId: 'qq_bot', appId: 'app', ownerUserOpenid: 'owner-openid' },
+    appSecret: 'secret',
+    harness: { ensureRunning: async () => true },
+    state: {},
+    createBot: () => bot,
+    typingMiddleware: () => 'typing',
+    connectTimeoutMs: 100,
+  });
+
+  await runtime.start();
+  assert.deepEqual(await runtime.sendConnectionTest('connection-test'), { sent: true });
+  assert.deepEqual(bot.sent, [{
+    target: { scope: 'c2c', targetId: 'owner-openid' },
+    text: 'connection-test',
+  }]);
+  await runtime.stop();
+});
+
+test('QQ runtime requires /status for wildcard owners and strips the remembered reply id', async () => {
+  const bot = new FakeBot();
+  const state = {};
+  const runtime = new QqRuntime({
+    config: { botId: 'qq_bot', appId: 'app', ownerUserOpenid: '*' },
+    appSecret: 'secret',
+    harness: { ensureRunning: async () => true },
+    state,
+    createBot: () => bot,
+    typingMiddleware: () => 'typing',
+    connectTimeoutMs: 100,
+  });
+
+  await runtime.start();
+  await assert.rejects(
+    () => runtime.sendConnectionTest('unavailable'),
+    (error) => error?.code === 'test-target-unavailable',
+  );
+  rememberConnectionTestTarget(state, {
+    scope: 'c2c', targetId: 'recent-user', msgId: 'old-status-message',
+  });
+  await runtime.sendConnectionTest('remembered-target');
+  assert.deepEqual(bot.sent, [{
+    target: { scope: 'c2c', targetId: 'recent-user' },
+    text: 'remembered-target',
+  }]);
+  await runtime.stop();
 });
 
 test('QQ runtime aborts an in-flight Harness interaction when stopped', async () => {

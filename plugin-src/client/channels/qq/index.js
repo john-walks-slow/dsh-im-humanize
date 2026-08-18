@@ -9,6 +9,7 @@ import { installDingtalkStyles } from '../dingtalk/styles.js';
 import {
   QQ_ENDPOINTS,
   QQ_RPC_CHANNEL,
+  connectionTestFeedback,
   formatRemaining,
   normalizeProvisioning,
   normalizeSnapshot,
@@ -151,6 +152,7 @@ function RemoveConfirmation({ account, busy, onConfirm, onCancel }) {
 export function AccountCard({
   account,
   busy,
+  feedback,
   removing,
   onReconnect,
   onWorkspaceSave,
@@ -180,6 +182,11 @@ export function AccountCard({
       }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
+        feedback ? h('div', {
+          className: 'ddt-summary dim-cardSummary',
+          role: 'status',
+          'aria-live': 'polite',
+        }, feedback) : null,
         h('div', { className: 'ddt-actions dim-cardActions' },
           h(Button, { className: 'dim-cardAction', onClick: onReconnect, disabled: Boolean(busy) }, busy === 'reconnect' ? '检查中…' : account.connected ? '检查连接' : '重试连接'),
           h(Button, { className: 'dim-cardAction', kind: 'danger', onClick: onRequestRemove, disabled: Boolean(busy) }, '移除接入')))),
@@ -193,6 +200,7 @@ export function QqSettingsTab({ rpcCall }) {
   const [provision, setProvision] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [busyByBot, setBusyByBot] = React.useState({});
+  const [feedbackByBot, setFeedbackByBot] = React.useState({});
   const [removeTarget, setRemoveTarget] = React.useState(null);
   const [credentialOpen, setCredentialOpen] = React.useState(false);
   const [credentialError, setCredentialError] = React.useState(null);
@@ -361,6 +369,35 @@ export function QqSettingsTab({ rpcCall }) {
     }
   }, [invoke, loadStatus, workspaceFence]);
 
+  const reconnect = React.useCallback(async (account) => {
+    setFeedbackByBot((current) => {
+      const next = { ...current };
+      delete next[account.botId];
+      return next;
+    });
+    try {
+      const snapshot = await botAction(
+        account,
+        'reconnect',
+        QQ_ENDPOINTS.reconnectBot,
+        { botId: account.botId, sendTest: true },
+      );
+      if (mounted.current) {
+        setFeedbackByBot((current) => ({
+          ...current,
+          [account.botId]: connectionTestFeedback(snapshot?.testMessage),
+        }));
+      }
+    } catch {
+      if (mounted.current) {
+        setFeedbackByBot((current) => ({
+          ...current,
+          [account.botId]: '连接检查失败，请稍后重试。',
+        }));
+      }
+    }
+  }, [botAction]);
+
   let provisionView = null;
   if (provision?.status === 'starting') provisionView = h('div', { className: 'ddt-card ddt-loading dim-surfaceCard' }, h('div', { className: 'ddt-spinner' }), '正在申请 QQ 二维码…');
   else if (['pending', 'refreshing'].includes(provision?.status)) provisionView = h(QrPanel, {
@@ -378,8 +415,9 @@ export function QqSettingsTab({ rpcCall }) {
           h('li', { key: account.botId }, h(AccountCard, {
             account,
             busy: busyByBot[account.botId],
+            feedback: feedbackByBot[account.botId],
             removing: removeTarget === account.botId,
-            onReconnect: () => void botAction(account, 'reconnect', QQ_ENDPOINTS.reconnectBot, { botId: account.botId }),
+            onReconnect: () => void reconnect(account),
             onWorkspaceSave: (workspace) => botAction(
               account,
               'workspace',

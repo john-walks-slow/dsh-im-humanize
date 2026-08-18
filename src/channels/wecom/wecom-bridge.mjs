@@ -14,6 +14,7 @@ import {
   imagePromptUserMessage,
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
+import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
 
 const HELP_TEXT = [
   '企业微信机器人已连接 DeepSeek Harness。',
@@ -430,6 +431,9 @@ export class WecomHarnessBridge {
       if (!hasImages && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#sendImmediate(frame, chatId, '企业微信机器人与 DeepSeek Harness 连接正常。');
+        if (body.chattype === 'single') {
+          rememberConnectionTestTarget(this.#state, { chatId });
+        }
         await this.#state.markSeen(messageId);
         return;
       }

@@ -1,5 +1,6 @@
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { runCompactCommand } from '../shared/compact-command.mjs';
+import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
 import {
   harnessAnswerForQuestion,
   harnessQuestionText,
@@ -295,6 +296,11 @@ export class QqHarnessBridge {
       }
       if (!hasImages && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
+        if (message.kind === 'c2c'
+          && target?.scope === 'c2c'
+          && nonEmptyString(target.targetId) === sender) {
+          rememberConnectionTestTarget(this.#state, target);
+        }
         await this.#bot.sendText(target, 'QQ 机器人与 DeepSeek Harness 连接正常。');
         await this.#state.markSeen(messageId);
         return;

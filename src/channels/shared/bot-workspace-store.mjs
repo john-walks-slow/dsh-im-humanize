@@ -9,6 +9,7 @@ import {
 } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
+import { CONNECTION_TEST_STATE_IDENTITY } from './connection-test.mjs';
 import { WORKSPACE_SESSION_STALE } from './workspace-session.mjs';
 
 const EMPTY_DOCUMENT = Object.freeze({ version: 1, workspaces: Object.freeze({}) });
@@ -687,6 +688,7 @@ export function createBotWorkspaceScope(harness, { botId, workspaces, state }) {
   });
   const scopedState = new Proxy(state, {
     get(target, property) {
+      if (property === CONNECTION_TEST_STATE_IDENTITY) return target;
       if (property === 'sessionFor') {
         return (key, ...args) => {
           if (!isCurrentScope()) return null;

@@ -1,3 +1,5 @@
+import { connectionTestMessage } from './connection-test.mjs';
+
 function cleanString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -159,6 +161,25 @@ export class TokenBotController {
       }
     });
     return this.status();
+  }
+
+  async sendConnectionTest(botId) {
+    const config = this.#configStore.get(botId);
+    if (!config) throw new Error(`Unknown ${this.#descriptor.label} bot`);
+    return this.#withBotTransition(botId, async () => {
+      const runtime = this.#runtimes.get(botId);
+      if (!runtime?.status?.ready || typeof runtime.sendConnectionTest !== 'function') {
+        const error = new Error(`${this.#descriptor.label}机器人尚未连接`);
+        error.code = 'test-target-unavailable';
+        throw error;
+      }
+      const cardLabel = `${config.name}（${this.#maskPlatformId(config.platformId)}）`;
+      await runtime.sendConnectionTest(connectionTestMessage(
+        cardLabel,
+        `${this.#descriptor.label}机器人`,
+      ));
+      return { sent: true };
+    });
   }
 
   async deleteBot(botId) {

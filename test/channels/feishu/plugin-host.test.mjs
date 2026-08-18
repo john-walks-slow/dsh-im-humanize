@@ -398,22 +398,27 @@ test('multi-bot RPC operations require a botId and never expose host-only fields
     cancelRegistration: async () => multi,
     disconnect: async () => status(),
     reconnectBot: async (botId) => { calls.push(['reconnect', botId]); return multi; },
+    sendConnectionTest: async (botId) => { calls.push(['test-message', botId]); },
     disconnectBot: async (botId) => { calls.push(['disconnect', botId]); return multi; },
     deleteBot: async (botId) => { calls.push(['delete', botId]); return status({ schemaVersion: 2, bots: [] }); },
   };
   const fx = await rpcFixture(controller);
 
   for (const [endpoint, payload] of [
-    [FEISHU_MULTI_ENDPOINTS.reconnectBot, { botId: 'bot_safe' }],
+    [FEISHU_MULTI_ENDPOINTS.reconnectBot, { botId: 'bot_safe', sendTest: true }],
     [FEISHU_MULTI_ENDPOINTS.disconnectBot, { botId: 'bot_safe' }],
     [FEISHU_MULTI_ENDPOINTS.deleteBot, { botId: 'bot_safe', confirm: true }],
   ]) {
     const result = await fx.registration.handler(endpoint, payload, signal());
     assert.equal(result.ok, true);
     assert.doesNotMatch(JSON.stringify(result), /DSH_FEISHU_APP_SECRET|ou_private|cli_raw_private|private-token/);
+    if (endpoint === FEISHU_MULTI_ENDPOINTS.reconnectBot) {
+      assert.deepEqual(result.value.testMessage, { sent: true });
+    }
   }
   assert.deepEqual(calls, [
     ['reconnect', 'bot_safe'],
+    ['test-message', 'bot_safe'],
     ['disconnect', 'bot_safe'],
     ['delete', 'bot_safe'],
   ]);
@@ -426,6 +431,105 @@ test('multi-bot RPC operations require a botId and never expose host-only fields
   assert.equal(invalid.ok, false);
   assert.equal(invalid.error.code, 'bad-request');
   assert.doesNotMatch(JSON.stringify(invalid), /\.\.\/private/);
+});
+
+test('Feishu reconnect test delivery is best-effort and requires the target bot to be connected', async () => {
+  let connected = true;
+  let sendCalls = 0;
+  const snapshot = () => status({
+    schemaVersion: 2,
+    revision: 1,
+    configured: true,
+    bots: [{
+      botId: 'bot_safe',
+      phase: connected ? 'connected' : 'disconnected',
+      connected,
+      configured: true,
+      bot: { name: '安全机器人', appIdMasked: 'cli_safe••••1234', domain: 'feishu' },
+      connection: {
+        ready: connected,
+        feishuLongConnectionState: connected ? 'connected' : 'idle',
+        harnessReachable: connected,
+      },
+    }],
+  });
+  const controller = {
+    status: async () => snapshot(),
+    startRegistration: async () => snapshot(),
+    cancelRegistration: async () => snapshot(),
+    disconnect: async () => status(),
+    reconnectBot: async () => snapshot(),
+    sendConnectionTest: async () => {
+      sendCalls += 1;
+      throw new Error('private Feishu provider failure');
+    },
+  };
+  const fx = await rpcFixture(controller);
+
+  const failedSend = await fx.registration.handler(
+    FEISHU_MULTI_ENDPOINTS.reconnectBot,
+    { botId: 'bot_safe', sendTest: true },
+    signal(),
+  );
+  assert.equal(failedSend.ok, true);
+  assert.deepEqual(failedSend.value.testMessage, {
+    sent: false,
+    code: 'test-message-failed',
+  });
+  assert.doesNotMatch(JSON.stringify(failedSend), /private Feishu provider failure/);
+  assert.equal(sendCalls, 1);
+
+  connected = false;
+  const unavailable = await fx.registration.handler(
+    FEISHU_MULTI_ENDPOINTS.reconnectBot,
+    { botId: 'bot_safe', sendTest: true },
+    signal(),
+  );
+  assert.equal(unavailable.ok, true);
+  assert.deepEqual(unavailable.value.testMessage, {
+    sent: false,
+    code: 'test-target-unavailable',
+  });
+  assert.equal(sendCalls, 1);
+
+  const invalid = await fx.registration.handler(
+    FEISHU_MULTI_ENDPOINTS.reconnectBot,
+    { botId: 'bot_safe', sendTest: 'yes' },
+    signal(),
+  );
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.error.code, 'bad-request');
+  await fx.dispose();
+});
+
+test('Feishu RPC never sends a connection test after reconnect is cancelled', async () => {
+  let resolveReconnect;
+  let sendCalls = 0;
+  const reconnect = new Promise((resolve) => { resolveReconnect = resolve; });
+  const controller = {
+    status: async () => status(),
+    startRegistration: async () => status(),
+    cancelRegistration: async () => status(),
+    disconnect: async () => status(),
+    reconnectBot: async () => reconnect,
+    sendConnectionTest: async () => { sendCalls += 1; },
+  };
+  const fx = await rpcFixture(controller);
+  const abort = new AbortController();
+  const result = fx.registration.handler(FEISHU_MULTI_ENDPOINTS.reconnectBot, {
+    botId: 'bot_safe',
+    sendTest: true,
+  }, abort.signal);
+
+  abort.abort();
+  resolveReconnect(status({
+    schemaVersion: 2,
+    bots: [{ botId: 'bot_safe', connected: true }],
+  }));
+
+  assert.equal((await result).error.code, 'cancelled');
+  assert.equal(sendCalls, 0);
+  await fx.dispose();
 });
 
 test('dependency failures and AbortSignal use valid RpcResult error branches', async () => {

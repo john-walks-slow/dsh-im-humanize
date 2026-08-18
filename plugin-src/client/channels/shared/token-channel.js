@@ -30,6 +30,14 @@ function checkedTime(value) {
   }
 }
 
+function connectionTestNotice(value) {
+  if (value?.testMessage?.sent === true) return '测试消息已发送，请到对应机器人会话中确认。';
+  if (value?.testMessage?.code === 'test-target-unavailable') {
+    return '连接检查完成。请先私聊机器人发送 /status，再重新检查。';
+  }
+  return value?.testMessage ? '连接检查完成，但测试消息发送失败。' : null;
+}
+
 export function createTokenChannelSettings(definition) {
   const {
     channel,
@@ -53,7 +61,7 @@ export function createTokenChannelSettings(definition) {
     emptyActionLabel = '填写 Bot Token',
   } = definition;
 
-  function AccountCard({ account, busy, removing, onReconnect, onWorkspaceSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
+  function AccountCard({ account, busy, testNotice, removing, onReconnect, onWorkspaceSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
     const state = busy === 'reconnect' ? 'connecting' : account.state;
     const tone = account.connected ? 'success' : state === 'error' ? 'error' : 'warning';
     const stateLabel = account.connected ? '运行正常' : state === 'connecting' ? '正在连接' : '连接未就绪';
@@ -82,6 +90,7 @@ export function createTokenChannelSettings(definition) {
         }),
         h('div', { className: 'ddt-accountFooter dim-cardFooter' },
           summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
+          testNotice ? h('div', { className: 'ddt-summary dim-cardSummary', role: 'status' }, testNotice) : null,
           h('div', { className: 'ddt-actions dim-cardActions' },
             h(Button, {
               className: 'dim-cardAction',
@@ -111,6 +120,7 @@ export function createTokenChannelSettings(definition) {
     const [credentialError, setCredentialError] = React.useState(null);
     const [busy, setBusy] = React.useState(false);
     const [busyByBot, setBusyByBot] = React.useState({});
+    const [testNoticeByBot, setTestNoticeByBot] = React.useState({});
     const [removeTarget, setRemoveTarget] = React.useState(null);
     const mounted = React.useRef(true);
     const workspaceFence = useWorkspaceSnapshotFence();
@@ -198,9 +208,24 @@ export function createTokenChannelSettings(definition) {
       const snapshotVersion = workspaceFence.beginMutation();
       setBusyByBot((current) => ({ ...current, [account.botId]: operation }));
       try {
-        const snapshot = api.normalizeSnapshot(await invoke(endpoint, payload));
+        const value = await invoke(endpoint, payload);
+        const snapshot = api.normalizeSnapshot(value);
         if (mounted.current && workspaceFence.canCommitMutation(snapshotVersion)) {
           setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+        }
+        if (mounted.current && operation === 'reconnect') {
+          setTestNoticeByBot((current) => ({
+            ...current,
+            [account.botId]: connectionTestNotice(value),
+          }));
+        }
+      } catch (error) {
+        if (operation !== 'reconnect') throw error;
+        if (mounted.current) {
+          setTestNoticeByBot((current) => ({
+            ...current,
+            [account.botId]: '连接检查失败，请稍后重试。',
+          }));
         }
       } finally {
         const shouldRefresh = workspaceFence.endMutation();
@@ -221,12 +246,13 @@ export function createTokenChannelSettings(definition) {
             h('li', { key: account.botId }, h(AccountCard, {
               account,
               busy: busyByBot[account.botId],
+              testNotice: testNoticeByBot[account.botId],
               removing: removeTarget === account.botId,
               onReconnect: () => void botAction(
                 account,
                 'reconnect',
                 endpoints.reconnectBot,
-                { botId: account.botId },
+                { botId: account.botId, sendTest: true },
               ),
               onWorkspaceSave: (workspace) => botAction(
                 account,

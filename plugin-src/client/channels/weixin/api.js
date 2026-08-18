@@ -35,6 +35,16 @@ function timestamp(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function normalizeTestMessage(value) {
+  if (!isRecord(value)) return null;
+  if (value.sent === true) return { sent: true };
+  if (value.sent !== false) return null;
+  const code = value.code === 'test-target-unavailable'
+    ? 'test-target-unavailable'
+    : 'test-message-failed';
+  return { sent: false, code };
+}
+
 export function unwrapRpcResult(result) {
   if (!isRecord(result) || typeof result.ok !== 'boolean') {
     throw new Error('微信服务返回了无法识别的响应');
@@ -142,6 +152,7 @@ export function normalizeSnapshot(value) {
       connected: bots.filter((bot) => bot.connected).length,
     },
     provisioning: value.provisioning ? normalizeProvisioning(value.provisioning) : null,
+    testMessage: normalizeTestMessage(value.testMessage),
   };
 }
 

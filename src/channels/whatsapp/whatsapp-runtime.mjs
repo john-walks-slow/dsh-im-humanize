@@ -421,6 +421,22 @@ export class WhatsappRuntime {
     return this.stop();
   }
 
+  async sendConnectionTest(text) {
+    if (!this.#status.ready || !this.#client) {
+      const error = new Error('WhatsApp机器人尚未连接');
+      error.code = 'test-target-unavailable';
+      throw error;
+    }
+    if (typeof text !== 'string' || !text.trim()) {
+      throw new TypeError('WhatsApp connection test text is required');
+    }
+    await this.#client.sendText({
+      jid: this.#config.accountJid,
+      selfChat: true,
+    }, text);
+    return { sent: true };
+  }
+
   async stop() {
     const session = this.#session;
     const client = this.#client;

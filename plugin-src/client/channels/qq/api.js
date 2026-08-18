@@ -13,6 +13,7 @@ export const QQ_ENDPOINTS = Object.freeze({
 
 const PROVISION_STATES = new Set(['starting', 'pending', 'refreshing', 'connecting', 'connected', 'failed', 'cancelled']);
 const ACCOUNT_STATES = new Set(['connected', 'connecting', 'offline', 'error']);
+const TEST_MESSAGE_CODES = new Set(['test-target-unavailable', 'test-message-failed']);
 const QR_DATA_URL = /^data:image\/(?:png|webp);base64,[a-z\d+/]+={0,2}$/i;
 
 function isRecord(value) {
@@ -96,16 +97,36 @@ function normalizeBot(value) {
   };
 }
 
+function normalizeTestMessage(value) {
+  if (!isRecord(value) || typeof value.sent !== 'boolean') return undefined;
+  if (value.sent) return { sent: true };
+  const code = text(value.code, 'test-message-failed', 80);
+  return {
+    sent: false,
+    code: TEST_MESSAGE_CODES.has(code) ? code : 'test-message-failed',
+  };
+}
+
 export function normalizeSnapshot(value) {
   const source = isRecord(value?.snapshot) ? value.snapshot : value;
   if (!isRecord(source) || !Array.isArray(source.bots)) throw new Error('QQ 服务没有返回有效的机器人列表');
   const bots = source.bots.map(normalizeBot).filter(Boolean);
+  const testMessage = normalizeTestMessage(source.testMessage);
   return {
     revision: Number.isSafeInteger(source.revision) ? source.revision : 0,
     bots,
     totals: { configured: bots.length, connected: bots.filter((bot) => bot.connected).length },
     provisioning: source.provisioning ? normalizeProvisioning(source.provisioning) : null,
+    ...(testMessage ? { testMessage } : {}),
   };
+}
+
+export function connectionTestFeedback(result) {
+  if (result?.sent === true) return '测试消息已发送，请到对应机器人会话中确认。';
+  if (result?.code === 'test-target-unavailable') {
+    return '连接检查完成。请先私聊机器人发送 /status，再重新检查。';
+  }
+  return result ? '连接检查完成，但测试消息发送失败。' : null;
 }
 
 export function presentError(error) {

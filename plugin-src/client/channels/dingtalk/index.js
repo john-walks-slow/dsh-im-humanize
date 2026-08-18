@@ -7,6 +7,7 @@ import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import {
   DINGTALK_ENDPOINTS,
   DINGTALK_RPC_CHANNEL,
+  connectionTestFeedback,
   formatRemaining,
   normalizeProvisioning,
   normalizeSnapshot,
@@ -208,6 +209,7 @@ function RemoveConfirmation({ account, busy, onConfirm, onCancel }) {
 export function AccountCard({
   account,
   busy,
+  feedback,
   removing,
   onReconnect,
   onWorkspaceSave,
@@ -241,6 +243,10 @@ export function AccountCard({
       }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
+        feedback ? h('div', {
+          className: 'ddt-summary dim-cardSummary',
+          role: 'status',
+        }, feedback) : null,
         h('div', { className: 'ddt-actions dim-cardActions' },
           h(Button, { className: 'dim-cardAction', onClick: onReconnect, disabled: Boolean(busy) },
             busy === 'reconnect' ? '检查中…' : account.connected ? '检查连接' : '重试连接'),
@@ -262,6 +268,7 @@ function AccountList(props) {
       h(AccountCard, {
         account,
         busy: props.busyByBot[account.botId],
+        feedback: props.feedbackByBot[account.botId]?.message,
         removing: props.removeTarget === account.botId,
         onReconnect: () => props.onReconnect(account),
         onWorkspaceSave: (workspace) => props.onWorkspaceSave(account, workspace),
@@ -280,6 +287,7 @@ export function DingtalkSettingsTab({ rpcCall }) {
   const [provision, setProvision] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [busyByBot, setBusyByBot] = React.useState({});
+  const [feedbackByBot, setFeedbackByBot] = React.useState({});
   const [removeTarget, setRemoveTarget] = React.useState(null);
   const [credentialOpen, setCredentialOpen] = React.useState(false);
   const [credentialError, setCredentialError] = React.useState(null);
@@ -325,6 +333,22 @@ export function DingtalkSettingsTab({ rpcCall }) {
     }
   }, []);
 
+  const discardStaleFeedback = React.useCallback((snapshot) => {
+    const botsById = new Map(snapshot.bots.map((bot) => [bot.botId, bot]));
+    setFeedbackByBot((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const [botId, feedback] of Object.entries(next)) {
+        const bot = botsById.get(botId);
+        if (!bot || (feedback.clearWhenDisconnected && (!bot.connected || bot.error))) {
+          delete next[botId];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, []);
+
   const focusAddButton = React.useCallback(() => {
     if (!mountedRef.current) return;
     if (focusFrameRef.current !== null) window.cancelAnimationFrame(focusFrameRef.current);
@@ -366,6 +390,7 @@ export function DingtalkSettingsTab({ rpcCall }) {
         revision: snapshot.revision,
         error: null,
       });
+      discardStaleFeedback(snapshot);
       if (restoreProvisioning && snapshot.provisioning) {
         setProvision((current) => !current || current.attemptId === snapshot.provisioning.attemptId
           ? {
@@ -386,7 +411,7 @@ export function DingtalkSettingsTab({ rpcCall }) {
       }));
       return undefined;
     }
-  }, [invoke, workspaceFence]);
+  }, [discardStaleFeedback, invoke, workspaceFence]);
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -480,6 +505,7 @@ export function DingtalkSettingsTab({ rpcCall }) {
           revision: snapshot.revision,
           error: null,
         });
+        discardStaleFeedback(snapshot);
       }
       setCredentialOpen(false);
       announce('钉钉机器人凭据已绑定。');
@@ -490,7 +516,7 @@ export function DingtalkSettingsTab({ rpcCall }) {
       if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
       if (mountedRef.current) setBusy(false);
     }
-  }, [announce, invoke, loadStatus, workspaceFence]);
+  }, [announce, discardStaleFeedback, invoke, loadStatus, workspaceFence]);
 
   const cancelProvisioning = React.useCallback(async () => {
     if (!mountedRef.current) return;
@@ -595,6 +621,13 @@ export function DingtalkSettingsTab({ rpcCall }) {
     if (!mountedRef.current) return undefined;
     const snapshotVersion = workspaceFence.beginMutation();
     setBotBusy(account.botId, operation);
+    if (operation === 'reconnect') {
+      setFeedbackByBot((current) => {
+        const next = { ...current };
+        delete next[account.botId];
+        return next;
+      });
+    }
     try {
       const snapshot = normalizeSnapshot(await invoke(endpoint, payload));
       if (!mountedRef.current) return undefined;
@@ -606,28 +639,50 @@ export function DingtalkSettingsTab({ rpcCall }) {
           revision: snapshot.revision,
           error: null,
         });
+        discardStaleFeedback(snapshot);
       }
-      announce(typeof success === 'function' ? success(snapshot) : success);
+      const successMessage = typeof success === 'function' ? success(snapshot) : success;
+      if (operation === 'reconnect') {
+        setFeedbackByBot((current) => ({
+          ...current,
+          [account.botId]: {
+            message: successMessage,
+            clearWhenDisconnected: snapshot.testMessage?.sent === true,
+          },
+        }));
+      }
+      announce(successMessage);
       return snapshot;
     } catch (error) {
       if (!mountedRef.current) return undefined;
-      announce(`操作失败：${presentError(error).message}`);
+      const failureMessage = operation === 'reconnect'
+        ? '连接检查失败，请稍后重试。'
+        : `操作失败：${presentError(error).message}`;
+      if (operation === 'reconnect') {
+        setFeedbackByBot((current) => ({
+          ...current,
+          [account.botId]: { message: failureMessage, clearWhenDisconnected: false },
+        }));
+      }
+      announce(failureMessage);
       return undefined;
     } finally {
       const shouldRefresh = workspaceFence.endMutation();
       if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true, restoreProvisioning: false });
       if (mountedRef.current) setBotBusy(account.botId, null);
     }
-  }, [announce, invoke, loadStatus, setBotBusy, workspaceFence]);
+  }, [announce, discardStaleFeedback, invoke, loadStatus, setBotBusy, workspaceFence]);
 
   const reconnect = React.useCallback((account) => runBotAction({
     account,
     operation: 'reconnect',
     endpoint: DINGTALK_ENDPOINTS.reconnectBot,
-    payload: { botId: account.botId },
-    success: (snapshot) => snapshot?.bots.find((bot) => bot.botId === account.botId)?.connected
-      ? '钉钉连接检查完成。'
-      : '钉钉仍未连接，插件会继续自动重试。',
+    payload: { botId: account.botId, sendTest: true },
+    success: (snapshot) => {
+      const refreshed = snapshot?.bots.find((bot) => bot.botId === account.botId);
+      if (!refreshed?.connected) return '钉钉仍未连接，插件会继续自动重试。';
+      return connectionTestFeedback(snapshot.testMessage) ?? '钉钉连接检查完成。';
+    },
   }), [runBotAction]);
 
   const saveWorkspace = React.useCallback(async (account, workspace) => {
@@ -646,13 +701,14 @@ export function DingtalkSettingsTab({ rpcCall }) {
           revision: snapshot.revision,
           error: null,
         });
+        discardStaleFeedback(snapshot);
       }
     } finally {
       const shouldRefresh = workspaceFence.endMutation();
       if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
       if (mountedRef.current) setBotBusy(account.botId, null);
     }
-  }, [invoke, loadStatus, setBotBusy, workspaceFence]);
+  }, [discardStaleFeedback, invoke, loadStatus, setBotBusy, workspaceFence]);
 
   const remove = React.useCallback(async (account) => {
     const snapshot = await runBotAction({
@@ -738,6 +794,7 @@ export function DingtalkSettingsTab({ rpcCall }) {
               ? h(AccountList, {
                   bots: model.bots,
                   busyByBot,
+                  feedbackByBot,
                   removeTarget,
                   onReconnect: (account) => void reconnect(account),
                   onWorkspaceSave: saveWorkspace,

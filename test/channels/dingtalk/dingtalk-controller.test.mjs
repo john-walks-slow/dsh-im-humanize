@@ -56,8 +56,10 @@ function configFixture(initial = [], events = []) {
 
 function runtimeFactory({ events = [], pendingByClient = new Map(), failStart = false } = {}) {
   const runtimes = [];
+  const connectionTests = [];
   return {
     runtimes,
+    connectionTests,
     createRuntime: async ({ botId, config, clientSecret }) => {
       events.push(['create', botId]);
       let ready = false;
@@ -90,6 +92,9 @@ function runtimeFactory({ events = [], pendingByClient = new Map(), failStart = 
         async stop() {
           events.push(['stop', botId]);
           ready = false;
+        },
+        async sendConnectionTest(text) {
+          connectionTests.push({ botId, text });
         },
       };
       runtimes.push(runtime);
@@ -145,6 +150,10 @@ test('successful QR poll stores secret then config then starts runtime without p
     /device-code-private|client-secret-private|secretRef|ding-client-private/,
   );
   assert.equal(controller.status().totals.connected, 1);
+  await controller.sendConnectionTest(completed.botId);
+  assert.equal(runtimes.connectionTests[0].botId, completed.botId);
+  assert.match(runtimes.connectionTests[0].text, /DeepSeek Harness 连接测试成功/);
+  assert.match(runtimes.connectionTests[0].text, /钉钉机器人（ding••••vate）/);
   await controller.close();
 });
 

@@ -240,6 +240,35 @@ export class FeishuRuntime {
     }
   }
 
+  async sendConnectionTest(text) {
+    if (!this.#status.ready || !this.#client) {
+      const error = new Error('飞书机器人尚未连接');
+      error.code = 'test-target-unavailable';
+      throw error;
+    }
+    const ownerOpenId = this.#ownerOpenIds[0];
+    if (!ownerOpenId || ownerOpenId === '*') {
+      const error = new Error('飞书机器人没有可用的测试消息接收人');
+      error.code = 'test-target-unavailable';
+      throw error;
+    }
+    if (typeof text !== 'string' || !text.trim()) {
+      throw new TypeError('Feishu connection test text is required');
+    }
+    const response = await this.#client.im.v1.message.create({
+      params: { receive_id_type: 'open_id' },
+      data: {
+        receive_id: ownerOpenId,
+        msg_type: 'text',
+        content: JSON.stringify({ text }),
+      },
+    });
+    if (response?.code && response.code !== 0) {
+      throw new Error(`Feishu connection test failed: ${response.msg || response.code}`);
+    }
+    return { sent: true };
+  }
+
   async stop({ preserveError = false } = {}) {
     const error = preserveError ? this.#status.lastError : null;
     const abortController = this.#abortController;

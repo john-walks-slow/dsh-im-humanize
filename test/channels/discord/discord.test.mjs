@@ -185,6 +185,7 @@ test('Discord normalizes DMs and only addressed server messages', () => {
   }, '1234567890123456789');
   assert.equal(direct.kind, 'direct');
   assert.equal(direct.addressed, true);
+  assert.deepEqual(direct.connectionTestTarget, { channelId: '222222222222222222' });
 
   const group = normalizeDiscordMessage({
     id: '111111111111111112',

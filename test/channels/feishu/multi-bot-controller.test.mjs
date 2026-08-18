@@ -100,6 +100,7 @@ function fixture({
         appSecret,
         starts: 0,
         stops: 0,
+        sentTests: [],
         get status() { return structuredClone(status); },
         async start() {
           runtime.starts += 1;
@@ -112,6 +113,10 @@ function fixture({
           runtime.stops += 1;
           status.ready = false;
           status.feishuLongConnectionState = 'idle';
+        },
+        async sendConnectionTest(text) {
+          runtime.sentTests.push(text);
+          return { sent: true };
         },
       };
       const history = runtimes.get(botId) ?? [];
@@ -195,6 +200,22 @@ test('repeated initialization never restarts an already healthy bot', async () =
   assert.equal(fx.runtimes.get(healthy.id).length, 1);
   assert.equal(fx.runtimes.get(healthy.id)[0].starts, 1);
   assert.equal(fx.runtimes.get(healthy.id)[0].stops, 0);
+});
+
+test('connection test uses the selected bot runtime and shared message copy', async () => {
+  const healthy = bot('bot_healthy', 'healthy');
+  healthy.appId = 'cli_healthy_1234567890';
+  const fx = fixture({
+    bots: [healthy],
+    secrets: { [healthy.secretRef]: 'healthy-secret' },
+  });
+
+  await fx.controller.initialize();
+  assert.deepEqual(await fx.controller.sendConnectionTest(healthy.id), { sent: true });
+  assert.deepEqual(fx.runtimes.get(healthy.id)[0].sentTests, [
+    '✅ DeepSeek Harness 连接测试成功\n这条消息由插件页面中的“机器人 healthy（cli_heal••••7890）”机器人卡片发出。',
+  ]);
+  await fx.controller.close();
 });
 
 test('multiple scans create independent bots, credential refs and runtimes', async () => {

@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
 import { deriveWecomBotIdentity, maskWecomBotId } from './config-store.mjs';
+import {
+  connectionTestMessage,
+  connectionTestTargetUnavailable,
+} from '../shared/connection-test.mjs';
 
 const ACTIVE_ATTEMPT_STATES = new Set(['pending', 'connecting']);
 const TERMINAL_ATTEMPT_STATES = new Set(['connected', 'failed', 'cancelled', 'expired']);
@@ -235,6 +239,20 @@ export class WecomController {
       }
     });
     return this.status();
+  }
+
+  async sendConnectionTest(botId) {
+    const config = this.#configStore.get(botId);
+    if (!config) throw new Error('Unknown Enterprise WeChat bot');
+    return this.#withBotTransition(botId, async () => {
+      const runtime = this.#runtimes.get(botId);
+      if (!runtime?.status?.ready || typeof runtime.sendConnectionTest !== 'function') {
+        throw connectionTestTargetUnavailable('企业微信机器人');
+      }
+      return runtime.sendConnectionTest(connectionTestMessage(
+        `企业微信机器人（${maskWecomBotId(config.remoteBotId)}）`,
+      ));
+    });
   }
 
   async deleteBot(botId) {

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { connectionTestMessage } from '../shared/connection-test.mjs';
 import { deriveWhatsappBotId, maskWhatsappAccount } from './config-store.mjs';
 
 const ACTIVE_ATTEMPT_STATES = new Set(['starting', 'pending', 'connecting']);
@@ -196,6 +197,25 @@ export class WhatsappController {
       }
     });
     return this.status();
+  }
+
+  async sendConnectionTest(botId) {
+    const config = this.#configStore.get(botId);
+    if (!config) throw new Error('Unknown WhatsApp bot');
+    return this.#withBotTransition(botId, async () => {
+      const runtime = this.#runtimes.get(botId);
+      if (!runtime?.status?.ready || typeof runtime.sendConnectionTest !== 'function') {
+        const error = new Error('WhatsApp机器人尚未连接');
+        error.code = 'test-target-unavailable';
+        throw error;
+      }
+      return runtime.sendConnectionTest(
+        connectionTestMessage(
+          `${config.name}（${maskWhatsappAccount(config.accountJid)}）`,
+          'WhatsApp机器人',
+        ),
+      );
+    });
   }
 
   async deleteBot(botId) {

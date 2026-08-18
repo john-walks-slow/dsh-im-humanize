@@ -1,4 +1,5 @@
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
+import { publicConnectionTestResult } from '../../../../src/channels/shared/connection-test.mjs';
 import {
   publicWorkspaceError,
   SET_WORKSPACE_ENDPOINT,
@@ -44,7 +45,8 @@ function payloadFailure(endpoint, payload) {
       ? null : 'bot.bind-credentials requires a Bot Token.';
   }
   if (endpoint === TOKEN_BOT_ENDPOINTS.reconnectBot) {
-    return exactKeys(payload, ['botId']) && validId(payload.botId)
+    return exactKeys(payload, ['botId', 'sendTest']) && validId(payload.botId)
+      && (payload.sendTest === undefined || typeof payload.sendTest === 'boolean')
       ? null : 'bot.reconnect requires a botId.';
   }
   if (endpoint === TOKEN_BOT_ENDPOINTS.deleteBot) {
@@ -105,6 +107,28 @@ export function createTokenBotRpcHandler(controller, { channel }) {
         value = await controller.bindCredentials(payload);
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.reconnectBot) {
         value = await controller.reconnectBot(payload.botId);
+        if (signal?.aborted) {
+          return { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } };
+        }
+        if (payload.sendTest === true) {
+          let testError = null;
+          try {
+            if (value?.bots?.find((bot) => bot?.botId === payload.botId)?.connected !== true) {
+              const unavailable = new Error('Bot is not connected');
+              unavailable.code = 'test-target-unavailable';
+              throw unavailable;
+            }
+            if (typeof controller.sendConnectionTest !== 'function') {
+              const unavailable = new Error('Connection test is unavailable');
+              unavailable.code = 'test-target-unavailable';
+              throw unavailable;
+            }
+            await controller.sendConnectionTest(payload.botId);
+          } catch (error) {
+            testError = error;
+          }
+          value = { ...value, testMessage: publicConnectionTestResult(testError) };
+        }
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.setWorkspace) {
         if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
         value = await controller.updateWorkspace(payload.botId, payload.workspace);

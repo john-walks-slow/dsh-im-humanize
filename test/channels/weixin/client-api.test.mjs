@@ -1,0 +1,131 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import TestRenderer from 'react-test-renderer';
+
+import { normalizeSnapshot } from '../../../plugin-src/client/channels/weixin/api.js';
+import {
+  AccountCard,
+  WeixinSettingsTab,
+} from '../../../plugin-src/client/channels/weixin/index.js';
+
+const { act, create } = TestRenderer;
+const CLIENT_URL = new URL('../../../plugin-src/client/channels/weixin/index.js', import.meta.url);
+
+async function flushMicrotasks() {
+  for (let index = 0; index < 6; index += 1) await Promise.resolve();
+}
+
+function textOf(node) {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  return node?.children?.map(textOf).join('') ?? '';
+}
+
+function buttonNamed(root, name) {
+  return root.findAllByType('button').find((button) => textOf(button) === name);
+}
+
+function account(botId, name) {
+  return {
+    botId,
+    connected: true,
+    state: 'connected',
+    configured: true,
+    workspace: '/workspace/current',
+    bot: { name, accountIdMasked: `${botId}•••` },
+    health: { summary: '微信消息长轮询运行正常', lastCheckedAt: Date.now() },
+    error: null,
+  };
+}
+
+test('Weixin client keeps only the public connection-test result', () => {
+  const snapshot = normalizeSnapshot({
+    schemaVersion: 1,
+    revision: 1,
+    state: 'connected',
+    testMessage: {
+      sent: false,
+      code: 'test-target-unavailable',
+      providerDetail: 'must-not-cross-client-normalization',
+    },
+    bots: [{
+      botId: 'wx_0123456789abcdef01234567',
+      connected: true,
+      state: 'connected',
+      configured: true,
+      bot: { name: '微信机器人', accountIdMasked: 'account••••1234' },
+    }],
+  });
+
+  assert.deepEqual(snapshot.testMessage, {
+    sent: false,
+    code: 'test-target-unavailable',
+  });
+});
+
+test('Weixin card feedback stays visible without hiding connection errors', () => {
+  const markup = renderToStaticMarkup(React.createElement(AccountCard, {
+    account: {
+      ...account('wx_first', '微信机器人'),
+      connected: false,
+      state: 'error',
+      error: { code: 'offline', message: '连接凭据已失效' },
+    },
+    feedback: '微信连接检查完成，测试消息已发送。',
+    onReconnect() {}, onRequestRemove() {}, onConfirmRemove() {}, onCancelRemove() {},
+  }));
+
+  assert.match(markup, />连接凭据已失效</);
+  assert.match(markup, /role="status"[^>]*>微信连接检查完成，测试消息已发送。</);
+});
+
+test('Weixin connection feedback is scoped to the checked bot', async (t) => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    setInterval() { return 1; }, clearInterval() {},
+    setTimeout() { return 1; }, clearTimeout() {},
+    requestAnimationFrame(callback) { callback(); return 1; }, cancelAnimationFrame() {},
+  };
+  t.after(() => {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  });
+
+  const bots = [account('wx_first', 'First Bot'), account('wx_second', 'Second Bot')];
+  const calls = [];
+  const rpcCall = async (endpoint, payload) => {
+    if (endpoint === 'connection.status') return { ok: true, value: { revision: 1, bots } };
+    if (endpoint === 'bot.reconnect') {
+      calls.push(payload);
+      return { ok: true, value: { revision: 2, bots, testMessage: { sent: true } } };
+    }
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(WeixinSettingsTab, { rpcCall }));
+    await flushMicrotasks();
+  });
+  const first = renderer.root.findByProps({ 'data-bot-id': 'wx_first' });
+  await act(async () => {
+    buttonNamed(first, '检查连接').props.onClick();
+    await flushMicrotasks();
+  });
+
+  const firstAfter = renderer.root.findByProps({ 'data-bot-id': 'wx_first' });
+  const secondAfter = renderer.root.findByProps({ 'data-bot-id': 'wx_second' });
+  assert.match(textOf(firstAfter), /测试消息已发送/);
+  assert.doesNotMatch(textOf(secondAfter), /测试消息已发送/);
+  assert.deepEqual(calls, [{ botId: 'wx_first', sendTest: true }]);
+  await act(async () => { renderer.unmount(); });
+});
+
+test('Weixin reconnect failure uses fixed translatable copy', async () => {
+  const source = await readFile(CLIENT_URL, 'utf8');
+  assert.match(source, /'连接检查失败，请稍后重试。'/);
+  assert.doesNotMatch(source, /连接检查失败：\$\{presentError\(error\)\.message\}/);
+});

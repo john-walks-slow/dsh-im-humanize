@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { connectionTestMessage } from '../shared/connection-test.mjs';
 import { RegistrationManager } from './registration-manager.mjs';
 import { REQUIRED_TENANT_SCOPES } from './plugin-controller.mjs';
 
@@ -336,6 +337,26 @@ export class MultiBotDshFeishuController {
       }
       this.#touch();
       return this.status(botId);
+    });
+  }
+
+  async sendConnectionTest(botId) {
+    this.#assertOpen();
+    return this.#withBotTransition(botId, async () => {
+      const config = this.#requireBot(botId);
+      const runtime = this.#runtimes.get(botId);
+      if (!isConnected(connectionStatus(runtime))
+        || typeof runtime.sendConnectionTest !== 'function') {
+        const error = new Error('飞书机器人尚未连接');
+        error.code = 'test-target-unavailable';
+        throw error;
+      }
+      return runtime.sendConnectionTest(
+        connectionTestMessage(
+          `${config.botName}（${maskedAppId(config.appId)}）`,
+          '飞书机器人',
+        ),
+      );
     });
   }
 

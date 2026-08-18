@@ -13,6 +13,10 @@ import {
   validateWorkspacePath,
 } from '../src/channels/shared/bot-workspace-store.mjs';
 import {
+  connectionTestTarget,
+  rememberConnectionTestTarget,
+} from '../src/channels/shared/connection-test.mjs';
+import {
   runWorkspaceCommand,
   splitWorkspaceCommandMessage,
 } from '../src/channels/shared/workspace-command.mjs';
@@ -68,6 +72,23 @@ test('BotWorkspaceStore uses process.cwd() when a bot has no configured workspac
   const { root } = await fixture(t);
   const store = await new BotWorkspaceStore(join(root, 'cwd-workspaces.json')).load();
   assert.equal(await store.ensure('bot_cwd'), process.cwd());
+});
+
+test('connection test targets survive a new workspace scope for the same bot', async (t) => {
+  const { path, defaultWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await workspaces.ensure('bot_reconnect');
+  const state = {};
+  const harness = {};
+  const beforeReconnect = createBotWorkspaceScope(harness, {
+    botId: 'bot_reconnect', workspaces, state,
+  });
+  const afterReconnect = createBotWorkspaceScope(harness, {
+    botId: 'bot_reconnect', workspaces, state,
+  });
+
+  assert.equal(rememberConnectionTestTarget(beforeReconnect.state, { channelId: 'D123' }), true);
+  assert.deepEqual(connectionTestTarget(afterReconnect.state), { channelId: 'D123' });
 });
 
 test('workspace writes roll back updates while committed removals stay retired in memory', async (t) => {

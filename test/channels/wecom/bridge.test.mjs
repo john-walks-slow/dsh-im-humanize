@@ -6,6 +6,7 @@ import {
   wecomInboundMessage,
 } from '../../../src/channels/wecom/wecom-bridge.mjs';
 import { DEFAULT_IMAGE_PROMPT } from '../../../src/channels/shared/image-prompt.mjs';
+import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
 
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
@@ -99,6 +100,33 @@ function questionInteraction({
     reconnect,
   };
 }
+
+test('Enterprise WeChat remembers only a private /status chat as a connection-test target', async () => {
+  const privateState = state();
+  const privateTransport = testClient();
+  const privateBridge = new WecomHarnessBridge({
+    client: privateTransport.client,
+    harness: { ensureRunning: async () => true },
+    state: privateState,
+  });
+  await privateBridge.accept(frame({ msgid: 'status-private', text: { content: '/status' } }));
+  assert.deepEqual(connectionTestTarget(privateState), { chatId: 'member-1' });
+
+  const groupState = state();
+  const groupTransport = testClient();
+  const groupBridge = new WecomHarnessBridge({
+    client: groupTransport.client,
+    harness: { ensureRunning: async () => true },
+    state: groupState,
+  });
+  await groupBridge.accept(frame({
+    msgid: 'status-group',
+    chattype: 'group',
+    chatid: 'group-1',
+    text: { content: '@机器人 /status' },
+  }));
+  assert.equal(connectionTestTarget(groupState), null);
+});
 
 test('Enterprise WeChat executes /compact for the bound Session without prompting the model', async () => {
   const store = state();

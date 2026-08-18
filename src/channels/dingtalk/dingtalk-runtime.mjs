@@ -3,6 +3,7 @@ import {
   createDingtalkBridgeStatus,
   DingtalkHarnessBridge,
 } from './dingtalk-bridge.mjs';
+import { sendRememberedConnectionTest } from '../shared/connection-test.mjs';
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -345,6 +346,26 @@ export class DingtalkRuntime {
     this.#status.dingtalkStreamState = preserveError ? 'failed' : 'idle';
     this.#status.lastError = lastError;
     return this.status;
+  }
+
+  async sendConnectionTest(text) {
+    return sendRememberedConnectionTest({
+      state: this.#state,
+      text,
+      channelLabel: '钉钉机器人',
+      send: async ({ sessionWebhook }, content) => {
+        if (!this.#status.ready || !this.#abortController) {
+          throw new Error('DingTalk runtime is not connected');
+        }
+        await this.#api.sendText({
+          clientId: this.#config.clientId,
+          clientSecret: this.#clientSecret,
+          sessionWebhook,
+          text: content,
+          signal: this.#abortController.signal,
+        });
+      },
+    });
   }
 
   #pendingSenders() {

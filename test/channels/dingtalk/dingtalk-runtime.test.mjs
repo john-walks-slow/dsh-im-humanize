@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { DingtalkRuntime } from '../../../src/channels/dingtalk/dingtalk-runtime.mjs';
+import { rememberConnectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
 
 async function eventually(predicate, timeoutMs = 1_000) {
   const deadline = Date.now() + timeoutMs;
@@ -43,6 +44,42 @@ function stateFixture() {
     },
   };
 }
+
+test('runtime sends a DingTalk connection test only through the remembered private status webhook', async () => {
+  const state = stateFixture();
+  const sends = [];
+  const client = {
+    connected: true,
+    socket: { readyState: 1 },
+    registerCallbackListener() {},
+    async connect() {},
+    socketCallBackResponse() {},
+    disconnect() {},
+  };
+  const runtime = new DingtalkRuntime({
+    config: { clientId: 'ding-client', approvedSenders: [] },
+    clientSecret: 'host-secret',
+    harness: { ensureRunning: async () => true },
+    state,
+    api: { sendText: async (request) => sends.push(request) },
+    streamFactory: async () => ({ client, topic: 'robot-topic' }),
+  });
+
+  await runtime.start();
+  await assert.rejects(() => runtime.sendConnectionTest('连接测试'), {
+    code: 'test-target-unavailable',
+  });
+  rememberConnectionTestTarget(state, {
+    sessionWebhook: 'https://oapi.dingtalk.com/robot/reply?ticket=status-private',
+  });
+  assert.deepEqual(await runtime.sendConnectionTest('连接测试'), { sent: true });
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].clientId, 'ding-client');
+  assert.equal(sends[0].clientSecret, 'host-secret');
+  assert.equal(sends[0].sessionWebhook, 'https://oapi.dingtalk.com/robot/reply?ticket=status-private');
+  assert.equal(sends[0].text, '连接测试');
+  await runtime.stop();
+});
 
 test('runtime owns one DWClient, waits for socket OPEN, acknowledges first, and disconnects on stop', async () => {
   const order = [];

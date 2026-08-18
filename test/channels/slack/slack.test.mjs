@@ -280,6 +280,7 @@ test('Slack controller stores two protected credential references and exposes ne
   const configPath = join(directory, 'config.json');
   const configStore = await new SlackConfigStore(configPath).load();
   const credentialStore = credentials();
+  const connectionTests = [];
   const controller = new SlackController({
     credentials: credentialStore,
     configStore,
@@ -299,6 +300,7 @@ test('Slack controller stores two protected credential references and exposes ne
       },
       async start() {},
       async stop() {},
+      async sendConnectionTest(text) { connectionTests.push(text); },
     }),
   });
   const status = await controller.bindCredentials({ botToken: BOT_TOKEN, appToken: APP_TOKEN });
@@ -311,12 +313,16 @@ test('Slack controller stores two protected credential references and exposes ne
   const stored = await readFile(configPath, 'utf8');
   assert.doesNotMatch(stored, new RegExp(BOT_TOKEN));
   assert.doesNotMatch(stored, new RegExp(APP_TOKEN));
+  await controller.sendConnectionTest(identity.botId);
+  assert.match(connectionTests[0], /DeepSeek Harness/);
+  assert.match(connectionTests[0], /T1234••• · U1234•••/);
   await controller.deleteBot(identity.botId);
   assert.equal(credentialStore.values.has(identity.botTokenRef), false);
   assert.equal(credentialStore.values.has(identity.appTokenRef), false);
 });
 
 test('Slack RPC requires exactly two tokens and strips all credential internals', async () => {
+  const connectionTests = [];
   const controller = {
     status: () => ({ bots: [], totals: { configured: 0, connected: 0 } }),
     bindCredentials: async () => ({
@@ -331,7 +337,11 @@ test('Slack RPC requires exactly two tokens and strips all credential internals'
       }],
       totals: { configured: 1, connected: 0 },
     }),
-    reconnectBot: async () => ({ bots: [], totals: { configured: 0, connected: 0 } }),
+    reconnectBot: async (botId) => ({
+      bots: [{ botId, connected: true }],
+      totals: { configured: 1, connected: 1 },
+    }),
+    sendConnectionTest: async (botId) => { connectionTests.push(botId); },
     deleteBot: async () => ({ bots: [], totals: { configured: 0, connected: 0 } }),
   };
   const handler = createSlackRpcHandler(controller);
@@ -352,6 +362,42 @@ test('Slack RPC requires exactly two tokens and strips all credential internals'
   });
   assert.equal(rejected.ok, false);
   assert.equal(rejected.error.code, 'bad-request');
+
+  const tested = await handler(SLACK_ENDPOINTS.reconnectBot, {
+    botId: 'slack_1234567890abcdef12345678',
+    sendTest: true,
+  });
+  assert.equal(tested.ok, true);
+  assert.deepEqual(tested.value.testMessage, { sent: true });
+  assert.deepEqual(connectionTests, ['slack_1234567890abcdef12345678']);
+});
+
+test('Slack RPC never sends a connection test after reconnect is cancelled', async () => {
+  let resolveReconnect;
+  let sendCalls = 0;
+  const reconnect = new Promise((resolve) => { resolveReconnect = resolve; });
+  const botId = 'slack_1234567890abcdef12345678';
+  const controller = {
+    status: async () => ({ bots: [] }),
+    bindCredentials: async () => ({ bots: [] }),
+    reconnectBot: async () => reconnect,
+    sendConnectionTest: async () => { sendCalls += 1; },
+    deleteBot: async () => ({ bots: [] }),
+  };
+  const abort = new AbortController();
+  const result = createSlackRpcHandler(controller)(SLACK_ENDPOINTS.reconnectBot, {
+    botId,
+    sendTest: true,
+  }, abort.signal);
+
+  abort.abort();
+  resolveReconnect({ bots: [{ botId, connected: true }] });
+
+  assert.deepEqual(await result, {
+    ok: false,
+    error: { code: 'cancelled', message: 'The request was cancelled.' },
+  });
+  assert.equal(sendCalls, 0);
 });
 
 test('Slack normalizes direct messages and addressed channel events', () => {
@@ -372,6 +418,7 @@ test('Slack normalizes direct messages and addressed channel events', () => {
   assert.equal(direct.content, 'hello & welcome');
   assert.equal(direct.conversationId, 'D12345678');
   assert.equal(direct.replyTarget.threadTs, '1700000000.001');
+  assert.deepEqual(direct.connectionTestTarget, { channelId: 'D12345678' });
 
   const group = normalizeSlackEvent({
     event_id: 'Ev002',

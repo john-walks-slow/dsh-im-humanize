@@ -50,6 +50,37 @@ function abortable(promise, signal) {
   });
 }
 
+test('runtime sends a connection test to the bound Weixin owner without reply context', async () => {
+  const sends = [];
+  const runtime = new WeixinRuntime({
+    api: {
+      notifyStart: async () => {},
+      notifyStop: async () => {},
+      sendText: async (request) => sends.push(request),
+      getUpdates: async ({ signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      }),
+    },
+    config: {
+      botId: 'wx_owner',
+      baseUrl: 'https://ilinkai.weixin.qq.com/',
+      ownerUserId: 'owner-user',
+    },
+    token: 'bot-token',
+    harness: { ensureRunning: async () => true },
+    state: { getUpdatesBuf: () => '' },
+  });
+
+  await runtime.start();
+  assert.deepEqual(await runtime.sendConnectionTest('连接测试'), { sent: true });
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].toUserId, 'owner-user');
+  assert.equal(sends[0].text, '连接测试');
+  assert.equal(sends[0].contextToken, undefined);
+  assert.equal(sends[0].runId, undefined);
+  await runtime.stop();
+});
+
 test('runtime verifies the token, consumes getUpdates, replies, persists cursor, and aborts on stop', async () => {
   const calls = [];
   let pollCount = 0;

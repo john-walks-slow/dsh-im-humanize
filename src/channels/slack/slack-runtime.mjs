@@ -83,6 +83,7 @@ export function normalizeSlackEvent(payload, botUserId, { loadFile = async () =>
       recipientUserId: String(event.user),
       recipientTeamId: String(event.user_team ?? payload.team_id ?? ''),
     },
+    connectionTestTarget: { channelId: String(event.channel) },
   };
 }
 
@@ -291,6 +292,15 @@ export class SlackRuntime {
 
   get status() {
     return structuredClone(this.#status);
+  }
+
+  async sendConnectionTest(text) {
+    if (!this.#status.ready || !this.#bridge) {
+      const error = new Error('Slack bot is not connected');
+      error.code = 'test-target-unavailable';
+      throw error;
+    }
+    return this.#bridge.sendConnectionTest(text);
   }
 
   async start() {

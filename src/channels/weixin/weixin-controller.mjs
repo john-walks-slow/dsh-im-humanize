@@ -6,6 +6,10 @@ import {
   WeixinApiError,
 } from './weixin-api.mjs';
 import { deriveWeixinBotIdentity, maskWeixinAccountId } from './config-store.mjs';
+import {
+  connectionTestMessage,
+  connectionTestTargetUnavailable,
+} from '../shared/connection-test.mjs';
 
 const ACTIVE_ATTEMPT_STATES = new Set([
   'starting',
@@ -238,6 +242,20 @@ export class WeixinController {
       }
     });
     return this.status();
+  }
+
+  async sendConnectionTest(botId) {
+    const config = this.#configStore.get(botId);
+    if (!config) throw new Error('Unknown Weixin account');
+    return this.#withBotTransition(botId, async () => {
+      const runtime = this.#runtimes.get(botId);
+      if (!runtime?.status?.ready || typeof runtime.sendConnectionTest !== 'function') {
+        throw connectionTestTargetUnavailable('微信机器人');
+      }
+      return runtime.sendConnectionTest(connectionTestMessage(
+        `微信机器人（${maskWeixinAccountId(config.accountId)}）`,
+      ));
+    });
   }
 
   async deleteBot(botId) {

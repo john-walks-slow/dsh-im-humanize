@@ -330,6 +330,16 @@ function formatCheckedTime(timestamp) {
   }
 }
 
+function connectionTestNotice(value) {
+  if (value?.testMessage?.sent === true) {
+    return '测试消息已发送，请到飞书会话中确认。';
+  }
+  if (value?.testMessage?.code === 'test-target-unavailable') {
+    return '连接检查完成，但当前没有可用的测试消息接收人。';
+  }
+  return value?.testMessage ? '连接检查完成，但测试消息发送失败。' : null;
+}
+
 function RemoveConfirmation({ bot, busy, onConfirm, onCancel }) {
   const cancelRef = React.useRef(null);
   const idPart = bot.botId.replace(/[^a-zA-Z0-9_-]/g, "-");
@@ -364,6 +374,7 @@ export function BotCard({
   connection,
   busy,
   actionError,
+  testNotice,
   removing,
   onReconnect,
   onWorkspaceSave,
@@ -420,6 +431,10 @@ export function BotCard({
       h("div", { className: "bxf-connectedFooter dim-cardFooter" },
         summary ? h("div", { className: "bxf-healthSummary dim-cardSummary", "data-error": actionError || connection.error ? "true" : undefined },
           summary) : null,
+        testNotice ? h("div", {
+          className: "bxf-healthSummary dim-cardSummary",
+          role: "status",
+        }, testNotice) : null,
         h("div", { className: "bxf-actions bxf-botActions dim-cardActions" },
           h(Button, {
             className: "dim-cardAction", onClick: onReconnect,
@@ -454,6 +469,7 @@ function BotList(props) {
           connection: bot,
           busy: props.busyByBot[bot.botId],
           actionError: props.errorsByBot[bot.botId],
+          testNotice: props.testNoticesByBot[bot.botId],
           removing: props.removeTargetId === bot.botId,
           onReconnect: () => props.onReconnect(bot),
           onWorkspaceSave: (workspace) => props.onWorkspaceSave(bot, workspace),
@@ -527,6 +543,7 @@ export function FeishuSettingsTab({ rpcCall }) {
   const [credentialError, setCredentialError] = React.useState(null);
   const [busyByBot, setBusyByBot] = React.useState({});
   const [errorsByBot, setErrorsByBot] = React.useState({});
+  const [testNoticesByBot, setTestNoticesByBot] = React.useState({});
   const [removeTargetId, setRemoveTargetId] = React.useState(null);
   const [announcement, setAnnouncement] = React.useState("");
   const [now, setNow] = React.useState(() => Date.now());
@@ -826,8 +843,14 @@ export function FeishuSettingsTab({ rpcCall }) {
     const snapshotVersion = workspaceFence.beginMutation();
     setBotBusy(botId, "reconnect");
     setBotError(botId, null);
+    setTestNoticesByBot((current) => {
+      const next = { ...current };
+      delete next[botId];
+      return next;
+    });
     try {
-      const snapshot = normalizeBotsSnapshot(await invoke(FEISHU_ENDPOINTS.reconnectBot, { botId }));
+      const value = await invoke(FEISHU_ENDPOINTS.reconnectBot, { botId, sendTest: true });
+      const snapshot = normalizeBotsSnapshot(value);
       if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
         mergeSnapshot(snapshot);
       }
@@ -839,12 +862,18 @@ export function FeishuSettingsTab({ rpcCall }) {
         error.code = refreshed?.error?.code ?? "FEISHU_BOT_OFFLINE";
         throw error;
       }
-      announce(connection.connected
+      const testNotice = connectionTestNotice(value);
+      if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
+        setTestNoticesByBot((current) => ({ ...current, [botId]: testNotice }));
+      }
+      announce(testNotice ?? (connection.connected
         ? `${bot.name}连接检查完成。`
-        : `${bot.name}已重新连接。`);
+        : `${bot.name}已重新连接。`));
     } catch (error) {
-      setBotError(botId, error);
-      announce(`${bot.name}操作失败，请查看机器人状态。`);
+      const failure = new Error("连接检查失败，请稍后重试。");
+      failure.code = error?.code;
+      setBotError(botId, failure);
+      announce(failure.message);
     } finally {
       const shouldRefresh = workspaceFence.endMutation();
       if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
@@ -995,6 +1024,7 @@ export function FeishuSettingsTab({ rpcCall }) {
                   bots: model.bots,
                   busyByBot,
                   errorsByBot,
+                  testNoticesByBot,
                   removeTargetId,
                   onReconnect: (bot) => void reconnectOneBot(bot),
                   onWorkspaceSave: saveWorkspace,

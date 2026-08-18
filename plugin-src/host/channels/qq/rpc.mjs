@@ -1,4 +1,8 @@
 import QRCode from 'qrcode';
+import {
+  connectionTestTargetUnavailable,
+  publicConnectionTestResult,
+} from '../../../../src/channels/shared/connection-test.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, SET_WORKSPACE_ENDPOINT, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
 
@@ -53,7 +57,10 @@ function payloadFailure(endpoint, payload) {
       ? null : 'bot.bind-credentials requires AppID and AppSecret.';
   }
   if (endpoint === QQ_ENDPOINTS.reconnectBot) {
-    return exactKeys(payload, ['botId']) && validId(payload.botId) ? null : 'bot.reconnect requires a botId.';
+    return exactKeys(payload, ['botId', 'sendTest'])
+      && validId(payload.botId)
+      && (payload.sendTest === undefined || payload.sendTest === true)
+      ? null : 'bot.reconnect requires a botId and accepts only sendTest=true.';
   }
   if (endpoint === QQ_ENDPOINTS.deleteBot) {
     return exactKeys(payload, ['botId', 'confirm']) && validId(payload.botId) && payload.confirm === true
@@ -125,7 +132,33 @@ export function createQqRpcHandler(controller, { encodeQr = qrDataUrl } = {}) {
       } else if (endpoint === QQ_ENDPOINTS.bindCredentials) {
         value = await publicStatus(await controller.bindCredentials(payload), cachedEncode);
       } else if (endpoint === QQ_ENDPOINTS.reconnectBot) {
-        value = await publicStatus(await controller.reconnectBot(payload.botId), cachedEncode);
+        const snapshot = await controller.reconnectBot(payload.botId);
+        if (signal?.aborted) {
+          return { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } };
+        }
+        let testMessage;
+        if (payload.sendTest === true) {
+          const connected = snapshot?.bots?.some(
+            (bot) => bot?.botId === payload.botId && bot?.connected === true,
+          ) === true;
+          if (!connected || typeof controller.sendConnectionTest !== 'function') {
+            testMessage = publicConnectionTestResult(
+              connectionTestTargetUnavailable('QQ机器人'),
+            );
+          } else {
+            let testError = null;
+            try {
+              await controller.sendConnectionTest(payload.botId);
+            } catch (error) {
+              testError = error;
+            }
+            testMessage = publicConnectionTestResult(testError);
+          }
+        }
+        value = await publicStatus({
+          ...snapshot,
+          ...(testMessage ? { testMessage } : {}),
+        }, cachedEncode);
       } else if (endpoint === QQ_ENDPOINTS.setWorkspace) {
         if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
         value = await publicStatus(

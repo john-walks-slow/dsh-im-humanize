@@ -6,6 +6,10 @@ import {
   maskDingtalkClientId,
   maskDingtalkSenderId,
 } from './config-store.mjs';
+import {
+  connectionTestMessage,
+  connectionTestTargetUnavailable,
+} from '../shared/connection-test.mjs';
 
 const ACTIVE_ATTEMPT_STATES = new Set(['starting', 'pending', 'connecting']);
 const TERMINAL_ATTEMPT_STATES = new Set(['connected', 'expired', 'failed', 'cancelled']);
@@ -384,6 +388,20 @@ export class DingtalkController {
       }
     });
     return this.status();
+  }
+
+  async sendConnectionTest(botId) {
+    const config = this.#configStore.get(botId);
+    if (!config) throw new Error('Unknown DingTalk bot');
+    return this.#withBotTransition(botId, async () => {
+      const runtime = this.#runtimes.get(botId);
+      if (!runtime?.status?.ready || typeof runtime.sendConnectionTest !== 'function') {
+        throw connectionTestTargetUnavailable('钉钉机器人');
+      }
+      return runtime.sendConnectionTest(connectionTestMessage(
+        `钉钉机器人（${maskDingtalkClientId(config.clientId)}）`,
+      ));
+    });
   }
 
   /** Removes one bot, its secret, runtime, and local conversation state. */

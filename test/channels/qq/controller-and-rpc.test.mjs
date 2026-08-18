@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { maskQqAppId } from '../../../src/channels/qq/config-store.mjs';
 import { QqController } from '../../../src/channels/qq/qq-controller.mjs';
+import { connectionTestMessage } from '../../../src/channels/shared/connection-test.mjs';
 import { QQ_ENDPOINTS, createQqRpcHandler } from '../../../plugin-src/host/channels/qq/rpc.mjs';
 
 function deferred() {
@@ -90,6 +92,41 @@ test('QQ AppID and AppSecret binding stores the secret and accepts the platform 
   await controller.close();
 });
 
+test('QQ controller delegates the shared connection-test message to the selected runtime', async () => {
+  const config = {
+    botId: 'qq_bot', appId: 'app-id', secretRef: 'qq.secret', ownerUserOpenid: 'owner-openid',
+  };
+  const sent = [];
+  const controller = new QqController({
+    qrAuth: { start() { return () => {}; } },
+    credentials: {
+      resolve: async () => ({ value: 'secret' }),
+      set: async () => {},
+      unset: async () => {},
+    },
+    configStore: {
+      list: () => [config],
+      get: (botId) => botId === config.botId ? config : null,
+      getByAppId: () => config,
+      save: async () => {},
+      remove: async () => null,
+    },
+    createRuntime: async () => ({
+      status: { ready: true, qqConnectionState: 'connected', harnessReachable: true },
+      start: async () => {},
+      stop: async () => {},
+      sendConnectionTest: async (text) => sent.push(text),
+    }),
+  });
+
+  await controller.initialize();
+  assert.deepEqual(await controller.sendConnectionTest(config.botId), { sent: true });
+  assert.deepEqual(sent, [
+    connectionTestMessage(`QQ 机器人（${maskQqAppId(config.appId)}）`),
+  ]);
+  await controller.close();
+});
+
 test('QQ RPC turns the host-only QR URL into an image and strips credential fields', async () => {
   const handler = createQqRpcHandler({
     status: () => ({ bots: [], totals: { configured: 0, connected: 0 } }),
@@ -100,13 +137,22 @@ test('QQ RPC turns the host-only QR URL into an image and strips credential fiel
     registrationStatus: () => null,
     cancelProvisioning: async () => ({}),
     bindCredentials: async () => ({ bots: [], totals: { configured: 0, connected: 0 } }),
-    reconnectBot: async () => ({}),
+    reconnectBot: async (botId) => ({
+      bots: [{ botId, connected: true }], totals: { configured: 1, connected: 1 },
+    }),
     deleteBot: async () => ({}),
   }, { encodeQr: async () => 'data:image/png;base64,YWJjZA==' });
   const result = await handler(QQ_ENDPOINTS.beginProvisioning, { locale: 'zh-CN' });
   assert.equal(result.ok, true);
   assert.equal(result.value.qrCodeDataUrl, 'data:image/png;base64,YWJjZA==');
   assert.doesNotMatch(JSON.stringify(result), /q\.qq\.com|never-public|ownerUserOpenid|appSecret/);
+  const legacyReconnect = await handler(QQ_ENDPOINTS.reconnectBot, {
+    botId: 'qq_bot', sendTest: true,
+  });
+  assert.equal(legacyReconnect.ok, true);
+  assert.deepEqual(legacyReconnect.value.testMessage, {
+    sent: false, code: 'test-target-unavailable',
+  });
 });
 
 test('QQ credential RPC validates the pair and never returns AppSecret', async () => {
@@ -127,4 +173,72 @@ test('QQ credential RPC validates the pair and never returns AppSecret', async (
   assert.deepEqual(received, { appId: 'manual-app', appSecret: 'manual-secret' });
   assert.doesNotMatch(JSON.stringify(result), /manual-secret|appSecret/);
   assert.equal((await handler(QQ_ENDPOINTS.bindCredentials, { appId: 'manual-app' })).ok, false);
+});
+
+test('QQ reconnect RPC reports test-message outcomes without discarding the snapshot', async () => {
+  const calls = [];
+  let sendError = null;
+  let connected = true;
+  const handler = createQqRpcHandler({
+    status: () => ({ bots: [], totals: { configured: 0, connected: 0 } }),
+    startProvisioning: async () => ({}),
+    registrationStatus: () => null,
+    cancelProvisioning: async () => ({}),
+    bindCredentials: async () => ({}),
+    reconnectBot: async (botId) => {
+      calls.push(['reconnect', botId]);
+      return {
+        revision: 7,
+        bots: [{ botId, connected, bot: { name: 'QQ机器人' } }],
+        totals: { configured: 1, connected: connected ? 1 : 0 },
+      };
+    },
+    sendConnectionTest: async (botId) => {
+      calls.push(['test', botId]);
+      if (sendError) throw sendError;
+      return { sent: true };
+    },
+    deleteBot: async () => ({}),
+  });
+
+  const success = await handler(QQ_ENDPOINTS.reconnectBot, { botId: 'qq_bot', sendTest: true });
+  assert.equal(success.ok, true);
+  assert.equal(success.value.revision, 7);
+  assert.deepEqual(success.value.testMessage, { sent: true });
+  assert.deepEqual(calls, [['reconnect', 'qq_bot'], ['test', 'qq_bot']]);
+
+  sendError = Object.assign(new Error('no recent target'), { code: 'test-target-unavailable' });
+  const unavailable = await handler(QQ_ENDPOINTS.reconnectBot, {
+    botId: 'qq_bot', sendTest: true,
+  });
+  assert.equal(unavailable.ok, true);
+  assert.equal(unavailable.value.bots[0].connected, true);
+  assert.deepEqual(unavailable.value.testMessage, {
+    sent: false, code: 'test-target-unavailable',
+  });
+
+  sendError = new Error('QQ API rejected the message');
+  const failed = await handler(QQ_ENDPOINTS.reconnectBot, { botId: 'qq_bot', sendTest: true });
+  assert.equal(failed.ok, true);
+  assert.deepEqual(failed.value.testMessage, { sent: false, code: 'test-message-failed' });
+
+  calls.length = 0;
+  connected = false;
+  sendError = null;
+  const offline = await handler(QQ_ENDPOINTS.reconnectBot, { botId: 'qq_bot', sendTest: true });
+  assert.equal(offline.ok, true);
+  assert.deepEqual(offline.value.testMessage, {
+    sent: false, code: 'test-target-unavailable',
+  });
+  assert.deepEqual(calls, [['reconnect', 'qq_bot']]);
+
+  calls.length = 0;
+  connected = true;
+  const reconnectOnly = await handler(QQ_ENDPOINTS.reconnectBot, { botId: 'qq_bot' });
+  assert.equal(reconnectOnly.ok, true);
+  assert.equal(reconnectOnly.value.testMessage, undefined);
+  assert.deepEqual(calls, [['reconnect', 'qq_bot']]);
+  assert.equal((await handler(QQ_ENDPOINTS.reconnectBot, {
+    botId: 'qq_bot', sendTest: false,
+  })).ok, false);
 });

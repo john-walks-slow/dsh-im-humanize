@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { connectionTestMessage } from '../shared/connection-test.mjs';
 import { deriveQqBotIdentity, maskQqAppId } from './config-store.mjs';
 
 const ACTIVE_ATTEMPT_STATES = new Set(['starting', 'pending', 'refreshing', 'connecting']);
@@ -246,6 +247,23 @@ export class QqController {
       }
     });
     return this.status();
+  }
+
+  async sendConnectionTest(botId) {
+    const config = this.#configStore.get(botId);
+    if (!config) throw new Error('Unknown QQ bot');
+    return this.#withBotTransition(botId, async () => {
+      const runtime = this.#runtimes.get(botId);
+      if (!runtime?.status?.ready || typeof runtime.sendConnectionTest !== 'function') {
+        const error = new Error('QQ机器人尚未连接');
+        error.code = 'test-target-unavailable';
+        throw error;
+      }
+      await runtime.sendConnectionTest(connectionTestMessage(
+        `QQ 机器人（${maskQqAppId(config.appId)}）`,
+      ));
+      return { sent: true };
+    });
   }
 
   async deleteBot(botId) {

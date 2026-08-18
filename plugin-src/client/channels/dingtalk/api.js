@@ -85,6 +85,16 @@ function normalizeError(value, fallbackCode, fallbackMessage) {
   };
 }
 
+function normalizeTestMessage(value) {
+  if (!isRecord(value)) return null;
+  if (value.sent === true) return { sent: true };
+  if (value.sent !== false) return null;
+  const code = value.code === 'test-target-unavailable'
+    ? 'test-target-unavailable'
+    : 'test-message-failed';
+  return { sent: false, code };
+}
+
 export function unwrapRpcResult(result) {
   if (!isRecord(result) || typeof result.ok !== 'boolean') {
     throw new Error('钉钉服务返回了无法识别的响应');
@@ -189,7 +199,16 @@ export function normalizeSnapshot(value) {
       connected: bots.filter((bot) => bot.connected).length,
     },
     provisioning: source.provisioning ? normalizeProvisioning(source.provisioning) : null,
+    testMessage: normalizeTestMessage(source.testMessage),
   };
+}
+
+export function connectionTestFeedback(result) {
+  if (result?.sent === true) return '钉钉连接检查完成，测试消息已发送。';
+  if (result?.code === 'test-target-unavailable') {
+    return '钉钉连接检查完成。请先私聊机器人发送 /status，再重新检查。';
+  }
+  return result ? '钉钉连接检查完成，但测试消息发送失败。' : null;
 }
 
 export function presentError(error) {

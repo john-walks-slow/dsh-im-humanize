@@ -1,5 +1,9 @@
 import { runWorkspaceCommand } from './workspace-command.mjs';
 import { runCompactCommand } from './compact-command.mjs';
+import {
+  rememberConnectionTestTarget,
+  sendRememberedConnectionTest,
+} from './connection-test.mjs';
 import { askInWorkspaceSession } from './workspace-session.mjs';
 import { HarnessApprovalQueue } from './harness-approval.mjs';
 import {
@@ -194,6 +198,15 @@ export class TextHarnessBridge {
     ]);
   }
 
+  sendConnectionTest(text) {
+    return sendRememberedConnectionTest({
+      state: this.#state,
+      text,
+      channelLabel: `${this.#descriptor.label}机器人`,
+      send: (target, message) => this.#bot.sendText(target, message),
+    });
+  }
+
   async #process(message, messageId, senderId, conversationKey, {
     alreadyRecorded = false,
   } = {}) {
@@ -239,6 +252,9 @@ export class TextHarnessBridge {
       if (!hasImages && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#bot.sendText(target, `${this.#descriptor.label}机器人与 DeepSeek Harness 连接正常。`);
+        if (message.kind === 'direct') {
+          rememberConnectionTestTarget(this.#state, message.connectionTestTarget ?? target);
+        }
         return;
       }
       const workspaceCommand = !hasImages

@@ -426,6 +426,193 @@ test('WhatsApp runtime answers self-chat without processing its own reply echo',
   await runtime.stop();
 });
 
+test('WhatsApp runtime sends a connection test to self and suppresses its outbound echo', async () => {
+  let callbacks;
+  let askCount = 0;
+  const sent = [];
+  const socket = {
+    sendPresenceUpdate: async () => {},
+    readMessages: async () => {},
+    sendMessage: async (jid, content) => {
+      sent.push([jid, content]);
+      return { key: { id: 'connection-test-1' } };
+    },
+  };
+  const runtime = new WhatsappRuntime({
+    config: linkedConfig(),
+    authDir: '/tmp/test-whatsapp-connection-test',
+    harness: {
+      ensureRunning: async () => {},
+      sessionExists: async () => true,
+      ask: async () => { askCount += 1; return 'unexpected'; },
+    },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => {},
+      sessionFor: () => 'session-connection-test',
+      sessionExists: async () => true,
+    },
+    createSession: async (options) => {
+      callbacks = options;
+      return {
+        socket,
+        ready: Promise.resolve({ accountJid: ACCOUNT_JID, name: 'Harness WhatsApp' }),
+        close: async () => {},
+        logout: async () => {},
+      };
+    },
+  });
+
+  await runtime.start();
+  assert.deepEqual(await runtime.sendConnectionTest('连接测试'), { sent: true });
+  assert.deepEqual(sent, [[ACCOUNT_JID, { text: '连接测试' }]]);
+  await callbacks.onMessage({
+    key: { remoteJid: ACCOUNT_JID, id: 'connection-test-1', fromMe: true },
+    message: { conversation: '连接测试' },
+  });
+  assert.equal(askCount, 0);
+  await runtime.stop();
+});
+
+test('WhatsApp controller delegates connection test copy to the current runtime', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-im-whatsapp-test-message-'));
+  const configStore = await new WhatsappConfigStore(join(root, 'config.json')).load();
+  const config = await configStore.save(linkedConfig());
+  const sent = [];
+  const controller = new WhatsappController({
+    configStore,
+    authPath: (name) => join(root, 'auth', name),
+    createSession: async () => { throw new Error('not used'); },
+    createRuntime: async () => ({
+      status: {
+        ready: true,
+        connectionState: 'connected',
+        harnessReachable: true,
+      },
+      start: async () => {},
+      stop: async () => {},
+      sendConnectionTest: async (text) => {
+        sent.push(text);
+        return { sent: true };
+      },
+    }),
+  });
+  t.after(() => controller.close());
+
+  await controller.initialize();
+  assert.deepEqual(await controller.sendConnectionTest(config.botId), { sent: true });
+  assert.deepEqual(sent, [
+    '✅ DeepSeek Harness 连接测试成功\n这条消息由插件页面中的“Harness WhatsApp（1650••••0123）”机器人卡片发出。',
+  ]);
+});
+
+test('WhatsApp reconnect RPC sends tests only for the connected target and keeps failures non-fatal', async () => {
+  const botId = deriveWhatsappBotId(ACCOUNT_JID);
+  let connected = true;
+  let sendFailure = false;
+  let sendCalls = 0;
+  const snapshot = () => ({
+    schemaVersion: 1,
+    revision: 1,
+    bots: [{
+      botId,
+      state: connected ? 'connected' : 'offline',
+      connected,
+      configured: true,
+      bot: { name: 'Harness WhatsApp', idMasked: '1650••••0123' },
+      health: { summary: 'status', lastCheckedAt: Date.now() },
+    }],
+    totals: { configured: 1, connected: connected ? 1 : 0 },
+  });
+  const controller = {
+    status: async () => snapshot(),
+    startProvisioning: async () => null,
+    registrationStatus: async () => null,
+    cancelProvisioning: async () => null,
+    reconnectBot: async () => snapshot(),
+    deleteBot: async () => snapshot(),
+    sendConnectionTest: async () => {
+      sendCalls += 1;
+      if (sendFailure) throw new Error('private provider failure');
+      return { sent: true };
+    },
+  };
+  const handler = createWhatsappRpcHandler(controller);
+
+  const legacy = await handler(WHATSAPP_ENDPOINTS.reconnectBot, { botId });
+  assert.equal(legacy.ok, true);
+  assert.equal('testMessage' in legacy.value, false);
+  assert.equal(sendCalls, 0);
+
+  const success = await handler(
+    WHATSAPP_ENDPOINTS.reconnectBot,
+    { botId, sendTest: true },
+  );
+  assert.deepEqual(success.value.testMessage, { sent: true });
+  assert.equal(sendCalls, 1);
+
+  sendFailure = true;
+  const failedSend = await handler(
+    WHATSAPP_ENDPOINTS.reconnectBot,
+    { botId, sendTest: true },
+  );
+  assert.equal(failedSend.ok, true);
+  assert.deepEqual(failedSend.value.testMessage, {
+    sent: false,
+    code: 'test-message-failed',
+  });
+  assert.doesNotMatch(JSON.stringify(failedSend), /private provider failure/);
+
+  connected = false;
+  const unavailable = await handler(
+    WHATSAPP_ENDPOINTS.reconnectBot,
+    { botId, sendTest: true },
+  );
+  assert.equal(unavailable.ok, true);
+  assert.deepEqual(unavailable.value.testMessage, {
+    sent: false,
+    code: 'test-target-unavailable',
+  });
+  assert.equal(sendCalls, 2);
+
+  const invalid = await handler(
+    WHATSAPP_ENDPOINTS.reconnectBot,
+    { botId, sendTest: 'yes' },
+  );
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.error.code, 'bad-request');
+});
+
+test('WhatsApp RPC never sends a connection test after reconnect is cancelled', async () => {
+  let resolveReconnect;
+  let sendCalls = 0;
+  const reconnect = new Promise((resolve) => { resolveReconnect = resolve; });
+  const botId = deriveWhatsappBotId(ACCOUNT_JID);
+  const controller = {
+    status: async () => ({ bots: [] }),
+    startProvisioning: async () => null,
+    registrationStatus: async () => null,
+    cancelProvisioning: async () => null,
+    reconnectBot: async () => reconnect,
+    sendConnectionTest: async () => { sendCalls += 1; },
+    deleteBot: async () => ({ bots: [] }),
+  };
+  const abort = new AbortController();
+  const result = createWhatsappRpcHandler(controller)(WHATSAPP_ENDPOINTS.reconnectBot, {
+    botId,
+    sendTest: true,
+  }, abort.signal);
+
+  abort.abort();
+  resolveReconnect({ bots: [{ botId, connected: true }] });
+
+  assert.deepEqual(await result, {
+    ok: false,
+    error: { code: 'cancelled', message: 'The request was cancelled.' },
+  });
+  assert.equal(sendCalls, 0);
+});
+
 test('WhatsApp QR controller and RPC keep the raw QR and linked identity host-only', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-im-whatsapp-controller-'));
   const configStore = await new WhatsappConfigStore(join(root, 'config.json')).load();

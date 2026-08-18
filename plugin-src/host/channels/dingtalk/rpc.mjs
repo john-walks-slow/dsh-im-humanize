@@ -1,6 +1,10 @@
 import QRCode from 'qrcode';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, SET_WORKSPACE_ENDPOINT, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
+import {
+  connectionTestTargetUnavailable,
+  publicConnectionTestResult,
+} from '../../../../src/channels/shared/connection-test.mjs';
 
 export const DINGTALK_RPC_CHANNEL = '/dingtalk';
 export const DINGTALK_ENDPOINTS = Object.freeze({
@@ -69,9 +73,11 @@ function payloadFailure(endpoint, payload) {
       : 'bot.bind-credentials requires Client ID and Client Secret.';
   }
   if (endpoint === DINGTALK_ENDPOINTS.reconnectBot) {
-    return exactKeys(payload, ['botId']) && validId(payload.botId)
+    return exactKeys(payload, ['botId', 'sendTest'])
+      && validId(payload.botId)
+      && (payload.sendTest === undefined || payload.sendTest === true)
       ? null
-      : 'bot.reconnect requires a botId.';
+      : 'bot.reconnect requires a botId and optional sendTest=true.';
   }
   if (endpoint === DINGTALK_ENDPOINTS.deleteBot) {
     return exactKeys(payload, ['botId', 'confirm']) && validId(payload.botId) && payload.confirm === true
@@ -210,7 +216,27 @@ export function createDingtalkRpcHandler(controller, { encodeQr = qrDataUrl } = 
       } else if (endpoint === DINGTALK_ENDPOINTS.bindCredentials) {
         value = await publicStatus(await controller.bindCredentials(payload), cachedEncode);
       } else if (endpoint === DINGTALK_ENDPOINTS.reconnectBot) {
-        value = await publicStatus(await controller.reconnectBot(payload.botId), cachedEncode);
+        const snapshot = await controller.reconnectBot(payload.botId);
+        if (signal?.aborted) return cancelled();
+        let testMessage;
+        if (payload.sendTest === true) {
+          const connected = snapshot?.bots?.some(
+            (bot) => bot?.botId === payload.botId && bot?.connected === true,
+          );
+          if (!connected || typeof controller.sendConnectionTest !== 'function') {
+            testMessage = publicConnectionTestResult(
+              connectionTestTargetUnavailable('钉钉机器人'),
+            );
+          } else {
+            try {
+              await controller.sendConnectionTest(payload.botId);
+              testMessage = publicConnectionTestResult();
+            } catch (error) {
+              testMessage = publicConnectionTestResult(error);
+            }
+          }
+        }
+        value = await publicStatus({ ...snapshot, ...(testMessage ? { testMessage } : {}) }, cachedEncode);
       } else if (endpoint === DINGTALK_ENDPOINTS.deleteBot) {
         value = await publicStatus(await controller.deleteBot(payload.botId), cachedEncode);
       } else if (endpoint === DINGTALK_ENDPOINTS.setWorkspace) {

@@ -49,6 +49,7 @@ function configFixture() {
 
 function runtimeFactory({ failStart = false } = {}) {
   const runtimes = [];
+  const connectionTests = [];
   const createRuntime = async ({ config, token }) => {
     let ready = false;
     const runtime = {
@@ -67,11 +68,12 @@ function runtimeFactory({ failStart = false } = {}) {
         ready = true;
       },
       async stop() { ready = false; },
+      async sendConnectionTest(text) { connectionTests.push({ botId: config.botId, text }); },
     };
     runtimes.push(runtime);
     return runtime;
   };
-  return { runtimes, createRuntime };
+  return { runtimes, connectionTests, createRuntime };
 }
 
 test('confirmed QR login stores bot_token only in credentials and starts a redacted account', async () => {
@@ -113,6 +115,11 @@ test('confirmed QR login stores bot_token only in credentials and starts a redac
   const publicJson = JSON.stringify(controller.status());
   assert.doesNotMatch(publicJson, /private-bot-token|owner-user|account@im\.bot|tokenRef/);
   assert.equal(controller.status().totals.connected, 1);
+
+  await controller.sendConnectionTest(completed.botId);
+  assert.equal(runtimes.connectionTests[0].botId, completed.botId);
+  assert.match(runtimes.connectionTests[0].text, /DeepSeek Harness 连接测试成功/);
+  assert.match(runtimes.connectionTests[0].text, /微信机器人（accoun••••\.bot）/);
 
   await controller.deleteBot(completed.botId);
   assert.equal(credentials.values.size, 0);

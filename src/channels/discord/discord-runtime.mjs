@@ -108,6 +108,7 @@ export function normalizeDiscordMessage(message, botId, { fetchImpl = fetch } = 
       channelId: String(message.channel_id),
       replyToMessageId: String(message.id),
     },
+    connectionTestTarget: { channelId: String(message.channel_id) },
   };
 }
 
@@ -237,6 +238,15 @@ export class DiscordRuntime {
 
   get status() {
     return structuredClone(this.#status);
+  }
+
+  async sendConnectionTest(text) {
+    if (!this.#status.ready || !this.#bridge) {
+      const error = new Error('Discord bot is not connected');
+      error.code = 'test-target-unavailable';
+      throw error;
+    }
+    return this.#bridge.sendConnectionTest(text);
   }
 
   async start() {

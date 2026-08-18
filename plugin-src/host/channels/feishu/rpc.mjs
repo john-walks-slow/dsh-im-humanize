@@ -1,4 +1,5 @@
 import QRCode from 'qrcode';
+import { publicConnectionTestResult } from '../../../../src/channels/shared/connection-test.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
 import {
@@ -258,8 +259,14 @@ function validPayload(endpoint, payload) {
       ? null
       : 'Disconnect requires removeCredentials=true.';
   }
-  if (endpoint === FEISHU_MULTI_ENDPOINTS.reconnectBot
-    || endpoint === FEISHU_MULTI_ENDPOINTS.disconnectBot) {
+  if (endpoint === FEISHU_MULTI_ENDPOINTS.reconnectBot) {
+    return hasOnlyKeys(payload, new Set(['botId', 'sendTest']))
+      && safeOpaqueId(payload.botId)
+      && (payload.sendTest === undefined || typeof payload.sendTest === 'boolean')
+      ? null
+      : 'A valid botId and optional sendTest flag are required.';
+  }
+  if (endpoint === FEISHU_MULTI_ENDPOINTS.disconnectBot) {
     return hasOnlyKeys(payload, new Set(['botId'])) && safeOpaqueId(payload.botId)
       ? null
       : 'A single valid botId is required.';
@@ -431,7 +438,31 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
         value = await toPublicFeishuStatus(await controller.disconnect(), { encodeQr: cachedEncodeQr });
       } else if (endpoint === FEISHU_MULTI_ENDPOINTS.reconnectBot) {
         if (typeof controller.reconnectBot !== 'function') throw new Error('Multi-bot reconnect is unavailable');
-        value = await toPublicFeishuStatus(await controller.reconnectBot(payload.botId), { encodeQr: cachedEncodeQr });
+        const checked = await controller.reconnectBot(payload.botId);
+        if (signal?.aborted) return cancelled();
+        value = await toPublicFeishuStatus(checked, { encodeQr: cachedEncodeQr });
+        if (payload.sendTest === true) {
+          let testError = null;
+          const connected = checked?.bots?.some(
+            (bot) => bot?.botId === payload.botId && bot.connected === true,
+          ) === true;
+          if (!connected) {
+            testError = new Error('Feishu bot is not connected');
+            testError.code = 'test-target-unavailable';
+          } else {
+            try {
+              if (typeof controller.sendConnectionTest !== 'function') {
+                const unavailable = new Error('Connection test is unavailable');
+                unavailable.code = 'test-target-unavailable';
+                throw unavailable;
+              }
+              await controller.sendConnectionTest(payload.botId);
+            } catch (error) {
+              testError = error;
+            }
+          }
+          value = { ...value, testMessage: publicConnectionTestResult(testError) };
+        }
       } else if (endpoint === FEISHU_MULTI_ENDPOINTS.disconnectBot) {
         if (typeof controller.disconnectBot !== 'function') throw new Error('Multi-bot disconnect is unavailable');
         value = await toPublicFeishuStatus(await controller.disconnectBot(payload.botId), { encodeQr: cachedEncodeQr });

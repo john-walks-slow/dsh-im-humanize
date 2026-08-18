@@ -1,5 +1,9 @@
 import { QQBot, typingIndicator } from '@tencent-connect/qqbot-nodejs';
 
+import {
+  connectionTestTarget,
+  connectionTestTargetUnavailable,
+} from '../shared/connection-test.mjs';
 import { createQqBridgeStatus, QqHarnessBridge } from './qq-bridge.mjs';
 
 function timeoutError() {
@@ -65,6 +69,28 @@ export class QqRuntime {
 
   get status() {
     return structuredClone(this.#status);
+  }
+
+  async sendConnectionTest(text) {
+    if (!this.#status.ready || !this.#bot) {
+      throw connectionTestTargetUnavailable('QQ机器人');
+    }
+    const ownerUserOpenid = typeof this.#config.ownerUserOpenid === 'string'
+      ? this.#config.ownerUserOpenid.trim()
+      : '';
+    const remembered = connectionTestTarget(this.#state);
+    const rememberedUserOpenid = remembered?.scope === 'c2c'
+      && typeof remembered.targetId === 'string'
+      ? remembered.targetId.trim()
+      : '';
+    const target = rememberedUserOpenid
+      ? { scope: 'c2c', targetId: rememberedUserOpenid }
+      : (ownerUserOpenid && ownerUserOpenid !== '*'
+        ? { scope: 'c2c', targetId: ownerUserOpenid }
+        : null);
+    if (!target) throw connectionTestTargetUnavailable('QQ机器人');
+    await this.#bot.sendText(target, text);
+    return { sent: true };
   }
 
   async start() {

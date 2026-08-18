@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { normalizeProvisioning, normalizeSnapshot, safeQrSource } from '../../../plugin-src/client/channels/qq/api.js';
+import {
+  connectionTestFeedback,
+  normalizeProvisioning,
+  normalizeSnapshot,
+  safeQrSource,
+} from '../../../plugin-src/client/channels/qq/api.js';
 
 test('QQ client keeps only redacted bot and host-rendered QR state', () => {
   const qr = 'data:image/png;base64,YWJjZA==';
@@ -19,4 +24,27 @@ test('QQ client keeps only redacted bot and host-rendered QR state', () => {
   });
   assert.equal(snapshot.totals.connected, 1);
   assert.equal(snapshot.bots[0].bot.appIdMasked, '123••••456');
+});
+
+test('QQ client normalizes and presents connection-test outcomes', () => {
+  const sent = normalizeSnapshot({ bots: [], testMessage: { sent: true, code: 'ignored' } });
+  assert.deepEqual(sent.testMessage, { sent: true });
+  assert.equal(
+    connectionTestFeedback(sent.testMessage),
+    '测试消息已发送，请到对应机器人会话中确认。',
+  );
+
+  const unavailable = normalizeSnapshot({
+    bots: [], testMessage: { sent: false, code: 'test-target-unavailable' },
+  });
+  assert.deepEqual(unavailable.testMessage, {
+    sent: false, code: 'test-target-unavailable',
+  });
+  assert.match(connectionTestFeedback(unavailable.testMessage), /\/status/);
+
+  const invalid = normalizeSnapshot({
+    bots: [], testMessage: { sent: false, code: 'private-provider-error' },
+  });
+  assert.deepEqual(invalid.testMessage, { sent: false, code: 'test-message-failed' });
+  assert.equal(connectionTestFeedback(undefined), null);
 });

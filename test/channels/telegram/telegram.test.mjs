@@ -158,6 +158,7 @@ test('Telegram config and controller store only a credential reference in bot da
   const configStore = await new TelegramConfigStore(configPath).load();
   const credentialStore = credentials();
   const runtimes = [];
+  const connectionTests = [];
   const controller = new TelegramController({
     credentials: credentialStore,
     configStore,
@@ -174,6 +175,7 @@ test('Telegram config and controller store only a credential reference in bot da
         },
         async start() {},
         async stop() {},
+        async sendConnectionTest(text) { connectionTests.push(text); },
       };
       runtimes.push(runtime);
       return runtime;
@@ -192,6 +194,9 @@ test('Telegram config and controller store only a credential reference in bot da
 
   await controller.reconnectBot(identity.botId);
   assert.equal(runtimes.length, 2);
+  await controller.sendConnectionTest(identity.botId);
+  assert.match(connectionTests[0], /Harness Telegram/);
+  assert.match(connectionTests[0], /123•••/);
   await controller.deleteBot(identity.botId);
   assert.equal(credentialStore.values.has(identity.tokenRef), false);
   assert.equal(controller.status().totals.configured, 0);
@@ -199,6 +204,7 @@ test('Telegram config and controller store only a credential reference in bot da
 
 test('Telegram RPC accepts only token binding and strips credential internals', async () => {
   const calls = [];
+  const connectionTests = [];
   const controller = {
     status: () => ({ bots: [], totals: { configured: 0, connected: 0 } }),
     bindCredentials: async (payload) => {
@@ -213,7 +219,11 @@ test('Telegram RPC accepts only token binding and strips credential internals', 
         totals: { configured: 1, connected: 0 },
       };
     },
-    reconnectBot: async () => ({ bots: [], totals: { configured: 0, connected: 0 } }),
+    reconnectBot: async (botId) => ({
+      bots: [{ botId, connected: true }],
+      totals: { configured: 1, connected: 1 },
+    }),
+    sendConnectionTest: async (botId) => { connectionTests.push(botId); },
     deleteBot: async () => ({ bots: [], totals: { configured: 0, connected: 0 } }),
   };
   const handler = createTelegramRpcHandler(controller);
@@ -225,6 +235,63 @@ test('Telegram RPC accepts only token binding and strips credential internals', 
   const rejected = await handler(TELEGRAM_ENDPOINTS.bindCredentials, { token: TOKEN, extra: true });
   assert.equal(rejected.ok, false);
   assert.equal(rejected.error.code, 'bad-request');
+
+  const legacyReconnect = await handler(TELEGRAM_ENDPOINTS.reconnectBot, {
+    botId: 'telegram_123',
+  });
+  assert.equal(legacyReconnect.ok, true);
+  assert.equal('testMessage' in legacyReconnect.value, false);
+  assert.deepEqual(connectionTests, []);
+
+  const tested = await handler(TELEGRAM_ENDPOINTS.reconnectBot, {
+    botId: 'telegram_123',
+    sendTest: true,
+  });
+  assert.equal(tested.ok, true);
+  assert.deepEqual(tested.value.testMessage, { sent: true });
+  assert.deepEqual(connectionTests, ['telegram_123']);
+
+  controller.sendConnectionTest = async () => {
+    const error = new Error('No explicit recipient');
+    error.code = 'test-target-unavailable';
+    throw error;
+  };
+  const missingTarget = await handler(TELEGRAM_ENDPOINTS.reconnectBot, {
+    botId: 'telegram_123',
+    sendTest: true,
+  });
+  assert.equal(missingTarget.ok, true);
+  assert.deepEqual(missingTarget.value.testMessage, {
+    sent: false,
+    code: 'test-target-unavailable',
+  });
+});
+
+test('shared token RPC never sends a connection test after reconnect is cancelled', async () => {
+  let resolveReconnect;
+  let sendCalls = 0;
+  const reconnect = new Promise((resolve) => { resolveReconnect = resolve; });
+  const controller = {
+    status: async () => ({ bots: [] }),
+    bindCredentials: async () => ({ bots: [] }),
+    reconnectBot: async () => reconnect,
+    sendConnectionTest: async () => { sendCalls += 1; },
+    deleteBot: async () => ({ bots: [] }),
+  };
+  const abort = new AbortController();
+  const result = createTelegramRpcHandler(controller)(TELEGRAM_ENDPOINTS.reconnectBot, {
+    botId: 'telegram_123',
+    sendTest: true,
+  }, abort.signal);
+
+  abort.abort();
+  resolveReconnect({ bots: [{ botId: 'telegram_123', connected: true }] });
+
+  assert.deepEqual(await result, {
+    ok: false,
+    error: { code: 'cancelled', message: 'The request was cancelled.' },
+  });
+  assert.equal(sendCalls, 0);
 });
 
 test('Telegram normalizes private messages and requires an explicit group address', () => {
@@ -239,6 +306,7 @@ test('Telegram normalizes private messages and requires an explicit group addres
   }, { botId: '123456789', username: 'HarnessBot' });
   assert.equal(privateMessage.kind, 'direct');
   assert.equal(privateMessage.addressed, true);
+  assert.deepEqual(privateMessage.connectionTestTarget, { chatId: 88, messageThreadId: undefined });
 
   const groupMessage = normalizeTelegramUpdate({
     update_id: 11,
@@ -352,9 +420,13 @@ test('Telegram normalizes photo captions and image documents into one downloadab
 
 test('Telegram bridge ignores unaddressed groups and streams direct replies', async () => {
   const sent = [];
+  const sentTargets = [];
   const updates = [];
   const bot = {
-    sendText: async (_target, text) => sent.push(text),
+    sendText: async (target, text) => {
+      sentTargets.push(target);
+      sent.push(text);
+    },
     sendTyping: async () => {},
     openStream: async () => ({
       update: async (text) => updates.push(text),
@@ -373,7 +445,8 @@ test('Telegram bridge ignores unaddressed groups and streams direct replies', as
       return '完成';
     },
   };
-  const bridge = new TelegramHarnessBridge({ bot, harness, state: memoryState() });
+  const state = memoryState();
+  const bridge = new TelegramHarnessBridge({ bot, harness, state });
   await bridge.accept({
     messageId: '1', senderId: 'u1', kind: 'group', conversationId: 'g1', content: 'ignored',
     addressed: false, replyTarget: {},
@@ -386,6 +459,26 @@ test('Telegram bridge ignores unaddressed groups and streams direct replies', as
   assert.equal(askCount, 1);
   assert.deepEqual(updates, ['正在使用搜索…', '处理中']);
   assert.deepEqual(sent, ['完成']);
+  await assert.rejects(
+    () => bridge.sendConnectionTest('card test'),
+    (error) => error?.code === 'test-target-unavailable',
+  );
+
+  const statusTarget = { chatId: 88, replyToMessageId: 7 };
+  await bridge.accept({
+    messageId: '3', senderId: 'u1', kind: 'direct', conversationId: 'u1', content: '/status',
+    addressed: true, replyTarget: statusTarget, connectionTestTarget: { chatId: 88 },
+  });
+  await bridge.sendConnectionTest('card test');
+  assert.deepEqual(sent.slice(-2), [
+    'Telegram机器人与 DeepSeek Harness 连接正常。',
+    'card test',
+  ]);
+  assert.deepEqual(sentTargets.at(-1), { chatId: 88 });
+  const reconnectedBridge = new TelegramHarnessBridge({ bot, harness, state });
+  await reconnectedBridge.sendConnectionTest('after reconnect');
+  assert.equal(sent.at(-1), 'after reconnect');
+  assert.deepEqual(sentTargets.at(-1), { chatId: 88 });
 });
 
 test('Telegram runtime validates webhook state and starts a cancellable long poll', async () => {

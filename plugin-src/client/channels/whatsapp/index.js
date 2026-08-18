@@ -43,6 +43,16 @@ function checkedTime(value) {
   }
 }
 
+function connectionTestNotice(value) {
+  if (value?.testMessage?.sent === true) {
+    return '测试消息已发送，请到 WhatsApp 自聊会话中确认。';
+  }
+  if (value?.testMessage?.code === 'test-target-unavailable') {
+    return '连接检查完成，但当前没有可用的 WhatsApp 自聊目标。';
+  }
+  return value?.testMessage ? '连接检查完成，但测试消息发送失败。' : null;
+}
+
 function Heading({ totals, busy, onAdd, addButtonRef }) {
   return h('div', { className: 'ddt-heading' },
     h('div', { className: 'ddt-tools' },
@@ -159,6 +169,7 @@ function RemoveConfirmation({ account, busy, onConfirm, onCancel }) {
 export function WhatsappAccountCard({
   account,
   busy,
+  testNotice,
   removing,
   onReconnect,
   onWorkspaceSave,
@@ -196,6 +207,10 @@ export function WhatsappAccountCard({
       }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
+        testNotice ? h('div', {
+          className: 'ddt-summary dim-cardSummary',
+          role: 'status',
+        }, testNotice) : null,
         h('div', { className: 'ddt-actions dim-cardActions' },
           h(Button, {
             className: 'dim-cardAction', onClick: onReconnect, disabled: Boolean(busy),
@@ -218,6 +233,7 @@ export function WhatsappSettingsTab({ rpcCall }) {
   const [provision, setProvision] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [busyByBot, setBusyByBot] = React.useState({});
+  const [testNoticeByBot, setTestNoticeByBot] = React.useState({});
   const [removeTarget, setRemoveTarget] = React.useState(null);
   const [now, setNow] = React.useState(Date.now());
   const mounted = React.useRef(true);
@@ -365,10 +381,32 @@ export function WhatsappSettingsTab({ rpcCall }) {
   const botAction = React.useCallback(async (account, operation, endpoint, payload) => {
     const snapshotVersion = workspaceFence.beginMutation();
     setBusyByBot((current) => ({ ...current, [account.botId]: operation }));
+    if (operation === 'reconnect') {
+      setTestNoticeByBot((current) => {
+        const next = { ...current };
+        delete next[account.botId];
+        return next;
+      });
+    }
     try {
-      const snapshot = normalizeSnapshot(await invoke(endpoint, payload));
+      const value = await invoke(endpoint, payload);
+      const snapshot = normalizeSnapshot(value);
       if (mounted.current && workspaceFence.canCommitMutation(snapshotVersion)) {
         setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+        if (operation === 'reconnect') {
+          setTestNoticeByBot((current) => ({
+            ...current,
+            [account.botId]: connectionTestNotice(value),
+          }));
+        }
+      }
+    } catch (error) {
+      if (operation !== 'reconnect') throw error;
+      if (mounted.current && workspaceFence.canCommitMutation(snapshotVersion)) {
+        setTestNoticeByBot((current) => ({
+          ...current,
+          [account.botId]: '连接检查失败，请稍后重试。',
+        }));
       }
     } finally {
       const shouldRefresh = workspaceFence.endMutation();
@@ -389,12 +427,13 @@ export function WhatsappSettingsTab({ rpcCall }) {
           h('li', { key: account.botId }, h(WhatsappAccountCard, {
             account,
             busy: busyByBot[account.botId],
+            testNotice: testNoticeByBot[account.botId],
             removing: removeTarget === account.botId,
             onReconnect: () => void botAction(
               account,
               'reconnect',
               WHATSAPP_ENDPOINTS.reconnectBot,
-              { botId: account.botId },
+              { botId: account.botId, sendTest: true },
             ),
             onWorkspaceSave: (workspace) => botAction(
               account,

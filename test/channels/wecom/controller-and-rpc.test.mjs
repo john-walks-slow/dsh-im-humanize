@@ -56,6 +56,7 @@ test('Enterprise WeChat Bot ID and Secret binding stores credentials and starts 
   const values = new Map();
   const configs = [];
   let runtimeArgs;
+  let connectionTestText;
   const controller = new WecomController({
     qrAuth: { start: async () => ({}), poll: async () => ({ status: 'waiting' }) },
     credentials: {
@@ -75,6 +76,7 @@ test('Enterprise WeChat Bot ID and Secret binding stores credentials and starts 
       return {
         status: { ready: true, wecomConnectionState: 'connected', harnessReachable: true },
         start: async () => {}, stop: async () => {},
+        sendConnectionTest: async (text) => { connectionTestText = text; },
       };
     },
   });
@@ -83,6 +85,9 @@ test('Enterprise WeChat Bot ID and Secret binding stores credentials and starts 
   assert.equal(values.get(configs[0].secretRef), 'manual-secret');
   assert.equal(runtimeArgs.secret, 'manual-secret');
   assert.doesNotMatch(JSON.stringify(status), /manual-secret|remote-manual|secretRef/);
+  await controller.sendConnectionTest(status.bots[0].botId);
+  assert.match(connectionTestText, /DeepSeek Harness 连接测试成功/);
+  assert.match(connectionTestText, /企业微信机器人（remote••••nual）/);
   await controller.close();
 });
 
@@ -102,6 +107,7 @@ test('Enterprise WeChat RPC encodes the QR on Host and strips every authorizatio
     cancelProvisioning: async () => ({}),
     bindCredentials: async () => ({ bots: [], totals: { configured: 0, connected: 0 } }),
     reconnectBot: async () => ({}),
+    sendConnectionTest: async () => ({ sent: true }),
     deleteBot: async () => ({}),
   }, { encodeQr: async () => 'data:image/png;base64,YWJjZA==' });
   const result = await handler(WECOM_ENDPOINTS.beginProvisioning, { locale: 'zh-CN' });
@@ -115,7 +121,8 @@ test('Enterprise WeChat credential RPC accepts official Bot ID fields and redact
   const handler = createWecomRpcHandler({
     status: () => ({ bots: [], totals: { configured: 0, connected: 0 } }),
     startProvisioning: async () => ({}), registrationStatus: async () => null,
-    cancelProvisioning: async () => ({}), reconnectBot: async () => ({}), deleteBot: async () => ({}),
+    cancelProvisioning: async () => ({}), reconnectBot: async () => ({}),
+    sendConnectionTest: async () => ({ sent: true }), deleteBot: async () => ({}),
     bindCredentials: async (payload) => {
       received = payload;
       return { bots: [], totals: { configured: 0, connected: 0 }, secret: payload.secret };
@@ -128,4 +135,64 @@ test('Enterprise WeChat credential RPC accepts official Bot ID fields and redact
   assert.deepEqual(received, { botId: 'remote-manual', secret: 'manual-secret' });
   assert.doesNotMatch(JSON.stringify(result), /manual-secret|"secret"/);
   assert.equal((await handler(WECOM_ENDPOINTS.bindCredentials, { botId: 'remote-manual' })).ok, false);
+});
+
+test('Enterprise WeChat reconnect optionally sends a test message without changing connection success', async () => {
+  const sent = [];
+  const base = {
+    status: () => ({ bots: [] }),
+    startProvisioning: async () => ({}), registrationStatus: async () => null,
+    cancelProvisioning: async () => ({}), bindCredentials: async () => ({}),
+    deleteBot: async () => ({}),
+  };
+  const connected = {
+    bots: [{ botId: 'wecom_bot', connected: true }],
+    totals: { configured: 1, connected: 1 },
+  };
+  const handler = createWecomRpcHandler({
+    ...base,
+    reconnectBot: async () => connected,
+    sendConnectionTest: async (botId) => { sent.push(botId); },
+  });
+
+  const success = await handler(WECOM_ENDPOINTS.reconnectBot, {
+    botId: 'wecom_bot', sendTest: true,
+  });
+  assert.equal(success.ok, true);
+  assert.deepEqual(success.value.testMessage, { sent: true });
+  assert.deepEqual(sent, ['wecom_bot']);
+
+  const failedSend = await createWecomRpcHandler({
+    ...base,
+    reconnectBot: async () => connected,
+    sendConnectionTest: async () => { throw new Error('provider rejected'); },
+  })(WECOM_ENDPOINTS.reconnectBot, { botId: 'wecom_bot', sendTest: true });
+  assert.equal(failedSend.ok, true);
+  assert.deepEqual(failedSend.value.testMessage, { sent: false, code: 'test-message-failed' });
+
+  let offlineSendCalled = false;
+  const offline = await createWecomRpcHandler({
+    ...base,
+    reconnectBot: async () => ({
+      bots: [{ botId: 'wecom_bot', connected: false }],
+      totals: { configured: 1, connected: 0 },
+    }),
+    sendConnectionTest: async () => { offlineSendCalled = true; },
+  })(WECOM_ENDPOINTS.reconnectBot, { botId: 'wecom_bot', sendTest: true });
+  assert.equal(offline.ok, true);
+  assert.deepEqual(offline.value.testMessage, {
+    sent: false, code: 'test-target-unavailable',
+  });
+  assert.equal(offlineSendCalled, false);
+  const missingMethod = await createWecomRpcHandler({
+    ...base,
+    reconnectBot: async () => connected,
+  })(WECOM_ENDPOINTS.reconnectBot, { botId: 'wecom_bot', sendTest: true });
+  assert.equal(missingMethod.ok, true);
+  assert.deepEqual(missingMethod.value.testMessage, {
+    sent: false, code: 'test-target-unavailable',
+  });
+  assert.equal((await handler(WECOM_ENDPOINTS.reconnectBot, {
+    botId: 'wecom_bot', sendTest: false,
+  })).ok, false);
 });

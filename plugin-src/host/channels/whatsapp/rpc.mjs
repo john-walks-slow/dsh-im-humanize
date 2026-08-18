@@ -1,5 +1,6 @@
 import QRCode from 'qrcode';
 
+import { publicConnectionTestResult } from '../../../../src/channels/shared/connection-test.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, SET_WORKSPACE_ENDPOINT, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
 
@@ -39,8 +40,9 @@ function payloadFailure(endpoint, payload) {
       ? null : `${endpoint} requires an attemptId.`;
   }
   if (endpoint === WHATSAPP_ENDPOINTS.reconnectBot) {
-    return exactKeys(payload, ['botId']) && validId(payload.botId)
-      ? null : 'bot.reconnect requires a botId.';
+    return exactKeys(payload, ['botId', 'sendTest']) && validId(payload.botId)
+      && (payload.sendTest === undefined || typeof payload.sendTest === 'boolean')
+      ? null : 'bot.reconnect requires a botId and optional sendTest flag.';
   }
   if (endpoint === WHATSAPP_ENDPOINTS.deleteBot) {
     return exactKeys(payload, ['botId', 'confirm']) && validId(payload.botId)
@@ -119,7 +121,33 @@ export function createWhatsappRpcHandler(controller, { encodeQr = qrDataUrl } = 
       } else if (endpoint === WHATSAPP_ENDPOINTS.cancelProvisioning) {
         value = sanitizePublic(await controller.cancelProvisioning(payload.attemptId));
       } else if (endpoint === WHATSAPP_ENDPOINTS.reconnectBot) {
-        value = await publicStatus(await controller.reconnectBot(payload.botId), cachedEncode);
+        const checked = await controller.reconnectBot(payload.botId);
+        if (signal?.aborted) {
+          return { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } };
+        }
+        value = await publicStatus(checked, cachedEncode);
+        if (payload.sendTest === true) {
+          let testError = null;
+          const connected = checked?.bots?.some(
+            (bot) => bot?.botId === payload.botId && bot.connected === true,
+          ) === true;
+          if (!connected) {
+            testError = new Error('WhatsApp bot is not connected');
+            testError.code = 'test-target-unavailable';
+          } else {
+            try {
+              if (typeof controller.sendConnectionTest !== 'function') {
+                const unavailable = new Error('Connection test is unavailable');
+                unavailable.code = 'test-target-unavailable';
+                throw unavailable;
+              }
+              await controller.sendConnectionTest(payload.botId);
+            } catch (error) {
+              testError = error;
+            }
+          }
+          value = { ...value, testMessage: publicConnectionTestResult(testError) };
+        }
       } else if (endpoint === WHATSAPP_ENDPOINTS.setWorkspace) {
         if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
         value = await publicStatus(

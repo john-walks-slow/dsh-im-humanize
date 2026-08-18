@@ -1,5 +1,9 @@
 import { WeixinApiError } from './weixin-api.mjs';
 import { createWeixinBridgeStatus, WeixinHarnessBridge } from './weixin-bridge.mjs';
+import {
+  connectionTestTarget,
+  connectionTestTargetUnavailable,
+} from '../shared/connection-test.mjs';
 
 const DEFAULT_START_RETRY_DELAYS_MS = Object.freeze([250, 1_000, 3_000]);
 
@@ -249,5 +253,26 @@ export class WeixinRuntime {
     this.#status.ready = false;
     this.#status.weixinConnectionState = 'idle';
     return this.status;
+  }
+
+  async sendConnectionTest(text) {
+    const remembered = connectionTestTarget(this.#state);
+    const toUserId = typeof remembered?.toUserId === 'string' && remembered.toUserId.trim()
+      ? remembered.toUserId.trim()
+      : typeof this.#config.ownerUserId === 'string' && this.#config.ownerUserId.trim()
+        ? this.#config.ownerUserId.trim()
+        : null;
+    if (!toUserId) throw connectionTestTargetUnavailable('微信机器人');
+    if (!this.#status.ready || !this.#abortController) {
+      throw new Error('Weixin runtime is not connected');
+    }
+    await this.#api.sendText({
+      baseUrl: this.#config.baseUrl,
+      token: this.#token,
+      toUserId,
+      text,
+      signal: this.#abortController.signal,
+    });
+    return { sent: true };
   }
 }

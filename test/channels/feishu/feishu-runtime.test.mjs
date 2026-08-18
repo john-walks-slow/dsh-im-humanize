@@ -4,9 +4,20 @@ import { FeishuRuntime } from '../../../src/channels/feishu/feishu-runtime.mjs';
 
 class FakeClient {
   static instances = [];
+  static sent = [];
 
   constructor(options) {
     this.options = options;
+    this.im = {
+      v1: {
+        message: {
+          create: async (payload) => {
+            FakeClient.sent.push(payload);
+            return { code: 0, data: { message_id: `message-${FakeClient.sent.length}` } };
+          },
+        },
+      },
+    };
     FakeClient.instances.push(this);
   }
 }
@@ -48,6 +59,7 @@ class FakeWSClient {
 function fakeLark() {
   FakeWSClient.instances.length = 0;
   FakeClient.instances.length = 0;
+  FakeClient.sent.length = 0;
   return {
     Domain: { Feishu: 'feishu-domain', Lark: 'lark-domain' },
     LoggerLevel: { info: 'info' },
@@ -103,6 +115,16 @@ test('FeishuRuntime becomes chat-ready only after Harness and Feishu are connect
   assert.equal((await FakeClient.instances[0].options.httpInstance.request({
     url: 'https://open.feishu.cn/test',
   })).timeout, 15_000);
+
+  assert.deepEqual(await runtime.sendConnectionTest('连接测试'), { sent: true });
+  assert.deepEqual(FakeClient.sent, [{
+    params: { receive_id_type: 'open_id' },
+    data: {
+      receive_id: 'ou_owner',
+      msg_type: 'text',
+      content: JSON.stringify({ text: '连接测试' }),
+    },
+  }]);
 
   const stopped = await runtime.stop();
   assert.equal(stopped.ready, false);

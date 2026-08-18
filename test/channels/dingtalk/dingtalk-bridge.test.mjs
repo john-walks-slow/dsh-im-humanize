@@ -5,6 +5,7 @@ import {
   createDingtalkBridgeStatus,
   DingtalkHarnessBridge,
 } from '../../../src/channels/dingtalk/dingtalk-bridge.mjs';
+import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
 
 function deferred() {
   let resolve;
@@ -80,6 +81,38 @@ const PNG_BYTES = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
   0x01, 0x02, 0x03,
 ]);
+
+test('DingTalk remembers only a private /status session webhook for connection tests', async () => {
+  const privateFixture = stateFixture();
+  const privateSent = [];
+  const privateBridge = new DingtalkHarnessBridge({
+    api: { sendText: async (request) => privateSent.push(request) },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: { ensureRunning: async () => true },
+    state: privateFixture.state,
+  });
+  await privateBridge.accept(message('status-private', '/status'));
+  assert.deepEqual(connectionTestTarget(privateFixture.state), {
+    sessionWebhook: 'https://oapi.dingtalk.com/robot/reply?ticket=status-private',
+  });
+  assert.equal(privateSent.at(-1).text, '钉钉机器人与 DeepSeek Harness 连接正常。');
+
+  const groupFixture = stateFixture();
+  const groupBridge = new DingtalkHarnessBridge({
+    api: { sendText: async () => {} },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: { ensureRunning: async () => true },
+    state: groupFixture.state,
+  });
+  await groupBridge.accept(message('status-group', '/status', {
+    conversationType: '2',
+    conversationId: 'group-status',
+    isInAtList: true,
+  }));
+  assert.equal(connectionTestTarget(groupFixture.state), null);
+});
 
 test('DingTalk resolves picture downloadCode lazily and sends image-only content to Harness', async () => {
   const fixture = stateFixture();

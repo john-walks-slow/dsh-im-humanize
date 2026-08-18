@@ -124,6 +124,192 @@ function findButton(renderer, label) {
   return button;
 }
 
+test('connection check requests a test message and announces its delivery', async (t) => {
+  const clock = createBrowserClock();
+  t.after(() => clock.restore());
+  const bot = {
+    botId: 'dt_test',
+    connected: true,
+    state: 'connected',
+    bot: { name: '钉钉机器人', clientIdMasked: 'ding••••test' },
+    health: { status: 'healthy', summary: '连接正常', lastCheckedAt: Date.now() },
+  };
+  const calls = [];
+  const rpcCall = async (endpoint, payload) => {
+    calls.push({ endpoint, payload });
+    if (endpoint === DINGTALK_ENDPOINTS.status) {
+      return ok(snapshot({ state: 'connected', bots: [bot] }));
+    }
+    if (endpoint === DINGTALK_ENDPOINTS.reconnectBot) {
+      return ok(snapshot({
+        state: 'connected',
+        bots: [bot],
+        testMessage: { sent: true },
+      }));
+    }
+    throw new Error(`unexpected endpoint: ${endpoint}`);
+  };
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(DingtalkSettingsTab, { rpcCall }));
+    await flushMicrotasks();
+  });
+  await act(async () => {
+    findButton(renderer, '检查连接').props.onClick();
+    await flushMicrotasks();
+  });
+
+  assert.deepEqual(calls.find((call) => call.endpoint === DINGTALK_ENDPOINTS.reconnectBot)?.payload, {
+    botId: 'dt_test', sendTest: true,
+  });
+  const announcement = [...clock.frames.entries()].at(-1);
+  assert.ok(announcement, 'successful connection test schedules an announcement');
+  await act(async () => {
+    clock.frames.delete(announcement[0]);
+    announcement[1]();
+    await flushMicrotasks();
+  });
+  const liveRegion = renderer.root.find(
+    (node) => node.props.role === 'status' && node.props['aria-live'] === 'polite',
+  );
+  assert.equal(nodeText(liveRegion), '钉钉连接检查完成，测试消息已发送。');
+  const botCard = renderer.root.find((node) => node.props['data-bot-id'] === 'dt_test');
+  const visibleFeedback = botCard.find(
+    (node) => node.props.role === 'status' && node.props['aria-live'] === undefined,
+  );
+  assert.equal(nodeText(visibleFeedback), '钉钉连接检查完成，测试消息已发送。');
+  act(() => renderer.unmount());
+});
+
+test('connection-check failure stays on the matching card with locale-safe wording', async (t) => {
+  const clock = createBrowserClock();
+  t.after(() => clock.restore());
+  const bots = ['dt_one', 'dt_two'].map((botId) => {
+    const connected = botId === 'dt_one';
+    return {
+      botId,
+      connected,
+      state: connected ? 'connected' : 'error',
+      bot: { name: botId, clientIdMasked: `ding••••${botId.slice(-3)}` },
+      health: {
+        status: connected ? 'healthy' : 'offline',
+        summary: connected ? '连接正常' : '现有连接错误',
+        lastCheckedAt: Date.now(),
+      },
+      error: connected ? null : { code: 'STREAM_DOWN', message: '现有连接错误' },
+    };
+  });
+  const rpcCall = async (endpoint, payload) => {
+    if (endpoint === DINGTALK_ENDPOINTS.status) {
+      return ok(snapshot({ state: 'degraded', bots }));
+    }
+    if (endpoint === DINGTALK_ENDPOINTS.reconnectBot) {
+      assert.equal(payload.botId, 'dt_two');
+      return {
+        ok: false,
+        error: { code: 'UPSTREAM_FAILED', message: 'provider-specific failure' },
+      };
+    }
+    throw new Error(`unexpected endpoint: ${endpoint}`);
+  };
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(DingtalkSettingsTab, { rpcCall }));
+    await flushMicrotasks();
+  });
+  const targetCard = renderer.root.find((node) => node.props['data-bot-id'] === 'dt_two');
+  const targetButton = targetCard.findAllByType('button')
+    .find((candidate) => nodeText(candidate) === '重试连接');
+  assert.ok(targetButton);
+  await act(async () => {
+    targetButton.props.onClick();
+    await flushMicrotasks();
+  });
+
+  const firstCard = renderer.root.find((node) => node.props['data-bot-id'] === 'dt_one');
+  assert.equal(firstCard.findAll((node) => node.props.role === 'status').length, 0);
+  const visibleFeedback = targetCard.find((node) => node.props.role === 'status');
+  assert.equal(nodeText(visibleFeedback), '连接检查失败，请稍后重试。');
+  assert.match(nodeText(targetCard), /现有连接错误/);
+  assert.equal(
+    targetCard.findAll((node) => node.props.className?.includes('dim-cardSummary')).length,
+    2,
+  );
+  assert.doesNotMatch(nodeText(targetCard), /provider-specific failure/);
+  const announcement = [...clock.frames.entries()].at(-1);
+  assert.ok(announcement, 'failed connection check schedules an announcement');
+  await act(async () => {
+    clock.frames.delete(announcement[0]);
+    announcement[1]();
+    await flushMicrotasks();
+  });
+  const liveRegion = renderer.root.find(
+    (node) => node.props.role === 'status' && node.props['aria-live'] === 'polite',
+  );
+  assert.equal(nodeText(liveRegion), '连接检查失败，请稍后重试。');
+  act(() => renderer.unmount());
+});
+
+test('a later disconnect removes stale success feedback and exposes the account error', async (t) => {
+  const clock = createBrowserClock();
+  t.after(() => clock.restore());
+  const connectedBot = {
+    botId: 'dt_stale',
+    connected: true,
+    state: 'connected',
+    bot: { name: '状态测试机器人', clientIdMasked: 'ding••••ale' },
+    health: { status: 'healthy', summary: '连接正常', lastCheckedAt: Date.now() },
+  };
+  const disconnectedBot = {
+    ...connectedBot,
+    connected: false,
+    state: 'error',
+    health: { status: 'offline', summary: 'Stream 已断开', lastCheckedAt: Date.now() },
+    error: { code: 'STREAM_DOWN', message: 'Stream 已断开' },
+  };
+  let disconnected = false;
+  const rpcCall = async (endpoint) => {
+    if (endpoint === DINGTALK_ENDPOINTS.status) {
+      const bot = disconnected ? disconnectedBot : connectedBot;
+      return ok(snapshot({ state: bot.connected ? 'connected' : 'degraded', bots: [bot] }));
+    }
+    if (endpoint === DINGTALK_ENDPOINTS.reconnectBot) {
+      return ok(snapshot({
+        state: 'connected',
+        bots: [connectedBot],
+        testMessage: { sent: true },
+      }));
+    }
+    throw new Error(`unexpected endpoint: ${endpoint}`);
+  };
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(DingtalkSettingsTab, { rpcCall }));
+    await flushMicrotasks();
+  });
+  await act(async () => {
+    findButton(renderer, '检查连接').props.onClick();
+    await flushMicrotasks();
+  });
+  let botCard = renderer.root.find((node) => node.props['data-bot-id'] === 'dt_stale');
+  assert.match(nodeText(botCard), /测试消息已发送/);
+
+  disconnected = true;
+  await act(async () => {
+    await clock.runInterval(15_000);
+    await flushMicrotasks();
+  });
+
+  botCard = renderer.root.find((node) => node.props['data-bot-id'] === 'dt_stale');
+  assert.match(nodeText(botCard), /Stream 已断开/);
+  assert.doesNotMatch(nodeText(botCard), /测试消息已发送/);
+  assert.equal(botCard.findAll((node) => node.props.role === 'status').length, 0);
+  act(() => renderer.unmount());
+});
+
 test('a late poll response cannot issue status RPCs or schedule work after effect cleanup', async (t) => {
   const clock = createBrowserClock();
   t.after(() => clock.restore());

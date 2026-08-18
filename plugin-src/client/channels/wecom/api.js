@@ -34,6 +34,16 @@ function timestamp(value) {
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
+function normalizeTestMessage(value) {
+  if (!isRecord(value)) return null;
+  if (value.sent === true) return { sent: true };
+  if (value.sent !== false) return null;
+  const code = value.code === 'test-target-unavailable'
+    ? 'test-target-unavailable'
+    : 'test-message-failed';
+  return { sent: false, code };
+}
+
 export function unwrapRpcResult(result) {
   if (!isRecord(result) || typeof result.ok !== 'boolean') throw new Error('企业微信服务返回了无法识别的响应');
   if (!result.ok) {
@@ -105,6 +115,7 @@ export function normalizeSnapshot(value) {
     bots,
     totals: { configured: bots.length, connected: bots.filter((bot) => bot.connected).length },
     provisioning: source.provisioning ? normalizeProvisioning(source.provisioning) : null,
+    testMessage: normalizeTestMessage(source.testMessage),
   };
 }
 

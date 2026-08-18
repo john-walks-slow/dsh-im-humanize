@@ -5,6 +5,10 @@ import {
   SET_WORKSPACE_ENDPOINT,
   validWorkspacePayload,
 } from '../shared/workspace-rpc.mjs';
+import {
+  connectionTestTargetUnavailable,
+  publicConnectionTestResult,
+} from '../../../../src/channels/shared/connection-test.mjs';
 
 export const WEIXIN_RPC_CHANNEL = '/weixin';
 export const WEIXIN_ENDPOINTS = Object.freeze({
@@ -55,9 +59,11 @@ function payloadFailure(endpoint, payload) {
       : 'provision.verify requires an attemptId and a 4-to-8-digit code.';
   }
   if (endpoint === WEIXIN_ENDPOINTS.reconnectBot) {
-    return exactKeys(payload, ['botId']) && validId(payload.botId)
+    return exactKeys(payload, ['botId', 'sendTest'])
+      && validId(payload.botId)
+      && (payload.sendTest === undefined || payload.sendTest === true)
       ? null
-      : 'bot.reconnect requires a botId.';
+      : 'bot.reconnect requires a botId and optional sendTest=true.';
   }
   if (endpoint === WEIXIN_ENDPOINTS.deleteBot) {
     return exactKeys(payload, ['botId', 'confirm']) && validId(payload.botId) && payload.confirm === true
@@ -165,7 +171,27 @@ export function createWeixinRpcHandler(controller, { encodeQr = qrDataUrl } = {}
         value = await controller.cancelProvisioning(payload.attemptId);
         if (!value) return badRequest('The provisioning attempt no longer exists.');
       } else if (endpoint === WEIXIN_ENDPOINTS.reconnectBot) {
-        value = await publicStatus(await controller.reconnectBot(payload.botId), cachedEncode);
+        const snapshot = await controller.reconnectBot(payload.botId);
+        if (signal?.aborted) return cancelled();
+        let testMessage;
+        if (payload.sendTest === true) {
+          const connected = snapshot?.bots?.some(
+            (bot) => bot?.botId === payload.botId && bot?.connected === true,
+          );
+          if (!connected || typeof controller.sendConnectionTest !== 'function') {
+            testMessage = publicConnectionTestResult(
+              connectionTestTargetUnavailable('微信机器人'),
+            );
+          } else {
+            try {
+              await controller.sendConnectionTest(payload.botId);
+              testMessage = publicConnectionTestResult();
+            } catch (error) {
+              testMessage = publicConnectionTestResult(error);
+            }
+          }
+        }
+        value = await publicStatus({ ...snapshot, ...(testMessage ? { testMessage } : {}) }, cachedEncode);
       } else if (endpoint === WEIXIN_ENDPOINTS.setWorkspace) {
         if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
         value = await publicStatus(

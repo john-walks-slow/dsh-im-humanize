@@ -151,6 +151,7 @@ function RemoveConfirmation({ account, busy, onConfirm, onCancel }) {
 export function AccountCard({
   account,
   busy,
+  feedback,
   removing,
   onReconnect,
   onWorkspaceSave,
@@ -180,6 +181,11 @@ export function AccountCard({
       }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
+        feedback ? h('div', {
+          className: 'ddt-summary dim-cardSummary',
+          role: 'status',
+          'aria-live': 'polite',
+        }, feedback) : null,
         h('div', { className: 'ddt-actions dim-cardActions' },
           h(Button, { className: 'dim-cardAction', onClick: onReconnect, disabled: Boolean(busy) }, busy === 'reconnect' ? '检查中…' : account.connected ? '检查连接' : '重试连接'),
           h(Button, { className: 'dim-cardAction', kind: 'danger', onClick: onRequestRemove, disabled: Boolean(busy) }, '移除接入')))),
@@ -193,13 +199,31 @@ export function WecomSettingsTab({ rpcCall }) {
   const [provision, setProvision] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [busyByBot, setBusyByBot] = React.useState({});
+  const [feedbackByBot, setFeedbackByBot] = React.useState({});
   const [removeTarget, setRemoveTarget] = React.useState(null);
   const [credentialOpen, setCredentialOpen] = React.useState(false);
   const [credentialError, setCredentialError] = React.useState(null);
+  const [notice, setNotice] = React.useState('');
   const [now, setNow] = React.useState(Date.now());
   const mounted = React.useRef(true);
   const workspaceFence = useWorkspaceSnapshotFence();
   const addButtonRef = React.useRef(null);
+  const noticeFrameRef = React.useRef(null);
+
+  const announce = React.useCallback((message) => {
+    if (!mounted.current) return;
+    if (noticeFrameRef.current !== null) {
+      window.cancelAnimationFrame(noticeFrameRef.current);
+      noticeFrameRef.current = null;
+    }
+    setNotice('');
+    if (message) {
+      noticeFrameRef.current = window.requestAnimationFrame(() => {
+        noticeFrameRef.current = null;
+        if (mounted.current) setNotice(message);
+      });
+    }
+  }, []);
 
   React.useEffect(() => {
     const disposeDingtalk = installDingtalkStyles();
@@ -207,6 +231,10 @@ export function WecomSettingsTab({ rpcCall }) {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      if (noticeFrameRef.current !== null) {
+        window.cancelAnimationFrame(noticeFrameRef.current);
+        noticeFrameRef.current = null;
+      }
       disposeWecom();
       disposeDingtalk();
     };
@@ -361,6 +389,46 @@ export function WecomSettingsTab({ rpcCall }) {
     }
   }, [invoke, loadStatus, workspaceFence]);
 
+  const reconnect = React.useCallback(async (account) => {
+    setFeedbackByBot((current) => {
+      const next = { ...current };
+      delete next[account.botId];
+      return next;
+    });
+    try {
+      const snapshot = await botAction(
+        account,
+        'reconnect',
+        WECOM_ENDPOINTS.reconnectBot,
+        { botId: account.botId, sendTest: true },
+      );
+      if (!snapshot) return;
+      const refreshed = snapshot.bots.find((bot) => bot.botId === account.botId);
+      let feedback;
+      if (!refreshed?.connected) {
+        feedback = '企业微信仍未连接，插件会继续自动重试。';
+      } else if (snapshot.testMessage?.sent) {
+        feedback = '企业微信连接检查完成，测试消息已发送。';
+      } else if (snapshot.testMessage?.code === 'test-target-unavailable') {
+        feedback = '企业微信连接检查完成。请先私聊机器人发送 /status，再重新检查。';
+      } else if (snapshot.testMessage) {
+        feedback = '企业微信连接检查完成，但测试消息发送失败。';
+      } else {
+        feedback = '企业微信连接检查完成。';
+      }
+      if (mounted.current) {
+        setFeedbackByBot((current) => ({ ...current, [account.botId]: feedback }));
+      }
+      announce(feedback);
+    } catch {
+      const feedback = '连接检查失败，请稍后重试。';
+      if (mounted.current) {
+        setFeedbackByBot((current) => ({ ...current, [account.botId]: feedback }));
+      }
+      announce(feedback);
+    }
+  }, [announce, botAction]);
+
   let provisionView = null;
   if (provision?.status === 'starting') provisionView = h('div', { className: 'ddt-card ddt-loading dim-surfaceCard' }, h('div', { className: 'ddt-spinner' }), '正在申请企业微信二维码…');
   else if (['pending', 'refreshing'].includes(provision?.status)) provisionView = h(QrPanel, {
@@ -378,8 +446,9 @@ export function WecomSettingsTab({ rpcCall }) {
           h('li', { key: account.botId }, h(AccountCard, {
             account,
             busy: busyByBot[account.botId],
+            feedback: feedbackByBot[account.botId],
             removing: removeTarget === account.botId,
-            onReconnect: () => void botAction(account, 'reconnect', WECOM_ENDPOINTS.reconnectBot, { botId: account.botId }),
+            onReconnect: () => void reconnect(account),
             onWorkspaceSave: (workspace) => botAction(
               account,
               'workspace',
@@ -419,6 +488,7 @@ export function WecomSettingsTab({ rpcCall }) {
       credentialOpen,
       addButtonRef,
     }),
+    h('div', { className: 'ddt-visuallyHidden', role: 'status', 'aria-live': 'polite' }, notice),
     model.phase === 'loading' ? h(LoadingView)
       : model.phase === 'error'
         ? h('div', { className: 'ddt-card dim-surfaceCard' }, h('div', { className: 'ddt-inlineError dim-inlineError' }, h('h3', null, '无法读取企业微信机器人状态'), h('p', null, model.error?.message), h(Button, { onClick: () => void loadStatus() }, '重新读取')))

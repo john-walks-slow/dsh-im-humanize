@@ -1,6 +1,10 @@
 import QRCode from 'qrcode';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, SET_WORKSPACE_ENDPOINT, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
+import {
+  connectionTestTargetUnavailable,
+  publicConnectionTestResult,
+} from '../../../../src/channels/shared/connection-test.mjs';
 
 export const WECOM_RPC_CHANNEL = '/wecom';
 export const WECOM_ENDPOINTS = Object.freeze({
@@ -53,7 +57,10 @@ function payloadFailure(endpoint, payload) {
       ? null : 'bot.bind-credentials requires Bot ID and Secret.';
   }
   if (endpoint === WECOM_ENDPOINTS.reconnectBot) {
-    return exactKeys(payload, ['botId']) && validId(payload.botId) ? null : 'bot.reconnect requires a botId.';
+    return exactKeys(payload, ['botId', 'sendTest'])
+      && validId(payload.botId)
+      && (payload.sendTest === undefined || payload.sendTest === true)
+      ? null : 'bot.reconnect requires a botId and optional sendTest=true.';
   }
   if (endpoint === WECOM_ENDPOINTS.deleteBot) {
     return exactKeys(payload, ['botId', 'confirm']) && validId(payload.botId) && payload.confirm === true
@@ -130,7 +137,29 @@ export function createWecomRpcHandler(controller, { encodeQr = qrDataUrl } = {})
       } else if (endpoint === WECOM_ENDPOINTS.bindCredentials) {
         value = await publicStatus(await controller.bindCredentials(payload), cachedEncode);
       } else if (endpoint === WECOM_ENDPOINTS.reconnectBot) {
-        value = await publicStatus(await controller.reconnectBot(payload.botId), cachedEncode);
+        const snapshot = await controller.reconnectBot(payload.botId);
+        if (signal?.aborted) {
+          return { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } };
+        }
+        let testMessage;
+        if (payload.sendTest === true) {
+          const connected = snapshot?.bots?.some(
+            (bot) => bot?.botId === payload.botId && bot?.connected === true,
+          );
+          if (!connected || typeof controller.sendConnectionTest !== 'function') {
+            testMessage = publicConnectionTestResult(
+              connectionTestTargetUnavailable('企业微信机器人'),
+            );
+          } else {
+            try {
+              await controller.sendConnectionTest(payload.botId);
+              testMessage = publicConnectionTestResult();
+            } catch (error) {
+              testMessage = publicConnectionTestResult(error);
+            }
+          }
+        }
+        value = await publicStatus({ ...snapshot, ...(testMessage ? { testMessage } : {}) }, cachedEncode);
       } else if (endpoint === WECOM_ENDPOINTS.setWorkspace) {
         if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
         value = await publicStatus(

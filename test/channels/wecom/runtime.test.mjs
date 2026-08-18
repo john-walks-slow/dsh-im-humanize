@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
 import { WecomRuntime } from '../../../src/channels/wecom/wecom-runtime.mjs';
+import { rememberConnectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
 
 function deferred() {
   let resolve;
@@ -12,12 +13,37 @@ function deferred() {
 
 class FakeClient extends EventEmitter {
   disconnected = false;
+  sent = [];
   connect() { queueMicrotask(() => this.emit('authenticated')); }
   disconnect() { this.disconnected = true; }
   async replyStream() {}
   async replyStreamNonBlocking() {}
-  async sendMessage() {}
+  async sendMessage(chatId, body) { this.sent.push({ chatId, body }); }
 }
+
+test('Enterprise WeChat runtime sends a connection test only to the remembered private status target', async () => {
+  const client = new FakeClient();
+  const state = {};
+  const runtime = new WecomRuntime({
+    config: { botId: 'wecom_bot', remoteBotId: 'remote-bot' },
+    secret: 'private-secret',
+    harness: { ensureRunning: async () => true },
+    state,
+    createClient: () => client,
+    connectTimeoutMs: 100,
+  });
+  await runtime.start();
+  await assert.rejects(() => runtime.sendConnectionTest('测试'), {
+    code: 'test-target-unavailable',
+  });
+  rememberConnectionTestTarget(state, { chatId: 'member-private' });
+  assert.deepEqual(await runtime.sendConnectionTest('测试'), { sent: true });
+  assert.deepEqual(client.sent, [{
+    chatId: 'member-private',
+    body: { msgtype: 'markdown', markdown: { content: '测试' } },
+  }]);
+  await runtime.stop();
+});
 
 test('Enterprise WeChat runtime waits for authentication, suppresses SDK payload logs, and reconnects', async () => {
   const client = new FakeClient();

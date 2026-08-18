@@ -492,6 +492,84 @@ test('an older reconnect snapshot from another bot cannot restore a saved worksp
   await act(async () => { renderer.unmount(); });
 });
 
+test('connection check requests a test message and shows its delivery result', async (t) => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { setInterval() { return 1; }, clearInterval() {} };
+  t.after(() => {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  });
+  const calls = [];
+  const snapshot = discordSnapshot('/workspace/current');
+  const rpcCall = async (endpoint, payload) => {
+    calls.push({ endpoint, payload });
+    if (endpoint === 'connection.status') return { ok: true, value: snapshot };
+    if (endpoint === 'bot.reconnect') {
+      return { ok: true, value: { ...snapshot, testMessage: { sent: true } } };
+    }
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(DiscordSettingsTab, { rpcCall }));
+    await flushMicrotasks();
+  });
+  const card = renderer.root.findByProps({ 'data-bot-id': 'discord_test' });
+  await act(async () => {
+    buttonNamed(card, '检查连接').props.onClick();
+    await flushMicrotasks();
+  });
+
+  assert.deepEqual(calls.find((call) => call.endpoint === 'bot.reconnect')?.payload, {
+    botId: 'discord_test',
+    sendTest: true,
+  });
+  assert.equal(
+    textOf(renderer.root.findByProps({ role: 'status' })),
+    '测试消息已发送，请到对应机器人会话中确认。',
+  );
+  await act(async () => { renderer.unmount(); });
+});
+
+test('shared token connection failures render a fixed English-safe notice', async (t) => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { setInterval() { return 1; }, clearInterval() {} };
+  setImTranslator((key) => en[key] ?? key);
+  t.after(() => {
+    setImTranslator(null);
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  });
+  const snapshot = discordSnapshot('/workspace/current');
+  const rpcCall = async (endpoint) => {
+    if (endpoint === 'connection.status') return { ok: true, value: snapshot };
+    if (endpoint === 'bot.reconnect') {
+      return {
+        ok: false,
+        error: { code: 'discord-operation-failed', message: 'Discord 操作失败，请稍后重试。' },
+      };
+    }
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(DiscordSettingsTab, { rpcCall }));
+    await flushMicrotasks();
+  });
+  const card = renderer.root.findByProps({ 'data-bot-id': 'discord_test' });
+  await act(async () => {
+    buttonNamed(card, 'Check connection').props.onClick();
+    await flushMicrotasks();
+  });
+
+  const notice = textOf(renderer.root.findByProps({ role: 'status' }));
+  assert.equal(notice, 'Connection check failed. Try again later.');
+  assert.doesNotMatch(notice, /[\p{Script=Han}]/u);
+  await act(async () => { renderer.unmount(); });
+});
+
 test('an older reconnect snapshot cannot resurrect a bot deleted by a newer mutation', async (t) => {
   const previousWindow = globalThis.window;
   globalThis.window = { setInterval() { return 1; }, clearInterval() {} };

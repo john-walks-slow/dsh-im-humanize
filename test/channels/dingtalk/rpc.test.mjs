@@ -21,6 +21,7 @@ function controller(overrides = {}) {
     cancelProvisioning: async () => ({ attemptId: 'attempt_1', status: 'cancelled' }),
     bindCredentials: async () => ({ bots: [] }),
     reconnectBot: async () => ({ bots: [] }),
+    sendConnectionTest: async () => ({ sent: true }),
     deleteBot: async () => ({ bots: [] }),
     approveSender: async () => ({ bots: [] }),
     revokeSender: async () => ({ bots: [] }),
@@ -112,4 +113,56 @@ test('RPC is registered for loopback clients only', () => {
   assert.equal(installDingtalkRpc(ctx, controller()), dispose);
   assert.equal(registrations[0][0], '/dingtalk');
   assert.deepEqual(registrations[0][2], { authority: 'loopback' });
+});
+
+test('reconnect sends a DingTalk test message only for a connected bot and isolates send failures', async () => {
+  const sent = [];
+  const connectedSnapshot = {
+    bots: [{ botId: 'dt_abc', connected: true }],
+    totals: { configured: 1, connected: 1 },
+  };
+  const success = await createDingtalkRpcHandler(controller({
+    reconnectBot: async () => connectedSnapshot,
+    sendConnectionTest: async (botId) => { sent.push(botId); },
+  }))(DINGTALK_ENDPOINTS.reconnectBot, { botId: 'dt_abc', sendTest: true });
+  assert.equal(success.ok, true);
+  assert.deepEqual(success.value.testMessage, { sent: true });
+  assert.deepEqual(sent, ['dt_abc']);
+
+  const failedSend = await createDingtalkRpcHandler(controller({
+    reconnectBot: async () => connectedSnapshot,
+    sendConnectionTest: async () => { throw new Error('expired webhook'); },
+  }))(DINGTALK_ENDPOINTS.reconnectBot, { botId: 'dt_abc', sendTest: true });
+  assert.equal(failedSend.ok, true);
+  assert.deepEqual(failedSend.value.testMessage, {
+    sent: false, code: 'test-message-failed',
+  });
+
+  let offlineSendCalled = false;
+  const offline = await createDingtalkRpcHandler(controller({
+    reconnectBot: async () => ({
+      bots: [{ botId: 'dt_abc', connected: false }],
+      totals: { configured: 1, connected: 0 },
+    }),
+    sendConnectionTest: async () => { offlineSendCalled = true; },
+  }))(DINGTALK_ENDPOINTS.reconnectBot, { botId: 'dt_abc', sendTest: true });
+  assert.equal(offline.ok, true);
+  assert.deepEqual(offline.value.testMessage, {
+    sent: false, code: 'test-target-unavailable',
+  });
+  assert.equal(offlineSendCalled, false);
+  const withoutMethod = controller({ reconnectBot: async () => connectedSnapshot });
+  delete withoutMethod.sendConnectionTest;
+  const unavailableWithoutMethod = await createDingtalkRpcHandler(withoutMethod)(
+    DINGTALK_ENDPOINTS.reconnectBot,
+    { botId: 'dt_abc', sendTest: true },
+  );
+  assert.equal(unavailableWithoutMethod.ok, true);
+  assert.deepEqual(unavailableWithoutMethod.value.testMessage, {
+    sent: false, code: 'test-target-unavailable',
+  });
+  assert.equal((await createDingtalkRpcHandler(controller())(
+    DINGTALK_ENDPOINTS.reconnectBot,
+    { botId: 'dt_abc', sendTest: false },
+  )).ok, false);
 });

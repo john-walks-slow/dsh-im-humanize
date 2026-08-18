@@ -18,6 +18,7 @@ import {
   imagePromptUserMessage,
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
+import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
 
@@ -250,6 +251,7 @@ export class WeixinHarnessBridge {
       if (!hasImages && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#send(sender, '微信与 DeepSeek Harness 连接正常。', contextToken, runId);
+        rememberConnectionTestTarget(this.#state, { toUserId: sender });
         await this.#state.markSeen(messageId);
         return;
       }

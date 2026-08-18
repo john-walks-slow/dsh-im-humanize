@@ -17,6 +17,7 @@ import {
   imagePromptUserMessage,
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
+import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
 
 const CARD_INITIAL_TEXT = '已连接 DeepSeek Harness，正在思考…';
 const CARD_ERROR_TEXT = '消息处理失败，请稍后重试。';
@@ -459,6 +460,9 @@ export class DingtalkHarnessBridge {
       if (isPlainText && !hasImages && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#send(sessionWebhook, '钉钉机器人与 DeepSeek Harness 连接正常。');
+        if (String(message.conversationType) !== '2') {
+          rememberConnectionTestTarget(this.#state, { sessionWebhook });
+        }
         return;
       }
       if (isPlainText && !hasImages && command === '/new') {

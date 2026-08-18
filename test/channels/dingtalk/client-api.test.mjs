@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   DINGTALK_ENDPOINTS,
   DINGTALK_RPC_CHANNEL,
+  connectionTestFeedback,
   formatRemaining,
   normalizeProvisioning,
   normalizeSnapshot,
@@ -83,6 +84,11 @@ test('snapshot derives totals and exposes only browser-safe bot state', () => {
     schemaVersion: 1,
     revision: 7,
     totals: { configured: 99, connected: 99 },
+    testMessage: {
+      sent: false,
+      code: 'test-target-unavailable',
+      providerDetail: 'must-not-cross-normalization',
+    },
     bots: [{
       botId: 'bot-safe',
       connected: true,
@@ -104,10 +110,29 @@ test('snapshot derives totals and exposes only browser-safe bot state', () => {
   assert.deepEqual(snapshot.totals, { configured: 1, connected: 1 });
   assert.equal(snapshot.bots[0].state, 'connected');
   assert.equal('senders' in snapshot.bots[0], false);
+  assert.deepEqual(snapshot.testMessage, {
+    sent: false, code: 'test-target-unavailable',
+  });
   assert.doesNotMatch(
     JSON.stringify(snapshot),
     /raw-client-id|raw-client-secret|credential-ref|device-code|raw-staff-id/,
   );
+});
+
+test('connection-test feedback uses fixed client-owned messages', () => {
+  assert.equal(
+    connectionTestFeedback({ sent: true }),
+    '钉钉连接检查完成，测试消息已发送。',
+  );
+  assert.equal(
+    connectionTestFeedback({ sent: false, code: 'test-target-unavailable' }),
+    '钉钉连接检查完成。请先私聊机器人发送 /status，再重新检查。',
+  );
+  assert.equal(
+    connectionTestFeedback({ sent: false, code: 'test-message-failed' }),
+    '钉钉连接检查完成，但测试消息发送失败。',
+  );
+  assert.equal(connectionTestFeedback(null), null);
 });
 
 test('presentation helpers redact sensitive messages and format countdowns', () => {

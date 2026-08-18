@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { AccountCard, QqSettingsTab } from '../../../plugin-src/client/channels/qq/index.js';
+import { en, setImTranslator } from '../../../plugin-src/client/i18n.js';
+
+const CLIENT_URL = new URL('../../../plugin-src/client/channels/qq/index.js', import.meta.url);
 
 test('QQ settings uses the shared compact channel toolbar', () => {
   const markup = renderToStaticMarkup(React.createElement(QqSettingsTab, {
@@ -49,4 +53,57 @@ test('QQ bot cards match the shared two-metric card treatment', () => {
     onReconnect() {}, onRequestRemove() {}, onConfirmRemove() {}, onCancelRemove() {},
   }));
   assert.match(offlineMarkup, /class="ddt-summary dim-cardSummary">连接失败，请检查凭据</);
+});
+
+test('QQ connection checks request a test message and show concise card feedback', async () => {
+  const source = await readFile(CLIENT_URL, 'utf8');
+  assert.match(source, /\{ botId: account\.botId, sendTest: true \}/);
+  assert.match(source, /'连接检查失败，请稍后重试。'/);
+  assert.doesNotMatch(source, /连接检查失败：\$\{presentError\(error\)\.message\}/);
+
+  const markup = renderToStaticMarkup(React.createElement(AccountCard, {
+    account: {
+      botId: 'qq_bot', connected: true, state: 'connected',
+      bot: { name: 'QQ机器人', appIdMasked: '123••••456' },
+      health: { summary: 'QQ WebSocket 长连接运行正常', lastCheckedAt: Date.now() },
+      error: null,
+    },
+    feedback: '测试消息已发送，请到对应机器人会话中确认。',
+    onReconnect() {}, onRequestRemove() {}, onConfirmRemove() {}, onCancelRemove() {},
+  }));
+  assert.match(markup, /role="status"/);
+  assert.match(markup, /测试消息已发送/);
+
+  const offlineMarkup = renderToStaticMarkup(React.createElement(AccountCard, {
+    account: {
+      botId: 'qq_bot', connected: false, state: 'error',
+      bot: { name: 'QQ机器人', appIdMasked: '123••••456' },
+      health: { summary: 'QQ 连接尚未就绪', lastCheckedAt: Date.now() },
+      error: { code: 'offline', message: '连接凭据已失效' },
+    },
+    feedback: '测试消息已发送，请到对应机器人会话中确认。',
+    onReconnect() {}, onRequestRemove() {}, onConfirmRemove() {}, onCancelRemove() {},
+  }));
+  assert.match(offlineMarkup, />连接凭据已失效</);
+  assert.match(offlineMarkup, /role="status"[^>]*>测试消息已发送/);
+});
+
+test('fixed reconnect failure copy renders fully in English', () => {
+  setImTranslator((key) => en[key] ?? key);
+  try {
+    const markup = renderToStaticMarkup(React.createElement(AccountCard, {
+      account: {
+        botId: 'qq_bot', connected: true, state: 'connected',
+        bot: { name: 'QQ Bot', appIdMasked: '123••••456' },
+        health: { summary: 'healthy', lastCheckedAt: Date.now() },
+        error: null,
+      },
+      feedback: '连接检查失败，请稍后重试。',
+      onReconnect() {}, onRequestRemove() {}, onConfirmRemove() {}, onCancelRemove() {},
+    }));
+    assert.match(markup, /Connection check failed\. Try again later\./);
+    assert.doesNotMatch(markup, /[\p{Script=Han}]/u);
+  } finally {
+    setImTranslator(null);
+  }
 });

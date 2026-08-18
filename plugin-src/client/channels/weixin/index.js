@@ -198,6 +198,7 @@ function checkedTime(timestamp) {
 export function AccountCard({
   account,
   busy,
+  feedback,
   removing,
   onReconnect,
   onWorkspaceSave,
@@ -229,6 +230,11 @@ export function AccountCard({
       }),
       h('div', { className: 'dxw-accountFooter dim-cardFooter' },
         summary ? h('div', { className: 'dxw-summary dim-cardSummary' }, summary) : null,
+        feedback ? h('div', {
+          className: 'dxw-summary dim-cardSummary',
+          role: 'status',
+          'aria-live': 'polite',
+        }, feedback) : null,
         h('div', { className: 'dxw-actions dim-cardActions' },
           h(Button, { className: 'dim-cardAction', onClick: onReconnect, disabled: Boolean(busy) },
             busy === 'reconnect' ? '检查中…' : account.connected ? '检查连接' : '重试连接'),
@@ -250,6 +256,7 @@ function AccountList(props) {
       h(AccountCard, {
         account,
         busy: props.busyByBot[account.botId],
+        feedback: props.feedbackByBot[account.botId],
         removing: props.removeTarget === account.botId,
         onReconnect: () => props.onReconnect(account),
         onWorkspaceSave: (workspace) => props.onWorkspaceSave(account, workspace),
@@ -282,6 +289,7 @@ export function WeixinSettingsTab({ rpcCall }) {
   const [provision, setProvision] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [busyByBot, setBusyByBot] = React.useState({});
+  const [feedbackByBot, setFeedbackByBot] = React.useState({});
   const [removeTarget, setRemoveTarget] = React.useState(null);
   const [notice, setNotice] = React.useState('');
   const [now, setNow] = React.useState(() => Date.now());
@@ -496,15 +504,42 @@ export function WeixinSettingsTab({ rpcCall }) {
   const reconnect = React.useCallback(async (account) => {
     const snapshotVersion = workspaceFence.beginMutation();
     setBotBusy(account.botId, 'reconnect');
+    setFeedbackByBot((current) => {
+      const next = { ...current };
+      delete next[account.botId];
+      return next;
+    });
     try {
-      const snapshot = normalizeSnapshot(await invoke(WEIXIN_ENDPOINTS.reconnectBot, { botId: account.botId }));
+      const snapshot = normalizeSnapshot(await invoke(
+        WEIXIN_ENDPOINTS.reconnectBot,
+        { botId: account.botId, sendTest: true },
+      ));
       if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
         setModel((current) => ({ ...current, bots: snapshot.bots, totals: snapshot.totals, revision: snapshot.revision }));
       }
       const refreshed = snapshot.bots.find((bot) => bot.botId === account.botId);
-      announce(refreshed?.connected ? '微信连接检查完成。' : '微信仍未连接，插件会继续自动重试。');
-    } catch (error) {
-      announce(`连接检查失败：${presentError(error).message}`);
+      let feedback;
+      if (!refreshed?.connected) {
+        feedback = '微信仍未连接，插件会继续自动重试。';
+      } else if (snapshot.testMessage?.sent) {
+        feedback = '微信连接检查完成，测试消息已发送。';
+      } else if (snapshot.testMessage?.code === 'test-target-unavailable') {
+        feedback = '微信连接检查完成。请先私聊机器人发送 /status，再重新检查。';
+      } else if (snapshot.testMessage) {
+        feedback = '微信连接检查完成，但测试消息发送失败。';
+      } else {
+        feedback = '微信连接检查完成。';
+      }
+      if (mountedRef.current) {
+        setFeedbackByBot((current) => ({ ...current, [account.botId]: feedback }));
+      }
+      announce(feedback);
+    } catch {
+      const feedback = '连接检查失败，请稍后重试。';
+      if (mountedRef.current) {
+        setFeedbackByBot((current) => ({ ...current, [account.botId]: feedback }));
+      }
+      announce(feedback);
     } finally {
       const shouldRefresh = workspaceFence.endMutation();
       if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
@@ -611,6 +646,7 @@ export function WeixinSettingsTab({ rpcCall }) {
               ? h(AccountList, {
                   bots: model.bots,
                   busyByBot,
+                  feedbackByBot,
                   removeTarget,
                   onReconnect: (account) => void reconnect(account),
                   onWorkspaceSave: saveWorkspace,

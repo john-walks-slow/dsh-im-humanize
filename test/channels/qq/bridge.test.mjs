@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { QqHarnessBridge } from '../../../src/channels/qq/qq-bridge.mjs';
+import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
 
 function deferred() {
   let resolve;
@@ -256,6 +257,45 @@ test('QQ executes /compact for the bound Session without prompting the model', a
   assert.deepEqual(executed, [{ sessionId: 'session-compact', line: '/compact' }]);
   assert.deepEqual(sent, ['已压缩 3 条历史记录（约 900 个 token）。']);
   assert.equal(fixture.seen.has('compact-qq'), true);
+});
+
+test('QQ remembers a connection-test target only for an authorized private /status', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    ownerUserOpenid: 'owner-openid',
+    harness: { ensureRunning: async () => true },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message({
+    messageId: 'status-rejected',
+    senderId: 'other-openid',
+    content: '/status',
+    replyTarget: { scope: 'c2c', targetId: 'other-openid', msgId: 'status-rejected' },
+  }));
+  await bridge.accept(message({
+    kind: 'group',
+    rawEventType: 'GROUP_AT_MESSAGE_CREATE',
+    groupOpenid: 'group-1',
+    messageId: 'status-group',
+    content: '/status',
+    replyTarget: { scope: 'group', targetId: 'group-1', msgId: 'status-group' },
+  }));
+  assert.equal(connectionTestTarget(fixture.state), null);
+
+  const privateTarget = {
+    scope: 'c2c', targetId: 'owner-openid', msgId: 'status-private',
+  };
+  await bridge.accept(message({
+    messageId: 'status-private',
+    content: '/status',
+    replyTarget: privateTarget,
+  }));
+
+  assert.deepEqual(connectionTestTarget(fixture.state), privateTarget);
+  assert.equal(sent.filter(({ text }) => text.includes('连接正常')).length, 2);
 });
 
 test('QQ private messages stream Harness snapshots and finalize once', async () => {

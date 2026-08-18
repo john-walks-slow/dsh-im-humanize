@@ -37,6 +37,7 @@ function controllerFixture() {
     submitVerification: async (id) => ({ ...attempts.get(id), status: 'scanned' }),
     cancelProvisioning: async (id) => ({ ...attempts.get(id), status: 'cancelled' }),
     reconnectBot: async () => snapshot(),
+    sendConnectionTest: async () => ({ sent: true }),
     deleteBot: async () => snapshot(),
   };
   return controller;
@@ -104,4 +105,61 @@ test('RPC requires explicit confirmation before removing a Weixin account', asyn
   }, new AbortController().signal);
   assert.equal(result.ok, false);
   assert.equal(result.error.code, 'bad-request');
+});
+
+test('RPC sends a Weixin connection test only after reconnect reports the account connected', async () => {
+  const botId = 'wx_0123456789abcdef01234567';
+  const sent = [];
+  const connected = controllerFixture();
+  connected.reconnectBot = async () => snapshot({
+    state: 'connected',
+    bots: [{ botId, connected: true }],
+    totals: { configured: 1, connected: 1 },
+  });
+  connected.sendConnectionTest = async (id) => { sent.push(id); };
+  const success = await createWeixinRpcHandler(connected)(WEIXIN_ENDPOINTS.reconnectBot, {
+    botId, sendTest: true,
+  });
+  assert.equal(success.ok, true);
+  assert.deepEqual(success.value.testMessage, { sent: true });
+  assert.deepEqual(sent, [botId]);
+
+  connected.sendConnectionTest = async () => { throw new Error('send rejected'); };
+  const failedSend = await createWeixinRpcHandler(connected)(WEIXIN_ENDPOINTS.reconnectBot, {
+    botId, sendTest: true,
+  });
+  assert.equal(failedSend.ok, true);
+  assert.deepEqual(failedSend.value.testMessage, {
+    sent: false, code: 'test-message-failed',
+  });
+
+  let offlineSendCalled = false;
+  const offline = controllerFixture();
+  offline.reconnectBot = async () => snapshot({
+    state: 'offline',
+    bots: [{ botId, connected: false }],
+    totals: { configured: 1, connected: 0 },
+  });
+  offline.sendConnectionTest = async () => { offlineSendCalled = true; };
+  const unavailable = await createWeixinRpcHandler(offline)(WEIXIN_ENDPOINTS.reconnectBot, {
+    botId, sendTest: true,
+  });
+  assert.equal(unavailable.ok, true);
+  assert.deepEqual(unavailable.value.testMessage, {
+    sent: false, code: 'test-target-unavailable',
+  });
+  assert.equal(offlineSendCalled, false);
+  const missingMethod = controllerFixture();
+  missingMethod.reconnectBot = connected.reconnectBot;
+  delete missingMethod.sendConnectionTest;
+  const missing = await createWeixinRpcHandler(missingMethod)(WEIXIN_ENDPOINTS.reconnectBot, {
+    botId, sendTest: true,
+  });
+  assert.equal(missing.ok, true);
+  assert.deepEqual(missing.value.testMessage, {
+    sent: false, code: 'test-target-unavailable',
+  });
+  assert.equal((await createWeixinRpcHandler(connected)(WEIXIN_ENDPOINTS.reconnectBot, {
+    botId, sendTest: false,
+  })).ok, false);
 });

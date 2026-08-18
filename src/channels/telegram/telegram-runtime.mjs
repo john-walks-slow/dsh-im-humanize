@@ -111,6 +111,7 @@ export function normalizeTelegramUpdate(update, { botId, username, loadFile = as
       replyToMessageId: messageId,
       messageThreadId,
     },
+    connectionTestTarget: { chatId, messageThreadId },
   };
 }
 
@@ -227,6 +228,15 @@ export class TelegramRuntime {
 
   get status() {
     return structuredClone(this.#status);
+  }
+
+  async sendConnectionTest(text) {
+    if (!this.#status.ready || !this.#bridge) {
+      const error = new Error('Telegram bot is not connected');
+      error.code = 'test-target-unavailable';
+      throw error;
+    }
+    return this.#bridge.sendConnectionTest(text);
   }
 
   async start() {
