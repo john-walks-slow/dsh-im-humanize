@@ -44,6 +44,25 @@ function credentials() {
   };
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function eventually(predicate, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail('condition was not met before timeout');
+}
+
 test('Discord API authenticates with a Bot header and validates the current bot', async () => {
   assert.equal(validDiscordToken(TOKEN), true);
   assert.equal(validDiscordToken('not-a-token'), false);
@@ -233,6 +252,9 @@ class FakeSocket {
 
 test('Discord runtime identifies on Gateway v10 and becomes ready', async () => {
   let socket;
+  const abortMark = deferred();
+  let abortMarkStarted = false;
+  const errors = [];
   const runtime = new DiscordRuntime({
     config: {
       botId: 'discord_test',
@@ -246,7 +268,13 @@ test('Discord runtime identifies on Gateway v10 and becomes ready', async () => 
       setSession: async () => {},
       clearSession: async () => {},
       hasSeen: () => false,
-      markSeen: async () => {},
+      markSeen: async (messageId) => {
+        if (messageId === '111111111111111199') {
+          abortMarkStarted = true;
+          return abortMark.promise;
+        }
+        throw new Error(`Discord state write failed for ${messageId}`);
+      },
     },
     createApi: () => ({
       getCurrentUser: async () => ({ id: '1234567890123456789', bot: true }),
@@ -260,6 +288,10 @@ test('Discord runtime identifies on Gateway v10 and becomes ready', async () => 
       return socket;
     },
     random: () => 0.5,
+    logger: {
+      warn() {},
+      error(...args) { errors.push(args); },
+    },
   });
   await runtime.start();
   assert.equal(runtime.status.ready, true);
@@ -267,6 +299,46 @@ test('Discord runtime identifies on Gateway v10 and becomes ready', async () => 
   assert.equal(identify.d.token, TOKEN);
   assert.equal(identify.d.intents, 4_609);
   assert.equal(identify.d.properties.browser, 'dsh-im');
-  await runtime.stop();
+
+  for (const [id, sequence] of [
+    ['111111111111111190', 2],
+    ['111111111111111191', 3],
+  ]) {
+    socket.emit('message', {
+      data: JSON.stringify({
+        op: 0,
+        t: 'MESSAGE_CREATE',
+        s: sequence,
+        d: {
+          id,
+          channel_id: '222222222222222222',
+          author: { id: '333333333333333333', bot: false },
+          content: 'trigger state failure',
+        },
+      }),
+    });
+  }
+  await eventually(() => errors.length === 2);
+  assert.equal(errors.every((args) => args[0].includes('message handling failed')), true);
+
+  socket.emit('message', {
+    data: JSON.stringify({
+      op: 0,
+      t: 'MESSAGE_CREATE',
+      s: 4,
+      d: {
+        id: '111111111111111199',
+        channel_id: '222222222222222222',
+        author: { id: '333333333333333333', bot: false },
+        content: 'abort state write',
+      },
+    }),
+  });
+  await eventually(() => abortMarkStarted);
+  const stopping = runtime.stop();
+  abortMark.reject(new Error('Discord state write aborted'));
+  await stopping;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(errors.length, 2);
   assert.equal(runtime.status.ready, false);
 });

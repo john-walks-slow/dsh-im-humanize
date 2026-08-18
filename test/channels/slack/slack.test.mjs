@@ -46,6 +46,25 @@ function credentials() {
   };
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function eventually(predicate, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail('condition was not met before timeout');
+}
+
 test('Slack validates both tokens and inspects Bot and Socket Mode credentials', async () => {
   assert.equal(validSlackBotToken(BOT_TOKEN), true);
   assert.equal(validSlackAppToken(APP_TOKEN), true);
@@ -269,6 +288,9 @@ class FakeSocket {
 
 test('Slack runtime opens Socket Mode, acknowledges envelopes, and becomes ready', async () => {
   let socket;
+  const abortMark = deferred();
+  let abortMarkStarted = false;
+  const errors = [];
   const runtime = new SlackRuntime({
     config: {
       botId: 'slack_test',
@@ -283,7 +305,13 @@ test('Slack runtime opens Socket Mode, acknowledges envelopes, and becomes ready
       setSession: async () => {},
       clearSession: async () => {},
       hasSeen: () => false,
-      markSeen: async () => {},
+      markSeen: async (messageId) => {
+        if (messageId === 'Ev-abort') {
+          abortMarkStarted = true;
+          return abortMark.promise;
+        }
+        throw new Error(`Slack state write failed for ${messageId}`);
+      },
     },
     createApi: () => ({
       authTest: async () => ({ team_id: 'T12345678', user_id: 'U12345678' }),
@@ -299,6 +327,10 @@ test('Slack runtime opens Socket Mode, acknowledges envelopes, and becomes ready
       }));
       return socket;
     },
+    logger: {
+      warn() {},
+      error(...args) { errors.push(args); },
+    },
   });
   await runtime.start();
   assert.equal(runtime.status.ready, true);
@@ -310,6 +342,55 @@ test('Slack runtime opens Socket Mode, acknowledges envelopes, and becomes ready
     }),
   });
   assert.deepEqual(socket.sent.at(-1), { envelope_id: 'env-1' });
-  await runtime.stop();
+
+  for (const eventId of ['Ev-failed-first', 'Ev-failed-queued']) {
+    socket.emit('message', {
+      data: JSON.stringify({
+        envelope_id: `env-${eventId}`,
+        type: 'events_api',
+        payload: {
+          type: 'event_callback',
+          api_app_id: 'A12345678',
+          event_id: eventId,
+          event: {
+            type: 'message',
+            channel_type: 'im',
+            channel: 'D12345678',
+            user: 'U87654321',
+            ts: eventId === 'Ev-failed-first' ? '1700000000.010' : '1700000000.011',
+            text: 'trigger state failure',
+          },
+        },
+      }),
+    });
+  }
+  await eventually(() => errors.length === 2);
+  assert.equal(errors.every((args) => args[0].includes('message handling failed')), true);
+
+  socket.emit('message', {
+    data: JSON.stringify({
+      envelope_id: 'env-abort',
+      type: 'events_api',
+      payload: {
+        type: 'event_callback',
+        api_app_id: 'A12345678',
+        event_id: 'Ev-abort',
+        event: {
+          type: 'message',
+          channel_type: 'im',
+          channel: 'D12345678',
+          user: 'U87654321',
+          ts: '1700000000.012',
+          text: 'abort state write',
+        },
+      },
+    }),
+  });
+  await eventually(() => abortMarkStarted);
+  const stopping = runtime.stop();
+  abortMark.reject(new Error('Slack state write aborted'));
+  await stopping;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(errors.length, 2);
   assert.equal(runtime.status.ready, false);
 });

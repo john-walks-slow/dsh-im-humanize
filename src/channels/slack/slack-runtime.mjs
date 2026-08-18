@@ -309,6 +309,7 @@ export class SlackRuntime {
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
+        signal: controller.signal,
       });
       let timer;
       try {
@@ -389,7 +390,16 @@ export class SlackRuntime {
         if (this.#appId && packet.payload.api_app_id
           && packet.payload.api_app_id !== this.#appId) return;
         const message = normalizeSlackEvent(packet.payload, this.#config.platformId.split(':')[1]);
-        if (message) void this.#bridge?.accept(message);
+        const bridge = this.#bridge;
+        if (message && bridge) {
+          void bridge.accept(message).catch((error) => {
+            if (generation !== this.#generation || this.#stopped) return;
+            this.#logger.error?.(
+              `[dsh-im:slack] bot ${this.#config.botId} message handling failed:`,
+              error,
+            );
+          });
+        }
       });
 
       addSocketListener(socket, 'close', (event = {}) => {

@@ -116,6 +116,8 @@ export class WeixinRuntime {
       await this.#harness.ensureRunning();
       this.#status.harnessReachable = true;
       await this.#notifyStart();
+      this.#abortController = new AbortController();
+      const signal = this.#abortController.signal;
       this.#bridge = new WeixinHarnessBridge({
         api: this.#api,
         baseUrl: this.#config.baseUrl,
@@ -127,12 +129,11 @@ export class WeixinRuntime {
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
         maxMessageChars: this.#maxMessageChars,
+        signal,
       });
-      this.#abortController = new AbortController();
       this.#status.ready = true;
       this.#status.weixinConnectionState = 'connected';
       this.#status.lastCheckedAt = Date.now();
-      const signal = this.#abortController.signal;
       this.#monitor = this.#runMonitor(signal).catch((error) => {
         if (signal.aborted) return;
         this.#status.ready = false;
@@ -142,6 +143,9 @@ export class WeixinRuntime {
       });
       return this.status;
     } catch (error) {
+      this.#abortController?.abort();
+      this.#abortController = null;
+      this.#bridge = null;
       this.#status.ready = false;
       this.#status.weixinConnectionState = 'failed';
       this.#status.lastError = error?.message ?? String(error);
@@ -195,7 +199,13 @@ export class WeixinRuntime {
         this.#status.lastError = null;
 
         for (const message of response?.msgs ?? []) {
-          await this.#bridge.accept(message);
+          void this.#bridge.accept(message).catch((error) => {
+            if (signal.aborted) return;
+            this.#logger.error?.(
+              `[dsh-weixin] account ${this.#config.botId} message handling failed:`,
+              error,
+            );
+          });
         }
         if (typeof response?.get_updates_buf === 'string' && response.get_updates_buf) {
           await this.#state.setGetUpdatesBuf(response.get_updates_buf);

@@ -36,6 +36,7 @@ export class WecomRuntime {
   #bridge = null;
   #starting = null;
   #startController = null;
+  #runtimeController = null;
 
   constructor({
     config,
@@ -69,8 +70,10 @@ export class WecomRuntime {
   async start() {
     if (this.#status.ready && this.#client) return this.status;
     if (this.#starting) return this.#starting;
+    this.#runtimeController?.abort(new DOMException('Enterprise WeChat runtime replaced', 'AbortError'));
     const controller = new AbortController();
     this.#startController = controller;
+    this.#runtimeController = controller;
     this.#starting = this.#start(controller.signal).finally(() => {
       if (this.#startController === controller) this.#startController = null;
       this.#starting = null;
@@ -105,6 +108,7 @@ export class WecomRuntime {
       status: this.#status,
       logger: this.#logger,
       replyTimeoutMs: this.#replyTimeoutMs,
+      signal,
     });
 
     let readyResolve;
@@ -186,6 +190,8 @@ export class WecomRuntime {
   async stop() {
     const starting = this.#starting;
     this.#startController?.abort(new DOMException('Enterprise WeChat runtime stopped', 'AbortError'));
+    this.#runtimeController?.abort(new DOMException('Enterprise WeChat runtime stopped', 'AbortError'));
+    this.#runtimeController = null;
     await this.#stopActive();
     await starting?.catch(() => undefined);
     return this.status;

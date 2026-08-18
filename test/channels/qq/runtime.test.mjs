@@ -4,6 +4,12 @@ import test from 'node:test';
 
 import { QqRuntime } from '../../../src/channels/qq/qq-runtime.mjs';
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 class FakeBot extends EventEmitter {
   middlewares = [];
   stopped = false;
@@ -69,4 +75,60 @@ test('QQ runtime never reports ready when the gateway does not emit ready', asyn
   });
   await assert.rejects(() => runtime.start(), /did not become ready/);
   assert.equal(runtime.status.ready, false);
+});
+
+test('QQ runtime aborts an in-flight Harness interaction when stopped', async () => {
+  const bot = new FakeBot();
+  const askStarted = deferred();
+  let askSignal;
+  const runtime = new QqRuntime({
+    config: { botId: 'qq_bot', appId: 'app', ownerUserOpenid: 'owner' },
+    appSecret: 'secret',
+    harness: {
+      ensureRunning: async () => true,
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        askSignal = options.signal;
+        askStarted.resolve();
+        await new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => {
+          reject(options.signal.reason);
+        }, { once: true }));
+      },
+    },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => {},
+      sessionFor: () => 'session-existing',
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+    createBot: () => bot,
+    typingMiddleware: () => 'typing',
+    connectTimeoutMs: 100,
+    logger: { error() {}, warn() {}, info() {} },
+  });
+
+  await runtime.start();
+  bot.emit('message', {}, {
+    kind: 'c2c',
+    rawEventType: 'C2C_MESSAGE_CREATE',
+    senderId: 'owner',
+    senderIsBot: false,
+    content: '需要交互',
+    messageId: 'interaction-message',
+    replyTarget: { scope: 'c2c', targetId: 'owner', msgId: 'interaction-message' },
+  });
+  await askStarted.promise;
+  assert.equal(askSignal.aborted, false);
+  bot.emit('message', {}, {
+    kind: 'c2c',
+    rawEventType: 'C2C_MESSAGE_CREATE',
+    senderId: 'owner',
+    senderIsBot: false,
+    content: '排队中的下一条消息',
+    messageId: 'queued-message',
+    replyTarget: { scope: 'c2c', targetId: 'owner', msgId: 'queued-message' },
+  });
+  await runtime.stop();
+  assert.equal(askSignal.aborted, true);
 });

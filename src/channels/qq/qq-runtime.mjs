@@ -101,6 +101,8 @@ export class QqRuntime {
     if (!bot || typeof bot.start !== 'function' || typeof bot.stop !== 'function') {
       throw new TypeError('QQ bot factory returned an invalid client');
     }
+    const controller = new AbortController();
+    this.#abortController = controller;
     this.#bot = bot;
     this.#bridge = new QqHarnessBridge({
       bot,
@@ -110,6 +112,7 @@ export class QqRuntime {
       status: this.#status,
       logger: this.#logger,
       replyTimeoutMs: this.#replyTimeoutMs,
+      signal: controller.signal,
     });
     bot.use?.(this.#typingMiddleware({
       keepAlive: true,
@@ -117,8 +120,6 @@ export class QqRuntime {
         || ctx?.message?.senderId === this.#config.ownerUserOpenid,
     }));
 
-    const controller = new AbortController();
-    this.#abortController = controller;
     let readyResolve;
     let readyReject;
     const ready = new Promise((resolve, reject) => {
@@ -141,7 +142,17 @@ export class QqRuntime {
         this.#logger.warn?.(`[dsh-im:qq] bot ${this.#config.botId} connection error:`, error);
       }
     };
-    const onMessage = (_ctx, message) => this.#bridge?.accept(message);
+    const onMessage = (_ctx, message) => {
+      const task = this.#bridge?.accept(message);
+      if (!task) return;
+      void task.catch((error) => {
+        if (controller.signal.aborted) return;
+        this.#logger.error?.(
+          `[dsh-im:qq] bot ${this.#config.botId} message handling failed:`,
+          error,
+        );
+      });
+    };
     bot.on('ready', onReady);
     bot.on('resumed', onReady);
     bot.on('error', onError);

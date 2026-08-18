@@ -238,6 +238,7 @@ export class DiscordRuntime {
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
+        signal: controller.signal,
       });
       let timer;
       try {
@@ -346,7 +347,16 @@ export class DiscordRuntime {
           markReady();
         } else if (packet.t === 'MESSAGE_CREATE') {
           const message = normalizeDiscordMessage(packet.d, this.#config.platformId);
-          if (message) void this.#bridge?.accept(message);
+          const bridge = this.#bridge;
+          if (message && bridge) {
+            void bridge.accept(message).catch((error) => {
+              if (generation !== this.#generation || this.#stopped) return;
+              this.#logger.error?.(
+                `[dsh-im:discord] bot ${this.#config.botId} message handling failed:`,
+                error,
+              );
+            });
+          }
         }
       });
       addSocketListener(socket, 'close', (event = {}) => {

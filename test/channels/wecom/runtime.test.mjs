@@ -4,6 +4,12 @@ import test from 'node:test';
 
 import { WecomRuntime } from '../../../src/channels/wecom/wecom-runtime.mjs';
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 class FakeClient extends EventEmitter {
   disconnected = false;
   connect() { queueMicrotask(() => this.emit('authenticated')); }
@@ -77,4 +83,51 @@ test('Enterprise WeChat runtime stop cancels an in-flight authentication wait', 
   await assert.rejects(starting, { name: 'AbortError' });
   assert.equal(client.disconnected, true);
   assert.equal(runtime.status.wecomConnectionState, 'idle');
+});
+
+test('Enterprise WeChat runtime aborts an in-flight Harness interaction when stopped', async () => {
+  const client = new FakeClient();
+  const askStarted = deferred();
+  let askSignal;
+  const runtime = new WecomRuntime({
+    config: { botId: 'wecom_bot', remoteBotId: 'remote-bot' },
+    secret: 'private-secret',
+    harness: {
+      ensureRunning: async () => true,
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        askSignal = options.signal;
+        askStarted.resolve();
+        await new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => {
+          reject(options.signal.reason);
+        }, { once: true }));
+      },
+    },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => {},
+      sessionFor: () => 'session-existing',
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+    createClient: () => client,
+    connectTimeoutMs: 100,
+    logger: { error() {}, warn() {} },
+  });
+
+  await runtime.start();
+  client.emit('message', {
+    headers: { req_id: 'req-interaction' },
+    body: {
+      msgid: 'msg-interaction',
+      chattype: 'single',
+      from: { userid: 'member-1' },
+      msgtype: 'text',
+      text: { content: '需要交互' },
+    },
+  });
+  await askStarted.promise;
+  assert.equal(askSignal.aborted, false);
+  await runtime.stop();
+  assert.equal(askSignal.aborted, true);
 });

@@ -256,6 +256,7 @@ export class WhatsappRuntime {
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
+        signal: controller.signal,
       });
       const now = Date.now();
       this.#status.ready = true;

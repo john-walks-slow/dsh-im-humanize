@@ -3,6 +3,41 @@ import test from 'node:test';
 
 import { QqHarnessBridge } from '../../../src/channels/qq/qq-bridge.mjs';
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+async function eventually(predicate, messageText = 'condition was not met') {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(messageText);
+}
+
+function stateFixture(initialSessions = []) {
+  const sessions = new Map(initialSessions);
+  const seen = new Set();
+  return {
+    sessions,
+    seen,
+    state: {
+      hasSeen: (id) => seen.has(id),
+      markSeen: async (id) => seen.add(id),
+      sessionFor: (key) => sessions.get(key) ?? null,
+      setSession: async (key, sessionId) => sessions.set(key, sessionId),
+      clearSession: async (key) => sessions.delete(key),
+    },
+  };
+}
+
 function message(overrides = {}) {
   return {
     kind: 'c2c',
@@ -100,4 +135,778 @@ test('QQ credential-bound bots accept senders within the platform visibility sco
   await bridge.accept(message({ messageId: 'visible', senderId: 'visible-user' }));
   assert.equal(asks, 1);
   assert.equal(bridge.status.messagesRejected, 0);
+});
+
+test('QQ group questions require the initiating actor to mention the bot and preserve multi-question answers', async () => {
+  const fixture = stateFixture([['group:group-1', 'session-group']]);
+  const sent = [];
+  const asked = [];
+  const submitted = deferred();
+  const secondQuestionDelivered = deferred();
+  const releaseSecondQuestion = deferred();
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (target, text) => {
+        sent.push({ target, text });
+        if (text.includes('选择交付内容')) {
+          secondQuestionDelivered.resolve();
+          await releaseSecondQuestion.promise;
+        }
+      },
+    },
+    ownerUserOpenid: '*',
+    harness: {
+      sessionExists: async () => true,
+      createSession: async () => assert.fail('the existing session should be reused'),
+      ask: async (sessionId, text, options) => {
+        asked.push({ sessionId, text });
+        if (text === '旁观者的普通问题') return '旁观者问题已回答';
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'qq-group-multi',
+          rpcId: 'qq-group-multi',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [
+              {
+                id: 'language',
+                question: '选择回答语言',
+                options: [{ label: '中文' }, { label: 'English' }],
+              },
+              {
+                id: 'deliverables',
+                question: '选择交付内容',
+                multiSelect: true,
+                options: [{ label: '测试' }, { label: '文档' }],
+              },
+            ],
+          },
+          respond: async (result) => {
+            submitted.resolve(result);
+            return { accepted: true };
+          },
+        });
+        await submitted.promise;
+        return '发起者交互完成';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const first = bridge.accept(message({
+    kind: 'group',
+    rawEventType: 'GROUP_AT_MESSAGE_CREATE',
+    senderId: 'initiator',
+    groupOpenid: 'group-1',
+    content: '启动群聊交互',
+    messageId: 'group-start',
+    replyTarget: { scope: 'group', targetId: 'group-1', msgId: 'group-start' },
+  }));
+  await eventually(() => sent.some(({ text }) => text.includes('选择回答语言')));
+  assert.equal(sent.find(({ text }) => text.includes('选择回答语言')).text
+    .includes('群聊中请 @机器人 后发送答案。'), true);
+
+  let submittedResult;
+  submitted.promise.then((result) => { submittedResult = result; });
+  const bystander = bridge.accept(message({
+    kind: 'group',
+    rawEventType: 'GROUP_AT_MESSAGE_CREATE',
+    senderId: 'bystander',
+    groupOpenid: 'group-1',
+    content: '旁观者的普通问题',
+    messageId: 'group-bystander',
+    replyTarget: { scope: 'group', targetId: 'group-1', msgId: 'group-bystander' },
+  }));
+  await bridge.accept(message({
+    kind: 'group',
+    rawEventType: 'GROUP_MESSAGE_CREATE',
+    senderId: 'initiator',
+    groupOpenid: 'group-1',
+    content: '未提及机器人的答案',
+    messageId: 'group-unmentioned',
+    replyTarget: { scope: 'group', targetId: 'group-1', msgId: 'group-unmentioned' },
+  }));
+  assert.equal(submittedResult, undefined);
+
+  const firstAnswer = bridge.accept(message({
+    kind: 'group',
+    rawEventType: 'GROUP_AT_MESSAGE_CREATE',
+    senderId: 'initiator',
+    groupOpenid: 'group-1',
+    content: '2',
+    messageId: 'group-language',
+    replyTarget: { scope: 'group', targetId: 'group-1', msgId: 'group-language' },
+  }));
+  await secondQuestionDelivered.promise;
+  const secondAnswer = bridge.accept(message({
+    kind: 'group',
+    rawEventType: 'GROUP_AT_MESSAGE_CREATE',
+    senderId: 'initiator',
+    groupOpenid: 'group-1',
+    content: '1，文档，发布说明',
+    messageId: 'group-deliverables',
+    replyTarget: { scope: 'group', targetId: 'group-1', msgId: 'group-deliverables' },
+  }));
+  releaseSecondQuestion.resolve();
+  await Promise.all([firstAnswer, secondAnswer]);
+
+  assert.deepEqual(await submitted.promise, {
+    ok: true,
+    value: {
+      sessionId: 'session-group',
+      answer: {
+        answers: [
+          { id: 'language', selected: ['English'] },
+          { id: 'deliverables', selected: ['测试', '文档'], custom: '发布说明' },
+        ],
+      },
+    },
+  });
+  await Promise.all([first, bystander]);
+  assert.deepEqual(asked, [
+    { sessionId: 'session-group', text: '启动群聊交互' },
+    { sessionId: 'session-group', text: '旁观者的普通问题' },
+  ]);
+  assert.equal(asked.some(({ text }) => [
+    '未提及机器人的答案',
+    '2',
+    '1，文档，发布说明',
+  ].includes(text)), false);
+  assert.deepEqual(sent.slice(-2).map(({ text }) => text), ['发起者交互完成', '旁观者问题已回答']);
+});
+
+test('QQ pending questions stay isolated between private conversations', async () => {
+  const fixture = stateFixture([
+    ['c2c:user-a', 'session-a'],
+    ['c2c:user-b', 'session-b'],
+  ]);
+  const sent = [];
+  const asked = [];
+  const answeredA = deferred();
+  const responseA = deferred();
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    ownerUserOpenid: '*',
+    harness: {
+      sessionExists: async () => true,
+      createSession: async () => assert.fail('the existing sessions should be reused'),
+      ask: async (sessionId, text, options) => {
+        asked.push({ sessionId, text });
+        if (sessionId === 'session-b') return '乙会话的普通回答';
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'qq-isolated-a',
+          rpcId: 'qq-isolated-a',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [{ id: 'answer-a', question: '甲会话的问题' }],
+          },
+          respond: async (result) => {
+            responseA.resolve(result);
+            answeredA.resolve();
+            return { accepted: true };
+          },
+        });
+        await answeredA.promise;
+        return '甲会话完成';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const firstA = bridge.accept(message({
+    senderId: 'user-a',
+    content: '启动甲会话',
+    messageId: 'private-a-start',
+    replyTarget: { scope: 'c2c', targetId: 'user-a', msgId: 'private-a-start' },
+  }));
+  await eventually(() => sent.some(({ text }) => text.includes('甲会话的问题')));
+  await bridge.accept(message({
+    senderId: 'user-b',
+    content: '乙会话的消息',
+    messageId: 'private-b',
+    replyTarget: { scope: 'c2c', targetId: 'user-b', msgId: 'private-b' },
+  }));
+  assert.equal(sent.some(({ target, text }) => (
+    target.targetId === 'user-b' && text === '乙会话的普通回答'
+  )), true);
+
+  await bridge.accept(message({
+    senderId: 'user-a',
+    content: '甲的答案',
+    messageId: 'private-a-answer',
+    replyTarget: { scope: 'c2c', targetId: 'user-a', msgId: 'private-a-answer' },
+  }));
+  await firstA;
+  assert.deepEqual((await responseA.promise).value.answer.answers, [
+    { id: 'answer-a', selected: [], custom: '甲的答案' },
+  ]);
+  assert.deepEqual(asked, [
+    { sessionId: 'session-a', text: '启动甲会话' },
+    { sessionId: 'session-b', text: '乙会话的消息' },
+  ]);
+});
+
+test('QQ deduplicates question replays, cancels orphan questions, and keeps approvals fail-closed', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let approvalResponses = 0;
+  let parallelResponse;
+  let orphanResponse;
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => false,
+      createSession: async () => 'session-replay',
+      ask: async (sessionId, _text, options) => {
+        const replayedQuestion = {
+          kind: 'question',
+          interactionId: 'qq-replayed-question',
+          rpcId: 'qq-replayed-question',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [{ id: 'choice', question: '只应显示一次' }],
+          },
+          respond: async () => ({ accepted: true }),
+        };
+        await options.onInteraction(replayedQuestion);
+        await options.onInteraction(replayedQuestion);
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'qq-parallel-question',
+          rpcId: 'qq-parallel-question',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [{ id: 'parallel', question: '不应展示的并行问题' }],
+          },
+          respond: async (result) => {
+            parallelResponse = result;
+            return { accepted: true };
+          },
+        });
+        await options.onInteraction({
+          kind: 'approval',
+          interactionId: 'qq-approval',
+          rpcId: 'qq-approval',
+          sessionId,
+          payload: {
+            type: 'approval/requested',
+            sessionId,
+            approvalId: 'qq-approval',
+            toolName: 'bash',
+          },
+          respond: async () => { approvalResponses += 1; },
+        });
+        await options.onInteractionResolved({
+          kind: 'question',
+          interactionId: 'qq-replayed-question',
+          sessionId,
+          outcome: 'cancelled',
+        });
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'qq-orphan-question',
+          rpcId: 'qq-orphan-question',
+          sessionId,
+          recovered: true,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [{ id: 'secret', question: '旧会话中的敏感问题内容' }],
+          },
+          respond: async (result) => {
+            orphanResponse = result;
+            return { accepted: true };
+          },
+        });
+        return '交互恢复完成';
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+  });
+
+  await bridge.accept(message({ messageId: 'qq-replay', content: '测试交互重放' }));
+
+  assert.equal(sent.filter(({ text }) => text.includes('只应显示一次')).length, 1);
+  assert.deepEqual(parallelResponse, {
+    ok: false,
+    error: {
+      code: 'cancelled',
+      message: 'QQ is already handling another user interaction.',
+      details: {},
+    },
+  });
+  assert.equal(approvalResponses, 0);
+  assert.equal(sent.some(({ text }) => text.includes('approval')), false);
+  assert.deepEqual(orphanResponse, {
+    ok: false,
+    error: {
+      code: 'cancelled',
+      message: 'QQ safely cancelled an interaction left by an earlier client.',
+      details: {},
+    },
+  });
+  assert.equal(sent.some(({ text }) => text.includes('旧会话中的敏感问题内容')), false);
+  assert.equal(sent.some(({ text }) => text.includes('遗留的待回答问题')), true);
+  assert.equal(sent.at(-1).text, '交互恢复完成');
+});
+
+test('QQ keeps a queued prompt separate while a failed interaction answer is retried', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-submit-retry']]);
+  const sent = [];
+  const asked = [];
+  const firstSubmitStarted = deferred();
+  const releaseFirstSubmit = deferred();
+  const answered = deferred();
+  const submittedAnswers = [];
+  let submitAttempts = 0;
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      createSession: async () => assert.fail('the existing session should be reused'),
+      ask: async (sessionId, text, options) => {
+        asked.push(text);
+        if (text === '排队的下一个问题') return '第二轮完成';
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'qq-submit-retry',
+          rpcId: 'qq-submit-retry',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [{ id: 'answer', question: '请回答后再继续' }],
+          },
+          respond: async (result) => {
+            submittedAnswers.push(result.value.answer.answers[0].custom);
+            submitAttempts += 1;
+            if (submitAttempts === 1) {
+              firstSubmitStarted.resolve();
+              await releaseFirstSubmit.promise;
+              throw new Error('temporary response failure');
+            }
+            answered.resolve();
+            return { accepted: true };
+          },
+        });
+        await answered.promise;
+        return '第一轮完成';
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+  });
+
+  const first = bridge.accept(message({ messageId: 'retry-start', content: '启动可重试交互' }));
+  await eventually(() => sent.some(({ text }) => text.includes('请回答后再继续')));
+  const firstAnswer = bridge.accept(message({
+    messageId: 'retry-first-answer',
+    content: '第一次答案',
+    replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: 'retry-first-answer' },
+  }));
+  await firstSubmitStarted.promise;
+
+  let nextSettled = false;
+  const next = bridge.accept(message({
+    messageId: 'retry-next',
+    content: '排队的下一个问题',
+    replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: 'retry-next' },
+  })).finally(() => { nextSettled = true; });
+  releaseFirstSubmit.resolve();
+  await firstAnswer;
+  await eventually(() => sent.some(({ text }) => text.includes('回答提交失败')));
+  assert.equal(nextSettled, false);
+  assert.deepEqual(asked, ['启动可重试交互']);
+
+  await Promise.all([
+    bridge.accept(message({
+      messageId: 'retry-second-answer',
+      content: '重试后的答案',
+      replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: 'retry-second-answer' },
+    })),
+    first,
+    next,
+  ]);
+
+  assert.deepEqual(submittedAnswers, ['第一次答案', '重试后的答案']);
+  assert.deepEqual(asked, ['启动可重试交互', '排队的下一个问题']);
+  assert.deepEqual(sent.slice(-2).map(({ text }) => text), ['第一轮完成', '第二轮完成']);
+});
+
+test('QQ discards an already-claimed answer when the interaction resolves elsewhere', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-resolved-race']]);
+  const originalMarkSeen = fixture.state.markSeen;
+  const answerMarkStarted = deferred();
+  const releaseAnswerMark = deferred();
+  fixture.state.markSeen = async (id) => {
+    if (id === 'resolved-answer') {
+      answerMarkStarted.resolve();
+      await releaseAnswerMark.promise;
+    }
+    await originalMarkSeen(id);
+  };
+  const sent = [];
+  const asked = [];
+  const resolved = deferred();
+  let resolveInteraction;
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      createSession: async () => assert.fail('the existing session should be reused'),
+      ask: async (sessionId, text, options) => {
+        asked.push(text);
+        if (text === '后来的普通问题') return '后来问题的回答';
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'qq-resolved-race',
+          rpcId: 'qq-resolved-race',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [{ id: 'answer', question: '可能在其他客户端回答' }],
+          },
+          respond: async () => ({ accepted: true }),
+        });
+        resolveInteraction = async () => {
+          await options.onInteractionResolved({
+            kind: 'question',
+            interactionId: 'qq-resolved-race',
+            sessionId,
+            outcome: 'answered',
+          });
+          resolved.resolve();
+        };
+        await resolved.promise;
+        return '第一轮已由其他客户端完成';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const first = bridge.accept(message({ messageId: 'resolved-start', content: '启动外部解决竞态' }));
+  await eventually(() => typeof resolveInteraction === 'function');
+  const answer = bridge.accept(message({
+    messageId: 'resolved-answer',
+    content: '原本的问题答案',
+    replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: 'resolved-answer' },
+  }));
+  await answerMarkStarted.promise;
+  const later = bridge.accept(message({
+    messageId: 'resolved-later',
+    content: '后来的普通问题',
+    replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: 'resolved-later' },
+  }));
+  await resolveInteraction();
+  releaseAnswerMark.resolve();
+
+  await Promise.all([answer, first, later]);
+  assert.deepEqual(asked, ['启动外部解决竞态', '后来的普通问题']);
+  assert.equal(asked.includes('原本的问题答案'), false);
+  assert.equal(sent.some(({ text }) => text.includes('已在其他客户端处理')), true);
+});
+
+test('QQ keeps an answer that arrives after the first question is delivered but before its send ACK', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-first-delivery']]);
+  const questionDelivered = deferred();
+  const releaseQuestionAck = deferred();
+  const answered = deferred();
+  const sent = [];
+  const asked = [];
+  let submitted;
+  let questionSends = 0;
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (target, text) => {
+        sent.push({ target, text });
+        if (text.includes('首问 ACK 窗口')) {
+          questionSends += 1;
+          questionDelivered.resolve();
+          await releaseQuestionAck.promise;
+        }
+      },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, text, options) => {
+        asked.push(text);
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'qq-first-delivery',
+          rpcId: 'qq-first-delivery',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [{ id: 'answer', question: '首问 ACK 窗口' }],
+          },
+          respond: async (result) => {
+            submitted = result;
+            answered.resolve();
+            return { accepted: true };
+          },
+        });
+        await answered.promise;
+        return '首问已完成';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const first = bridge.accept(message({
+    messageId: 'first-delivery-start',
+    content: '启动首问窗口',
+  }));
+  await questionDelivered.promise;
+  const answer = bridge.accept(message({
+    messageId: 'first-delivery-answer',
+    content: '窗口内答案',
+    replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: 'first-delivery-answer' },
+  }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(submitted, undefined);
+  releaseQuestionAck.resolve();
+  await Promise.all([first, answer]);
+
+  assert.equal(questionSends, 1);
+  assert.deepEqual(asked, ['启动首问窗口']);
+  assert.deepEqual(submitted.value.answer.answers, [{
+    id: 'answer',
+    selected: [],
+    custom: '窗口内答案',
+  }]);
+  assert.equal(fixture.seen.has('first-delivery-answer'), true);
+});
+
+test('QQ tombstones a q2 answer accepted before its send ACK when the interaction resolves', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-q2-resolved']]);
+  const secondQuestionDelivered = deferred();
+  const releaseSecondQuestionAck = deferred();
+  const turnResolved = deferred();
+  const sent = [];
+  const asked = [];
+  let resolveInteraction;
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (target, text) => {
+        sent.push({ target, text });
+        if (text.includes('会在 ACK 前 resolved 的第二问')) {
+          secondQuestionDelivered.resolve();
+          await releaseSecondQuestionAck.promise;
+        }
+      },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, text, options) => {
+        asked.push(text);
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'qq-q2-resolved',
+          rpcId: 'qq-q2-resolved',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [
+              { id: 'first', question: '先回答第一问' },
+              { id: 'second', question: '会在 ACK 前 resolved 的第二问' },
+            ],
+          },
+          respond: async () => assert.fail('the externally resolved interaction must not be answered'),
+        });
+        resolveInteraction = () => {
+          options.onInteractionResolved({
+            kind: 'question',
+            interactionId: 'qq-q2-resolved',
+            sessionId,
+            outcome: 'answered',
+          });
+          turnResolved.resolve();
+        };
+        await turnResolved.promise;
+        return '已由其他客户端完成';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const first = bridge.accept(message({
+    messageId: 'q2-resolved-start',
+    content: '启动 q2 resolved 窗口',
+  }));
+  await eventually(() => typeof resolveInteraction === 'function');
+  const firstAnswer = bridge.accept(message({
+    messageId: 'q2-resolved-first',
+    content: '第一问答案',
+    replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: 'q2-resolved-first' },
+  }));
+  await secondQuestionDelivered.promise;
+  const secondAnswer = bridge.accept(message({
+    messageId: 'q2-resolved-second',
+    content: '第二问答案',
+    replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: 'q2-resolved-second' },
+  }));
+  resolveInteraction();
+  releaseSecondQuestionAck.resolve();
+  await Promise.all([firstAnswer, secondAnswer, first]);
+
+  assert.deepEqual(asked, ['启动 q2 resolved 窗口']);
+  assert.equal(fixture.seen.has('q2-resolved-second'), true);
+  assert.equal(sent.some(({ text }) => text.includes('已在其他客户端处理')), true);
+});
+
+test('QQ reports resolved when an in-flight response becomes not-pending', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-respond-resolved']]);
+  const responseStarted = deferred();
+  const releaseResponse = deferred();
+  const turnResolved = deferred();
+  const sent = [];
+  let resolveInteraction;
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, _text, options) => {
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'qq-respond-resolved',
+          rpcId: 'qq-respond-resolved',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [{ id: 'answer', question: '提交中会被外部解决' }],
+          },
+          respond: async () => {
+            responseStarted.resolve();
+            await releaseResponse.promise;
+            const error = new Error('already resolved');
+            error.code = 'interaction-not-pending';
+            throw error;
+          },
+        });
+        resolveInteraction = () => {
+          options.onInteractionResolved({
+            kind: 'question',
+            interactionId: 'qq-respond-resolved',
+            sessionId,
+            outcome: 'answered',
+          });
+          turnResolved.resolve();
+        };
+        await turnResolved.promise;
+        return '外部处理完成';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const first = bridge.accept(message({
+    messageId: 'respond-resolved-start',
+    content: '启动提交竞态',
+  }));
+  await eventually(() => typeof resolveInteraction === 'function');
+  const answer = bridge.accept(message({
+    messageId: 'respond-resolved-answer',
+    content: '我的答案',
+    replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: 'respond-resolved-answer' },
+  }));
+  await responseStarted.promise;
+  resolveInteraction();
+  releaseResponse.resolve();
+  await Promise.all([answer, first]);
+
+  assert.equal(sent.some(({ text, target }) => (
+    target.msgId === 'respond-resolved-answer'
+      && text.includes('已在其他客户端处理')
+  )), true);
+});
+
+test('QQ propagates the stop signal and cancels its pending question on abort', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('c2c:owner-openid', 'stale-session');
+  const controller = new AbortController();
+  const interactionReady = deferred();
+  let existsSignal;
+  let createSignal;
+  let askSignal;
+  let cancellation;
+  let cancellationSignal;
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async () => {} },
+    ownerUserOpenid: 'owner-openid',
+    signal: controller.signal,
+    harness: {
+      sessionExists: async (_sessionId, options) => {
+        existsSignal = options.signal;
+        return false;
+      },
+      createSession: async (options) => {
+        createSignal = options.signal;
+        return 'session-abort';
+      },
+      ask: async (sessionId, _text, options) => {
+        askSignal = options.signal;
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'qq-abort-question',
+          rpcId: 'qq-abort-question',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [{ id: 'answer', question: '等待进程停止' }],
+          },
+          respond: async (result, respondOptions) => {
+            cancellation = result;
+            cancellationSignal = respondOptions.signal;
+            return { accepted: true };
+          },
+        });
+        interactionReady.resolve();
+        await new Promise((resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+        });
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+  });
+
+  const turn = bridge.accept(message({ messageId: 'abort-start', content: '启动后停止' }));
+  await interactionReady.promise;
+  controller.abort(new Error('runtime stopped'));
+  await turn;
+
+  assert.equal(existsSignal, controller.signal);
+  assert.equal(createSignal, controller.signal);
+  assert.equal(askSignal, controller.signal);
+  assert.deepEqual(cancellation, {
+    ok: false,
+    error: {
+      code: 'cancelled',
+      message: 'The QQ interaction ended before the user answered.',
+      details: {},
+    },
+  });
+  assert.notEqual(cancellationSignal, controller.signal);
+  assert.equal(cancellationSignal.aborted, false);
 });

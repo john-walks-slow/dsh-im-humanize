@@ -34,19 +34,21 @@ export function normalizeTelegramUpdate(update, { botId, username }) {
   const addressed = direct
     || String(message.reply_to_message?.from?.id ?? '') === String(botId)
     || mentionedUsername(message, username);
+  const messageThreadId = Number.isSafeInteger(message.message_thread_id)
+    ? message.message_thread_id : undefined;
   return {
     messageId: String(update.update_id),
     senderId: String(senderId),
     senderIsBot: message.from?.is_bot === true,
     kind: direct ? 'direct' : 'group',
-    conversationId: String(chatId),
+    conversationId: messageThreadId === undefined
+      ? String(chatId) : `${chatId}:${messageThreadId}`,
     content: withoutBotMention(message.text ?? message.caption ?? '', username),
     addressed,
     replyTarget: {
       chatId,
       replyToMessageId: messageId,
-      messageThreadId: Number.isSafeInteger(message.message_thread_id)
-        ? message.message_thread_id : undefined,
+      messageThreadId,
     },
   };
 }
@@ -206,6 +208,7 @@ export class TelegramRuntime {
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
+        signal: controller.signal,
       });
 
       let cursor = this.#state.cursor();
@@ -248,7 +251,15 @@ export class TelegramRuntime {
           botId: this.#config.platformId,
           username: this.#config.username,
         });
-        if (message) await this.#bridge.accept(message);
+        if (message) {
+          void this.#bridge.accept(message).catch((error) => {
+            if (signal.aborted) return;
+            this.#logger.error?.(
+              `[dsh-im:telegram] bot ${this.#config.botId} message handling failed:`,
+              error,
+            );
+          });
+        }
         cursor = update.update_id + 1;
         await this.#state.setCursor(cursor);
       }

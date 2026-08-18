@@ -1,8 +1,21 @@
 import { runWorkspaceCommand } from './workspace-command.mjs';
 import { askInWorkspaceSession } from './workspace-session.mjs';
+import {
+  harnessAnswerForQuestion,
+  harnessQuestionText,
+  validHarnessQuestion,
+} from './harness-question.mjs';
+
+const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
 
 function cleanText(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function canClaimInteractionReply(message, pending, senderId) {
+  return pending.actor === senderId
+    && (message.kind !== 'group' || message.addressed === true)
+    && Boolean(cleanText(message.content));
 }
 
 export function createTextBridgeStatus() {
@@ -25,7 +38,11 @@ export class TextHarnessBridge {
   #status;
   #logger;
   #replyTimeoutMs;
+  #signal;
   #queues = new Map();
+  #pendingInteractions = new Map();
+  #interactionKeys = new Map();
+  #acceptedMessageIds = new Set();
 
   constructor({
     descriptor,
@@ -35,6 +52,7 @@ export class TextHarnessBridge {
     status = createTextBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
+    signal,
   }) {
     if (!descriptor?.key || !descriptor?.label) throw new TypeError('A channel descriptor is required');
     if (!bot || typeof bot.sendText !== 'function') throw new TypeError('A bot client is required');
@@ -46,6 +64,7 @@ export class TextHarnessBridge {
     this.#status = status;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#signal = signal;
   }
 
   get status() {
@@ -53,14 +72,69 @@ export class TextHarnessBridge {
   }
 
   accept(message) {
+    if (this.#signal?.aborted) return Promise.resolve();
     const conversationId = cleanText(message?.conversationId);
     const kind = message?.kind === 'group' ? 'group' : 'direct';
+    const normalized = { ...message, kind, conversationId };
+    const messageId = cleanText(normalized.messageId);
+    const senderId = cleanText(normalized.senderId);
+    if (!messageId || !senderId || !conversationId || normalized.senderIsBot === true
+      || this.#state.hasSeen(messageId) || this.#acceptedMessageIds.has(messageId)) {
+      return Promise.resolve();
+    }
+    this.#acceptedMessageIds.add(messageId);
+
     const key = `${kind}:${conversationId}`;
+    const pending = this.#pendingInteractions.get(key);
+    if (pending && pending.actor !== senderId) {
+      return this.#enqueueMessage(normalized, messageId, senderId, key);
+    }
+    if (pending?.submitting || pending?.claimedReplyMessageId) {
+      return this.#enqueueMessage(normalized, messageId, senderId, key);
+    }
+    if (pending) {
+      if (canClaimInteractionReply(normalized, pending, senderId)) {
+        pending.claimedReplyMessageId = messageId;
+      }
+      const previous = pending.queue ?? Promise.resolve();
+      const current = previous
+        .catch(() => undefined)
+        .then(() => this.#processInteractionReply(
+          normalized,
+          messageId,
+          senderId,
+          key,
+          pending,
+        ))
+        .finally(() => {
+          this.#acceptedMessageIds.delete(messageId);
+          if (pending.claimedReplyMessageId === messageId) {
+            pending.claimedReplyMessageId = null;
+          }
+          if (pending.queue === current) pending.queue = null;
+        });
+      pending.queue = current;
+      return current;
+    }
+    return this.#enqueueMessage(normalized, messageId, senderId, key);
+  }
+
+  #enqueueMessage(message, messageId, senderId, key, {
+    releaseMessageId = true,
+    alreadyRecorded = false,
+  } = {}) {
     const previous = this.#queues.get(key) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
-      .then(() => this.#process({ ...message, kind, conversationId }))
+      .then(() => this.#process(
+        message,
+        messageId,
+        senderId,
+        key,
+        { alreadyRecorded },
+      ))
       .finally(() => {
+        if (releaseMessageId) this.#acceptedMessageIds.delete(messageId);
         if (this.#queues.get(key) === current) this.#queues.delete(key);
       });
     this.#queues.set(key, current);
@@ -68,29 +142,36 @@ export class TextHarnessBridge {
   }
 
   async waitForIdle() {
-    await Promise.allSettled([...this.#queues.values()]);
+    await Promise.allSettled([
+      ...this.#queues.values(),
+      ...[...this.#pendingInteractions.values()].flatMap((pending) => (
+        pending.queue ? [pending.queue] : []
+      )),
+    ]);
   }
 
-  async #process(message) {
-    const messageId = cleanText(message.messageId);
-    const senderId = cleanText(message.senderId);
-    if (!messageId || !senderId || !message.conversationId || message.senderIsBot === true) return;
-    if (this.#state.hasSeen(messageId)) return;
-
-    this.#status.messagesReceived += 1;
-    this.#status.lastMessageAt = new Date().toISOString();
-    if (message.kind === 'group' && message.addressed !== true) {
-      this.#status.messagesRejected += 1;
-      this.#status.lastRejectedAt = new Date().toISOString();
-      return;
+  async #process(message, messageId, senderId, conversationKey, {
+    alreadyRecorded = false,
+  } = {}) {
+    if (!alreadyRecorded) {
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      this.#status.messagesReceived += 1;
+      this.#status.lastMessageAt = new Date().toISOString();
     }
 
     const target = message.replyTarget;
     const text = cleanText(message.content);
+    let stream = null;
     try {
+      this.#signal?.throwIfAborted();
+      if (message.kind === 'group' && message.addressed !== true) {
+        this.#status.messagesRejected += 1;
+        this.#status.lastRejectedAt = new Date().toISOString();
+        return;
+      }
       if (!text) {
         await this.#bot.sendText(target, '目前仅支持文字消息。');
-        await this.#state.markSeen(messageId);
         return;
       }
       const command = text.toLowerCase();
@@ -107,35 +188,29 @@ export class TextHarnessBridge {
           '/status  检查连接状态',
           '/help  显示本帮助',
         ].join('\n'));
-        await this.#state.markSeen(messageId);
         return;
       }
       if (command === '/status') {
-        await this.#harness.ensureRunning();
+        await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#bot.sendText(target, `${this.#descriptor.label}机器人与 DeepSeek Harness 连接正常。`);
-        await this.#state.markSeen(messageId);
         return;
       }
-      const conversationKey = `${message.kind}:${message.conversationId}`;
       const workspaceCommand = await runWorkspaceCommand(text, this.#harness, conversationKey);
       if (workspaceCommand) {
         for (const reply of workspaceCommand.messages ?? [workspaceCommand.message]) {
           await this.#bot.sendText(target, reply);
         }
-        await this.#state.markSeen(messageId);
         return;
       }
       if (command === '/new') {
         await this.#state.clearSession(conversationKey);
         await this.#bot.sendText(target, '已开启新会话。请发送你的问题。');
-        await this.#state.markSeen(messageId);
         return;
       }
 
       await this.#bot.sendTyping?.(target).catch((error) => {
         this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] typing indicator failed:`, error);
       });
-      let stream = null;
       let streamFinished = false;
       if (typeof this.#bot.openStream === 'function') {
         try {
@@ -152,13 +227,23 @@ export class TextHarnessBridge {
         state: this.#state,
         key: conversationKey,
         text,
+        createOptions: this.#signal ? { signal: this.#signal } : undefined,
+        existsOptions: this.#signal ? { signal: this.#signal } : undefined,
         askOptions: {
           timeoutMs: this.#replyTimeoutMs,
+          signal: this.#signal,
           onUpdate: stream ? async (update) => {
             const progress = update.type === 'text' ? update.text
               : update.type === 'tool' ? `正在使用${update.name}…` : update.text;
             if (progress) await stream.update(progress);
           } : undefined,
+          onInteraction: (interaction) => this.#handleInteraction(interaction, {
+            key: conversationKey,
+            actor: senderId,
+            target,
+            requiresMention: message.kind === 'group',
+          }),
+          onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
         },
       });
       if (stream) {
@@ -174,22 +259,349 @@ export class TextHarnessBridge {
         }
       }
       if (!streamFinished) await this.#bot.sendText(target, answer);
-      await this.#state.markSeen(messageId);
       this.#status.messagesReplied += 1;
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
     } catch (error) {
+      stream?.cancel?.();
+      if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);
       this.#logger.error?.(`[dsh-im:${this.#descriptor.key}] failed to process a message:`, error);
       try {
         await this.#bot.sendText(target, '消息处理失败，请稍后重试。');
-        await this.#state.markSeen(messageId);
       } catch (sendError) {
         this.#logger.error?.(
           `[dsh-im:${this.#descriptor.key}] failed to send the safe error reply:`,
           sendError,
         );
       }
+    } finally {
+      await this.#cancelPendingInteraction(conversationKey);
+    }
+  }
+
+  async #processInteractionReply(message, messageId, senderId, key, expected) {
+    if (this.#signal?.aborted) return;
+    const current = this.#pendingInteractions.get(key);
+    const claimed = expected.claimedReplyMessageId === messageId;
+    if (!current || current !== expected || current.submitting) {
+      if (claimed && (!current || current !== expected)) {
+        return this.#discardResolvedInteractionReply(message, messageId);
+      }
+      return this.#enqueueMessage(message, messageId, senderId, key, {
+        releaseMessageId: false,
+      });
+    }
+    if (this.#state.hasSeen(messageId)) return;
+    await this.#state.markSeen(messageId);
+    this.#status.messagesReceived += 1;
+    this.#status.lastMessageAt = new Date().toISOString();
+
+    if (message.kind === 'group' && message.addressed !== true) {
+      this.#status.messagesRejected += 1;
+      this.#status.lastRejectedAt = new Date().toISOString();
+      return;
+    }
+
+    const target = message.replyTarget;
+    const text = cleanText(message.content);
+    if (!text) {
+      try {
+        await this.#bot.sendText(target, '请用文字回答当前问题。');
+      } catch (error) {
+        this.#logger.error?.(
+          `[dsh-im:${this.#descriptor.key}] failed to reject a non-text interaction reply:`,
+          error,
+        );
+      }
+      return;
+    }
+
+    const pending = this.#pendingInteractions.get(key);
+    if (!pending || pending !== expected || pending.submitting) {
+      if (claimed && (!pending || pending !== expected)) {
+        return this.#discardResolvedInteractionReply(message, messageId, {
+          alreadyRecorded: true,
+        });
+      }
+      return this.#enqueueMessage(message, messageId, senderId, key, {
+        releaseMessageId: false,
+        alreadyRecorded: true,
+      });
+    }
+    pending.target = target;
+    if (pending.needsPresentation) {
+      const presentationWasInFlight = pending.presentationTask !== null;
+      try {
+        await this.#presentInteraction(pending);
+      } catch (error) {
+        this.#status.lastError = `${this.#descriptor.label}交互问题发送失败。`;
+        this.#logger.error?.(
+          `[dsh-im:${this.#descriptor.key}] failed to retry an interaction question:`,
+          error,
+        );
+        pending.interaction.reconnect?.();
+        return;
+      }
+      const presented = this.#pendingInteractions.get(key);
+      if (!presented || presented !== expected || presented.submitting) {
+        if (claimed && (!presented || presented !== expected)) {
+          return this.#discardResolvedInteractionReply(message, messageId, {
+            alreadyRecorded: true,
+          });
+        }
+        return this.#enqueueMessage(message, messageId, senderId, key, {
+          releaseMessageId: false,
+          alreadyRecorded: true,
+        });
+      }
+      // A reply can arrive after the platform accepted the question message but
+      // before its send promise settles. In that case it is already a valid
+      // answer. A message which itself retried a failed presentation is not.
+      if (!presentationWasInFlight) return;
+    }
+
+    const question = pending.questions[pending.index];
+    if (!question) return;
+    pending.answers.push(harnessAnswerForQuestion(question, text));
+    pending.index += 1;
+    if (pending.index < pending.questions.length) {
+      if (pending.claimedReplyMessageId === messageId) {
+        pending.claimedReplyMessageId = null;
+      }
+      pending.needsPresentation = true;
+      try {
+        await this.#presentInteraction(pending);
+      } catch (error) {
+        this.#status.lastError = `${this.#descriptor.label}交互问题发送失败。`;
+        this.#logger.error?.(
+          `[dsh-im:${this.#descriptor.key}] failed to send the next interaction question:`,
+          error,
+        );
+        pending.interaction.reconnect?.();
+      }
+      return;
+    }
+
+    pending.submitting = true;
+    try {
+      await pending.interaction.respond({
+        ok: true,
+        value: {
+          sessionId: pending.sessionId,
+          answer: { answers: pending.answers },
+        },
+      });
+      this.#clearPendingInteraction(key, pending.interactionId);
+      this.#status.lastError = null;
+    } catch (error) {
+      if (error?.code === 'interaction-not-pending') {
+        this.#clearPendingInteraction(key, pending.interactionId);
+        if (this.#signal?.aborted) return;
+        try {
+          await this.#bot.sendText(target, INTERACTION_RESOLVED_TEXT);
+        } catch (sendError) {
+          this.#logger.error?.(
+            `[dsh-im:${this.#descriptor.key}] failed to send an expired interaction notice:`,
+            sendError,
+          );
+        }
+        return;
+      }
+      if (this.#signal?.aborted || this.#pendingInteractions.get(key) !== pending) return;
+      pending.submitting = false;
+      pending.answers.pop();
+      pending.index -= 1;
+      this.#status.lastError = '回答提交失败。';
+      this.#logger.error?.(
+        `[dsh-im:${this.#descriptor.key}] failed to answer a Harness interaction:`,
+        error,
+      );
+      try {
+        await this.#bot.sendText(target, '回答提交失败，请重新发送当前问题的答案。');
+      } catch (sendError) {
+        this.#logger.error?.(
+          `[dsh-im:${this.#descriptor.key}] failed to send an interaction retry notice:`,
+          sendError,
+        );
+      }
+    }
+  }
+
+  async #handleInteraction(interaction, {
+    key,
+    actor,
+    target,
+    requiresMention,
+  }) {
+    // Approval remains deliberately unanswered until #5 supplies a policy that
+    // can prove both the actor and the conversation allowed to decide it.
+    if (interaction?.kind !== 'question') return;
+    const questions = interaction?.payload?.questions;
+    const interactionId = cleanText(interaction?.interactionId) || cleanText(interaction?.rpcId);
+    if (!cleanText(interaction?.rpcId)
+      || !interactionId
+      || !cleanText(interaction?.sessionId)
+      || !Array.isArray(questions)
+      || questions.length === 0
+      || questions.some((question) => !validHarnessQuestion(question))) {
+      this.#logger.warn?.(
+        `[dsh-im:${this.#descriptor.key}] ignored an invalid Harness question interaction`,
+      );
+      return;
+    }
+
+    if (interaction.recovered === true) {
+      await this.#respondCancellation(
+        interaction,
+        `${this.#descriptor.label} safely cancelled an interaction left by an earlier client.`,
+      );
+      try {
+        await this.#bot.sendText(
+          target,
+          '检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。',
+        );
+      } catch (error) {
+        this.#logger.error?.(
+          `[dsh-im:${this.#descriptor.key}] failed to send an interaction recovery notice:`,
+          error,
+        );
+      }
+      return;
+    }
+
+    const existing = this.#pendingInteractions.get(key);
+    if (existing?.interactionId === interactionId) {
+      existing.interaction = interaction;
+      if (existing.needsPresentation) await this.#presentInteraction(existing);
+      return;
+    }
+    if (this.#interactionKeys.has(interactionId)) return;
+    if (existing) {
+      this.#logger.warn?.(
+        `[dsh-im:${this.#descriptor.key}] cancelled a second pending Harness question`,
+      );
+      await this.#respondCancellation(
+        interaction,
+        `${this.#descriptor.label} is already handling another user interaction.`,
+      );
+      return;
+    }
+
+    const pending = {
+      kind: 'question',
+      interactionId,
+      sessionId: interaction.sessionId,
+      interaction,
+      actor,
+      requiresMention,
+      questions,
+      answers: [],
+      index: 0,
+      target,
+      queue: null,
+      claimedReplyMessageId: null,
+      submitting: false,
+      needsPresentation: true,
+      presentationTask: null,
+    };
+    this.#pendingInteractions.set(key, pending);
+    this.#interactionKeys.set(interactionId, key);
+    await this.#presentInteraction(pending);
+  }
+
+  #handleInteractionResolved(resolution) {
+    const interactionId = cleanText(resolution?.interactionId);
+    if (resolution?.kind !== 'question' || !interactionId) return;
+    const key = this.#interactionKeys.get(interactionId);
+    if (!key) return;
+    this.#clearPendingInteraction(key, interactionId);
+  }
+
+  #presentInteraction(pending) {
+    if (pending.presentationTask) return pending.presentationTask;
+    const question = pending.questions[pending.index];
+    if (!question) return Promise.resolve();
+    const task = (async () => {
+      await this.#bot.sendText(
+        pending.target,
+        harnessQuestionText(
+          question,
+          pending.index,
+          pending.questions.length,
+          { requiresMention: pending.requiresMention },
+        ),
+      );
+      pending.needsPresentation = false;
+    })();
+    pending.presentationTask = task;
+    task.then(
+      () => {
+        if (pending.presentationTask === task) pending.presentationTask = null;
+      },
+      () => {
+        if (pending.presentationTask === task) pending.presentationTask = null;
+      },
+    );
+    return task;
+  }
+
+  async #discardResolvedInteractionReply(message, messageId, {
+    alreadyRecorded = false,
+  } = {}) {
+    if (!alreadyRecorded) {
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      this.#status.messagesReceived += 1;
+      this.#status.lastMessageAt = new Date().toISOString();
+    }
+    try {
+      await this.#bot.sendText(message.replyTarget, INTERACTION_RESOLVED_TEXT);
+    } catch (error) {
+      this.#logger.error?.(
+        `[dsh-im:${this.#descriptor.key}] failed to send an expired interaction notice:`,
+        error,
+      );
+    }
+  }
+
+  #takePendingInteraction(key, interactionId) {
+    const pending = this.#pendingInteractions.get(key);
+    if (!pending
+      || (interactionId !== undefined && pending.interactionId !== interactionId)) return null;
+    this.#pendingInteractions.delete(key);
+    this.#interactionKeys.delete(pending.interactionId);
+    return pending;
+  }
+
+  #clearPendingInteraction(key, interactionId) {
+    return this.#takePendingInteraction(key, interactionId) !== null;
+  }
+
+  async #respondCancellation(interaction, message) {
+    try {
+      await interaction.respond({
+        ok: false,
+        error: { code: 'cancelled', message, details: {} },
+      }, { signal: AbortSignal.timeout(5_000) });
+    } catch (error) {
+      if (error?.code !== 'interaction-not-pending') throw error;
+    }
+  }
+
+  async #cancelPendingInteraction(key) {
+    const pending = this.#takePendingInteraction(key);
+    if (!pending || pending.kind !== 'question') return;
+    try {
+      await this.#respondCancellation(
+        pending.interaction,
+        `The ${this.#descriptor.label} interaction ended before the user answered.`,
+      );
+    } catch (error) {
+      this.#logger.warn?.(
+        `[dsh-im:${this.#descriptor.key}] failed to cancel a pending Harness interaction:`,
+        error,
+      );
     }
   }
 }
