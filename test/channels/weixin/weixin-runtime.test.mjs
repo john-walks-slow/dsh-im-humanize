@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { WeixinApiError } from '../../../src/channels/weixin/weixin-api.mjs';
 import { WeixinRuntime } from '../../../src/channels/weixin/weixin-runtime.mjs';
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -88,4 +89,34 @@ test('runtime refuses to report ready when notifyStart rejects the stored token'
   await assert.rejects(runtime.start(), /rejected/);
   assert.equal(runtime.status.ready, false);
   assert.equal(runtime.status.weixinConnectionState, 'failed');
+});
+
+test('runtime retries a transient notifyStart failure before reporting the account offline', async () => {
+  let startCalls = 0;
+  const runtime = new WeixinRuntime({
+    api: {
+      notifyStart: async () => {
+        startCalls += 1;
+        if (startCalls === 1) {
+          throw new WeixinApiError('network-error', 'temporary DNS failure');
+        }
+      },
+      notifyStop: async () => {},
+      sendText: async () => {},
+      getUpdates: async ({ signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+      }),
+    },
+    config: { botId: 'wx_retry', baseUrl: 'https://ilinkai.weixin.qq.com/', ownerUserId: 'owner' },
+    token: 'bot-token',
+    harness: { ensureRunning: async () => true },
+    state: {},
+    startRetryDelaysMs: [0],
+    logger: { warn() {}, error() {} },
+  });
+
+  const started = await runtime.start();
+  assert.equal(started.ready, true);
+  assert.equal(startCalls, 2);
+  await runtime.stop();
 });
