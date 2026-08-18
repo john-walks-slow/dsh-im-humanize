@@ -32,6 +32,7 @@
     "src",
     "LICENSE",
     "README.md",
+    "README.en.md",
     "THIRD_PARTY_NOTICES.md"
   ],
   "dsh": {
