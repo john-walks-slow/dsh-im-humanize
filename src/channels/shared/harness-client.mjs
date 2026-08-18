@@ -40,6 +40,37 @@ function workspaceFromList(workspacePath, workspaceList) {
   return workspace;
 }
 
+function toEpochMs(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value < 1e12 ? value * 1000 : value;
+  }
+  if (typeof value === 'string' && value) {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
+}
+
+function sessionTimeMs(summary) {
+  if (!summary || typeof summary !== 'object') return null;
+  const candidates = [
+    summary?.header?.lastActivityAt,
+    summary?.header?.updatedAt,
+    summary?.header?.createdAt,
+    summary?.projections?.values?.lastActivityAt,
+    summary?.projections?.values?.updatedAt,
+    summary?.projections?.values?.createdAt,
+    summary?.lastActivityAt,
+    summary?.updatedAt,
+    summary?.createdAt,
+  ];
+  for (const value of candidates) {
+    const ms = toEpochMs(value);
+    if (ms !== null) return ms;
+  }
+  return null;
+}
+
 function workspaceSessions(workspace, archivedSessionIds, sessionList) {
   if (!Array.isArray(sessionList?.items)) {
     throw new Error('Harness returned an invalid response for session.list');
@@ -54,7 +85,7 @@ function workspaceSessions(workspace, archivedSessionIds, sessionList) {
     sessions: workspace.sessionIds.map((sessionId) => {
       const summary = summaries.get(sessionId);
       const title = summary?.projections?.values?.title;
-      return {
+      const session = {
         sessionId,
         title: typeof title === 'string' ? title : null,
         archived: archived.has(sessionId),
@@ -62,6 +93,9 @@ function workspaceSessions(workspace, archivedSessionIds, sessionList) {
         origin: summary?.origin === 'subagent' ? 'subagent' : null,
         summaryAvailable: summary !== undefined,
       };
+      const time = sessionTimeMs(summary);
+      if (time !== null) session.time = time;
+      return session;
     }),
   };
 }

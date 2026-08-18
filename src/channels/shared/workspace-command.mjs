@@ -13,7 +13,7 @@ const MAX_COMMAND_MESSAGE_LENGTH = 1_800;
 const MAX_SESSION_ID_LENGTH = 256;
 const UNSAFE_DISPLAY_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 const UNSAFE_DISPLAY_TEXT_GLOBAL = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu;
-const SESSION_BIND_USAGE = '用法：/session Session ID';
+const SESSION_BIND_USAGE = '用法：/session Session ID 或 序号（/session N）';
 const SESSION_LIST_USAGE = [
   '用法：',
   '/sessionlist  列出当前工作区会话',
@@ -175,6 +175,25 @@ async function resolveSessionListWorkspace(selector, harness) {
   return selected;
 }
 
+function formatSessionRelativeTime(value) {
+  const ms = typeof value === 'number' && Number.isFinite(value) ? value : null;
+  if (ms === null) return '';
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  const hm = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const now = new Date();
+  const dayDiff = Math.round((startOfDay(now) - startOfDay(date)) / 86_400_000);
+  if (dayDiff === 0) return `今天 ${hm}`;
+  if (dayDiff === 1) return `昨天 ${hm}`;
+  if (dayDiff === 2) return `前天 ${hm}`;
+  if (date.getFullYear() === now.getFullYear()) {
+    return `${date.getMonth() + 1}月${date.getDate()}日 ${hm}`;
+  }
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+}
+
 function sessionListMessage(workspace, sessions) {
   const rows = sessions.map((session) => {
     const sessionId = safeDisplayText(session?.sessionId);
@@ -182,7 +201,9 @@ function sessionListMessage(workspace, sessions) {
     const title = session?.summaryAvailable === false
       ? '标题暂不可用'
       : safeDisplayText(session?.title) || '暂无标题';
-    return `${title}${session?.archived === true ? '（已归档）' : ''}\n   ID: ${sessionId}`;
+    const timeText = formatSessionRelativeTime(session?.time);
+    const annotation = `${timeText ? ` · ${timeText}` : ''}${session?.archived === true ? '（已归档）' : ''}`;
+    return `${title}${annotation}\n   ID: ${sessionId}`;
   });
   if (rows.length === 0) return `工作区：${workspace}\n该工作区暂无会话。`;
   return [
@@ -191,7 +212,7 @@ function sessionListMessage(workspace, sessions) {
     '',
     ...rows.map((row, index) => `${index + 1}. ${row}`),
     '',
-    '绑定用法：/session Session ID',
+    '绑定用法：/session Session ID 或 序号（/session N）',
   ].join('\n');
 }
 
@@ -247,7 +268,29 @@ function sessionBindErrorMessage(error) {
 
 async function runSessionBindCommand(command, harness, conversationKey) {
   const match = SESSION_BIND_COMMAND.exec(command);
-  const sessionId = match?.[1];
+  let sessionId = match?.[1];
+  if (typeof sessionId === 'string' && /^\d+$/u.test(sessionId)) {
+    // 序号模式：把 /session N 解析成当前工作区会话列表中的第 N 个会话
+    if (typeof harness?.listWorkspaceSessions !== 'function'
+      || typeof harness?.currentWorkspace !== 'function') {
+      return commandResult('当前机器人暂不支持按序号绑定，请使用 /session Session ID。');
+    }
+    const selected = await selectedWorkspacePath(harness.currentWorkspace());
+    if (selected.error) return commandResult(selected.error);
+    let listed;
+    try {
+      listed = await harness.listWorkspaceSessions(selected.workspace);
+      harness.assertWorkspaceScope?.();
+    } catch {
+      return commandResult('暂时无法获取会话列表，请稍后重试。');
+    }
+    const position = Number(sessionId);
+    if (!Number.isSafeInteger(position) || position < 1
+      || position > (listed?.sessions?.length ?? 0)) {
+      return commandResult('会话序号不存在，请先执行 /sessionlist 查看序号。');
+    }
+    sessionId = listed.sessions[position - 1].sessionId;
+  }
   if (!validSessionId(sessionId)) return commandResult(SESSION_BIND_USAGE);
   if (typeof harness?.bindWorkspaceSession !== 'function') {
     return commandResult('当前机器人暂不支持绑定已有会话。');
