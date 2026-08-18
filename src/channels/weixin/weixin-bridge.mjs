@@ -8,6 +8,7 @@ import {
   harnessQuestionText,
   validHarnessQuestion,
 } from '../shared/harness-question.mjs';
+import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 
@@ -68,6 +69,8 @@ export class WeixinHarnessBridge {
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
   #acceptedMessageIds = new Set();
+  #approvalTasks = new Set();
+  #approvals;
 
   constructor({
     api,
@@ -96,6 +99,7 @@ export class WeixinHarnessBridge {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#maxMessageChars = maxMessageChars;
     this.#signal = signal;
+    this.#approvals = new HarnessApprovalQueue({ label: 'weixin', logger });
   }
 
   get status() {
@@ -111,7 +115,38 @@ export class WeixinHarnessBridge {
       || this.#acceptedMessageIds.has(messageId)) return Promise.resolve();
     this.#acceptedMessageIds.add(messageId);
     const key = conversationKey(sender);
+    const contextToken = nonEmptyString(message?.context_token) ?? undefined;
+    const runId = nonEmptyString(message?.run_id) ?? undefined;
     const pending = this.#pendingInteractions.get(key);
+    const approval = this.#approvals.claimReply({
+      key,
+      actor: sender,
+      messageId,
+      text: extractWeixinText(message),
+      addressed: true,
+      hasPendingQuestion: Boolean(pending),
+      questionCompletion: pending?.submitting || pending?.claimedReplyMessageId
+        ? pending.queue
+        : null,
+      isQuestionPending: () => this.#pendingInteractions.has(key),
+      send: (text) => this.#send(sender, text, contextToken, runId),
+    });
+    if (approval) {
+      let task;
+      task = approval.process(async () => {
+          if (this.#state.hasSeen(messageId)) return false;
+          await this.#state.markSeen(messageId);
+          this.#status.messagesReceived += 1;
+          this.#status.lastMessageAt = new Date().toISOString();
+          return true;
+        })
+        .finally(() => {
+          this.#acceptedMessageIds.delete(messageId);
+          this.#approvalTasks.delete(task);
+        });
+      this.#approvalTasks.add(task);
+      return task;
+    }
     if (pending?.submitting || pending?.claimedReplyMessageId) {
       return this.#enqueueMessage(message, messageId, key);
     }
@@ -157,6 +192,7 @@ export class WeixinHarnessBridge {
       ...[...this.#pendingInteractions.values()].flatMap((pending) => (
         pending.queue ? [pending.queue] : []
       )),
+      ...this.#approvalTasks,
     ]);
   }
 
@@ -235,7 +271,10 @@ export class WeixinHarnessBridge {
           },
         }));
       } finally {
-        await this.#cancelPendingInteraction(key);
+        await Promise.allSettled([
+          this.#cancelPendingInteraction(key),
+          this.#approvals.closeRoute(key),
+        ]);
       }
       await this.#send(sender, answer, contextToken, runId);
       await this.#state.markSeen(messageId);
@@ -391,7 +430,13 @@ export class WeixinHarnessBridge {
     contextToken,
     runId,
   }) {
-    // Approval remains fail-closed until #5 adds an authenticated policy.
+    if (interaction?.kind === 'approval') {
+      return this.#approvals.handleRequested(interaction, {
+        key,
+        actor,
+        send: (text) => this.#send(actor, text, contextToken, runId),
+      });
+    }
     if (interaction?.kind !== 'question') return;
     const questions = interaction?.payload?.questions;
     const interactionId = typeof interaction?.interactionId === 'string'
@@ -466,7 +511,11 @@ export class WeixinHarnessBridge {
     await this.#presentInteraction(pending);
   }
 
-  #handleInteractionResolved(resolution) {
+  async #handleInteractionResolved(resolution) {
+    if (resolution?.kind === 'approval') {
+      await this.#approvals.handleResolved(resolution);
+      return;
+    }
     const interactionId = resolution?.interactionId;
     if (resolution?.kind !== 'question' || typeof interactionId !== 'string') return;
     const key = this.#interactionKeys.get(interactionId);

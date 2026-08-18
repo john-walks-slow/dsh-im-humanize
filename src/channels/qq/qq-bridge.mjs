@@ -4,6 +4,7 @@ import {
   harnessQuestionText,
   validHarnessQuestion,
 } from '../shared/harness-question.mjs';
+import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
@@ -65,6 +66,8 @@ export class QqHarnessBridge {
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
   #acceptedMessageIds = new Set();
+  #approvalTasks = new Set();
+  #approvals;
 
   constructor({
     bot,
@@ -87,6 +90,7 @@ export class QqHarnessBridge {
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#signal = signal;
+    this.#approvals = new HarnessApprovalQueue({ label: 'qq', logger });
   }
 
   get status() {
@@ -104,6 +108,35 @@ export class QqHarnessBridge {
     const key = conversationKey(message);
     this.#acceptedMessageIds.add(messageId);
     const pending = this.#pendingInteractions.get(key);
+    const approval = this.#approvals.claimReply({
+      key,
+      actor: sender,
+      messageId,
+      text: safeText(message),
+      addressed: message.kind !== 'group' || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE',
+      hasPendingQuestion: Boolean(pending),
+      questionCompletion: pending?.submitting || pending?.claimedReplyMessageId
+        ? pending.queue
+        : null,
+      isQuestionPending: () => this.#pendingInteractions.has(key),
+      send: (text) => this.#bot.sendText(message.replyTarget, text),
+    });
+    if (approval) {
+      let task;
+      task = approval.process(async () => {
+          if (this.#state.hasSeen(messageId)) return false;
+          await this.#state.markSeen(messageId);
+          this.#status.messagesReceived += 1;
+          this.#status.lastMessageAt = new Date().toISOString();
+          return true;
+        })
+        .finally(() => {
+          this.#acceptedMessageIds.delete(messageId);
+          this.#approvalTasks.delete(task);
+        });
+      this.#approvalTasks.add(task);
+      return task;
+    }
     if (pending && sender !== pending.actor) {
       return this.#enqueueMessage(message, messageId, key);
     }
@@ -152,6 +185,7 @@ export class QqHarnessBridge {
       ...[...this.#pendingInteractions.values()].flatMap((pending) => (
         pending.queue ? [pending.queue] : []
       )),
+      ...this.#approvalTasks,
     ]);
   }
 
@@ -247,7 +281,10 @@ export class QqHarnessBridge {
           },
         }));
       } finally {
-        await this.#cancelPendingInteraction(key);
+        await Promise.allSettled([
+          this.#cancelPendingInteraction(key),
+          this.#approvals.closeRoute(key),
+        ]);
       }
       if (stream) {
         try {
@@ -388,7 +425,14 @@ export class QqHarnessBridge {
     target,
     requiresMention,
   }) {
-    // Approval remains fail-closed until #5 adds an authenticated policy.
+    if (interaction?.kind === 'approval') {
+      return this.#approvals.handleRequested(interaction, {
+        key,
+        actor,
+        requiresMention,
+        send: (text) => this.#bot.sendText(target, text),
+      });
+    }
     if (interaction?.kind !== 'question') return;
     const questions = interaction?.payload?.questions;
     const interactionId = typeof interaction?.interactionId === 'string'
@@ -461,7 +505,11 @@ export class QqHarnessBridge {
     await this.#presentInteraction(pending);
   }
 
-  #handleInteractionResolved(resolution) {
+  async #handleInteractionResolved(resolution) {
+    if (resolution?.kind === 'approval') {
+      await this.#approvals.handleResolved(resolution);
+      return;
+    }
     const interactionId = resolution?.interactionId;
     if (resolution?.kind !== 'question' || typeof interactionId !== 'string') return;
     const key = this.#interactionKeys.get(interactionId);

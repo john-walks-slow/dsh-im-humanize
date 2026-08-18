@@ -1,5 +1,6 @@
 import { runWorkspaceCommand } from './workspace-command.mjs';
 import { askInWorkspaceSession } from './workspace-session.mjs';
+import { HarnessApprovalQueue } from './harness-approval.mjs';
 import {
   harnessAnswerForQuestion,
   harnessQuestionText,
@@ -43,6 +44,8 @@ export class TextHarnessBridge {
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
   #acceptedMessageIds = new Set();
+  #approvalTasks = new Set();
+  #approvals;
 
   constructor({
     descriptor,
@@ -65,6 +68,10 @@ export class TextHarnessBridge {
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#signal = signal;
+    this.#approvals = new HarnessApprovalQueue({
+      label: descriptor.key,
+      logger,
+    });
   }
 
   get status() {
@@ -86,6 +93,35 @@ export class TextHarnessBridge {
 
     const key = `${kind}:${conversationId}`;
     const pending = this.#pendingInteractions.get(key);
+    const approval = this.#approvals.claimReply({
+      key,
+      actor: senderId,
+      messageId,
+      text: normalized.content,
+      addressed: normalized.kind !== 'group' || normalized.addressed === true,
+      hasPendingQuestion: Boolean(pending),
+      questionCompletion: pending?.submitting || pending?.claimedReplyMessageId
+        ? pending.queue
+        : null,
+      isQuestionPending: () => this.#pendingInteractions.has(key),
+      send: (text) => this.#bot.sendText(normalized.replyTarget, text),
+    });
+    if (approval) {
+      let task;
+      task = approval.process(async () => {
+          if (this.#state.hasSeen(messageId)) return false;
+          await this.#state.markSeen(messageId);
+          this.#status.messagesReceived += 1;
+          this.#status.lastMessageAt = new Date().toISOString();
+          return true;
+        })
+        .finally(() => {
+          this.#acceptedMessageIds.delete(messageId);
+          this.#approvalTasks.delete(task);
+        });
+      this.#approvalTasks.add(task);
+      return task;
+    }
     if (pending && pending.actor !== senderId) {
       return this.#enqueueMessage(normalized, messageId, senderId, key);
     }
@@ -147,6 +183,7 @@ export class TextHarnessBridge {
       ...[...this.#pendingInteractions.values()].flatMap((pending) => (
         pending.queue ? [pending.queue] : []
       )),
+      ...this.#approvalTasks,
     ]);
   }
 
@@ -276,7 +313,10 @@ export class TextHarnessBridge {
         );
       }
     } finally {
-      await this.#cancelPendingInteraction(conversationKey);
+      await Promise.allSettled([
+        this.#cancelPendingInteraction(conversationKey),
+        this.#approvals.closeRoute(conversationKey),
+      ]);
     }
   }
 
@@ -434,8 +474,14 @@ export class TextHarnessBridge {
     target,
     requiresMention,
   }) {
-    // Approval remains deliberately unanswered until #5 supplies a policy that
-    // can prove both the actor and the conversation allowed to decide it.
+    if (interaction?.kind === 'approval') {
+      return this.#approvals.handleRequested(interaction, {
+        key,
+        actor,
+        requiresMention,
+        send: (text) => this.#bot.sendText(target, text),
+      });
+    }
     if (interaction?.kind !== 'question') return;
     const questions = interaction?.payload?.questions;
     const interactionId = cleanText(interaction?.interactionId) || cleanText(interaction?.rpcId);
@@ -510,7 +556,11 @@ export class TextHarnessBridge {
     await this.#presentInteraction(pending);
   }
 
-  #handleInteractionResolved(resolution) {
+  async #handleInteractionResolved(resolution) {
+    if (resolution?.kind === 'approval') {
+      await this.#approvals.handleResolved(resolution);
+      return;
+    }
     const interactionId = cleanText(resolution?.interactionId);
     if (resolution?.kind !== 'question' || !interactionId) return;
     const key = this.#interactionKeys.get(interactionId);

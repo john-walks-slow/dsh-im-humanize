@@ -351,10 +351,109 @@ test('QQ pending questions stay isolated between private conversations', async (
   ]);
 });
 
+test('QQ presents concurrent approvals in FIFO order without a code and consumes exact decisions', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-approval']]);
+  const sent = [];
+  const asked = [];
+  const completed = deferred();
+  const responses = [];
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      createSession: async () => assert.fail('the existing session should be reused'),
+      ask: async (sessionId, text, options) => {
+        asked.push(text);
+        for (const [approvalId, reason, command] of [
+          ['qq-approval-one', '允许执行第一步', "printf 'first-step\\n'"],
+          ['qq-approval-two', '允许执行第二步', "printf 'second-step\\n'"],
+        ]) {
+          await options.onInteraction({
+            kind: 'approval',
+            interactionId: approvalId,
+            rpcId: `${approvalId}-rpc`,
+            sessionId,
+            payload: {
+              type: 'approval/requested',
+              sessionId,
+              approvalId,
+              toolName: 'bash',
+              callId: `${approvalId}-call`,
+              reason,
+            },
+            toolCall: {
+              callId: `${approvalId}-call`,
+              name: 'bash',
+              arguments: JSON.stringify({ command }),
+            },
+            respond: async (result) => {
+              responses.push(result);
+              if (responses.length === 2) completed.resolve();
+              return { accepted: true };
+            },
+          });
+        }
+        await completed.promise;
+        return '审批完成';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const prompt = bridge.accept(message({
+    messageId: 'approval-start',
+    content: '启动两个审批',
+  }));
+  await eventually(() => sent.some(({ text }) => text.includes('允许执行第一步')));
+  assert.equal(sent.some(({ text }) => text.includes('允许执行第二步')), false);
+  assert.match(sent.find(({ text }) => text.includes('允许执行第一步')).text, /bash/);
+  assert.match(sent.find(({ text }) => text.includes('允许执行第一步')).text, /批准.*拒绝/s);
+  assert.doesNotMatch(sent.find(({ text }) => text.includes('允许执行第一步')).text, /qq-approval-one/);
+
+  await bridge.accept(message({
+    messageId: 'approval-allow',
+    content: '批准',
+    replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: 'approval-allow' },
+  }));
+  await eventually(() => sent.some(({ text }) => text.includes('允许执行第二步')));
+  assert.doesNotMatch(sent.find(({ text }) => text.includes('允许执行第二步')).text, /qq-approval-two/);
+
+  await Promise.all([
+    bridge.accept(message({
+      messageId: 'approval-reject',
+      content: '拒绝',
+      replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: 'approval-reject' },
+    })),
+    prompt,
+  ]);
+
+  assert.deepEqual(responses, [
+    {
+      ok: true,
+      value: {
+        sessionId: 'session-approval',
+        approvalId: 'qq-approval-one',
+        outcome: 'allowed-once',
+      },
+    },
+    {
+      ok: true,
+      value: {
+        sessionId: 'session-approval',
+        approvalId: 'qq-approval-two',
+        outcome: 'rejected',
+      },
+    },
+  ]);
+  assert.deepEqual(asked, ['启动两个审批']);
+  assert.equal(sent.at(-1).text, '审批完成');
+});
+
 test('QQ deduplicates question replays, cancels orphan questions, and keeps approvals fail-closed', async () => {
   const fixture = stateFixture();
   const sent = [];
-  let approvalResponses = 0;
+  let approvalResponse;
   let parallelResponse;
   let orphanResponse;
   const bridge = new QqHarnessBridge({
@@ -404,7 +503,7 @@ test('QQ deduplicates question replays, cancels orphan questions, and keeps appr
             approvalId: 'qq-approval',
             toolName: 'bash',
           },
-          respond: async () => { approvalResponses += 1; },
+          respond: async (result) => { approvalResponse = result; },
         });
         await options.onInteractionResolved({
           kind: 'question',
@@ -446,7 +545,14 @@ test('QQ deduplicates question replays, cancels orphan questions, and keeps appr
       details: {},
     },
   });
-  assert.equal(approvalResponses, 0);
+  assert.deepEqual(approvalResponse, {
+    ok: true,
+    value: {
+      sessionId: 'session-replay',
+      approvalId: 'qq-approval',
+      outcome: 'rejected',
+    },
+  });
   assert.equal(sent.some(({ text }) => text.includes('approval')), false);
   assert.deepEqual(orphanResponse, {
     ok: false,

@@ -427,10 +427,113 @@ test('pending questions are isolated by DingTalk conversation', async () => {
   await firstA;
 });
 
-test('question replays are deduplicated and approval interactions are never auto-approved', async () => {
+test('DingTalk handles approval replies on the fast lane and presents approvals in FIFO order', async () => {
   const fixture = stateFixture();
   const sent = [];
-  let approvalResponses = 0;
+  const asked = [];
+  const decisions = [];
+  const decided = deferred();
+  const bridge = new DingtalkHarnessBridge({
+    api: { sendText: async (request) => sent.push(request) },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => false,
+      createSession: async () => 'session-approval',
+      ask: async (sessionId, text, options) => {
+        asked.push({ sessionId, text });
+        const approval = (approvalId, toolName, reason) => ({
+          kind: 'approval',
+          interactionId: approvalId,
+          rpcId: `rpc-${approvalId}`,
+          sessionId,
+          payload: {
+            type: 'approval/requested',
+            sessionId,
+            approvalId,
+            toolName,
+            callId: `call-${approvalId}`,
+            reason,
+          },
+          toolCall: {
+            callId: `call-${approvalId}`,
+            name: toolName,
+            arguments: JSON.stringify({ operation: reason }),
+          },
+          respond: async (result) => {
+            decisions.push(result);
+            if (decisions.length === 2) decided.resolve();
+            return { accepted: true };
+          },
+        });
+        await options.onInteraction(approval(
+          'approval-build',
+          'bash',
+          '运行第一项构建操作',
+        ));
+        await options.onInteraction(approval(
+          'approval-write',
+          'write_file',
+          '运行第二项写入操作',
+        ));
+        await decided.promise;
+        return '两个审批均已处理';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const turn = bridge.accept(message('approval-start', '发起两个审批'));
+  await eventually(() => sent.some(({ text }) => text.includes('运行第一项构建操作')));
+  assert.equal(sent.some(({ text }) => text.includes('运行第二项写入操作')), false);
+  assert.equal(sent.some(({ text }) => text.includes('approval-build')), false);
+
+  await bridge.accept(message('approval-invalid', '好的'));
+  assert.deepEqual(decisions, []);
+  assert.deepEqual(asked, [{ sessionId: 'session-approval', text: '发起两个审批' }]);
+  assert.match(sent.at(-1).text, /批准/);
+  assert.match(sent.at(-1).text, /拒绝/);
+
+  await bridge.accept(message('approval-allow', '批准'));
+  assert.deepEqual(decisions, [{
+    ok: true,
+    value: {
+      sessionId: 'session-approval',
+      approvalId: 'approval-build',
+      outcome: 'allowed-once',
+    },
+  }]);
+  assert.equal(sent.filter(({ text }) => text.includes('运行第二项写入操作')).length, 1);
+  assert.equal(sent.some(({ text }) => text.includes('approval-write')), false);
+
+  await bridge.accept(message('approval-reject', '拒绝'));
+  await turn;
+
+  assert.deepEqual(decisions, [
+    {
+      ok: true,
+      value: {
+        sessionId: 'session-approval',
+        approvalId: 'approval-build',
+        outcome: 'allowed-once',
+      },
+    },
+    {
+      ok: true,
+      value: {
+        sessionId: 'session-approval',
+        approvalId: 'approval-write',
+        outcome: 'rejected',
+      },
+    },
+  ]);
+  assert.equal(sent.at(-1).text, '两个审批均已处理');
+});
+
+test('question replays are deduplicated and an unrenderable approval is safely rejected', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let approvalResponse;
   let secondQuestionResponse;
   const bridge = new DingtalkHarnessBridge({
     api: { sendText: async (request) => sent.push(request) },
@@ -478,7 +581,10 @@ test('question replays are deduplicated and approval interactions are never auto
             approvalId: 'approval-one',
             toolName: 'bash',
           },
-          respond: async () => { approvalResponses += 1; },
+          respond: async (result) => {
+            approvalResponse = result;
+            return { accepted: true };
+          },
         });
         await options.onInteractionResolved({
           kind: 'question',
@@ -504,8 +610,15 @@ test('question replays are deduplicated and approval interactions are never auto
       details: {},
     },
   });
-  assert.equal(sent.some(({ text }) => text.includes('approval')), false);
-  assert.equal(approvalResponses, 0);
+  assert.deepEqual(approvalResponse, {
+    ok: true,
+    value: {
+      sessionId: 'session-replay',
+      approvalId: 'approval-one',
+      outcome: 'rejected',
+    },
+  });
+  assert.equal(sent.some(({ text }) => text.includes('无法完整展示')), true);
   assert.equal(sent.at(-1).text, '交互已取消');
 });
 

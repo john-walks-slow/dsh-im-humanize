@@ -345,6 +345,89 @@ test('pending Enterprise WeChat questions stay isolated by conversation', async 
   );
 });
 
+test('Enterprise WeChat accepts only an exact approval decision and never forwards a fuzzy reply', async () => {
+  const transport = testClient();
+  const completed = deferred();
+  const prompts = [];
+  const responses = [];
+  const bridge = new WecomHarnessBridge({
+    client: transport.client,
+    generateStreamId: (() => { let index = 0; return () => `approval-${++index}`; })(),
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, text, options) => {
+        prompts.push(text);
+        await options.onInteraction({
+          kind: 'approval',
+          interactionId: 'wecom-approval',
+          rpcId: 'wecom-approval-rpc',
+          sessionId,
+          payload: {
+            type: 'approval/requested',
+            sessionId,
+            approvalId: 'wecom-approval',
+            toolName: 'bash',
+            callId: 'wecom-approval-call',
+            reason: '允许执行企业微信审批测试',
+          },
+          toolCall: {
+            callId: 'wecom-approval-call',
+            name: 'bash',
+            arguments: JSON.stringify({ command: "printf 'wecom-approval\\n'" }),
+          },
+          respond: async (result) => {
+            responses.push(result);
+            completed.resolve();
+            return { accepted: true };
+          },
+        });
+        await completed.promise;
+        return '审批已继续';
+      },
+    },
+    state: state(),
+  });
+
+  const outputTexts = () => [
+    ...transport.active.map(({ body }) => body.markdown.content),
+    ...transport.streamed.map(({ content }) => content),
+  ];
+  const prompt = bridge.accept(frame({
+    msgid: 'approval-start',
+    text: { content: '启动审批' },
+  }));
+  await eventually(() => outputTexts().some((text) => text.includes('允许执行企业微信审批测试')));
+
+  const outputCountBeforeFuzzyReply = outputTexts().length;
+  const fuzzy = bridge.accept(frame({
+    msgid: 'approval-fuzzy',
+    text: { content: '可以' },
+  }));
+  await eventually(() => outputTexts().slice(outputCountBeforeFuzzyReply).some((text) => text.includes('回复')
+    && text.includes('批准') && text.includes('拒绝')));
+  assert.deepEqual(responses, []);
+  assert.deepEqual(prompts, ['启动审批']);
+
+  await Promise.all([
+    fuzzy,
+    bridge.accept(frame({
+      msgid: 'approval-exact',
+      text: { content: '  YES  ' },
+    })),
+    prompt,
+  ]);
+
+  assert.deepEqual(responses, [{
+    ok: true,
+    value: {
+      sessionId: 'session-existing',
+      approvalId: 'wecom-approval',
+      outcome: 'allowed-once',
+    },
+  }]);
+  assert.deepEqual(prompts, ['启动审批']);
+});
+
 test('question replays are deduplicated and approvals remain fail-closed', async () => {
   const transport = testClient();
   const answered = deferred();
