@@ -59,7 +59,7 @@ All nine built-in channels can send JPEG, PNG, and WebP images, plus GIFs sent a
 Install the published stable release from npm (recommended):
 
 ```sh
-dsh plugin --profile web add @xmanrui/dsh-im
+dsh plugin --profile web add -w @xmanrui/dsh-im
 ```
 
 Restart `dsh web`, then open **Settings → Plugins → IM Bot**.

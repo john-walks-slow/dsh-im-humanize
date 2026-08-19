@@ -62,7 +62,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 推荐从 npm 安装已发布的稳定版本：
 
 ```sh
-dsh plugin --profile web add @xmanrui/dsh-im
+dsh plugin --profile web add -w @xmanrui/dsh-im
 ```
 
 重启 `dsh web`，然后打开「设置 → 插件 → IM机器人」。
