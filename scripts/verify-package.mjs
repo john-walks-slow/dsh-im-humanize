@@ -48,6 +48,40 @@ const [client, host, patch, manifestText, lockText, hostSource, clientSource, ex
 const manifest = JSON.parse(manifestText);
 const lock = JSON.parse(lockText);
 
+// DSH runtime packages use module-local Symbol keys, so a second physical copy breaks Host lookup.
+const forbiddenDshDependency = /^@deepseek-ai\/dsh-/;
+const dependencySections = [
+  'dependencies',
+  'devDependencies',
+  'optionalDependencies',
+  'peerDependencies',
+];
+for (const section of dependencySections) {
+  for (const name of Object.keys(manifest[section] ?? {})) {
+    if (forbiddenDshDependency.test(name)) {
+      throw new Error(
+        `${name} must not be declared in ${section}; DSH runtime packages must come from the host`,
+      );
+    }
+  }
+}
+const bundledDependencies = manifest.bundleDependencies ?? manifest.bundledDependencies ?? [];
+if (Array.isArray(bundledDependencies)) {
+  for (const name of bundledDependencies) {
+    if (forbiddenDshDependency.test(name)) {
+      throw new Error(`${name} must not be bundled; DSH runtime packages must come from the host`);
+    }
+  }
+}
+const forbiddenDshLockPaths = Object.keys(lock.packages ?? {}).filter((path) => (
+  /(?:^|\/)node_modules\/@deepseek-ai\/dsh-[^/]+(?:\/|$)/.test(path)
+));
+if (forbiddenDshLockPaths.length > 0) {
+  throw new Error(
+    `package lock must not install DSH runtime packages: ${forbiddenDshLockPaths.join(', ')}`,
+  );
+}
+
 if (!client.includes('id: "@xmanrui/dsh-im"')) {
   throw new Error('client bundle does not register the dsh-im loader id');
 }
