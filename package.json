@@ -1,7 +1,36 @@
 {
   "name": "@xmanrui/dsh-im",
   "version": "0.11.0",
-  "description": "通过扫码、App Manifest或机器人凭据把IM机器人接入DeepSeek Harness（支持飞书、微信、钉钉、企业微信、QQ、Slack、Telegram、Discord和WhatsApp）。",
+  "description": "通过扫码或机器人凭据把IM机器人接入DeepSeek Harness（支持飞书、微信、钉钉、企业微信、QQ、Slack、Telegram、Discord和WhatsApp）。 Connect IM bots to DeepSeek Harness via QR code or credentials (9 channels).",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "ai-agent",
+    "im",
+    "instant-messaging",
+    "chatbot",
+    "feishu",
+    "lark",
+    "wechat",
+    "wecom",
+    "dingtalk",
+    "qq",
+    "slack",
+    "telegram",
+    "discord",
+    "whatsapp"
+  ],
+  "author": {
+    "name": "xmanrui",
+    "url": "https://github.com/xmanrui"
+  },
+  "contributors": [
+    {
+      "name": "C3H3-AI",
+      "url": "https://github.com/C3H3-AI"
+    }
+  ],
   "license": "MIT",
   "type": "module",
   "repository": {
