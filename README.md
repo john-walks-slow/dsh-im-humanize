@@ -3,8 +3,8 @@
 ---
 
 <div align="center">
-  <p><strong>让聊天机器人轻松接入 DeepSeek Harness</strong></p>
-  <p><strong>Connect IM bots to DeepSeek Harness with ease</strong></p>
+  <p><strong>让 DeepSeek Harness 触手可及</strong></p>
+  <p><strong>DeepSeek Harness, always within reach</strong></p>
 
   <p>
     <img src="https://dsh-im-random-badge.xmanrui-dsh-im.workers.dev" alt="滑动变祖器：今天是梁子或今天是梁圣（随机）">

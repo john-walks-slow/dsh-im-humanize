@@ -7,7 +7,7 @@ const EN = Object.freeze({
   'IM机器人': 'IM bots',
   'IM机器人设置': 'IM bot settings',
   'IM 渠道': 'IM channels',
-  '让聊天机器人轻松接入 DeepSeek Harness': 'Connect IM bots to DeepSeek Harness with ease',
+  '让 DeepSeek Harness 触手可及': 'DeepSeek Harness, always within reach',
   '帮助与反馈 · 前往 GitHub': 'Help & feedback · Open GitHub',
   '微信': 'WeChat',
   '飞书': 'Feishu',

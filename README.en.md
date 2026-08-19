@@ -3,7 +3,7 @@
 ---
 
 <div align="center">
-  <p><strong>Connect IM bots to DeepSeek Harness with ease</strong></p>
+  <p><strong>DeepSeek Harness, always within reach</strong></p>
 
   <p>
     <img src="https://dsh-im-random-badge.xmanrui-dsh-im.workers.dev" alt="滑动变祖器：今天是梁子或今天是梁圣（随机）">

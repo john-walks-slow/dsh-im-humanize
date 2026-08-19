@@ -139,7 +139,7 @@ export function IMSettingsTab({
           width: 48,
           height: 48,
         }),
-        h('p', null, '让聊天机器人轻松接入 DeepSeek Harness')),
+        h('p', null, '让 DeepSeek Harness 触手可及')),
       h('span', { className: 'dim-githubAction' },
         h('a', {
           className: 'dim-githubLink',
