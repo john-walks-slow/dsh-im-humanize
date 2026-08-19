@@ -310,6 +310,9 @@ export class DingtalkHarnessBridge {
     } catch {
       // An unsafe reply route must never be able to submit an approval.
     }
+    if (sessionWebhook && String(message.conversationType) !== '2') {
+      rememberConnectionTestTarget(this.#state, { sessionWebhook });
+    }
     const pending = this.#pendingInteractions.get(key);
     const approvalReply = this.#approvals.claimReply({
       key,
@@ -460,9 +463,6 @@ export class DingtalkHarnessBridge {
       if (isPlainText && !hasImages && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#send(sessionWebhook, '钉钉机器人与 DeepSeek Harness 连接正常。');
-        if (String(message.conversationType) !== '2') {
-          rememberConnectionTestTarget(this.#state, { sessionWebhook });
-        }
         return;
       }
       if (isPlainText && !hasImages && command === '/new') {

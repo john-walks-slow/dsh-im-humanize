@@ -129,6 +129,9 @@ export class WeixinHarnessBridge {
     if (!messageId || !sender || this.#state.hasSeen(messageId)
       || this.#acceptedMessageIds.has(messageId)) return Promise.resolve();
     this.#acceptedMessageIds.add(messageId);
+    if (sender === this.#ownerUserId) {
+      rememberConnectionTestTarget(this.#state, { toUserId: sender });
+    }
     const key = conversationKey(sender);
     const contextToken = nonEmptyString(message?.context_token) ?? undefined;
     const runId = nonEmptyString(message?.run_id) ?? undefined;
@@ -251,7 +254,6 @@ export class WeixinHarnessBridge {
       if (!hasImages && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#send(sender, '微信与 DeepSeek Harness 连接正常。', contextToken, runId);
-        rememberConnectionTestTarget(this.#state, { toUserId: sender });
         await this.#state.markSeen(messageId);
         return;
       }

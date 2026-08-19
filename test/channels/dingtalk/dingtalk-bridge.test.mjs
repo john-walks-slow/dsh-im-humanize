@@ -82,7 +82,7 @@ const PNG_BYTES = Buffer.from([
   0x01, 0x02, 0x03,
 ]);
 
-test('DingTalk remembers only a private /status session webhook for connection tests', async () => {
+test('DingTalk remembers any private inbound session webhook for connection tests', async () => {
   const privateFixture = stateFixture();
   const privateSent = [];
   const privateBridge = new DingtalkHarnessBridge({
@@ -92,11 +92,11 @@ test('DingTalk remembers only a private /status session webhook for connection t
     harness: { ensureRunning: async () => true },
     state: privateFixture.state,
   });
-  await privateBridge.accept(message('status-private', '/status'));
+  await privateBridge.accept(message('help-private', '/help'));
   assert.deepEqual(connectionTestTarget(privateFixture.state), {
-    sessionWebhook: 'https://oapi.dingtalk.com/robot/reply?ticket=status-private',
+    sessionWebhook: 'https://oapi.dingtalk.com/robot/reply?ticket=help-private',
   });
-  assert.equal(privateSent.at(-1).text, '钉钉机器人与 DeepSeek Harness 连接正常。');
+  assert.match(privateSent.at(-1).text, /\/help/);
 
   const groupFixture = stateFixture();
   const groupBridge = new DingtalkHarnessBridge({
@@ -106,9 +106,9 @@ test('DingTalk remembers only a private /status session webhook for connection t
     harness: { ensureRunning: async () => true },
     state: groupFixture.state,
   });
-  await groupBridge.accept(message('status-group', '/status', {
+  await groupBridge.accept(message('help-group', '/help', {
     conversationType: '2',
-    conversationId: 'group-status',
+    conversationId: 'group-help',
     isInAtList: true,
   }));
   assert.equal(connectionTestTarget(groupFixture.state), null);

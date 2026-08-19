@@ -69,7 +69,7 @@ const PNG_BYTES = Buffer.from([
   0x01, 0x02, 0x03,
 ]);
 
-test('Weixin remembers only the authorized owner /status as a connection-test target', async () => {
+test('Weixin remembers any authorized private inbound as a connection-test target', async () => {
   const fixture = stateFixture();
   const sent = [];
   const bridge = new WeixinHarnessBridge({
@@ -81,20 +81,20 @@ test('Weixin remembers only the authorized owner /status as a connection-test ta
     state: fixture.state,
   });
 
-  await bridge.accept(message('status-owner', '/status'));
+  await bridge.accept(message('help-owner', '/help'));
   assert.deepEqual(connectionTestTarget(fixture.state), { toUserId: 'owner-user' });
-  assert.equal(sent.at(-1).text, '微信与 DeepSeek Harness 连接正常。');
+  assert.match(sent.at(-1).text, /\/help/);
 
   const rejectedFixture = stateFixture();
   const rejectedBridge = new WeixinHarnessBridge({
-    api: { sendText: async () => assert.fail('unauthorized status must not be answered') },
+    api: { sendText: async () => assert.fail('unauthorized message must not be answered') },
     baseUrl: 'https://ilinkai.weixin.qq.com/',
     token: 'host-token',
     ownerUserId: 'owner-user',
     harness: { ensureRunning: async () => true },
     state: rejectedFixture.state,
   });
-  await rejectedBridge.accept(message('status-other', '/status', { from_user_id: 'other-user' }));
+  await rejectedBridge.accept(message('help-other', '/help', { from_user_id: 'other-user' }));
   assert.equal(connectionTestTarget(rejectedFixture.state), null);
 });
 

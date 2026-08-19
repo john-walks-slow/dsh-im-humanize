@@ -270,6 +270,9 @@ export class WecomHarnessBridge {
 
     const key = conversationKey(frame);
     this.#acceptedMessageIds.add(messageId);
+    if (body.chattype === 'single') {
+      rememberConnectionTestTarget(this.#state, { chatId });
+    }
     const pending = this.#pendingInteractions.get(key);
     const approval = this.#approvals.claimReply({
       key,
@@ -431,9 +434,6 @@ export class WecomHarnessBridge {
       if (!hasImages && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#sendImmediate(frame, chatId, '企业微信机器人与 DeepSeek Harness 连接正常。');
-        if (body.chattype === 'single') {
-          rememberConnectionTestTarget(this.#state, { chatId });
-        }
         await this.#state.markSeen(messageId);
         return;
       }

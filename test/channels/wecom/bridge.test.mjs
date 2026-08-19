@@ -101,7 +101,7 @@ function questionInteraction({
   };
 }
 
-test('Enterprise WeChat remembers only a private /status chat as a connection-test target', async () => {
+test('Enterprise WeChat remembers any private inbound as a connection-test target', async () => {
   const privateState = state();
   const privateTransport = testClient();
   const privateBridge = new WecomHarnessBridge({
@@ -109,7 +109,7 @@ test('Enterprise WeChat remembers only a private /status chat as a connection-te
     harness: { ensureRunning: async () => true },
     state: privateState,
   });
-  await privateBridge.accept(frame({ msgid: 'status-private', text: { content: '/status' } }));
+  await privateBridge.accept(frame({ msgid: 'help-private', text: { content: '/help' } }));
   assert.deepEqual(connectionTestTarget(privateState), { chatId: 'member-1' });
 
   const groupState = state();
@@ -120,10 +120,10 @@ test('Enterprise WeChat remembers only a private /status chat as a connection-te
     state: groupState,
   });
   await groupBridge.accept(frame({
-    msgid: 'status-group',
+    msgid: 'help-group',
     chattype: 'group',
     chatid: 'group-1',
-    text: { content: '@机器人 /status' },
+    text: { content: '@机器人 /help' },
   }));
   assert.equal(connectionTestTarget(groupState), null);
 });

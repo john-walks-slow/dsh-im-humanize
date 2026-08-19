@@ -1,5 +1,9 @@
 import { FeishuHarnessBridge } from './bridge.mjs';
 import { VerifiedFeishuChannel } from './feishu-channel.mjs';
+import {
+  connectionTestTargetUnavailable,
+  sendRememberedConnectionTest,
+} from '../shared/connection-test.mjs';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -246,27 +250,39 @@ export class FeishuRuntime {
       error.code = 'test-target-unavailable';
       throw error;
     }
-    const ownerOpenId = this.#ownerOpenIds[0];
-    if (!ownerOpenId || ownerOpenId === '*') {
-      const error = new Error('飞书机器人没有可用的测试消息接收人');
-      error.code = 'test-target-unavailable';
-      throw error;
-    }
     if (typeof text !== 'string' || !text.trim()) {
       throw new TypeError('Feishu connection test text is required');
     }
-    const response = await this.#client.im.v1.message.create({
-      params: { receive_id_type: 'open_id' },
-      data: {
-        receive_id: ownerOpenId,
-        msg_type: 'text',
-        content: JSON.stringify({ text }),
+    const send = async (receiveIdType, receiveId, content) => {
+      const response = await this.#client.im.v1.message.create({
+        params: { receive_id_type: receiveIdType },
+        data: {
+          receive_id: receiveId,
+          msg_type: 'text',
+          content: JSON.stringify({ text: content }),
+        },
+      });
+      if (response?.code && response.code !== 0) {
+        throw new Error(`Feishu connection test failed: ${response.msg || response.code}`);
+      }
+    };
+
+    const ownerOpenId = this.#ownerOpenIds.find((value) => value !== '*');
+    if (ownerOpenId) {
+      await send('open_id', ownerOpenId, text);
+      return { sent: true };
+    }
+
+    return sendRememberedConnectionTest({
+      state: this.#state,
+      text,
+      channelLabel: '飞书机器人',
+      send: async (target, content) => {
+        const chatId = typeof target?.chatId === 'string' ? target.chatId.trim() : '';
+        if (!chatId) throw connectionTestTargetUnavailable('飞书机器人');
+        await send('chat_id', chatId, content);
       },
     });
-    if (response?.code && response.code !== 0) {
-      throw new Error(`Feishu connection test failed: ${response.msg || response.code}`);
-    }
-    return { sent: true };
   }
 
   async stop({ preserveError = false } = {}) {

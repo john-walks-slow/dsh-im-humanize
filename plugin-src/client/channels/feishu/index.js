@@ -335,7 +335,7 @@ function connectionTestNotice(value) {
     return '测试消息已发送，请到飞书会话中确认。';
   }
   if (value?.testMessage?.code === 'test-target-unavailable') {
-    return '连接检查完成，但当前没有可用的测试消息接收人。';
+    return '连接检查完成。机器人尚未收到可用于测试的私聊消息。';
   }
   return value?.testMessage ? '连接检查完成，但测试消息发送失败。' : null;
 }

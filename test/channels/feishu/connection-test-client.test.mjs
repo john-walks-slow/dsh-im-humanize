@@ -31,6 +31,8 @@ test('Feishu connection check requests and displays test-message feedback', asyn
     import.meta.url,
   ), 'utf8');
   assert.match(source, /FEISHU_ENDPOINTS\.reconnectBot, \{ botId, sendTest: true \}/);
+  assert.match(source, /机器人尚未收到可用于测试的私聊消息/);
+  assert.doesNotMatch(source, /请先私聊机器人发送 \/status/);
 
   const markup = renderToStaticMarkup(React.createElement(BotCard, {
     connection: {

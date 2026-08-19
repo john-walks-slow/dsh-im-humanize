@@ -101,6 +101,12 @@ export class TextHarnessBridge {
       return Promise.resolve();
     }
     this.#acceptedMessageIds.add(messageId);
+    if (normalized.kind === 'direct') {
+      rememberConnectionTestTarget(
+        this.#state,
+        normalized.connectionTestTarget ?? normalized.replyTarget,
+      );
+    }
 
     const key = `${kind}:${conversationId}`;
     const pending = this.#pendingInteractions.get(key);
@@ -252,9 +258,6 @@ export class TextHarnessBridge {
       if (!hasImages && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#bot.sendText(target, `${this.#descriptor.label}机器人与 DeepSeek Harness 连接正常。`);
-        if (message.kind === 'direct') {
-          rememberConnectionTestTarget(this.#state, message.connectionTestTarget ?? target);
-        }
         return;
       }
       const workspaceCommand = !hasImages

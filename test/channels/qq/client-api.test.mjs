@@ -40,7 +40,10 @@ test('QQ client normalizes and presents connection-test outcomes', () => {
   assert.deepEqual(unavailable.testMessage, {
     sent: false, code: 'test-target-unavailable',
   });
-  assert.match(connectionTestFeedback(unavailable.testMessage), /\/status/);
+  assert.equal(
+    connectionTestFeedback(unavailable.testMessage),
+    '连接检查完成。机器人尚未收到可用于测试的私聊消息。',
+  );
 
   const invalid = normalizeSnapshot({
     bots: [], testMessage: { sent: false, code: 'private-provider-error' },

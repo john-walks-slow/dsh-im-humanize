@@ -532,6 +532,50 @@ test('connection check requests a test message and shows its delivery result', a
   await act(async () => { renderer.unmount(); });
 });
 
+test('shared token target-unavailable feedback asks for any direct message', async (t) => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { setInterval() { return 1; }, clearInterval() {} };
+  setImTranslator((key) => en[key] ?? key);
+  t.after(() => {
+    setImTranslator(null);
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  });
+  const snapshot = discordSnapshot('/workspace/current');
+  const rpcCall = async (endpoint) => {
+    if (endpoint === 'connection.status') return { ok: true, value: snapshot };
+    if (endpoint === 'bot.reconnect') {
+      return {
+        ok: true,
+        value: {
+          ...snapshot,
+          testMessage: { sent: false, code: 'test-target-unavailable' },
+        },
+      };
+    }
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(DiscordSettingsTab, { rpcCall }));
+    await flushMicrotasks();
+  });
+  const card = renderer.root.findByProps({ 'data-bot-id': 'discord_test' });
+  await act(async () => {
+    buttonNamed(card, 'Check connection').props.onClick();
+    await flushMicrotasks();
+  });
+
+  const notice = textOf(renderer.root.findByProps({ role: 'status' }));
+  assert.equal(
+    notice,
+    'Connection check completed. The bot has not received a direct message it can use for testing.',
+  );
+  assert.doesNotMatch(notice, /\/status|[\p{Script=Han}]/u);
+  await act(async () => { renderer.unmount(); });
+});
+
 test('shared token connection failures render a fixed English-safe notice', async (t) => {
   const previousWindow = globalThis.window;
   globalThis.window = { setInterval() { return 1; }, clearInterval() {} };

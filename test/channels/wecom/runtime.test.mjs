@@ -21,7 +21,7 @@ class FakeClient extends EventEmitter {
   async sendMessage(chatId, body) { this.sent.push({ chatId, body }); }
 }
 
-test('Enterprise WeChat runtime sends a connection test only to the remembered private status target', async () => {
+test('Enterprise WeChat runtime sends a connection test only to the remembered private target', async () => {
   const client = new FakeClient();
   const state = {};
   const runtime = new WecomRuntime({

@@ -18,6 +18,7 @@ import {
 } from '../shared/harness-question.mjs';
 import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
 import { runCompactCommand } from '../shared/compact-command.mjs';
+import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 
@@ -131,6 +132,11 @@ export class FeishuHarnessBridge {
       this.#status.messagesRejected += 1;
       this.#status.lastRejectedAt = new Date().toISOString();
       return Promise.resolve();
+    }
+
+    if (event.message.chat_type === 'p2p') {
+      const chatId = nonEmptyString(event.message.chat_id);
+      if (chatId) rememberConnectionTestTarget(this.#state, { chatId });
     }
 
     this.#acceptedMessageIds.add(messageId);

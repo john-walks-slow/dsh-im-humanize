@@ -100,7 +100,7 @@ test('QQ runtime sends a proactive connection test to the explicit owner fallbac
   await runtime.stop();
 });
 
-test('QQ runtime requires /status for wildcard owners and strips the remembered reply id', async () => {
+test('QQ runtime requires a remembered private target for wildcard owners and strips the reply id', async () => {
   const bot = new FakeBot();
   const state = {};
   const runtime = new QqRuntime({
@@ -119,7 +119,7 @@ test('QQ runtime requires /status for wildcard owners and strips the remembered 
     (error) => error?.code === 'test-target-unavailable',
   );
   rememberConnectionTestTarget(state, {
-    scope: 'c2c', targetId: 'recent-user', msgId: 'old-status-message',
+    scope: 'c2c', targetId: 'recent-user', msgId: 'old-inbound-message',
   });
   await runtime.sendConnectionTest('remembered-target');
   assert.deepEqual(bot.sent, [{

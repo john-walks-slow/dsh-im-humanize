@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { DiscordHarnessBridge } from '../../../src/channels/discord/discord-bridge.mjs';
+import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
 import { TextHarnessBridge } from '../../../src/channels/shared/text-harness-bridge.mjs';
 import { SlackHarnessBridge } from '../../../src/channels/slack/slack-bridge.mjs';
 import { TelegramHarnessBridge } from '../../../src/channels/telegram/telegram-bridge.mjs';
@@ -146,6 +147,78 @@ test('all four shared text channels execute /compact outside the model prompt pa
 
     assert.deepEqual(executed, [{ sessionId: `session-${name}`, line: '/compact' }]);
     assert.deepEqual(sent, ['已压缩 12 条历史记录（约 3456 个 token）。']);
+  }
+});
+
+test('Slack, Telegram, and Discord remember any valid direct message per bot', async () => {
+  for (const [name, Bridge] of [
+    ['slack', SlackHarnessBridge],
+    ['telegram', TelegramHarnessBridge],
+    ['discord', DiscordHarnessBridge],
+  ]) {
+    let sessionSequence = 0;
+    const harness = {
+      createSession: async () => `${name}-session-${++sessionSequence}`,
+      ask: async () => `${name} reply`,
+    };
+    const first = stateFixture();
+    const second = stateFixture();
+    const firstSent = [];
+    const secondSent = [];
+    const firstBot = {
+      sendText: async (target, text) => firstSent.push({ target, text }),
+    };
+    const secondBot = {
+      sendText: async (target, text) => secondSent.push({ target, text }),
+    };
+    const firstBridge = new Bridge({ bot: firstBot, harness, state: first.state });
+    const secondBridge = new Bridge({ bot: secondBot, harness, state: second.state });
+    const firstTarget = { channelId: `${name}-private-a` };
+    const secondTarget = { channelId: `${name}-private-b` };
+
+    await firstBridge.accept(message(`${name}-direct-a`, 'hello', {
+      conversationId: `${name}-private-a`,
+      replyTarget: { ...firstTarget, replyToMessageId: 'reply-a' },
+      connectionTestTarget: firstTarget,
+    }));
+    assert.deepEqual(connectionTestTarget(first.state), firstTarget, name);
+
+    await firstBridge.accept(message(`${name}-group`, 'hello group', {
+      kind: 'group',
+      conversationId: `${name}-group`,
+      addressed: true,
+      replyTarget: { channelId: `${name}-group` },
+      connectionTestTarget: { channelId: `${name}-group` },
+    }));
+    assert.deepEqual(connectionTestTarget(first.state), firstTarget, `${name} group`);
+
+    await firstBridge.accept(message(`${name}-direct-a`, 'duplicate', {
+      conversationId: `${name}-private-replay`,
+      replyTarget: { channelId: `${name}-private-replay` },
+      connectionTestTarget: { channelId: `${name}-private-replay` },
+    }));
+    assert.deepEqual(connectionTestTarget(first.state), firstTarget, `${name} duplicate`);
+
+    await secondBridge.accept(message(`${name}-direct-b`, 'hello', {
+      conversationId: `${name}-private-b`,
+      replyTarget: { ...secondTarget, replyToMessageId: 'reply-b' },
+      connectionTestTarget: secondTarget,
+    }));
+    assert.deepEqual(connectionTestTarget(second.state), secondTarget, `${name} second bot`);
+
+    const reconnectedFirstBridge = new Bridge({ bot: firstBot, harness, state: first.state });
+    await reconnectedFirstBridge.sendConnectionTest(`${name} first test`);
+    await secondBridge.sendConnectionTest(`${name} second test`);
+    assert.deepEqual(
+      firstSent.find(({ text }) => text === `${name} first test`)?.target,
+      firstTarget,
+      `${name} reconnect`,
+    );
+    assert.deepEqual(
+      secondSent.find(({ text }) => text === `${name} second test`)?.target,
+      secondTarget,
+      `${name} bot isolation`,
+    );
   }
 });
 

@@ -259,7 +259,7 @@ test('QQ executes /compact for the bound Session without prompting the model', a
   assert.equal(fixture.seen.has('compact-qq'), true);
 });
 
-test('QQ remembers a connection-test target only for an authorized private /status', async () => {
+test('QQ remembers any authorized private inbound as a connection-test target', async () => {
   const fixture = stateFixture();
   const sent = [];
   const bridge = new QqHarnessBridge({
@@ -270,32 +270,32 @@ test('QQ remembers a connection-test target only for an authorized private /stat
   });
 
   await bridge.accept(message({
-    messageId: 'status-rejected',
+    messageId: 'help-rejected',
     senderId: 'other-openid',
-    content: '/status',
-    replyTarget: { scope: 'c2c', targetId: 'other-openid', msgId: 'status-rejected' },
+    content: '/help',
+    replyTarget: { scope: 'c2c', targetId: 'other-openid', msgId: 'help-rejected' },
   }));
   await bridge.accept(message({
     kind: 'group',
     rawEventType: 'GROUP_AT_MESSAGE_CREATE',
     groupOpenid: 'group-1',
-    messageId: 'status-group',
-    content: '/status',
-    replyTarget: { scope: 'group', targetId: 'group-1', msgId: 'status-group' },
+    messageId: 'help-group',
+    content: '/help',
+    replyTarget: { scope: 'group', targetId: 'group-1', msgId: 'help-group' },
   }));
   assert.equal(connectionTestTarget(fixture.state), null);
 
   const privateTarget = {
-    scope: 'c2c', targetId: 'owner-openid', msgId: 'status-private',
+    scope: 'c2c', targetId: 'owner-openid', msgId: 'help-private',
   };
   await bridge.accept(message({
-    messageId: 'status-private',
-    content: '/status',
+    messageId: 'help-private',
+    content: '/help',
     replyTarget: privateTarget,
   }));
 
   assert.deepEqual(connectionTestTarget(fixture.state), privateTarget);
-  assert.equal(sent.filter(({ text }) => text.includes('连接正常')).length, 2);
+  assert.equal(sent.length, 2);
 });
 
 test('QQ private messages stream Harness snapshots and finalize once', async () => {

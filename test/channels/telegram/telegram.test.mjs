@@ -454,26 +454,15 @@ test('Telegram bridge ignores unaddressed groups and streams direct replies', as
   assert.equal(askCount, 0);
   await bridge.accept({
     messageId: '2', senderId: 'u1', kind: 'direct', conversationId: 'u1', content: 'hello',
-    addressed: true, replyTarget: {},
+    addressed: true,
+    replyTarget: { chatId: 88, replyToMessageId: 7 },
+    connectionTestTarget: { chatId: 88 },
   });
   assert.equal(askCount, 1);
   assert.deepEqual(updates, ['正在使用搜索…', '处理中']);
   assert.deepEqual(sent, ['完成']);
-  await assert.rejects(
-    () => bridge.sendConnectionTest('card test'),
-    (error) => error?.code === 'test-target-unavailable',
-  );
-
-  const statusTarget = { chatId: 88, replyToMessageId: 7 };
-  await bridge.accept({
-    messageId: '3', senderId: 'u1', kind: 'direct', conversationId: 'u1', content: '/status',
-    addressed: true, replyTarget: statusTarget, connectionTestTarget: { chatId: 88 },
-  });
   await bridge.sendConnectionTest('card test');
-  assert.deepEqual(sent.slice(-2), [
-    'Telegram机器人与 DeepSeek Harness 连接正常。',
-    'card test',
-  ]);
+  assert.equal(sent.at(-1), 'card test');
   assert.deepEqual(sentTargets.at(-1), { chatId: 88 });
   const reconnectedBridge = new TelegramHarnessBridge({ bot, harness, state });
   await reconnectedBridge.sendConnectionTest('after reconnect');

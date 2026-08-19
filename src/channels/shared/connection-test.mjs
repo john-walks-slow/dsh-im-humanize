@@ -31,7 +31,7 @@ export function connectionTestMessage(botName, channelLabel = '机器人') {
 }
 
 export function connectionTestTargetUnavailable(channelLabel = '机器人') {
-  const error = new Error(`请先私聊${channelLabel}发送 /status，再点击“检查连接”。`);
+  const error = new Error(`${channelLabel}尚未收到可用于测试的私聊消息。`);
   error.code = 'test-target-unavailable';
   return error;
 }

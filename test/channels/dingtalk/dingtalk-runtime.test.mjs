@@ -45,7 +45,7 @@ function stateFixture() {
   };
 }
 
-test('runtime sends a DingTalk connection test only through the remembered private status webhook', async () => {
+test('runtime sends a DingTalk connection test only through the remembered private webhook', async () => {
   const state = stateFixture();
   const sends = [];
   const client = {
@@ -70,13 +70,13 @@ test('runtime sends a DingTalk connection test only through the remembered priva
     code: 'test-target-unavailable',
   });
   rememberConnectionTestTarget(state, {
-    sessionWebhook: 'https://oapi.dingtalk.com/robot/reply?ticket=status-private',
+    sessionWebhook: 'https://oapi.dingtalk.com/robot/reply?ticket=inbound-private',
   });
   assert.deepEqual(await runtime.sendConnectionTest('连接测试'), { sent: true });
   assert.equal(sends.length, 1);
   assert.equal(sends[0].clientId, 'ding-client');
   assert.equal(sends[0].clientSecret, 'host-secret');
-  assert.equal(sends[0].sessionWebhook, 'https://oapi.dingtalk.com/robot/reply?ticket=status-private');
+  assert.equal(sends[0].sessionWebhook, 'https://oapi.dingtalk.com/robot/reply?ticket=inbound-private');
   assert.equal(sends[0].text, '连接测试');
   await runtime.stop();
 });

@@ -177,6 +177,12 @@ export class QqHarnessBridge {
       || this.#acceptedMessageIds.has(messageId)) return Promise.resolve();
     const key = conversationKey(message);
     this.#acceptedMessageIds.add(messageId);
+    if (message.kind === 'c2c'
+      && (this.#ownerUserOpenid === '*' || sender === this.#ownerUserOpenid)
+      && message.replyTarget?.scope === 'c2c'
+      && nonEmptyString(message.replyTarget.targetId) === sender) {
+      rememberConnectionTestTarget(this.#state, message.replyTarget);
+    }
     const pending = this.#pendingInteractions.get(key);
     const approval = this.#approvals.claimReply({
       key,
@@ -296,11 +302,6 @@ export class QqHarnessBridge {
       }
       if (!hasImages && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
-        if (message.kind === 'c2c'
-          && target?.scope === 'c2c'
-          && nonEmptyString(target.targetId) === sender) {
-          rememberConnectionTestTarget(this.#state, target);
-        }
         await this.#bot.sendText(target, 'QQ 机器人与 DeepSeek Harness 连接正常。');
         await this.#state.markSeen(messageId);
         return;

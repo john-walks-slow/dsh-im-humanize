@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import { FeishuHarnessBridge } from '../../../src/channels/feishu/bridge.mjs';
 import { DEFAULT_IMAGE_PROMPT } from '../../../src/channels/shared/image-prompt.mjs';
+import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
 
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
@@ -85,6 +86,54 @@ function textClient(sendText) {
     } } } },
   };
 }
+
+test('Feishu remembers any authorized private inbound message as a connection-test target', async () => {
+  const groupFixture = stateFixture();
+  const groupBridge = new FeishuHarnessBridge({
+    client: textClient(async () => {}),
+    channel: {},
+    harness: { ensureRunning: async () => true },
+    state: groupFixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+  await groupBridge.accept(event('target-group', '/help', {
+    chat_type: 'group',
+    chat_id: 'oc_group',
+  }));
+  await groupBridge.waitForIdle();
+  assert.equal(connectionTestTarget(groupFixture.state), null);
+
+  const rejectedFixture = stateFixture();
+  const rejectedBridge = new FeishuHarnessBridge({
+    client: textClient(async () => {}),
+    channel: {},
+    harness: { ensureRunning: async () => true },
+    state: rejectedFixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+  await rejectedBridge.accept(event('target-rejected', '/help', {
+    senderOpenId: 'ou_other',
+  }));
+  await rejectedBridge.waitForIdle();
+  assert.equal(connectionTestTarget(rejectedFixture.state), null);
+
+  const privateFixture = stateFixture();
+  const privateBridge = new FeishuHarnessBridge({
+    client: textClient(async () => {}),
+    channel: {},
+    harness: { ensureRunning: async () => true },
+    state: privateFixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['*']),
+  });
+  await privateBridge.accept(event('target-private', '/help', {
+    chat_id: 'oc_private',
+  }));
+  await privateBridge.waitForIdle();
+  assert.deepEqual(connectionTestTarget(privateFixture.state), { chatId: 'oc_private' });
+});
 
 test('Feishu executes /compact for the bound Session without prompting the model', async () => {
   const fixture = stateFixture([['p2p:ou_user', 'session-compact']]);
