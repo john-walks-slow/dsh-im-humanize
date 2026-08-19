@@ -9,6 +9,17 @@ import {
 } from '../src/channels/shared/harness-client.mjs';
 import { createHarnessCommandExecutor } from '../plugin-src/host/harness-command-executor.mjs';
 
+const PRODUCTION_FILES = [
+  'plugin-src/host/channels/feishu/production.mjs',
+  'plugin-src/host/channels/weixin/production.mjs',
+  'plugin-src/host/channels/dingtalk/production.mjs',
+  'plugin-src/host/channels/wecom/production.mjs',
+  'plugin-src/host/channels/qq/production.mjs',
+  'plugin-src/host/channels/slack/production.mjs',
+  'plugin-src/host/channels/shared/production.mjs',
+  'plugin-src/host/channels/whatsapp/production.mjs',
+];
+
 function state(sessionId = 'session-one') {
   return { sessionFor: () => sessionId };
 }
@@ -142,17 +153,7 @@ test('Host command executor invokes the commands Typert endpoint with the Sessio
 });
 
 test('all nine production channels receive the Host command executor', async () => {
-  const productionFiles = [
-    'plugin-src/host/channels/feishu/production.mjs',
-    'plugin-src/host/channels/weixin/production.mjs',
-    'plugin-src/host/channels/dingtalk/production.mjs',
-    'plugin-src/host/channels/wecom/production.mjs',
-    'plugin-src/host/channels/qq/production.mjs',
-    'plugin-src/host/channels/slack/production.mjs',
-    'plugin-src/host/channels/shared/production.mjs',
-    'plugin-src/host/channels/whatsapp/production.mjs',
-  ];
-  for (const path of productionFiles) {
+  for (const path of PRODUCTION_FILES) {
     const source = await readFile(new URL(`../${path}`, import.meta.url), 'utf8');
     assert.match(source, /createHarnessCommandExecutor\(ctx, internals\.commandExecutor\)/, path);
     assert.match(source, /commandExecutor \? \{ commandExecutor \} : \{\}/, path);
@@ -167,5 +168,29 @@ test('all nine production channels receive the Host command executor', async () 
       'utf8',
     );
     assert.match(source, /'typertGateway'/, channel);
+  }
+});
+
+test('all nine production channels defer an omitted agent preset to the Harness Host', async () => {
+  for (const path of PRODUCTION_FILES) {
+    const source = await readFile(new URL(`../${path}`, import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /agentPreset:\s*config\.agentPreset\s*\?\?\s*['"]standard['"]/, path);
+    assert.match(
+      source,
+      /\.\.\.\(config\.agentPreset == null \? \{\} : \{ agentPreset: config\.agentPreset \}\)/,
+      path,
+    );
+  }
+
+  for (const channel of ['telegram', 'discord']) {
+    const source = await readFile(
+      new URL(`../plugin-src/host/channels/${channel}/production.mjs`, import.meta.url),
+      'utf8',
+    );
+    assert.match(
+      source,
+      /createTokenProductionController\(ctx, config, internals,/,
+      `${channel} must delegate to the shared production assembly`,
+    );
   }
 });

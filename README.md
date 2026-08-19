@@ -77,6 +77,8 @@ QQ 扫码接入使用腾讯 QQBot v2 官方流程。默认腾讯授权页会把�
 
 每个机器人维护独立的 Harness 工作区。新接入机器人会把 Harness Host 进程当时的工作目录（`process.cwd()`）记录为默认值；该路径会持久化，不会因为以后从其他目录重启 Host 而改变。设置页的机器人卡片会显示当前路径，并可直接修改。
 
+渠道没有显式配置 `agentPreset` 时，新建的 IM 会话继承 Harness 的 `agent-presets.default` 全局默认值。Harness 会在每次创建会话时读取该默认值，因此修改设置只影响之后创建的新会话；已有会话以及通过 `/session` 绑定的会话保持自身 preset。渠道显式配置的 `agentPreset` 始终优先。
+
 ## 机器人命令
 
 | 命令 | 作用 |
