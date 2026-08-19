@@ -124,8 +124,10 @@ test('/models lists the global catalog without creating a Session', async () => 
   const result = await runModelCommand('/MODELS', harness, state, 'direct:one', { signal });
 
   assert.match(result.message, /DeepSeek/);
-  assert.match(result.message, /deepseek-official\/deepseek-v4-flash/);
-  assert.match(result.message, /openrouter\/anthropic\/claude-sonnet-4/);
+  assert.match(result.message, /1\. deepseek-official\/deepseek-v4-flash/);
+  assert.match(result.message, /2\. deepseek-official\/deepseek-v4-pro/);
+  assert.match(result.message, /3\. openrouter\/anthropic\/claude-sonnet-4/);
+  assert.match(result.message, /切换模型：\/model <序号>/);
   assert.deepEqual(calls, [
     ['sessionFor', 'direct:one'],
     ['listModels', { signal }],
@@ -146,7 +148,7 @@ test('/models marks the current Session model and contains provider-local failur
   const { harness, state } = fixture({ initialSessionId: 'session-one', sessionCatalog });
   const result = await runModelCommand('/models', harness, state, 'direct:one');
 
-  assert.match(result.message, /deepseek-official\/deepseek-v4-pro（当前）/);
+  assert.match(result.message, /2\. deepseek-official\/deepseek-v4-pro（当前）/);
   assert.match(result.message, /Private Provider/);
   assert.doesNotMatch(result.message, /private\.example|secret=abc/);
 });
@@ -181,7 +183,7 @@ test('/models splits a long catalog into lossless 1,800-character messages', asy
   assert.ok(result.messages.length > 1);
   assert.ok(result.messages.every((message) => message.length <= 1_800));
   assert.equal(result.messages.join(''), result.message);
-  assert.match(result.message, /provider\/model-079/);
+  assert.match(result.message, /80\. provider\/model-079/);
 });
 
 test('/model reports current state without creating or selecting', async () => {
@@ -221,6 +223,31 @@ test('/model uses an exact catalog ID and preserves slashes inside the model ID'
   ]);
 });
 
+test('/model accepts the current catalog\'s global 1-based model number', async () => {
+  const { calls, harness, state } = fixture({ initialSessionId: 'session-one' });
+  const result = await runModelCommand('/model 3', harness, state, 'direct:one');
+
+  assert.match(result.message, /openrouter\/anthropic\/claude-sonnet-4/);
+  assert.deepEqual(calls.find(([name]) => name === 'selectModel'), [
+    'selectModel',
+    'session-one',
+    { provider: 'openrouter', model: 'anthropic/claude-sonnet-4' },
+    {},
+  ]);
+});
+
+test('/model rejects invalid model numbers without creating or selecting a Session', async () => {
+  for (const requested of ['0', '4', '9007199254740992']) {
+    const { calls, harness, state } = fixture();
+    const result = await runModelCommand(`/model ${requested}`, harness, state, 'direct:one');
+
+    assert.match(result.message, /模型序号无效/, requested);
+    assert.match(result.message, /\/models/, requested);
+    assert.equal(calls.some(([name]) => name === 'createSession'), false, requested);
+    assert.equal(calls.some(([name]) => name === 'selectModel'), false, requested);
+  }
+});
+
 test('/model rejects unknown IDs before creating a Session', async () => {
   const { calls, harness, state } = fixture();
   const result = await runModelCommand(
@@ -243,7 +270,7 @@ test('/model creates and selects a blank Session before exposing its binding', a
   const { calls, harness, state, boundId } = fixture();
   const signal = new AbortController().signal;
   const result = await runModelCommand(
-    '/model deepseek-official/deepseek-v4-pro',
+    '/model 2',
     harness,
     state,
     'direct:one',
@@ -288,7 +315,7 @@ test('two concurrent first model switches share one created Session', async () =
 
   const results = await Promise.all([
     runModelCommand(
-      '/model deepseek-official/deepseek-v4-pro',
+      '/model 2',
       harness,
       state,
       'direct:one',

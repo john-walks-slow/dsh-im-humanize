@@ -346,7 +346,7 @@ test('DingTalk lists models without prompting and help advertises all four comma
   });
 
   await bridge.accept(message('models-dingtalk', '/models'));
-  assert.match(sent.at(-1).text, /dingtalk-provider\/model-one/);
+  assert.match(sent.at(-1).text, /1\. dingtalk-provider\/model-one/);
   assert.equal(asks, 0);
   assert.equal(creates, 0);
   assert.equal(fixture.sessions.size, 0);
@@ -356,6 +356,7 @@ test('DingTalk lists models without prompting and help advertises all four comma
   for (const command of ['/models', '/model', '/stop', '/steer']) {
     assert.equal(help.includes(command), true, command);
   }
+  assert.match(help, /\/model 2/);
 });
 
 test('bridge maps a DingTalk direct conversation to one persistent Harness session', async () => {

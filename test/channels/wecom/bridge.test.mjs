@@ -178,7 +178,7 @@ test('Enterprise WeChat lists models without prompting and help advertises all f
   });
 
   await bridge.accept(frame({ msgid: 'models-wecom', text: { content: '/models' } }));
-  assert.match(transport.streamed.at(-1).content, /wecom-provider\/model-one/);
+  assert.match(transport.streamed.at(-1).content, /1\. wecom-provider\/model-one/);
   assert.equal(asks, 0);
   assert.equal(creates, 0);
 
@@ -187,6 +187,7 @@ test('Enterprise WeChat lists models without prompting and help advertises all f
   for (const command of ['/models', '/model', '/stop', '/steer']) {
     assert.equal(help.includes(command), true, command);
   }
+  assert.match(help, /\/model 2/);
 });
 
 test('Enterprise WeChat messages stream Harness progress and finalize once', async () => {

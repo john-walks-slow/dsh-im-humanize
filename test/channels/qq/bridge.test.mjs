@@ -283,7 +283,7 @@ test('QQ lists models without prompting and help advertises all four commands', 
   });
 
   await bridge.accept(message({ messageId: 'models-qq', content: '/models' }));
-  assert.match(sent.at(-1), /qq-provider\/model-one/);
+  assert.match(sent.at(-1), /1\. qq-provider\/model-one/);
   assert.equal(asks, 0);
   assert.equal(creates, 0);
   assert.equal(fixture.sessions.size, 0);
@@ -293,6 +293,7 @@ test('QQ lists models without prompting and help advertises all four commands', 
   for (const command of ['/models', '/model', '/stop', '/steer']) {
     assert.equal(help.includes(command), true, command);
   }
+  assert.match(help, /\/model 2/);
 });
 
 test('QQ remembers any authorized private inbound as a connection-test target', async () => {

@@ -4,7 +4,7 @@ import { withSessionBindingLock } from './session-binding-lock.mjs';
 
 const MODEL_COMMAND = /^\/model(?=$|\s)/i;
 const MODELS_COMMAND = /^\/models(?=$|\s)/i;
-const MODEL_USAGE = '用法：/model <provider>/<model>';
+const MODEL_USAGE = '用法：/model <序号> 或 /model <provider>/<model>';
 const MODELS_USAGE = '用法：/models（不带参数）';
 const SESSION_BINDING_CHANGED = 'session-binding-changed';
 const UNSAFE_DISPLAY_TEXT_GLOBAL = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu;
@@ -88,17 +88,46 @@ function matchingModel(catalog, requested) {
   return null;
 }
 
+function modelAt(catalog, requestedIndex) {
+  let index = 0;
+  for (const group of catalog.groups) {
+    for (const model of group.models) {
+      index += 1;
+      if (index === requestedIndex) {
+        return { provider: group.id, model: model.id };
+      }
+    }
+  }
+  return null;
+}
+
+function modelNumberRequest(requested) {
+  if (!/^\d+$/u.test(requested)) return null;
+  const index = Number(requested);
+  return { index: Number.isSafeInteger(index) && index > 0 ? index : null };
+}
+
+function invalidModelNumberMessage(requested) {
+  return [
+    `模型序号无效：${safeDisplayText(requested)}`,
+    '',
+    '请发送 /models 查看并输入有效的正整数序号。',
+  ].join('\n');
+}
+
 function formatCatalog(catalog) {
   const currentId = catalog.current
     ? modelId(catalog.current.provider, catalog.current.model)
     : null;
   const lines = ['可用模型：'];
+  let index = 0;
   if (catalog.groups.length === 0) lines.push('', '当前没有可用模型。');
   for (const group of catalog.groups) {
     lines.push('', safeDisplayText(group.name) || safeDisplayText(group.id));
     for (const model of group.models) {
+      index += 1;
       const id = modelId(group.id, model.id);
-      lines.push(`- ${safeDisplayText(id)}${id === currentId ? '（当前）' : ''}`);
+      lines.push(`${index}. ${safeDisplayText(id)}${id === currentId ? '（当前）' : ''}`);
     }
   }
   if (catalog.failures.length > 0) {
@@ -107,6 +136,7 @@ function formatCatalog(catalog) {
       lines.push(`- ${safeDisplayText(failure.name) || safeDisplayText(failure.id)}`);
     }
   }
+  if (index > 0) lines.push('', '切换模型：/model <序号>');
   return lines.join('\n');
 }
 
@@ -116,7 +146,7 @@ function currentModelMessage(current) {
     modelId(current.provider, current.model),
     '',
     '查看全部模型：/models',
-    '切换模型：/model <provider>/<model>',
+    '切换模型：/model <序号>',
   ].join('\n');
 }
 
@@ -125,7 +155,7 @@ function noSessionMessage() {
     '当前聊天还没有会话。',
     '',
     '查看模型：/models',
-    '选择模型：/model <provider>/<model>',
+    '选择模型：/model <序号>',
   ].join('\n');
 }
 
@@ -243,7 +273,12 @@ export async function runModelCommand(text, harness, state, key, options = {}) {
       return commandResult(modelErrorMessage(error, 'select'));
     }
   }
-  if (!requested.includes('/') || requested.startsWith('/') || requested.endsWith('/')) {
+  const numberRequest = modelNumberRequest(requested);
+  if (numberRequest?.index === null) {
+    return commandResult(invalidModelNumberMessage(requested));
+  }
+  if (!numberRequest
+    && (!requested.includes('/') || requested.startsWith('/') || requested.endsWith('/'))) {
     return commandResult(MODEL_USAGE);
   }
   if (options.pendingInteraction) {
@@ -264,8 +299,11 @@ export async function runModelCommand(text, harness, state, key, options = {}) {
       const catalog = bound
         ? await sessionCatalog(bound.session, requestOptions)
         : await listCatalog(harness, requestOptions);
-      const selection = matchingModel(catalog, requested);
+      const selection = numberRequest
+        ? modelAt(catalog, numberRequest.index)
+        : matchingModel(catalog, requested);
       if (!selection) {
+        if (numberRequest) return commandResult(invalidModelNumberMessage(requested));
         return commandResult([
           `没有找到模型：${safeDisplayText(requested)}`,
           '',

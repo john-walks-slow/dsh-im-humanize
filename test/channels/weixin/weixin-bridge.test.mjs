@@ -241,7 +241,7 @@ test('Weixin lists models without prompting and help advertises all four command
   });
 
   await bridge.accept(message('models-weixin', '/models'));
-  assert.match(sent.at(-1).text, /weixin-provider\/model-one/);
+  assert.match(sent.at(-1).text, /1\. weixin-provider\/model-one/);
   assert.equal(asks, 0);
   assert.equal(creates, 0);
   assert.equal(fixture.sessions.size, 0);
@@ -251,6 +251,7 @@ test('Weixin lists models without prompting and help advertises all four command
   for (const command of ['/models', '/model', '/stop', '/steer']) {
     assert.equal(help.includes(command), true, command);
   }
+  assert.match(help, /\/model 2/);
 });
 
 test('bridge maps the scanning Weixin user to one persistent Harness session and echoes context_token', async () => {

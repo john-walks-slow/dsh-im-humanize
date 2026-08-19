@@ -91,9 +91,9 @@ GitHub 源安装会直接拉取并构建 Git 依赖；pnpm 10 及以上版本可
 | `/help` | 显示机器人支持的命令和用法。 |
 | `/new` | 解除当前聊天的会话绑定，让下一条普通消息开启全新 Harness 会话。 |
 | `/status` | 检查当前机器人与 DeepSeek Harness 的连接状态。 |
-| `/models` | 按 Provider 列出当前配置的全部可用模型。 |
+| `/models` | 按序号列出当前配置的全部可用模型。 |
 | `/model` | 查看当前聊天绑定会话正在使用的模型。 |
-| `/model <Provider/模型ID>` | 切换当前聊天绑定会话的模型。 |
+| `/model <序号或 Provider/模型ID>` | 切换当前聊天绑定会话的模型。 |
 | `/stop` | 立即停止当前聊天正在运行的任务，并保留尚未开始的排队消息。 |
 | `/steer <补充指令>` | 把补充指令立即加入当前聊天正在运行的任务。 |
 | `/compact` | 立即压缩当前聊天绑定会话的较早上下文。 |
@@ -104,15 +104,15 @@ GitHub 源安装会直接拉取并构建 Git 依赖；pnpm 10 及以上版本可
 | 交互式提问 | 回复选项序号、选项文字或自定义文字；多选时用逗号分隔。 |
 | 远程审批 | 回复 `批准` / `拒绝` / `同意` / `不同意` / `yes` / `no`。 |
 
-示例：`/help`、`/new`、`/status`、`/models`、`/model deepseek-official/deepseek-v4-pro`、`/steer 只检查配置文件`、`/stop`、`/compact`、`/workspace /Users/alice/projects/my-app`、`/sessionlist 2`、`/sessionlist /Users/alice/projects/my-app` 或 `/session session-id`
+示例：先发送 `/models`，再发送 `/model 2` 切换到列表中的第 2 个模型。其他命令示例：`/help`、`/new`、`/status`、`/model deepseek-official/deepseek-v4-pro`、`/steer 只检查配置文件`、`/stop`、`/compact`、`/workspace /Users/alice/projects/my-app`、`/sessionlist 2`、`/sessionlist /Users/alice/projects/my-app` 或 `/session session-id`
 
 ### 命令说明
 
 - `/help` 不需要参数，也不会创建会话；它会返回当前机器人支持的完整命令列表。
 - `/status` 不需要参数，也不会向模型发送消息或改变会话绑定；它用于确认当前机器人能够连接 DeepSeek Harness。
 - `/new` 只解除当前聊天在 dsh-im 中保存的会话绑定，不会删除、清空或归档旧 Session。下一条普通消息会在当前工作区创建并绑定一个新 Session。任务正在运行或等待问题、审批时，应先完成交互或使用 `/stop`，再使用 `/new`。
-- `/models` 不需要参数，也不会创建会话。它列出 Harness 当前配置的全部可用模型，使用可稳定复制的 `Provider/模型ID`；某个 Provider 查询失败时，其他 Provider 的结果仍会显示。
-- `/model` 不带参数时只查看当前会话模型；带完整模型 ID 时只接受 `/models` 列出的精确值。聊天尚无会话时，有效的切换命令会创建并绑定一个空白会话，但不会触发模型回复。切换只影响当前会话；Harness 还会尝试把它保存为以后新会话的默认模型，已有其他会话不受影响。
+- `/models` 不需要参数，也不会创建会话。它为 Harness 当前配置的全部可用模型分配序号，同时显示可稳定复制的 `Provider/模型ID`；某个 Provider 查询失败时，其他 Provider 的结果仍会显示。
+- `/model` 不带参数时只查看当前会话模型；带参数时接受 `/models` 列出的序号或完整模型 ID，例如 `/model 2`。完整 ID 必须精确匹配。聊天尚无会话时，有效的切换命令会创建并绑定一个空白会话，但不会触发模型回复。切换只影响当前会话；Harness 还会尝试把它保存为以后新会话的默认模型，已有其他会话不受影响。
 - 正在运行任务或等待审批、问题回答时不能切换模型；请等待完成，或先使用 `/stop`。含图片的会话无法切换到不支持图片输入的模型。
 - `/stop` 和 `/steer` 只控制当前聊天自己发起的运行任务，即使多个聊天绑定同一个 Session，也不会有意控制其他聊天的任务。`/stop` 不删除会话或历史，并保留尚未开始的排队消息；重复发送是安全的。
 - `/steer` 只接受文字，可包含多行；它不会创建新会话或第二个任务。没有运行任务时请直接发送普通消息；等待审批或问题回答时请先处理交互，或使用 `/stop`。

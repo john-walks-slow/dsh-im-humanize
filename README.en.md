@@ -88,9 +88,9 @@ After installation, follow the built-in instructions on each channel page to sca
 | `/help` | Show the commands and usage supported by the bot. |
 | `/new` | Unbind the current chat so its next ordinary message starts a new Harness Session. |
 | `/status` | Check the connection between the current bot and DeepSeek Harness. |
-| `/models` | List every currently configured model, grouped by provider. |
+| `/models` | List every currently configured model with a number. |
 | `/model` | Show the model used by the Session bound to this chat. |
-| `/model <provider/model-id>` | Switch the model for the Session bound to this chat. |
+| `/model <number or provider/model-id>` | Switch the model for the Session bound to this chat. |
 | `/stop` | Immediately stop this chat's running task while preserving work that has not started. |
 | `/steer <additional instruction>` | Inject an additional instruction into this chat's running task. |
 | `/compact` | Immediately compact older context in the Session bound to the current chat. |
@@ -101,15 +101,15 @@ After installation, follow the built-in instructions on each channel page to sca
 | Interactive question | Reply with an option number, option label, or custom text; separate multiple choices with commas. |
 | Remote approval | Reply with `批准` / `拒绝` / `同意` / `不同意` / `yes` / `no`. |
 
-Examples: `/help`, `/new`, `/status`, `/models`, `/model deepseek-official/deepseek-v4-pro`, `/steer inspect only the configuration file`, `/stop`, `/compact`, `/workspace /Users/alice/projects/my-app`, `/sessionlist 2`, `/sessionlist /Users/alice/projects/my-app`, or `/session session-id`
+Example: send `/models`, then `/model 2` to switch to the second model in the list. Other examples: `/help`, `/new`, `/status`, `/model deepseek-official/deepseek-v4-pro`, `/steer inspect only the configuration file`, `/stop`, `/compact`, `/workspace /Users/alice/projects/my-app`, `/sessionlist 2`, `/sessionlist /Users/alice/projects/my-app`, or `/session session-id`
 
 ### Command details
 
 - `/help` takes no arguments and never creates a Session. It returns the complete command list supported by the current bot.
 - `/status` takes no arguments, never prompts the model, and does not change the Session binding. It confirms that the current bot can reach DeepSeek Harness.
 - `/new` only removes the current chat's saved dsh-im Session binding; it never deletes, empties, or archives the old Session. The next ordinary message creates and binds a new Session in the current workspace. If a task is running or waiting for a question or approval, finish the interaction or use `/stop` before `/new`.
-- `/models` takes no arguments and never creates a Session. It lists every currently configured Harness model using stable, copyable `provider/model-id` values. If one provider fails, models from the remaining providers are still shown.
-- Bare `/model` only displays the current Session model. `/model <provider/model-id>` accepts an exact value returned by `/models`. When the chat has no Session yet, a valid switch creates and binds a blank Session without prompting the model. The switch affects only that Session; Harness also attempts to save it as the default for future Sessions, while other existing Sessions remain unchanged.
+- `/models` takes no arguments and never creates a Session. It assigns a number to every currently configured Harness model and also shows its stable, copyable `provider/model-id`. If one provider fails, models from the remaining providers are still shown.
+- Bare `/model` only displays the current Session model. A model can be selected by the number or exact full ID returned by `/models`, for example `/model 2`. When the chat has no Session yet, a valid switch creates and binds a blank Session without prompting the model. The switch affects only that Session; Harness also attempts to save it as the default for future Sessions, while other existing Sessions remain unchanged.
 - A model cannot be switched while a task is running or waiting for an approval or question answer. Wait for it to finish or use `/stop` first. A Session containing images cannot switch to a model that does not accept image input.
 - `/stop` and `/steer` control only a running task started by this chat. Even when multiple chats bind the same Session, they do not intentionally control another chat's task. `/stop` does not delete the Session or its history, preserves queued work that has not started, and is safe to repeat.
 - `/steer` accepts text only, including multiple lines. It neither creates another Session nor starts a second task. Send an ordinary message when no task is running; while an approval or question is pending, answer it first or use `/stop`.

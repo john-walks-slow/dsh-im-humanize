@@ -188,7 +188,7 @@ test('Feishu lists models without prompting and help advertises all four command
 
   await bridge.accept(event('models-feishu', '/models'));
   await bridge.waitForIdle();
-  assert.match(sent.at(-1), /feishu-provider\/model-one/);
+  assert.match(sent.at(-1), /1\. feishu-provider\/model-one/);
   assert.equal(asks, 0);
   assert.equal(creates, 0);
   assert.equal(fixture.sessions.size, 0);
@@ -199,6 +199,7 @@ test('Feishu lists models without prompting and help advertises all four command
   for (const command of ['/models', '/model', '/stop', '/steer']) {
     assert.equal(help.includes(command), true, command);
   }
+  assert.match(help, /\/model 2/);
 });
 
 test('bridge maps a Feishu conversation to a persistent Harness session and replies', async () => {

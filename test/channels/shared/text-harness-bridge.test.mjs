@@ -193,7 +193,7 @@ test('all four shared text channels list models locally and advertise all four c
     });
 
     await bridge.accept(message(`models-${name}`, '/models'));
-    assert.match(sent.at(-1), new RegExp(`${name}-provider/model-one`), name);
+    assert.match(sent.at(-1), new RegExp(`1\\. ${name}-provider/model-one`), name);
     assert.equal(asks, 0, `${name} ask`);
     assert.equal(creates, 0, `${name} create`);
     assert.equal(fixture.sessions.size, 0, `${name} session binding`);
@@ -203,6 +203,7 @@ test('all four shared text channels list models locally and advertise all four c
     for (const command of ['/models', '/model', '/stop', '/steer']) {
       assert.match(help, new RegExp(`\\${command}`), `${name} ${command}`);
     }
+    assert.match(help, /\/model 2/, `${name} numbered model selection`);
   }
 });
 
