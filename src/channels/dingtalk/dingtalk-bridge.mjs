@@ -10,6 +10,14 @@ import {
 } from '../shared/harness-question.mjs';
 import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
 import { runCompactCommand } from '../shared/compact-command.mjs';
+import {
+  isControlCommand,
+  runControlCommand,
+} from '../shared/control-command.mjs';
+import {
+  isModelCommand,
+  runModelCommand,
+} from '../shared/model-command.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 import {
@@ -33,6 +41,10 @@ const HELP_TEXT = [
   '/workspacelist  列出工作区绝对路径',
   '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
   '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
+  '/models  列出所有可用模型',
+  '/model [模型ID]  查看或切换当前会话模型',
+  '/stop  停止当前任务',
+  '/steer 补充指令  纠偏当前任务',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');
@@ -246,6 +258,7 @@ export class DingtalkHarnessBridge {
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
   #interactionTasks = new Set();
+  #commandTasks = new Set();
   #acceptedMessageIds = new Set();
   #approvals;
 
@@ -314,6 +327,37 @@ export class DingtalkHarnessBridge {
       rememberConnectionTestTarget(this.#state, { sessionWebhook });
     }
     const pending = this.#pendingInteractions.get(key);
+    const promptMessage = dingtalkInboundMessage(message, {
+      api: this.#api,
+      clientId: this.#clientId,
+      clientSecret: this.#clientSecret,
+    });
+    const commandText = nonEmptyString(promptMessage.content) ?? '';
+    const commandRunner = isControlCommand(commandText)
+      ? runControlCommand
+      : (isModelCommand(commandText) ? runModelCommand : null);
+    const addressed = String(message.conversationType) !== '2' || message?.isInAtList === true;
+    if (commandRunner && sessionWebhook && addressed) {
+      let task;
+      task = this.#processFastCommand(
+        message,
+        messageId,
+        key,
+        sessionWebhook,
+        promptMessage,
+        commandRunner,
+      ).catch((error) => {
+        if (error?.code === 'turn-stopped' || this.#signal?.aborted) return;
+        this.#status.lastError = '钉钉命令处理失败。';
+        this.#logger.error?.('[dsh-dingtalk] failed to process a command', safeErrorDiagnostic(error));
+        return this.#send(sessionWebhook, CARD_ERROR_TEXT).catch(() => undefined);
+      }).finally(() => {
+        this.#acceptedMessageIds.delete(messageId);
+        this.#commandTasks.delete(task);
+      });
+      this.#commandTasks.add(task);
+      return task;
+    }
     const approvalReply = this.#approvals.claimReply({
       key,
       actor: sender,
@@ -412,7 +456,39 @@ export class DingtalkHarnessBridge {
         pending.queue ? [pending.queue] : []
       )),
       ...this.#interactionTasks,
+      ...this.#commandTasks,
     ]);
+  }
+
+  async #processFastCommand(message, messageId, key, sessionWebhook, prompt, runner) {
+    this.#signal?.throwIfAborted();
+    if (this.#state.hasSeen(messageId)) return;
+    await this.#state.markSeen(messageId);
+    increment(this.#status, 'messagesReceived');
+    this.#status.lastMessageAt = new Date().toISOString();
+    const result = await runner(
+      nonEmptyString(prompt.content) ?? '',
+      this.#harness,
+      this.#state,
+      key,
+      {
+        signal: this.#signal,
+        hasImages: hasInboundImages(prompt),
+        pendingInteraction: this.#pendingInteractions.has(key)
+          || this.#approvals.hasPending(key),
+        control: { owner: this, key },
+      },
+    );
+    if (result?.stopped) {
+      await Promise.allSettled([
+        this.#cancelPendingInteraction(key),
+        this.#approvals.closeRoute(key),
+      ]);
+    }
+    for (const reply of result?.messages ?? [result?.message]) {
+      if (reply) await this.#send(sessionWebhook, reply);
+    }
+    this.#status.lastError = null;
   }
 
   async #process(message, messageId, sender, key, { alreadyRecorded = false } = {}) {
@@ -519,6 +595,7 @@ export class DingtalkHarnessBridge {
         askOptions: {
           timeoutMs: this.#replyTimeoutMs,
           signal: this.#signal,
+          control: { owner: this, key },
           onUpdate: cardStarted
             ? (update) => cardStream.push(progressText(update))
             : undefined,
@@ -537,6 +614,10 @@ export class DingtalkHarnessBridge {
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
     } catch (error) {
+      if (error?.code === 'turn-stopped') {
+        if (cardStarted) await cardStream.finish('已停止。').catch(() => undefined);
+        return;
+      }
       if (this.#signal?.aborted) return;
       this.#status.lastError = '钉钉消息处理失败。';
       this.#logger.error?.(

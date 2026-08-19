@@ -11,6 +11,14 @@ import {
 } from '../shared/harness-question.mjs';
 import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
 import { runCompactCommand } from '../shared/compact-command.mjs';
+import {
+  isControlCommand,
+  runControlCommand,
+} from '../shared/control-command.mjs';
+import {
+  isModelCommand,
+  runModelCommand,
+} from '../shared/model-command.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 import {
@@ -32,6 +40,10 @@ const HELP_TEXT = [
   '/workspacelist  列出工作区绝对路径',
   '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
   '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
+  '/models  列出所有可用模型',
+  '/model [模型ID]  查看或切换当前会话模型',
+  '/stop  停止当前任务',
+  '/steer 补充指令  纠偏当前任务',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');
@@ -85,6 +97,7 @@ export class WeixinHarnessBridge {
   #interactionKeys = new Map();
   #acceptedMessageIds = new Set();
   #approvalTasks = new Set();
+  #commandTasks = new Set();
   #approvals;
 
   constructor({
@@ -136,6 +149,34 @@ export class WeixinHarnessBridge {
     const contextToken = nonEmptyString(message?.context_token) ?? undefined;
     const runId = nonEmptyString(message?.run_id) ?? undefined;
     const pending = this.#pendingInteractions.get(key);
+    const commandText = nonEmptyString(extractWeixinText(message)) ?? '';
+    const commandRunner = isControlCommand(commandText)
+      ? runControlCommand
+      : (isModelCommand(commandText) ? runModelCommand : null);
+    if (commandRunner && sender === this.#ownerUserId) {
+      let task;
+      task = this.#processFastCommand(
+        message,
+        messageId,
+        key,
+        sender,
+        contextToken,
+        runId,
+        commandText,
+        commandRunner,
+      ).catch((error) => {
+        if (error?.code === 'turn-stopped' || this.#signal?.aborted) return;
+        this.#status.lastError = error?.message ?? String(error);
+        this.#logger.error?.('[dsh-weixin] failed to process a command:', error);
+        return this.#send(sender, '消息处理失败，请稍后重试。', contextToken, runId)
+          .catch(() => undefined);
+      }).finally(() => {
+        this.#acceptedMessageIds.delete(messageId);
+        this.#commandTasks.delete(task);
+      });
+      this.#commandTasks.add(task);
+      return task;
+    }
     const approval = this.#approvals.claimReply({
       key,
       actor: sender,
@@ -211,7 +252,42 @@ export class WeixinHarnessBridge {
         pending.queue ? [pending.queue] : []
       )),
       ...this.#approvalTasks,
+      ...this.#commandTasks,
     ]);
+  }
+
+  async #processFastCommand(
+    message,
+    messageId,
+    key,
+    sender,
+    contextToken,
+    runId,
+    text,
+    runner,
+  ) {
+    this.#signal?.throwIfAborted();
+    if (this.#state.hasSeen(messageId)) return;
+    await this.#state.markSeen(messageId);
+    this.#status.messagesReceived += 1;
+    this.#status.lastMessageAt = new Date().toISOString();
+    const result = await runner(text, this.#harness, this.#state, key, {
+      signal: this.#signal,
+      hasImages: hasWeixinImageItems(message),
+      pendingInteraction: this.#pendingInteractions.has(key)
+        || this.#approvals.hasPending(key),
+      control: { owner: this, key },
+    });
+    if (result?.stopped) {
+      await Promise.allSettled([
+        this.#cancelPendingInteraction(key),
+        this.#approvals.closeRoute(key),
+      ]);
+    }
+    for (const reply of result?.messages ?? [result?.message]) {
+      if (reply) await this.#send(sender, reply, contextToken, runId);
+    }
+    this.#status.lastError = null;
   }
 
   async #process(message, key, { alreadyRecorded = false } = {}) {
@@ -303,6 +379,7 @@ export class WeixinHarnessBridge {
           askOptions: {
             timeoutMs: this.#replyTimeoutMs,
             signal: this.#signal,
+            control: { owner: this, key },
             onInteraction: (interaction) => this.#handleInteraction(interaction, {
               key,
               actor: sender,
@@ -324,6 +401,10 @@ export class WeixinHarnessBridge {
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
     } catch (error) {
+      if (error?.code === 'turn-stopped') {
+        await this.#state.markSeen(messageId);
+        return;
+      }
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);
       this.#logger.error?.('[dsh-weixin] failed to process an inbound message:', error);

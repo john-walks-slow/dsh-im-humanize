@@ -12,10 +12,75 @@ const interactionRegistries = new Map();
 function interactionRegistry(origin) {
   let registry = interactionRegistries.get(origin);
   if (!registry) {
-    registry = { ownerships: new Map(), claims: new Map(), nextOrder: 0 };
+    registry = {
+      ownerships: new Map(),
+      claims: new Map(),
+      controls: new WeakMap(),
+      nextOrder: 0,
+    };
     interactionRegistries.set(origin, registry);
   }
   return registry;
+}
+
+function normalizeControl(control) {
+  const ownerType = typeof control?.owner;
+  if ((ownerType !== 'object' && ownerType !== 'function')
+    || control.owner === null
+    || typeof control.key !== 'string'
+    || !control.key) return null;
+  return { owner: control.owner, key: control.key };
+}
+
+function validModelSelection(value) {
+  return value !== null
+    && typeof value === 'object'
+    && typeof value.provider === 'string'
+    && Boolean(value.provider)
+    && typeof value.model === 'string'
+    && Boolean(value.model)
+    && (value.reasoningEffort === undefined || typeof value.reasoningEffort === 'string');
+}
+
+function validateModelCatalog(value, method, { session = false } = {}) {
+  if (!value || typeof value !== 'object'
+    || !Array.isArray(value.groups)
+    || !Array.isArray(value.failures)) {
+    throw new Error(`Harness returned an invalid response for ${method}`);
+  }
+  for (const group of value.groups) {
+    if (!group || typeof group !== 'object'
+      || typeof group.id !== 'string' || !group.id
+      || typeof group.name !== 'string' || !group.name
+      || !Array.isArray(group.models)) {
+      throw new Error(`Harness returned an invalid response for ${method}`);
+    }
+    for (const model of group.models) {
+      if (!model || typeof model !== 'object'
+        || typeof model.id !== 'string' || !model.id
+        || typeof model.name !== 'string' || !model.name) {
+        throw new Error(`Harness returned an invalid response for ${method}`);
+      }
+    }
+  }
+  for (const failure of value.failures) {
+    if (!failure || typeof failure !== 'object'
+      || typeof failure.id !== 'string' || !failure.id
+      || typeof failure.name !== 'string' || !failure.name
+      || (failure.message !== undefined && typeof failure.message !== 'string')) {
+      throw new Error(`Harness returned an invalid response for ${method}`);
+    }
+  }
+  if (session && (!validModelSelection(value.current) || typeof value.routable !== 'boolean')) {
+    throw new Error(`Harness returned an invalid response for ${method}`);
+  }
+  return value;
+}
+
+function turnStoppedError() {
+  const error = new Error('Harness turn was stopped before producing a text reply');
+  error.code = 'turn-stopped';
+  return error;
 }
 
 function workspacePaths(value) {
@@ -319,10 +384,13 @@ export class HarnessClient {
   #rpcIdPrefix;
   #logPrefix;
   #commandExecutor;
+  #controlExecutor;
+  #sessionMaintenanceExecutor;
   #managedProcess = null;
   #interactionRegistry;
   #interactionOwnerships;
   #interactionClaims;
+  #controlOwnerships;
 
   constructor({
     baseUrl,
@@ -336,6 +404,8 @@ export class HarnessClient {
     rpcIdPrefix = 'im',
     logPrefix = 'dsh-im',
     commandExecutor,
+    controlExecutor,
+    sessionMaintenanceExecutor,
   }) {
     if (typeof createWebSocket !== 'function') {
       throw new TypeError('createWebSocket must be a function');
@@ -352,6 +422,13 @@ export class HarnessClient {
     if (commandExecutor !== undefined && typeof commandExecutor !== 'function') {
       throw new TypeError('commandExecutor must be a function');
     }
+    if (controlExecutor !== undefined && typeof controlExecutor !== 'function') {
+      throw new TypeError('controlExecutor must be a function');
+    }
+    if (sessionMaintenanceExecutor !== undefined
+      && typeof sessionMaintenanceExecutor !== 'function') {
+      throw new TypeError('sessionMaintenanceExecutor must be a function');
+    }
     this.#baseUrl = new URL(baseUrl);
     this.#workspace = workspace;
     // Keep an omitted preset absent so session.create resolves the Host's current default.
@@ -364,9 +441,12 @@ export class HarnessClient {
     this.#rpcIdPrefix = rpcIdPrefix.trim();
     this.#logPrefix = logPrefix.trim();
     this.#commandExecutor = commandExecutor;
+    this.#controlExecutor = controlExecutor;
+    this.#sessionMaintenanceExecutor = sessionMaintenanceExecutor;
     this.#interactionRegistry = interactionRegistry(this.#baseUrl.origin);
     this.#interactionOwnerships = this.#interactionRegistry.ownerships;
     this.#interactionClaims = this.#interactionRegistry.claims;
+    this.#controlOwnerships = this.#interactionRegistry.controls;
   }
 
   async rpc(method, payload = {}, timeoutMs = 30_000, options = {}) {
@@ -441,6 +521,61 @@ export class HarnessClient {
     if (!workspace) return { workspace: workspacePath, sessions: [] };
     const sessionList = await this.rpc('session.list', {}, 30_000, options);
     return workspaceSessions(workspace, workspaceList.archivedSessionIds, sessionList);
+  }
+
+  async listModels(options = {}) {
+    await this.ensureRunning(options);
+    const value = await this.rpc('llm.models', {}, 30_000, options);
+    return validateModelCatalog(value, 'llm.models');
+  }
+
+  async getSessionModels(sessionId, options = {}) {
+    if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('sessionId is required');
+    await this.ensureRunning(options);
+    const value = await this.rpc('session.models', { sessionId }, 30_000, options);
+    return validateModelCatalog(value, 'session.models', { session: true });
+  }
+
+  async selectSessionModel(sessionId, selection, options = {}) {
+    if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('sessionId is required');
+    if (!validModelSelection(selection)) {
+      throw new TypeError('A provider and model are required');
+    }
+    await this.ensureRunning(options);
+    const operation = (maintenanceSignal) => {
+      const signal = maintenanceSignal && options.signal
+        ? AbortSignal.any([maintenanceSignal, options.signal])
+        : (maintenanceSignal ?? options.signal);
+      return this.rpc('session.selectModel', {
+        sessionId,
+        provider: selection.provider,
+        model: selection.model,
+      }, 30_000, signal ? { ...options, signal } : options);
+    };
+    const value = this.#sessionMaintenanceExecutor
+      ? await this.#sessionMaintenanceExecutor({ sessionId, operation })
+      : await operation();
+    if (!value || typeof value !== 'object' || !validModelSelection(value.selected)) {
+      throw new Error('Harness returned an invalid response for session.selectModel');
+    }
+    return value;
+  }
+
+  async isSessionRunning(sessionId, options = {}) {
+    if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('sessionId is required');
+    await this.ensureRunning(options);
+    const value = await this.rpc('session.list', {}, 30_000, options);
+    if (!value || typeof value !== 'object' || !Array.isArray(value.items)) {
+      throw new Error('Harness returned an invalid response for session.list');
+    }
+    for (const item of value.items) {
+      if (!item || typeof item !== 'object'
+        || typeof item.sessionId !== 'string' || !item.sessionId
+        || typeof item.running !== 'boolean') {
+        throw new Error('Harness returned an invalid response for session.list');
+      }
+    }
+    return value.items.find((item) => item.sessionId === sessionId)?.running ?? false;
   }
 
   async adoptWorkspaceSession(value, options = {}) {
@@ -585,6 +720,154 @@ export class HarnessClient {
     }
   }
 
+  #registerControlOwnership(ownership) {
+    if (!ownership.control) return;
+    let routes = this.#controlOwnerships.get(ownership.control.owner);
+    if (!routes) {
+      routes = new Map();
+      this.#controlOwnerships.set(ownership.control.owner, routes);
+    }
+    const owners = routes.get(ownership.control.key) ?? new Set();
+    owners.add(ownership);
+    routes.set(ownership.control.key, owners);
+  }
+
+  #unregisterControlOwnership(ownership) {
+    if (!ownership.control) return;
+    const routes = this.#controlOwnerships.get(ownership.control.owner);
+    const owners = routes?.get(ownership.control.key);
+    owners?.delete(ownership);
+    if (owners?.size === 0) routes.delete(ownership.control.key);
+    if (routes?.size === 0) this.#controlOwnerships.delete(ownership.control.owner);
+  }
+
+  #controlCandidates(sessionId, control) {
+    const normalized = normalizeControl(control);
+    if (!normalized) return [];
+    const owners = this.#controlOwnerships.get(normalized.owner)?.get(normalized.key);
+    return [...(owners ?? [])]
+      .filter((ownership) => ownership.sessionId === sessionId)
+      .sort((left, right) => left.order - right.order);
+  }
+
+  #activeControlOwnership(sessionId, control) {
+    return this.#controlCandidates(sessionId, control).find((ownership) => (
+      ownership.started
+      && ownership.active
+      && !ownership.completed
+      && ownership.turn !== null
+    )) ?? null;
+  }
+
+  async #refreshControlOwnership(sessionId, control, options) {
+    const candidates = this.#controlCandidates(sessionId, control);
+    // An exact local owner is mandatory before even observing the Session.
+    // This prevents an unrelated chat bound to the same Session from using
+    // run state as authority to cancel or steer somebody else's turn.
+    if (candidates.length === 0) return null;
+    try {
+      const history = await this.rpc(
+        'session.history',
+        { sessionId, maxMessages: 50 },
+        30_000,
+        options,
+      );
+      this.#consumeInteractionOwnerships(sessionId, history.events ?? []);
+    } catch (error) {
+      if (!(error instanceof HarnessRpcError) || error.code !== 'session-not-found') throw error;
+      for (const ownership of candidates) {
+        ownership.active = false;
+        ownership.completed = true;
+      }
+      return null;
+    }
+    return this.#activeControlOwnership(sessionId, control);
+  }
+
+  async hasActiveTurn(sessionId, control, options = {}) {
+    if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('sessionId is required');
+    return Boolean(await this.#refreshControlOwnership(sessionId, control, options));
+  }
+
+  async stopActiveTurn(sessionId, control, options = {}) {
+    if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('sessionId is required');
+    const ownership = await this.#refreshControlOwnership(sessionId, control, options);
+    if (!ownership) return false;
+    if (ownership.stopRequested) return true;
+    // Re-check after the refresh await. The owning ask may have completed and
+    // unregistered while session.history was in flight.
+    if (this.#activeControlOwnership(sessionId, control) !== ownership) return false;
+    ownership.stopRequested = true;
+    try {
+      if (this.#controlExecutor) {
+        const accepted = this.#controlExecutor({
+          sessionId,
+          expectedTurn: ownership.turn,
+          promptRpcId: ownership.promptRpcId,
+          action: 'stop',
+        });
+        if (accepted && typeof accepted.then === 'function') {
+          throw new TypeError('controlExecutor must return synchronously');
+        }
+        if (accepted !== undefined) {
+          if (typeof accepted !== 'boolean') {
+            throw new TypeError('controlExecutor must return a boolean or undefined');
+          }
+          if (!accepted) ownership.stopRequested = false;
+          return accepted;
+        }
+      }
+      await this.rpc(
+        'session.cancel',
+        { sessionId, keepInbox: true },
+        30_000,
+        options,
+      );
+      return true;
+    } catch (error) {
+      if (this.#activeControlOwnership(sessionId, control) === ownership) {
+        ownership.stopRequested = false;
+      }
+      if (error instanceof HarnessRpcError && error.code === 'session-not-found') return false;
+      throw error;
+    }
+  }
+
+  async steerActiveTurn(sessionId, text, control, options = {}) {
+    if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('sessionId is required');
+    if (typeof text !== 'string' || !text.trim()) {
+      throw new TypeError('Steering text is required');
+    }
+    const ownership = await this.#refreshControlOwnership(sessionId, control, options);
+    if (!ownership || ownership.stopRequested) return false;
+    if (this.#activeControlOwnership(sessionId, control) !== ownership) return false;
+    if (this.#controlExecutor) {
+      const accepted = this.#controlExecutor({
+        sessionId,
+        expectedTurn: ownership.turn,
+        promptRpcId: ownership.promptRpcId,
+        action: 'steer',
+        text,
+      });
+      if (accepted && typeof accepted.then === 'function') {
+        throw new TypeError('controlExecutor must return synchronously');
+      }
+      if (accepted !== undefined) {
+        if (typeof accepted !== 'boolean') {
+          throw new TypeError('controlExecutor must return a boolean or undefined');
+        }
+        return accepted;
+      }
+    }
+    await this.rpc('session.prompt', {
+      sessionId,
+      mode: 'steer',
+      content: [{ type: 'text', text }],
+      clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }, 30_000, options);
+    return true;
+  }
+
   #consumeInteractionOwnerships(sessionId, entries) {
     for (const ownership of this.#interactionOwnerships.get(sessionId) ?? []) {
       consumeInteractionOwnership(ownership, entries);
@@ -634,6 +917,7 @@ export class HarnessClient {
     const onInteractionResolved = typeof options.onInteractionResolved === 'function'
       ? options.onInteractionResolved
       : undefined;
+    const control = normalizeControl(options.control);
     await this.ensureRunning({ signal });
     const before = await this.rpc(
       'session.history',
@@ -655,23 +939,29 @@ export class HarnessClient {
     // The mux is host-global. A prompt RPC becomes the owner only when its
     // durable user/message starts a turn, so two chats bound to one Session
     // cannot answer each other's questions or approvals.
-    const ownership = interactionController
+    const ownership = interactionController || control
       ? {
+          sessionId,
           promptRpcId,
           active: false,
           started: false,
           completed: false,
+          stopRequested: false,
           turn: null,
           openTurn: null,
           lastSeq: baselineSeq,
           reconnect: null,
           order: -1,
           toolCalls: new Map(),
+          control,
         }
       : null;
     let interactionTask = null;
 
-    if (ownership) this.#registerInteractionOwnership(sessionId, ownership);
+    if (ownership) {
+      this.#registerInteractionOwnership(sessionId, ownership);
+      this.#registerControlOwnership(ownership);
+    }
 
     try {
       if (interactionSignal) {
@@ -706,39 +996,52 @@ export class HarnessClient {
         clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       }, 30_000, { rpcId: promptRpcId, signal });
 
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        await sleep(300, signal);
-        const history = await this.rpc(
-          'session.history',
-          { sessionId, maxMessages: 50 },
-          30_000,
-          { signal },
-        );
-        const wasActive = ownership?.active === true;
-        if (ownership) {
-          this.#consumeInteractionOwnerships(sessionId, history.events ?? []);
-          if (!wasActive && ownership.active) ownership.reconnect?.();
-        }
-        const update = tracker.consume(history.events ?? []);
-        if (update && onUpdate) {
-          try {
-            await onUpdate(update);
-          } catch (error) {
-            console.warn(`[${this.#logPrefix}] ignored a progress update failure:`, error.message);
+      try {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          await sleep(300, signal);
+          const history = await this.rpc(
+            'session.history',
+            { sessionId, maxMessages: 50 },
+            30_000,
+            { signal },
+          );
+          const wasActive = ownership?.active === true;
+          if (ownership) {
+            this.#consumeInteractionOwnerships(sessionId, history.events ?? []);
+            if (!wasActive && ownership.active) ownership.reconnect?.();
           }
+          const update = tracker.consume(history.events ?? []);
+          if (update && onUpdate) {
+            try {
+              await onUpdate(update);
+            } catch (error) {
+              console.warn(`[${this.#logPrefix}] ignored a progress update failure:`, error.message);
+            }
+          }
+          if (!tracker.finished) continue;
+          if (tracker.answer) return tracker.answer;
+          if (ownership?.stopRequested) throw turnStoppedError();
+          throw new Error(
+            `Harness turn ended without a text reply${tracker.reason ? ` (${JSON.stringify(tracker.reason)})` : ''}`,
+          );
         }
-        if (!tracker.finished) continue;
+        throw new Error(`Harness reply timed out after ${Math.round(timeoutMs / 1_000)} seconds`);
+      } catch (error) {
+        // Once cancellation was accepted, transport/poll failures and timeouts
+        // describe the convergence of that stop, not an unrelated ask failure.
+        if (!ownership?.stopRequested) throw error;
         if (tracker.answer) return tracker.answer;
-        throw new Error(
-          `Harness turn ended without a text reply${tracker.reason ? ` (${JSON.stringify(tracker.reason)})` : ''}`,
-        );
+        if (error?.code === 'turn-stopped') throw error;
+        throw turnStoppedError();
       }
-      throw new Error(`Harness reply timed out after ${Math.round(timeoutMs / 1_000)} seconds`);
     } finally {
+      if (ownership) {
+        this.#unregisterControlOwnership(ownership);
+        this.#unregisterInteractionOwnership(sessionId, ownership);
+      }
       interactionController?.abort(new DOMException('Harness turn finished', 'AbortError'));
       if (interactionTask) await interactionTask.catch(() => undefined);
-      if (ownership) this.#unregisterInteractionOwnership(sessionId, ownership);
     }
   }
 
@@ -775,6 +1078,10 @@ export class HarnessClient {
         socket.removeEventListener('error', handleError);
         signal.removeEventListener('abort', handleAbort);
         if (ownership?.reconnect === close) ownership.reconnect = null;
+        if (signal.aborted) {
+          resolve();
+          return;
+        }
         void callbackTail.then(() => {
           const failure = error ?? callbackFailure;
           if (failure) reject(failure);

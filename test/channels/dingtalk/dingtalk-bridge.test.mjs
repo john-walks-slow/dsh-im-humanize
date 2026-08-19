@@ -321,6 +321,43 @@ test('DingTalk executes /compact for the bound Session without prompting the mod
   assert.equal(sent.at(-1).text, '暂无可压缩的历史记录。');
 });
 
+test('DingTalk lists models without prompting and help advertises all four commands', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let asks = 0;
+  let creates = 0;
+  const bridge = new DingtalkHarnessBridge({
+    api: { sendText: async (request) => sent.push(request) },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      listModels: async () => ({
+        groups: [{
+          id: 'dingtalk-provider',
+          name: 'DingTalk Provider',
+          models: [{ id: 'model-one', name: 'Model One' }],
+        }],
+        failures: [],
+      }),
+      createSession: async () => { creates += 1; return 'dingtalk-session'; },
+      ask: async () => { asks += 1; return 'unexpected model reply'; },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('models-dingtalk', '/models'));
+  assert.match(sent.at(-1).text, /dingtalk-provider\/model-one/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+  assert.equal(fixture.sessions.size, 0);
+
+  await bridge.accept(message('help-models-dingtalk', '/help'));
+  const help = sent.at(-1).text;
+  for (const command of ['/models', '/model', '/stop', '/steer']) {
+    assert.equal(help.includes(command), true, command);
+  }
+});
+
 test('bridge maps a DingTalk direct conversation to one persistent Harness session', async () => {
   const fixture = stateFixture();
   const sent = [];

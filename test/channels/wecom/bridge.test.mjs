@@ -153,6 +153,42 @@ test('Enterprise WeChat executes /compact for the bound Session without promptin
   assert.deepEqual(transport.active, []);
 });
 
+test('Enterprise WeChat lists models without prompting and help advertises all four commands', async () => {
+  const store = state();
+  store.sessionFor = () => null;
+  const transport = testClient();
+  let asks = 0;
+  let creates = 0;
+  const bridge = new WecomHarnessBridge({
+    client: transport.client,
+    generateStreamId: () => 'models-stream',
+    harness: {
+      listModels: async () => ({
+        groups: [{
+          id: 'wecom-provider',
+          name: 'WeCom Provider',
+          models: [{ id: 'model-one', name: 'Model One' }],
+        }],
+        failures: [],
+      }),
+      createSession: async () => { creates += 1; return 'wecom-session'; },
+      ask: async () => { asks += 1; return 'unexpected model reply'; },
+    },
+    state: store,
+  });
+
+  await bridge.accept(frame({ msgid: 'models-wecom', text: { content: '/models' } }));
+  assert.match(transport.streamed.at(-1).content, /wecom-provider\/model-one/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+
+  await bridge.accept(frame({ msgid: 'help-models-wecom', text: { content: '/help' } }));
+  const help = transport.streamed.at(-1).content;
+  for (const command of ['/models', '/model', '/stop', '/steer']) {
+    assert.equal(help.includes(command), true, command);
+  }
+});
+
 test('Enterprise WeChat messages stream Harness progress and finalize once', async () => {
   const replies = [];
   const active = [];

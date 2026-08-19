@@ -1,3 +1,5 @@
+import { withSessionBindingLock } from './session-binding-lock.mjs';
+
 export const WORKSPACE_SESSION_STALE = 'workspace-session-stale';
 
 function workspaceSession(harness, sessionId) {
@@ -7,6 +9,12 @@ function workspaceSession(harness, sessionId) {
   return Object.freeze({
     sessionId,
     sessionExists: (...args) => harness.sessionExists(sessionId, ...args),
+    models: (...args) => harness.getSessionModels(sessionId, ...args),
+    selectModel: (...args) => harness.selectSessionModel(sessionId, ...args),
+    isRunning: (...args) => harness.isSessionRunning(sessionId, ...args),
+    hasActiveTurn: (...args) => harness.hasActiveTurn(sessionId, ...args),
+    stopActiveTurn: (...args) => harness.stopActiveTurn(sessionId, ...args),
+    steerActiveTurn: (...args) => harness.steerActiveTurn(sessionId, ...args),
     ask: (...args) => harness.ask(sessionId, ...args),
   });
 }
@@ -40,16 +48,20 @@ export async function askInWorkspaceSession({
 }) {
   while (true) {
     try {
-      let sessionId = state.sessionFor(key);
-      let session = sessionId ? workspaceSession(harness, sessionId) : null;
-      if (!session || !(await sessionExists(session, existsOptions))) {
-        sessionId = await createSession(harness, createOptions);
-        if (await state.setSession(key, sessionId) === false) continue;
-        session = workspaceSession(harness, sessionId);
-      }
+      const binding = await withSessionBindingLock(state, key, async () => {
+        let sessionId = state.sessionFor(key);
+        let session = sessionId ? workspaceSession(harness, sessionId) : null;
+        if (!session || !(await sessionExists(session, existsOptions))) {
+          sessionId = await createSession(harness, createOptions);
+          if (await state.setSession(key, sessionId) === false) return null;
+          session = workspaceSession(harness, sessionId);
+        }
+        return { sessionId, session };
+      });
+      if (!binding) continue;
       return {
-        sessionId,
-        answer: await session.ask(content ?? text, askOptions),
+        sessionId: binding.sessionId,
+        answer: await binding.session.ask(content ?? text, askOptions),
       };
     } catch (error) {
       if (error?.code !== WORKSPACE_SESSION_STALE) throw error;

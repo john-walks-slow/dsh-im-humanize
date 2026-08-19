@@ -21,7 +21,10 @@ import {
   splitWorkspaceCommandMessage,
 } from '../src/channels/shared/workspace-command.mjs';
 import { TextHarnessBridge } from '../src/channels/shared/text-harness-bridge.mjs';
-import { askInWorkspaceSession } from '../src/channels/shared/workspace-session.mjs';
+import {
+  askInWorkspaceSession,
+  WORKSPACE_SESSION_STALE,
+} from '../src/channels/shared/workspace-session.mjs';
 import { HarnessClient as WeixinHarnessClient } from '../src/channels/weixin/harness-client.mjs';
 import { HarnessClient as FeishuHarnessClient } from '../src/channels/feishu/harness-client.mjs';
 import { HarnessClient as DingtalkHarnessClient } from '../src/channels/dingtalk/harness-client.mjs';
@@ -203,6 +206,69 @@ test('an old session cannot be written back while RPC switches the bot workspace
   finishCreation('second-session-from-old-workspace');
   assert.equal(await scope.harness.sessionExists(await oldSessionForLookup), false);
   assert.equal(existenceChecks, 0, 'stale sessions are rejected before asking Harness');
+});
+
+test('an old workspace session handle cannot list, select, stop, or steer after a switch', async (t) => {
+  const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await workspaces.ensure('bot_session_controls');
+  const targetCalls = [];
+  const harness = {
+    async getSessionModels(...args) { targetCalls.push(['models', ...args]); },
+    async selectSessionModel(...args) { targetCalls.push(['select', ...args]); },
+    async stopActiveTurn(...args) { targetCalls.push(['stop', ...args]); },
+    async steerActiveTurn(...args) { targetCalls.push(['steer', ...args]); },
+  };
+  const state = { async clearSessions() {} };
+  const scope = createBotWorkspaceScope(harness, {
+    botId: 'bot_session_controls', workspaces, state,
+  });
+  const oldSession = scope.harness.workspaceSession('session-old');
+  const controller = createWorkspaceAwareController({
+    status() { return { bots: [{ botId: 'bot_session_controls' }] }; },
+  }, { workspaces, stateFor: async () => state });
+
+  await controller.updateWorkspace('bot_session_controls', alternateWorkspace);
+  const control = { owner: {}, key: 'direct:one' };
+  for (const operation of [
+    () => oldSession.models(),
+    () => oldSession.selectModel({ provider: 'provider', model: 'model' }),
+    () => oldSession.stopActiveTurn(control),
+    () => oldSession.steerActiveTurn('continue', control),
+  ]) {
+    await assert.rejects(operation(), (error) => error?.code === WORKSPACE_SESSION_STALE);
+  }
+  assert.deepEqual(targetCalls, []);
+});
+
+test('a control mutation that already started keeps its result across a workspace switch', async (t) => {
+  const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await workspaces.ensure('bot_started_controls');
+  const started = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const harness = {
+    async stopActiveTurn() { started.push('stop'); await gate; return true; },
+    async steerActiveTurn() { started.push('steer'); await gate; return true; },
+  };
+  const state = { async clearSessions() {} };
+  const scope = createBotWorkspaceScope(harness, {
+    botId: 'bot_started_controls', workspaces, state,
+  });
+  const session = scope.harness.workspaceSession('session-old');
+  const control = { owner: {}, key: 'direct:one' };
+  const stop = session.stopActiveTurn(control);
+  const steer = session.steerActiveTurn('continue', control);
+  assert.deepEqual(started, ['stop', 'steer']);
+
+  const controller = createWorkspaceAwareController({
+    status() { return { bots: [{ botId: 'bot_started_controls' }] }; },
+  }, { workspaces, stateFor: async () => state });
+  await controller.updateWorkspace('bot_started_controls', alternateWorkspace);
+  release();
+
+  assert.deepEqual(await Promise.all([stop, steer]), [true, true]);
 });
 
 test('a prompt retries in the new workspace when switching after session creation', async (t) => {

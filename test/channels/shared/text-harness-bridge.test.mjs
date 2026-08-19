@@ -27,6 +27,20 @@ async function eventually(predicate, timeoutMs = 1_000) {
   assert.fail('condition was not met before timeout');
 }
 
+async function within(promise, timeoutMs, messageText) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(messageText)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function stateFixture(initialSessions = {}) {
   const sessions = new Map(Object.entries(initialSessions));
   const seen = new Set();
@@ -148,6 +162,125 @@ test('all four shared text channels execute /compact outside the model prompt pa
     assert.deepEqual(executed, [{ sessionId: `session-${name}`, line: '/compact' }]);
     assert.deepEqual(sent, ['已压缩 12 条历史记录（约 3456 个 token）。']);
   }
+});
+
+test('all four shared text channels list models locally and advertise all four commands', async () => {
+  for (const [name, Bridge] of [
+    ['slack', SlackHarnessBridge],
+    ['telegram', TelegramHarnessBridge],
+    ['discord', DiscordHarnessBridge],
+    ['whatsapp', WhatsappHarnessBridge],
+  ]) {
+    const fixture = stateFixture();
+    const sent = [];
+    let asks = 0;
+    let creates = 0;
+    const bridge = new Bridge({
+      bot: { sendText: async (_target, text) => sent.push(text) },
+      state: fixture.state,
+      harness: {
+        listModels: async () => ({
+          groups: [{
+            id: `${name}-provider`,
+            name: `${name} Provider`,
+            models: [{ id: 'model-one', name: 'Model One' }],
+          }],
+          failures: [],
+        }),
+        createSession: async () => { creates += 1; return `${name}-session`; },
+        ask: async () => { asks += 1; return 'unexpected model reply'; },
+      },
+    });
+
+    await bridge.accept(message(`models-${name}`, '/models'));
+    assert.match(sent.at(-1), new RegExp(`${name}-provider/model-one`), name);
+    assert.equal(asks, 0, `${name} ask`);
+    assert.equal(creates, 0, `${name} create`);
+    assert.equal(fixture.sessions.size, 0, `${name} session binding`);
+
+    await bridge.accept(message(`help-${name}`, '/help'));
+    const help = sent.at(-1);
+    for (const command of ['/models', '/model', '/stop', '/steer']) {
+      assert.match(help, new RegExp(`\\${command}`), `${name} ${command}`);
+    }
+  }
+});
+
+test('/stop uses the shared command fast lane without waiting for the running prompt', async () => {
+  const fixture = stateFixture({ 'direct:chat-a': 'session-running' });
+  const askStarted = deferred();
+  const releaseAsk = deferred();
+  const sent = [];
+  const controls = {};
+  let promptSettled = false;
+  const session = {
+    sessionExists: async () => true,
+    ask: async (_text, options) => {
+      controls.prompt = options.control;
+      askStarted.resolve();
+      await releaseAsk.promise;
+      return '原任务完成';
+    },
+    stopActiveTurn: async (control) => {
+      controls.stop = control;
+      return true;
+    },
+  };
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    harness: { workspaceSession: () => session },
+  });
+
+  const prompt = bridge.accept(message('running-prompt', '执行一个长任务'))
+    .finally(() => { promptSettled = true; });
+  await askStarted.promise;
+
+  await within(
+    bridge.accept(message('running-stop', '/stop')),
+    250,
+    '/stop waited for the ordinary conversation queue',
+  );
+  assert.equal(promptSettled, false);
+  assert.equal(sent.includes('已请求停止当前任务。'), true);
+  assert.equal(controls.stop.owner, controls.prompt.owner);
+  assert.equal(controls.stop.key, controls.prompt.key);
+
+  releaseAsk.resolve();
+  await prompt;
+  assert.equal(sent.at(-1), '原任务完成');
+});
+
+test('a stopped shared-channel turn closes an opened stream instead of leaving a processing placeholder', async () => {
+  const fixture = stateFixture({ 'direct:chat-a': 'session-running' });
+  const finished = [];
+  let cancelled = 0;
+  const sent = [];
+  const stopped = new Error('stopped');
+  stopped.code = 'turn-stopped';
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: {
+      sendText: async (_target, text) => sent.push(text),
+      openStream: async () => ({
+        update() {},
+        async finish(text) { finished.push(text); },
+        cancel() { cancelled += 1; },
+      }),
+    },
+    harness: {
+      workspaceSession: () => ({
+        sessionExists: async () => true,
+        ask: async () => { throw stopped; },
+      }),
+    },
+  });
+
+  await bridge.accept(message('stopped-stream', '执行长任务'));
+
+  assert.deepEqual(finished, ['已停止。']);
+  assert.equal(cancelled, 0);
+  assert.deepEqual(sent, []);
 });
 
 test('Slack, Telegram, and Discord remember any valid direct message per bot', async () => {

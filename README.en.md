@@ -98,14 +98,24 @@ When a channel does not explicitly configure `agentPreset`, each new IM session 
 
 | Command | Description |
 | --- | --- |
+| `/models` | List every currently configured model, grouped by provider. |
+| `/model` | Show the model used by the Session bound to this chat. |
+| `/model <provider/model-id>` | Switch the model for the Session bound to this chat. |
+| `/stop` | Immediately stop this chat's running task while preserving work that has not started. |
+| `/steer <additional instruction>` | Inject an additional instruction into this chat's running task. |
 | `/compact` | Immediately compact older context in the Session bound to the current chat. |
 | `/workspace <absolute workspace path>` | Switch the current bot's Harness workspace. |
 | `/workspacelist` | List workspace absolute paths that still exist on the current Harness Host. |
 | `/sessionlist [workspace number or absolute path]` | List every registered session ID and title in the selected workspace; omit the argument to use the current workspace. |
 | `/session <Session ID>` | Bind the current chat to an existing Harness session. |
 
-Examples: `/compact`, `/workspace /Users/alice/projects/my-app`, `/sessionlist 2`, `/sessionlist /Users/alice/projects/my-app`, or `/session session-id`
+Examples: `/models`, `/model deepseek-official/deepseek-v4-pro`, `/steer inspect only the configuration file`, `/stop`, `/compact`, `/workspace /Users/alice/projects/my-app`, `/sessionlist 2`, `/sessionlist /Users/alice/projects/my-app`, or `/session session-id`
 
+- `/models` takes no arguments and never creates a Session. It lists every currently configured Harness model using stable, copyable `provider/model-id` values. If one provider fails, models from the remaining providers are still shown.
+- Bare `/model` only displays the current Session model. `/model <provider/model-id>` accepts an exact value returned by `/models`. When the chat has no Session yet, a valid switch creates and binds a blank Session without prompting the model. The switch affects only that Session; Harness also attempts to save it as the default for future Sessions, while other existing Sessions remain unchanged.
+- A model cannot be switched while a task is running or waiting for an approval or question answer. Wait for it to finish or use `/stop` first. A Session containing images cannot switch to a model that does not accept image input.
+- `/stop` and `/steer` control only a running task started by this chat. Even when multiple chats bind the same Session, they do not intentionally control another chat's task. `/stop` does not delete the Session or its history, preserves queued work that has not started, and is safe to repeat.
+- `/steer` accepts text only, including multiple lines. It neither creates another Session nor starts a second task. Send an ordinary message when no task is running; while an approval or question is pending, answer it first or use `/stop`.
 - `/compact` acts only on the Harness Session already bound to the current chat and is never sent to the model. The bot reports the applicable status when the chat has no Session yet, the Session is generating a reply, or there is no compactable history.
 - The path must be an existing absolute directory. The bot returns an actionable error and the correct usage when validation fails.
 - `/workspacelist` takes no arguments. It combines the Harness global registry with the current bot's path. When that current path still exists and is safe to display, it appears first and is marked as current. Any listed path can be copied directly into `/workspace`.

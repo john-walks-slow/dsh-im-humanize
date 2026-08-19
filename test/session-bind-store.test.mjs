@@ -17,6 +17,7 @@ import {
   BotWorkspaceStore,
   createBotWorkspaceScope,
 } from '../src/channels/shared/bot-workspace-store.mjs';
+import { runModelCommand } from '../src/channels/shared/model-command.mjs';
 import { askInWorkspaceSession } from '../src/channels/shared/workspace-session.mjs';
 
 async function fixture(t) {
@@ -43,6 +44,20 @@ function deferred() {
   let resolve;
   const promise = new Promise((settle) => { resolve = settle; });
   return { promise, resolve };
+}
+
+async function within(promise, timeoutMs, message) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function memoryState(initial = {}) {
@@ -186,6 +201,90 @@ test('the next message continues the bound Session without creating a new one', 
   assert.deepEqual(reply, { sessionId: 'session-target', answer: 'continued answer' });
   assert.deepEqual(asked, [{ sessionId: 'session-target', text: 'continue here' }]);
   assert.equal(createCalls, 0);
+});
+
+test('a first prompt and model switch share one binding without holding the lock during ask', async () => {
+  const state = memoryState();
+  const askStarted = deferred();
+  const releaseAsk = deferred();
+  const calls = [];
+  let creations = 0;
+  const catalog = {
+    groups: [{
+      id: 'provider',
+      name: 'Provider',
+      models: [{ id: 'model', name: 'Model' }],
+    }],
+    failures: [],
+  };
+  const harness = {
+    async createSession() {
+      creations += 1;
+      calls.push(['createSession']);
+      return `session-${creations}`;
+    },
+    workspaceSession(sessionId) {
+      return {
+        async sessionExists() { return true; },
+        async ask(text) {
+          calls.push(['ask', sessionId, text]);
+          askStarted.resolve();
+          await releaseAsk.promise;
+          return 'answer';
+        },
+        async isRunning() { return false; },
+        async hasActiveTurn() { return false; },
+        async models() {
+          return {
+            ...catalog,
+            current: { provider: 'provider', model: 'model' },
+            routable: true,
+          };
+        },
+        async selectModel(selection) {
+          calls.push(['selectModel', sessionId, selection]);
+          return { selected: selection };
+        },
+      };
+    },
+    async listModels() { return catalog; },
+  };
+
+  const prompting = askInWorkspaceSession({
+    harness,
+    state,
+    key: 'conversation',
+    text: 'first prompt',
+  });
+  const switching = runModelCommand(
+    '/model provider/model',
+    harness,
+    state,
+    'conversation',
+  );
+  await askStarted.promise;
+
+  let switchResult;
+  try {
+    switchResult = await within(
+      switching,
+      500,
+      'model switching waited for the running ask instead of only the binding transaction',
+    );
+  } finally {
+    releaseAsk.resolve();
+  }
+  const promptResult = await prompting;
+
+  assert.match(switchResult.message, /模型已切换为/);
+  assert.deepEqual(promptResult, { sessionId: 'session-1', answer: 'answer' });
+  assert.equal(creations, 1);
+  assert.deepEqual(state.snapshot(), { conversation: 'session-1' });
+  assert.deepEqual(calls, [
+    ['createSession'],
+    ['ask', 'session-1', 'first prompt'],
+    ['selectModel', 'session-1', { provider: 'provider', model: 'model' }],
+  ]);
 });
 
 test('workspace sessions forward structured multimodal prompt content unchanged', async (t) => {

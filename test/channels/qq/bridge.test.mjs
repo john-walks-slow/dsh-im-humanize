@@ -259,6 +259,42 @@ test('QQ executes /compact for the bound Session without prompting the model', a
   assert.equal(fixture.seen.has('compact-qq'), true);
 });
 
+test('QQ lists models without prompting and help advertises all four commands', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let asks = 0;
+  let creates = 0;
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      listModels: async () => ({
+        groups: [{
+          id: 'qq-provider',
+          name: 'QQ Provider',
+          models: [{ id: 'model-one', name: 'Model One' }],
+        }],
+        failures: [],
+      }),
+      createSession: async () => { creates += 1; return 'qq-session'; },
+      ask: async () => { asks += 1; return 'unexpected model reply'; },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message({ messageId: 'models-qq', content: '/models' }));
+  assert.match(sent.at(-1), /qq-provider\/model-one/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+  assert.equal(fixture.sessions.size, 0);
+
+  await bridge.accept(message({ messageId: 'help-models-qq', content: '/help' }));
+  const help = sent.at(-1);
+  for (const command of ['/models', '/model', '/stop', '/steer']) {
+    assert.equal(help.includes(command), true, command);
+  }
+});
+
 test('QQ remembers any authorized private inbound as a connection-test target', async () => {
   const fixture = stateFixture();
   const sent = [];
@@ -335,6 +371,80 @@ test('QQ private messages stream Harness snapshots and finalize once', async () 
   assert.deepEqual(sent, []);
   assert.equal(seen.has('msg-1'), true);
   assert.equal(bridge.status.messagesReplied, 1);
+});
+
+test('QQ closes an opened progress stream and announces when the Harness turn is stopped', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-stopped']]);
+  const frames = [];
+  const sent = [];
+  let cancellations = 0;
+  let loggedErrors = 0;
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => sent.push(text),
+      openStream: () => ({
+        update: async (text) => frames.push(text),
+        complete: async () => frames.push('DONE'),
+        cancel: () => { cancellations += 1; },
+      }),
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, { onUpdate }) => {
+        await onUpdate({ type: 'tool', name: 'bash' });
+        const error = new Error('turn stopped');
+        error.code = 'turn-stopped';
+        throw error;
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() { loggedErrors += 1; } },
+  });
+
+  await bridge.accept(message({ messageId: 'qq-stopped-stream' }));
+
+  assert.deepEqual(frames, ['正在使用bash…']);
+  assert.equal(cancellations, 1);
+  assert.deepEqual(sent, ['已停止。']);
+  assert.equal(loggedErrors, 0);
+  assert.equal(fixture.seen.has('qq-stopped-stream'), true);
+});
+
+test('QQ keeps a stopped turn terminal when stream cleanup and its notice both fail', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-stopped-fallback']]);
+  let warnings = 0;
+  let loggedErrors = 0;
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async () => { throw new Error('send unavailable'); },
+      openStream: () => ({
+        update: async () => {},
+        complete: async () => {},
+        cancel: () => { throw new Error('cancel unavailable'); },
+      }),
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        const error = new Error('turn stopped');
+        error.code = 'turn-stopped';
+        throw error;
+      },
+    },
+    state: fixture.state,
+    logger: {
+      warn() { warnings += 1; },
+      error() { loggedErrors += 1; },
+    },
+  });
+
+  await bridge.accept(message({ messageId: 'qq-stopped-stream-fallback' }));
+
+  assert.equal(warnings, 2);
+  assert.equal(loggedErrors, 0);
+  assert.equal(fixture.seen.has('qq-stopped-stream-fallback'), true);
 });
 
 test('QQ bridge accepts only the scanner and requires an at-message event in groups', async () => {

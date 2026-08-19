@@ -1047,7 +1047,7 @@ test('reconnect history restores a Code Mode sub-call before replaying its appro
   await Promise.allSettled([asking]);
 });
 
-test('interaction callbacks preserve frame order and watcher shutdown drains them', async () => {
+test('interaction callbacks preserve frame order but watcher abort does not await a hanging callback', async () => {
   const opened = deferred();
   const releaseRequested = deferred();
   const order = [];
@@ -1102,10 +1102,10 @@ test('interaction callbacks preserve frame order and watcher shutdown drains the
   let settled = false;
   void watching.finally(() => { settled = true; });
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(settled, false);
+  assert.equal(settled, true);
 
   releaseRequested.resolve();
-  await watching;
+  await eventually(() => order.length === 3);
   assert.deepEqual(order, ['requested:start', 'requested:end', 'resolved']);
 });
 

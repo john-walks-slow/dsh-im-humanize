@@ -511,7 +511,9 @@ export function createBotWorkspaceScope(harness, { botId, workspaces, state }) {
           }
         };
       }
-      if ((property === 'listWorkspaces' || property === 'listWorkspaceSessions')
+      if ((property === 'listWorkspaces'
+        || property === 'listWorkspaceSessions'
+        || property === 'listModels')
         && typeof target[property] === 'function') {
         return async (...args) => {
           if (!isCurrentScope()) {
@@ -627,12 +629,54 @@ export function createBotWorkspaceScope(harness, { botId, workspaces, state }) {
           sessionGenerations.delete(sessionId);
           const isCurrentSession = () => isCurrentScope()
             && generation === workspaces.generationFor(botId);
+          const invokeCurrentSession = async (method, args, action) => {
+            if (!isCurrentSession()) {
+              throw workspaceSessionStale(
+                `The bot workspace changed before this ${action} started.`,
+              );
+            }
+            const result = await target[method](sessionId, ...args);
+            if (!isCurrentSession()) {
+              throw workspaceSessionStale(
+                `The bot workspace changed while this ${action} was running.`,
+              );
+            }
+            return result;
+          };
+          const invokeStartedSessionMutation = async (method, args, action) => {
+            if (!isCurrentSession()) {
+              throw workspaceSessionStale(
+                `The bot workspace changed before this ${action} started.`,
+              );
+            }
+            // Once an irreversible control mutation has started, preserve its
+            // actual outcome even if a workspace switch commits concurrently.
+            return target[method](sessionId, ...args);
+          };
           return Object.freeze({
             sessionId,
             async sessionExists(...args) {
               if (!isCurrentSession()) return false;
               const exists = await target.sessionExists(sessionId, ...args);
               return isCurrentSession() && exists;
+            },
+            models(...args) {
+              return invokeCurrentSession('getSessionModels', args, 'model listing');
+            },
+            selectModel(...args) {
+              return invokeCurrentSession('selectSessionModel', args, 'model selection');
+            },
+            isRunning(...args) {
+              return invokeCurrentSession('isSessionRunning', args, 'run-state check');
+            },
+            hasActiveTurn(...args) {
+              return invokeCurrentSession('hasActiveTurn', args, 'turn ownership check');
+            },
+            stopActiveTurn(...args) {
+              return invokeStartedSessionMutation('stopActiveTurn', args, 'turn stop');
+            },
+            steerActiveTurn(...args) {
+              return invokeStartedSessionMutation('steerActiveTurn', args, 'turn steering');
             },
             ask(...args) {
               if (!isCurrentSession()) {

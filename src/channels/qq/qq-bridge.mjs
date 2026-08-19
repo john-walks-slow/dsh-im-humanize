@@ -1,5 +1,9 @@
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { runCompactCommand } from '../shared/compact-command.mjs';
+import {
+  isControlCommand,
+  runControlCommand,
+} from '../shared/control-command.mjs';
 import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
 import {
   harnessAnswerForQuestion,
@@ -7,6 +11,10 @@ import {
   validHarnessQuestion,
 } from '../shared/harness-question.mjs';
 import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
+import {
+  isModelCommand,
+  runModelCommand,
+} from '../shared/model-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 import {
   fetchImageBuffer,
@@ -38,6 +46,10 @@ const HELP_TEXT = [
   '/workspacelist  列出工作区绝对路径',
   '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
   '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
+  '/models  列出所有可用模型',
+  '/model [模型ID]  查看或切换当前会话模型',
+  '/stop  停止当前任务',
+  '/steer 补充指令  纠偏当前任务',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');
@@ -134,6 +146,7 @@ export class QqHarnessBridge {
   #interactionKeys = new Map();
   #acceptedMessageIds = new Set();
   #approvalTasks = new Set();
+  #commandTasks = new Set();
   #approvals;
 
   constructor({
@@ -184,6 +197,34 @@ export class QqHarnessBridge {
       rememberConnectionTestTarget(this.#state, message.replyTarget);
     }
     const pending = this.#pendingInteractions.get(key);
+    const commandText = safeText(message);
+    const commandRunner = isControlCommand(commandText)
+      ? runControlCommand
+      : (isModelCommand(commandText) ? runModelCommand : null);
+    const allowed = this.#ownerUserOpenid === '*' || sender === this.#ownerUserOpenid;
+    const addressed = message.kind !== 'group'
+      || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE';
+    if (commandRunner && allowed && addressed) {
+      let task;
+      task = this.#processFastCommand(
+        message,
+        messageId,
+        key,
+        commandText,
+        commandRunner,
+      ).catch((error) => {
+        if (error?.code === 'turn-stopped' || this.#signal?.aborted) return;
+        this.#status.lastError = error?.message ?? String(error);
+        this.#logger.error?.('[dsh-im:qq] failed to process a command:', error);
+        return this.#bot.sendText(message.replyTarget, '消息处理失败，请稍后重试。')
+          .catch(() => undefined);
+      }).finally(() => {
+        this.#acceptedMessageIds.delete(messageId);
+        this.#commandTasks.delete(task);
+      });
+      this.#commandTasks.add(task);
+      return task;
+    }
     const approval = this.#approvals.claimReply({
       key,
       actor: sender,
@@ -262,7 +303,33 @@ export class QqHarnessBridge {
         pending.queue ? [pending.queue] : []
       )),
       ...this.#approvalTasks,
+      ...this.#commandTasks,
     ]);
+  }
+
+  async #processFastCommand(message, messageId, key, text, runner) {
+    this.#signal?.throwIfAborted();
+    if (this.#state.hasSeen(messageId)) return;
+    await this.#state.markSeen(messageId);
+    this.#status.messagesReceived += 1;
+    this.#status.lastMessageAt = new Date().toISOString();
+    const result = await runner(text, this.#harness, this.#state, key, {
+      signal: this.#signal,
+      hasImages: hasQqImageAttachments(message),
+      pendingInteraction: this.#pendingInteractions.has(key)
+        || this.#approvals.hasPending(key),
+      control: { owner: this, key },
+    });
+    if (result?.stopped) {
+      await Promise.allSettled([
+        this.#cancelPendingInteraction(key),
+        this.#approvals.closeRoute(key),
+      ]);
+    }
+    for (const reply of result?.messages ?? [result?.message]) {
+      if (reply) await this.#bot.sendText(message.replyTarget, reply);
+    }
+    this.#status.lastError = null;
   }
 
   async #process(message, key, { alreadyRecorded = false } = {}) {
@@ -360,6 +427,7 @@ export class QqHarnessBridge {
           askOptions: {
             timeoutMs: this.#replyTimeoutMs,
             signal: this.#signal,
+            control: { owner: this, key },
             onUpdate: stream ? async (update) => {
               const progress = update.type === 'text'
                 ? update.text
@@ -399,6 +467,22 @@ export class QqHarnessBridge {
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
     } catch (error) {
+      if (error?.code === 'turn-stopped') {
+        if (stream) {
+          try {
+            await stream.cancel?.();
+          } catch (streamError) {
+            this.#logger.warn?.('[dsh-im:qq] unable to cancel a stopped QQ stream:', streamError);
+          }
+          try {
+            await this.#bot.sendText(target, '已停止。');
+          } catch (sendError) {
+            this.#logger.warn?.('[dsh-im:qq] unable to announce a stopped QQ turn:', sendError);
+          }
+        }
+        await this.#state.markSeen(messageId);
+        return;
+      }
       stream?.cancel?.();
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);

@@ -1,9 +1,17 @@
 import { runWorkspaceCommand } from './workspace-command.mjs';
 import { runCompactCommand } from './compact-command.mjs';
 import {
+  isControlCommand,
+  runControlCommand,
+} from './control-command.mjs';
+import {
   rememberConnectionTestTarget,
   sendRememberedConnectionTest,
 } from './connection-test.mjs';
+import {
+  isModelCommand,
+  runModelCommand,
+} from './model-command.mjs';
 import { askInWorkspaceSession } from './workspace-session.mjs';
 import { HarnessApprovalQueue } from './harness-approval.mjs';
 import {
@@ -56,6 +64,7 @@ export class TextHarnessBridge {
   #interactionKeys = new Map();
   #acceptedMessageIds = new Set();
   #approvalTasks = new Set();
+  #commandTasks = new Set();
   #approvals;
 
   constructor({
@@ -110,6 +119,24 @@ export class TextHarnessBridge {
 
     const key = `${kind}:${conversationId}`;
     const pending = this.#pendingInteractions.get(key);
+    const text = cleanText(normalized.content);
+    const commandRunner = isControlCommand(text)
+      ? runControlCommand
+      : (isModelCommand(text) ? runModelCommand : null);
+    if (commandRunner && (normalized.kind !== 'group' || normalized.addressed === true)) {
+      let task;
+      task = this.#processFastCommand(
+        normalized,
+        messageId,
+        key,
+        commandRunner,
+      ).finally(() => {
+        this.#acceptedMessageIds.delete(messageId);
+        this.#commandTasks.delete(task);
+      });
+      this.#commandTasks.add(task);
+      return task;
+    }
     const approval = this.#approvals.claimReply({
       key,
       actor: senderId,
@@ -201,7 +228,46 @@ export class TextHarnessBridge {
         pending.queue ? [pending.queue] : []
       )),
       ...this.#approvalTasks,
+      ...this.#commandTasks,
     ]);
+  }
+
+  async #processFastCommand(message, messageId, key, runner) {
+    if (this.#state.hasSeen(messageId)) return;
+    await this.#state.markSeen(messageId);
+    this.#status.messagesReceived += 1;
+    this.#status.lastMessageAt = new Date().toISOString();
+    const target = message.replyTarget;
+    try {
+      const result = await runner(
+        cleanText(message.content),
+        this.#harness,
+        this.#state,
+        key,
+        {
+          signal: this.#signal,
+          hasImages: hasInboundImages(message),
+          pendingInteraction: this.#pendingInteractions.has(key)
+            || this.#approvals.hasPending(key),
+          control: { owner: this, key },
+        },
+      );
+      if (result?.stopped) {
+        await Promise.allSettled([
+          this.#cancelPendingInteraction(key),
+          this.#approvals.closeRoute(key),
+        ]);
+      }
+      for (const reply of result?.messages ?? [result?.message]) {
+        if (reply) await this.#bot.sendText(target, reply);
+      }
+      this.#status.lastError = null;
+    } catch (error) {
+      if (error?.code === 'turn-stopped' || this.#signal?.aborted) return;
+      this.#status.lastError = error?.message ?? String(error);
+      this.#logger.error?.(`[dsh-im:${this.#descriptor.key}] failed to process a command:`, error);
+      await this.#bot.sendText(target, '消息处理失败，请稍后重试。').catch(() => undefined);
+    }
   }
 
   sendConnectionTest(text) {
@@ -250,6 +316,10 @@ export class TextHarnessBridge {
           '/workspacelist  列出工作区绝对路径',
           '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
           '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
+          '/models  列出所有可用模型',
+          '/model [模型ID]  查看或切换当前会话模型',
+          '/stop  停止当前任务',
+          '/steer 补充指令  纠偏当前任务',
           '/status  检查连接状态',
           '/help  显示本帮助',
         ].join('\n'));
@@ -316,6 +386,7 @@ export class TextHarnessBridge {
         askOptions: {
           timeoutMs: this.#replyTimeoutMs,
           signal: this.#signal,
+          control: { owner: this, key: conversationKey },
           onUpdate: stream ? async (update) => {
             const progress = update.type === 'text' ? update.text
               : update.type === 'tool' ? `正在使用${update.name}…` : update.text;
@@ -347,6 +418,16 @@ export class TextHarnessBridge {
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
     } catch (error) {
+      if (error?.code === 'turn-stopped') {
+        if (stream) {
+          try {
+            await stream.finish('已停止。');
+          } catch {
+            stream.cancel?.();
+          }
+        }
+        return;
+      }
       stream?.cancel?.();
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);

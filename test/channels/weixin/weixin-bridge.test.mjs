@@ -215,6 +215,44 @@ test('Weixin executes /compact for the bound Session without prompting the model
   assert.equal(fixture.seen.has('compact-weixin'), true);
 });
 
+test('Weixin lists models without prompting and help advertises all four commands', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let asks = 0;
+  let creates = 0;
+  const bridge = new WeixinHarnessBridge({
+    api: { sendText: async (request) => sent.push(request) },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      listModels: async () => ({
+        groups: [{
+          id: 'weixin-provider',
+          name: 'Weixin Provider',
+          models: [{ id: 'model-one', name: 'Model One' }],
+        }],
+        failures: [],
+      }),
+      createSession: async () => { creates += 1; return 'weixin-session'; },
+      ask: async () => { asks += 1; return 'unexpected model reply'; },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('models-weixin', '/models'));
+  assert.match(sent.at(-1).text, /weixin-provider\/model-one/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+  assert.equal(fixture.sessions.size, 0);
+
+  await bridge.accept(message('help-models-weixin', '/help'));
+  const help = sent.at(-1).text;
+  for (const command of ['/models', '/model', '/stop', '/steer']) {
+    assert.equal(help.includes(command), true, command);
+  }
+});
+
 test('bridge maps the scanning Weixin user to one persistent Harness session and echoes context_token', async () => {
   const sent = [];
   const asked = [];

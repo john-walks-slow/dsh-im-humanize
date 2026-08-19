@@ -101,14 +101,24 @@ QQ 扫码接入使用腾讯 QQBot v2 官方流程。默认腾讯授权页会把�
 
 | 命令 | 作用 |
 | --- | --- |
+| `/models` | 按 Provider 列出当前配置的全部可用模型。 |
+| `/model` | 查看当前聊天绑定会话正在使用的模型。 |
+| `/model <Provider/模型ID>` | 切换当前聊天绑定会话的模型。 |
+| `/stop` | 立即停止当前聊天正在运行的任务，并保留尚未开始的排队消息。 |
+| `/steer <补充指令>` | 把补充指令立即加入当前聊天正在运行的任务。 |
 | `/compact` | 立即压缩当前聊天绑定会话的较早上下文。 |
 | `/workspace <工作区绝对路径>` | 切换当前机器人的 Harness 工作区。 |
 | `/workspacelist` | 列出当前 Harness Host 上仍然存在的工作区绝对路径。 |
 | `/sessionlist [工作区序号或绝对路径]` | 列出指定工作区登记的所有会话 ID 和标题；省略参数时使用当前工作区。 |
 | `/session <Session ID>` | 将当前聊天绑定到指定的已有 Harness 会话。 |
 
-示例：`/compact`、`/workspace /Users/alice/projects/my-app`、`/sessionlist 2`、`/sessionlist /Users/alice/projects/my-app` 或 `/session session-id`
+示例：`/models`、`/model deepseek-official/deepseek-v4-pro`、`/steer 只检查配置文件`、`/stop`、`/compact`、`/workspace /Users/alice/projects/my-app`、`/sessionlist 2`、`/sessionlist /Users/alice/projects/my-app` 或 `/session session-id`
 
+- `/models` 不需要参数，也不会创建会话。它列出 Harness 当前配置的全部可用模型，使用可稳定复制的 `Provider/模型ID`；某个 Provider 查询失败时，其他 Provider 的结果仍会显示。
+- `/model` 不带参数时只查看当前会话模型；带完整模型 ID 时只接受 `/models` 列出的精确值。聊天尚无会话时，有效的切换命令会创建并绑定一个空白会话，但不会触发模型回复。切换只影响当前会话；Harness 还会尝试把它保存为以后新会话的默认模型，已有其他会话不受影响。
+- 正在运行任务或等待审批、问题回答时不能切换模型；请等待完成，或先使用 `/stop`。含图片的会话无法切换到不支持图片输入的模型。
+- `/stop` 和 `/steer` 只控制当前聊天自己发起的运行任务，即使多个聊天绑定同一个 Session，也不会有意控制其他聊天的任务。`/stop` 不删除会话或历史，并保留尚未开始的排队消息；重复发送是安全的。
+- `/steer` 只接受文字，可包含多行；它不会创建新会话或第二个任务。没有运行任务时请直接发送普通消息；等待审批或问题回答时请先处理交互，或使用 `/stop`。
 - `/compact` 只作用于当前聊天已经绑定的 Harness 会话，不会把命令发送给模型。当前聊天尚未创建会话、会话正在生成回复或没有可压缩历史时，机器人会直接返回对应状态。
 - 只接受已经存在的绝对目录；路径无效时机器人会返回具体提示和正确用法。
 - `/workspacelist` 不需要参数。它合并 Harness 全局登记项与当前机器人的路径；当前路径仍存在且可安全显示时会排在首位并标记为“当前”。结果可直接复制到 `/workspace` 命令。

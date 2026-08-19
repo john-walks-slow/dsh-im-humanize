@@ -161,6 +161,46 @@ test('Feishu executes /compact for the bound Session without prompting the model
   assert.deepEqual(sent, ['暂无可压缩的历史记录。']);
 });
 
+test('Feishu lists models without prompting and help advertises all four commands', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let asks = 0;
+  let creates = 0;
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness: {
+      listModels: async () => ({
+        groups: [{
+          id: 'feishu-provider',
+          name: 'Feishu Provider',
+          models: [{ id: 'model-one', name: 'Model One' }],
+        }],
+        failures: [],
+      }),
+      createSession: async () => { creates += 1; return 'feishu-session'; },
+      ask: async () => { asks += 1; return 'unexpected model reply'; },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  await bridge.accept(event('models-feishu', '/models'));
+  await bridge.waitForIdle();
+  assert.match(sent.at(-1), /feishu-provider\/model-one/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+  assert.equal(fixture.sessions.size, 0);
+
+  await bridge.accept(event('help-feishu', '/help'));
+  await bridge.waitForIdle();
+  const help = sent.at(-1);
+  for (const command of ['/models', '/model', '/stop', '/steer']) {
+    assert.equal(help.includes(command), true, command);
+  }
+});
+
 test('bridge maps a Feishu conversation to a persistent Harness session and replies', async () => {
   const sent = [];
   const reactions = [];

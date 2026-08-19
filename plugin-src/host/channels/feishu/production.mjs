@@ -4,6 +4,7 @@ import { unlink } from 'node:fs/promises';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { createConnectionSupervisor } from './connection-supervisor.mjs';
 import { createHarnessCommandExecutor } from '../../harness-command-executor.mjs';
+import { createHarnessSessionExecutors } from '../../harness-session-coordinator.mjs';
 import { verifyFeishuApp } from '../../../../src/channels/feishu/feishu-app.mjs';
 import { FeishuRuntime } from '../../../../src/channels/feishu/feishu-runtime.mjs';
 import { HarnessClient } from '../../../../src/channels/feishu/harness-client.mjs';
@@ -107,6 +108,10 @@ export async function createProductionController(ctx, config = {}, internals = {
     return stateFor(botConfig);
   };
   const commandExecutor = createHarnessCommandExecutor(ctx, internals.commandExecutor);
+  const { controlExecutor, sessionMaintenanceExecutor } = createHarnessSessionExecutors(ctx, {
+    controlExecutor: internals.controlExecutor,
+    sessionMaintenanceExecutor: internals.sessionMaintenanceExecutor,
+  });
   const harness = new Harness({
     baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
     workspace: defaultWorkspace,
@@ -116,6 +121,8 @@ export async function createProductionController(ctx, config = {}, internals = {
     autostart: false,
     dshBin: config.dshBin ?? 'dsh',
     ...(commandExecutor ? { commandExecutor } : {}),
+    ...(controlExecutor ? { controlExecutor } : {}),
+    ...(sessionMaintenanceExecutor ? { sessionMaintenanceExecutor } : {}),
   });
 
   const coreController = new Controller({

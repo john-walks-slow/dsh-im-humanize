@@ -110,6 +110,10 @@ export class HarnessApprovalQueue {
     this.#logger = logger;
   }
 
+  hasPending(key) {
+    return this.#routes.get(key)?.items.some((pending) => !pending.inactive) === true;
+  }
+
   claimReply({
     key,
     actor,

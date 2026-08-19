@@ -18,7 +18,15 @@ import {
 } from '../shared/harness-question.mjs';
 import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
 import { runCompactCommand } from '../shared/compact-command.mjs';
+import {
+  isControlCommand,
+  runControlCommand,
+} from '../shared/control-command.mjs';
 import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
+import {
+  isModelCommand,
+  runModelCommand,
+} from '../shared/model-command.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 
@@ -35,6 +43,10 @@ const HELP_TEXT = [
   '/workspacelist  列出工作区绝对路径',
   '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
   '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
+  '/models  列出所有可用模型',
+  '/model [模型ID]  查看或切换当前会话模型',
+  '/stop  停止当前任务',
+  '/steer 补充指令  纠偏当前任务',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ].join('\n');
@@ -77,6 +89,7 @@ export class FeishuHarnessBridge {
   #resolvedQuestionReplies = new Map();
   #acceptedMessageIds = new Set();
   #interactionTasks = new Set();
+  #commandTasks = new Set();
   #approvals;
   #status;
   #allowedSenderOpenIds;
@@ -141,6 +154,37 @@ export class FeishuHarnessBridge {
 
     this.#acceptedMessageIds.add(messageId);
     const processingReaction = this.#addReaction(messageId, 'OnIt');
+    const commandMessage = extractInboundMessage(event, this.#client);
+    const commandText = nonEmptyString(commandMessage.content) ?? '';
+    const commandRunner = isControlCommand(commandText)
+      ? runControlCommand
+      : (isModelCommand(commandText) ? runModelCommand : null);
+    const addressed = event?.message?.chat_type === 'p2p'
+      || (Array.isArray(event?.message?.mentions) && event.message.mentions.length > 0);
+    if (commandRunner && addressed) {
+      const processing = this.#processFastCommand(
+        event,
+        messageId,
+        key,
+        commandMessage,
+        commandRunner,
+      );
+      let current;
+      current = processing
+        .then(() => this.#finishReaction(messageId, processingReaction, 'DONE'))
+        .catch((error) => this.#handleMessageFailure(
+          event,
+          messageId,
+          processingReaction,
+          error,
+        ))
+        .finally(() => {
+          this.#acceptedMessageIds.delete(messageId);
+          this.#commandTasks.delete(current);
+        });
+      this.#commandTasks.add(current);
+      return current;
+    }
     if (this.#isResolvedQuestionReply(event, key)) {
       const current = Promise.resolve()
         .then(() => this.#discardResolvedInteractionReply(event, messageId))
@@ -276,6 +320,10 @@ export class FeishuHarnessBridge {
   }
 
   async #handleMessageFailure(event, messageId, processingReaction, error) {
+    if (error?.code === 'turn-stopped') {
+      await this.#removeProcessingReaction(messageId, processingReaction);
+      return;
+    }
     if (this.#signal?.aborted) {
       await this.#removeProcessingReaction(messageId, processingReaction);
       return;
@@ -297,7 +345,39 @@ export class FeishuHarnessBridge {
         pending.queue ? [pending.queue] : []
       )),
       ...this.#interactionTasks,
+      ...this.#commandTasks,
     ]);
+  }
+
+  async #processFastCommand(event, messageId, key, message, runner) {
+    this.#signal?.throwIfAborted();
+    if (this.#state.hasSeen(messageId)) return;
+    await this.#state.markSeen(messageId);
+    this.#status.lastMessageAt = new Date().toISOString();
+    this.#status.messagesReceived += 1;
+    const result = await runner(
+      nonEmptyString(message.content) ?? '',
+      this.#harness,
+      this.#state,
+      key,
+      {
+        signal: this.#signal,
+        hasImages: hasInboundImages(message),
+        pendingInteraction: this.#pendingInteractions.has(key)
+          || this.#approvals.hasPending(key),
+        control: { owner: this, key },
+      },
+    );
+    if (result?.stopped) {
+      await Promise.allSettled([
+        this.#cancelPendingInteraction(key),
+        this.#approvals.closeRoute(key),
+      ]);
+    }
+    for (const reply of result?.messages ?? [result?.message]) {
+      if (reply) await this.#send(event.message.chat_id, reply);
+    }
+    this.#status.lastError = null;
   }
 
   async #handle(event, key, { alreadyRecorded = false } = {}) {
@@ -372,6 +452,7 @@ export class FeishuHarnessBridge {
     return {
       timeoutMs: this.#replyTimeoutMs,
       signal: this.#signal,
+      control: { owner: this, key },
       onInteraction: (interaction) => this.#handleInteraction(interaction, {
         key,
         actor: senderOpenId(event),

@@ -1,0 +1,84 @@
+const CONTROL_COMMAND = /^\/(?:stop|steer)(?=$|\s)/iu;
+const STOP_COMMAND = /^\/stop(?=$|\s)/iu;
+const STOP_USAGE = '用法：/stop（不带参数）';
+const STEER_USAGE = '用法：/steer <补充指令>';
+const TEXT_ONLY = '控制命令仅支持纯文字，请移除图片后重试。';
+
+function commandResult(message, extra = {}) {
+  return { message, ...extra };
+}
+
+function requestOptions(signal) {
+  return signal ? { signal } : {};
+}
+
+function boundSession(harness, state, key) {
+  if (typeof state?.sessionFor !== 'function') return null;
+  const sessionId = state.sessionFor(key);
+  if (typeof sessionId !== 'string' || !sessionId) return null;
+  if (typeof harness?.workspaceSession !== 'function') {
+    throw new TypeError('Harness does not support workspace sessions');
+  }
+  const session = harness.workspaceSession(sessionId);
+  if (!session || typeof session !== 'object') {
+    throw new TypeError('Harness returned an invalid workspace session');
+  }
+  return session;
+}
+
+export function isControlCommand(text) {
+  return typeof text === 'string' && CONTROL_COMMAND.test(text.trim());
+}
+
+export async function runControlCommand(text, harness, state, key, {
+  signal,
+  hasImages = false,
+  pendingInteraction = false,
+  control,
+} = {}) {
+  if (!isControlCommand(text)) return null;
+  const command = text.trim();
+  const stop = STOP_COMMAND.test(command);
+
+  if (hasImages) return commandResult(TEXT_ONLY);
+
+  if (stop) {
+    if (!/^\/stop$/iu.test(command)) return commandResult(STOP_USAGE);
+    const session = boundSession(harness, state, key);
+    if (!session) return commandResult('当前聊天没有正在运行的任务。');
+    if (typeof session.stopActiveTurn !== 'function') {
+      throw new TypeError('Harness session does not support stopping active turns');
+    }
+    const stopped = await session.stopActiveTurn(control, requestOptions(signal));
+    return stopped
+      ? commandResult('已请求停止当前任务。', { stopped: true })
+      : commandResult('当前聊天没有正在运行的任务。');
+  }
+
+  const match = /^\/steer(?:\s+([\s\S]*))?$/iu.exec(command);
+  const instruction = match?.[1]?.trim() ?? '';
+  if (!instruction) return commandResult(STEER_USAGE);
+  if (pendingInteraction) {
+    return commandResult([
+      '当前任务正在等待你的回答或审批。',
+      '',
+      '请先处理当前请求，或者发送 /stop 停止任务。',
+    ].join('\n'));
+  }
+
+  const session = boundSession(harness, state, key);
+  if (!session) {
+    return commandResult('当前聊天没有正在运行的任务，请直接发送普通消息。');
+  }
+  if (typeof session.steerActiveTurn !== 'function') {
+    throw new TypeError('Harness session does not support steering active turns');
+  }
+  const steered = await session.steerActiveTurn(
+    instruction,
+    control,
+    requestOptions(signal),
+  );
+  return steered
+    ? commandResult('已提交补充指令，Agent 会在下一步读取。')
+    : commandResult('当前聊天没有正在运行的任务，请直接发送普通消息。');
+}
