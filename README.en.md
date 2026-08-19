@@ -32,7 +32,7 @@
 
 ## Introduction
 
-Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest, or entering existing bot credentials. One plugin and one settings entry provide unified management for Feishu, WeChat, DingTalk, WeCom, QQ, Slack, Telegram, Discord, and WhatsApp bots. It also supports switching workspaces and rebinding sessions.
+Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest, or entering existing bot credentials. One plugin and one settings entry provide unified management for Feishu, WeChat, DingTalk, WeCom, QQ, Slack, Telegram, Discord, and WhatsApp. **Every channel supports multiple bots**, each with independent connection state, workspace, and session bindings. It also supports switching workspaces and rebinding sessions.
 
 ## Interface
 
