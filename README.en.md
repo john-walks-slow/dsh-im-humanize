@@ -42,17 +42,21 @@ All nine built-in channels can send JPEG, PNG, and WebP images, plus GIFs sent a
 
 ## Installation
 
-```sh
-npx -y github:xmanrui/dsh-im install
-```
-
-Alternatively, install it directly from npm:
+Install the published stable release from npm (recommended):
 
 ```sh
 dsh plugin --profile web add @xmanrui/dsh-im
 ```
 
-Restart `dsh web`, then open **Settings → Plugins → IM Bot**. The installer replaces directly installed `dsh-feishu`, `dsh-weixin`, and `dsh-dingtalk` entries in the profile with `dsh-im` without deleting channel data.
+Restart `dsh web`, then open **Settings → Plugins → IM Bot**.
+
+To try the latest code before it is published to npm, use the GitHub-source installer instead:
+
+```sh
+npx -y github:xmanrui/dsh-im install
+```
+
+A GitHub-source installation fetches and builds a Git dependency directly. With pnpm 10 or newer, the profile may first need an `allowBuilds` entry in `pnpm-workspace.yaml`. Most users should prefer the stable npm release. The GitHub installer replaces directly installed `dsh-feishu`, `dsh-weixin`, and `dsh-dingtalk` entries in the profile with `dsh-im` without deleting channel data.
 
 Feishu, QQ, DingTalk, and WeCom each provide two entry points. The blue **QR access** action uses the platform QR flow; the key-marked, outlined **Manual access** action immediately to its right connects an existing bot application. Feishu and QQ use App ID + App Secret and AppID + AppSecret respectively, DingTalk uses Client ID + Client Secret, and WeCom uses Bot ID + Secret. Secrets are sent only to the local Harness Host and stored through its protected credential provider; status responses and bot lists never return them.
 
