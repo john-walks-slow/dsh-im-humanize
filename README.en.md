@@ -98,6 +98,9 @@ When a channel does not explicitly configure `agentPreset`, each new IM session 
 
 | Command | Description |
 | --- | --- |
+| `/help` | Show the commands and usage supported by the bot. |
+| `/new` | Unbind the current chat so its next ordinary message starts a new Harness Session. |
+| `/status` | Check the connection between the current bot and DeepSeek Harness. |
 | `/models` | List every currently configured model, grouped by provider. |
 | `/model` | Show the model used by the Session bound to this chat. |
 | `/model <provider/model-id>` | Switch the model for the Session bound to this chat. |
@@ -108,9 +111,16 @@ When a channel does not explicitly configure `agentPreset`, each new IM session 
 | `/workspacelist` | List workspace absolute paths that still exist on the current Harness Host. |
 | `/sessionlist [workspace number or absolute path]` | List every registered session ID and title in the selected workspace; omit the argument to use the current workspace. |
 | `/session <Session ID>` | Bind the current chat to an existing Harness session. |
+| Interactive question | Reply with an option number, option label, or custom text; separate multiple choices with commas. |
+| Remote approval | Reply with `批准` / `拒绝` / `同意` / `不同意` / `yes` / `no`. |
 
-Examples: `/models`, `/model deepseek-official/deepseek-v4-pro`, `/steer inspect only the configuration file`, `/stop`, `/compact`, `/workspace /Users/alice/projects/my-app`, `/sessionlist 2`, `/sessionlist /Users/alice/projects/my-app`, or `/session session-id`
+Examples: `/help`, `/new`, `/status`, `/models`, `/model deepseek-official/deepseek-v4-pro`, `/steer inspect only the configuration file`, `/stop`, `/compact`, `/workspace /Users/alice/projects/my-app`, `/sessionlist 2`, `/sessionlist /Users/alice/projects/my-app`, or `/session session-id`
 
+### Command details
+
+- `/help` takes no arguments and never creates a Session. It returns the complete command list supported by the current bot.
+- `/status` takes no arguments, never prompts the model, and does not change the Session binding. It confirms that the current bot can reach DeepSeek Harness.
+- `/new` only removes the current chat's saved dsh-im Session binding; it never deletes, empties, or archives the old Session. The next ordinary message creates and binds a new Session in the current workspace. If a task is running or waiting for a question or approval, finish the interaction or use `/stop` before `/new`.
 - `/models` takes no arguments and never creates a Session. It lists every currently configured Harness model using stable, copyable `provider/model-id` values. If one provider fails, models from the remaining providers are still shown.
 - Bare `/model` only displays the current Session model. `/model <provider/model-id>` accepts an exact value returned by `/models`. When the chat has no Session yet, a valid switch creates and binds a blank Session without prompting the model. The switch affects only that Session; Harness also attempts to save it as the default for future Sessions, while other existing Sessions remain unchanged.
 - A model cannot be switched while a task is running or waiting for an approval or question answer. Wait for it to finish or use `/stop` first. A Session containing images cannot switch to a model that does not accept image input.
@@ -130,6 +140,15 @@ Examples: `/models`, `/model deepseek-official/deepseek-v4-pro`, `/steer inspect
 - Any user who can run `/session` can continue the selected session and use later messages to write to it or invoke its available tools. Expose the bot and session list only to trusted users.
 - A successful switch clears only the current bot's old Harness session mappings and does not affect other bots.
 - The new workspace applies to subsequent messages; a reply that has already started generating is allowed to finish.
+
+## Other features
+
+- **Image understanding**: all nine built-in channels can send JPEG, PNG, WebP, and GIF files sent as images to Harness, with an optional text description. Each image is limited to 5 MB, and all images in one message are limited to 20 MB in total.
+- **Switch workspaces from a bot card**: every bot card on the settings page shows its current Harness workspace. Enter an existing absolute directory path directly or open the directory picker. Switching clears only that bot's old chat mappings; it never deletes, empties, or archives old Sessions. Replies already in progress may finish, while later messages use the new workspace.
+- **Check the connection and send a test message**: when a bot is online, clicking **Check connection** verifies the platform connection and sends a “DeepSeek Harness connection test succeeded” message to the bot's most recently remembered direct conversation; WhatsApp uses the account's self-chat. The test neither creates a Harness Session nor invokes the model. The bot must have received at least one direct message before it has a remembered test target; otherwise the page reports that no test conversation is available yet.
+- **Retry a connection or remove an integration**: when a bot is offline, its card action changes to **Retry connection**. Use **Remove integration** when the bot is no longer needed. Each action affects only the selected bot and leaves other bots and channels unchanged.
+- **Manage multiple bots independently**: a channel can have multiple connected bots. Credentials, connection state, workspace, and chat-to-Session mappings are kept separately for every bot, so card actions do not affect sibling bots.
+- **Streaming replies and progress**: the plugin uses each platform's available capabilities to show thinking state, tool progress, and incremental answers. Platforms without a native streaming API complete replies through message edits, card updates, or a final message.
 
 ## Design
 
