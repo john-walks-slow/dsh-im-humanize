@@ -95,6 +95,7 @@ export class OfficeJobExecutor {
   #transport;
   #createHarness;
   #logger;
+  #sleep;
   #active = new Map();
   #queued = new Set();
   #completed = new Set();
@@ -107,7 +108,13 @@ export class OfficeJobExecutor {
     lastJobAt: null,
   };
 
-  constructor({ config, transport, createHarness, logger = console }) {
+  constructor({
+    config,
+    transport,
+    createHarness,
+    logger = console,
+    sleepImpl = sleep,
+  }) {
     if (!config || !transport || typeof createHarness !== 'function') {
       throw new TypeError('OfficeJobExecutor requires config, transport, and createHarness');
     }
@@ -115,6 +122,7 @@ export class OfficeJobExecutor {
     this.#transport = transport;
     this.#createHarness = createHarness;
     this.#logger = logger;
+    this.#sleep = sleepImpl;
   }
 
   get status() { return structuredClone(this.#status); }
@@ -256,18 +264,10 @@ export class OfficeJobExecutor {
 
   async #renew(jobId, entry) {
     while (!entry.controller.signal.aborted) {
-      try { await sleep(RENEW_MS, undefined, { signal: entry.controller.signal }); }
+      try { await this.#sleep(RENEW_MS, undefined, { signal: entry.controller.signal }); }
       catch { return; }
       try {
         await this.#transport.renewJob(jobId, entry.leaseToken, { signal: entry.controller.signal });
-        const snapshot = await this.#transport.getJob(jobId, { signal: entry.controller.signal });
-        const approval = snapshot?.job?.approval;
-        if (approval && (approval.status === 'approved' || approval.status === 'rejected')) {
-          entry.approvals.get(approval.id)?.resolve({
-            decision: approval.status,
-            answer: clean(approval.answer),
-          });
-        }
       } catch (error) {
         if (entry.controller.signal.aborted) return;
         entry.cancelled = true;
@@ -279,6 +279,22 @@ export class OfficeJobExecutor {
           }, 10_000).catch(() => undefined);
         }
         return;
+      }
+      try {
+        const snapshot = await this.#transport.getJob(jobId, { signal: entry.controller.signal });
+        const approval = snapshot?.job?.approval;
+        if (approval && (approval.status === 'approved' || approval.status === 'rejected')) {
+          entry.approvals.get(approval.id)?.resolve({
+            decision: approval.status,
+            answer: clean(approval.answer),
+          });
+        }
+      } catch (error) {
+        if (entry.controller.signal.aborted) return;
+        this.#logger.warn?.(
+          `[dsh-im:office] Job ${jobId} approval poll failed; will retry after the next renewal:`,
+          error.message,
+        );
       }
     }
   }

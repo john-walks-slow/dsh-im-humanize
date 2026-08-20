@@ -33,16 +33,26 @@ export class TokenBotConfigStore {
   #channel;
   #botPrefix;
   #tokenRefPrefix;
+  #normalizeBotExtension;
   #botIdPattern;
   #tokenRefPattern;
   #value = EMPTY_DOCUMENT;
   #writeQueue = Promise.resolve();
 
-  constructor(path, { channel, botPrefix, tokenRefPrefix }) {
+  constructor(path, {
+    channel,
+    botPrefix,
+    tokenRefPrefix,
+    normalizeBotExtension = () => ({}),
+  }) {
+    if (typeof normalizeBotExtension !== 'function') {
+      throw new TypeError('normalizeBotExtension must be a function');
+    }
     this.#path = path;
     this.#channel = channel;
     this.#botPrefix = botPrefix;
     this.#tokenRefPrefix = tokenRefPrefix;
+    this.#normalizeBotExtension = normalizeBotExtension;
     this.#botIdPattern = new RegExp(`^${escapePattern(botPrefix)}_[a-f0-9]{24}$`);
     this.#tokenRefPattern = new RegExp(`^${escapePattern(tokenRefPrefix)}_[A-F0-9]{24}$`);
   }
@@ -127,6 +137,8 @@ export class TokenBotConfigStore {
       tokenRefPrefix: this.#tokenRefPrefix,
     });
     if (derived.botId !== botId || derived.tokenRef !== tokenRef) return null;
+    const extension = this.#normalizeBotExtension(value);
+    if (!extension || typeof extension !== 'object' || Array.isArray(extension)) return null;
     return Object.freeze({
       botId,
       platformId,
@@ -135,6 +147,7 @@ export class TokenBotConfigStore {
       username: cleanString(value.username),
       createdAt: cleanString(value.createdAt) ?? new Date().toISOString(),
       connectedAt: cleanString(value.connectedAt),
+      ...extension,
     });
   }
 

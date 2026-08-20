@@ -163,6 +163,34 @@ export class TokenBotController {
     return this.status();
   }
 
+  async updateBotConfig(botId, update) {
+    if (this.#closed) throw new Error(`${this.#descriptor.label} controller is closed`);
+    if (typeof update !== 'function') throw new TypeError('Bot config update must be a function');
+    await this.#withBotTransition(botId, async () => {
+      if (this.#closed) throw new Error(`${this.#descriptor.label} controller is closed`);
+      const config = this.#configStore.get(botId);
+      if (!config) throw new Error(`Unknown ${this.#descriptor.label} bot`);
+      const token = await this.#resolveToken(config.tokenRef);
+      if (!token) throw new Error(`${this.#descriptor.label} bot token is missing`);
+      if (this.#closed) throw new Error(`${this.#descriptor.label} controller is closed`);
+      const nextConfig = update(config);
+      const savedConfig = await this.#configStore.save(nextConfig);
+      try {
+        await this.#startRuntime(savedConfig, token);
+        this.#errors.delete(botId);
+      } catch (error) {
+        this.#errors.set(botId, safeError(
+          'connection-failed',
+          `${this.#descriptor.label}连接仍未就绪，请稍后重试。`,
+        ));
+        throw error;
+      } finally {
+        this.#touch();
+      }
+    });
+    return this.status();
+  }
+
   async sendConnectionTest(botId) {
     const config = this.#configStore.get(botId);
     if (!config) throw new Error(`Unknown ${this.#descriptor.label} bot`);

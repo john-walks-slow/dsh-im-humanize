@@ -22,15 +22,25 @@ export class OfficeRuntime {
   #token;
   #logger;
   #transport;
+  #sleep;
   #controller = null;
   #task = null;
   #status;
   #jobs;
 
-  constructor({ config, token, logger = console, transport, createHarness, jobExecutor }) {
+  constructor({
+    config,
+    token,
+    logger = console,
+    transport,
+    createHarness,
+    jobExecutor,
+    sleepImpl = sleep,
+  }) {
     this.#config = config;
     this.#token = token;
     this.#logger = logger;
+    this.#sleep = sleepImpl;
     this.#transport = transport ?? new OfficeTransport({
       baseUrl: config.baseUrl, deviceId: config.deviceId, token,
     });
@@ -91,7 +101,10 @@ export class OfficeRuntime {
         const heartbeat = await this.#transport.heartbeat(this.capabilities(), { signal: attemptSignal });
         this.#offerJobs(heartbeat?.jobs);
         this.#status.lastHeartbeatAt = new Date().toISOString();
-        const heartbeatTask = this.#heartbeatLoop(attemptSignal);
+        let streamOpened = false;
+        const heartbeatTask = this.#heartbeatLoop(attemptSignal, () => {
+          if (streamOpened && !attemptSignal.aborted) attempt = 0;
+        });
         const stream = this.#transport.stream({
           signal: attemptSignal,
           lastEventId: this.#status.lastEventId,
@@ -99,7 +112,7 @@ export class OfficeRuntime {
             this.#status.connected = true;
             this.#status.state = 'connected';
             this.#status.error = null;
-            attempt = 0;
+            streamOpened = true;
           },
           onEvent: async (event) => {
             this.#status.lastEventAt = new Date().toISOString();
@@ -112,13 +125,14 @@ export class OfficeRuntime {
         await Promise.race([stream, heartbeatTask]);
       } catch (error) {
         if (signal.aborted) break;
+        attemptController.abort();
         this.#status.connected = false;
         this.#status.state = 'reconnecting';
         this.#status.error = safeConnectionError(error);
         this.#status.reconnects += 1;
         const delay = RETRY_DELAYS[Math.min(attempt, RETRY_DELAYS.length - 1)];
         attempt += 1;
-        try { await sleep(delay, undefined, { signal }); } catch { break; }
+        try { await this.#sleep(delay, undefined, { signal }); } catch { break; }
       } finally {
         attemptController.abort();
       }
@@ -127,12 +141,13 @@ export class OfficeRuntime {
     this.#status.state = 'idle';
   }
 
-  async #heartbeatLoop(signal) {
+  async #heartbeatLoop(signal, onSuccess) {
     while (!signal.aborted) {
-      await sleep(this.#config.heartbeatSeconds * 1_000, undefined, { signal });
+      await this.#sleep(this.#config.heartbeatSeconds * 1_000, undefined, { signal });
       const heartbeat = await this.#transport.heartbeat(this.capabilities(), { signal });
       this.#offerJobs(heartbeat?.jobs);
       this.#status.lastHeartbeatAt = new Date().toISOString();
+      onSuccess?.();
     }
   }
 

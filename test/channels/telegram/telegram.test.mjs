@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  TELEGRAM_ACCESS_MODES,
   TelegramConfigStore,
   deriveTelegramBotIdentity,
+  normalizeTelegramAccessPolicy,
 } from '../../../src/channels/telegram/config-store.mjs';
 import { TelegramController } from '../../../src/channels/telegram/telegram-controller.mjs';
 import {
@@ -187,11 +189,16 @@ test('Telegram config and controller store only a credential reference in bot da
   assert.equal(status.totals.connected, 1);
   assert.equal(status.bots[0].bot.name, 'Harness Telegram');
   assert.equal(status.bots[0].bot.username, 'harness_bot');
+  assert.deepEqual(status.bots[0].accessPolicy, {
+    accessMode: TELEGRAM_ACCESS_MODES.compatible,
+    allowedUsers: [],
+  });
   const identity = deriveTelegramBotIdentity('123456789');
   assert.equal(credentialStore.values.get(identity.tokenRef), TOKEN);
   const persisted = await readFile(configPath, 'utf8');
   assert.doesNotMatch(persisted, new RegExp(TOKEN));
   assert.match(persisted, new RegExp(identity.tokenRef));
+  assert.doesNotMatch(persisted, /accessMode|allowedUsers/);
 
   await controller.reconnectBot(identity.botId);
   assert.equal(runtimes.length, 2);
@@ -201,6 +208,220 @@ test('Telegram config and controller store only a credential reference in bot da
   await controller.deleteBot(identity.botId);
   assert.equal(credentialStore.values.has(identity.tokenRef), false);
   assert.equal(controller.status().totals.configured, 0);
+});
+
+test('Telegram loads legacy bots without an access policy as compatible mode', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-im-telegram-legacy-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const configPath = join(directory, 'config.json');
+  const identity = deriveTelegramBotIdentity('123456789');
+  await writeFile(configPath, `${JSON.stringify({
+    version: 1,
+    bots: [{
+      ...identity,
+      platformId: '123456789',
+      name: 'Legacy Telegram',
+      username: 'legacy_bot',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      connectedAt: '2026-01-01T00:00:00.000Z',
+    }],
+  }, null, 2)}\n`);
+
+  const store = await new TelegramConfigStore(configPath).load();
+  const saved = store.get(identity.botId);
+  assert.equal(saved.accessMode, undefined);
+  assert.equal(saved.allowedUsers, undefined);
+  assert.deepEqual(normalizeTelegramAccessPolicy(saved), {
+    accessMode: TELEGRAM_ACCESS_MODES.compatible,
+    allowedUsers: [],
+  });
+});
+
+test('Telegram access policy persists per bot, switches freely, and restarts only that bot', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-im-telegram-policy-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const configPath = join(directory, 'config.json');
+  const configStore = await new TelegramConfigStore(configPath).load();
+  const runtimeRecords = [];
+  let inspected = 0;
+  const controller = new TelegramController({
+    credentials: credentials(),
+    configStore,
+    inspectToken: async () => {
+      inspected += 1;
+      return {
+        platformId: inspected === 1 ? '111111111' : inspected === 2 ? '222222222' : '111111111',
+        name: inspected === 2 ? 'Bot B' : 'Bot A',
+        username: inspected === 2 ? 'bot_b' : 'bot_a',
+      };
+    },
+    createRuntime: async ({ botId, config }) => {
+      const record = { botId, config: structuredClone(config), starts: 0, stops: 0 };
+      runtimeRecords.push(record);
+      return {
+        status: {
+          ready: true,
+          connectionState: 'connected',
+          harnessReachable: true,
+          lastCheckedAt: 10,
+        },
+        async start() { record.starts += 1; },
+        async stop() { record.stops += 1; },
+      };
+    },
+  });
+
+  await controller.bindCredentials({ token: TOKEN });
+  await controller.bindCredentials({ token: '222222222:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456' });
+  const botA = deriveTelegramBotIdentity('111111111').botId;
+  const botB = deriveTelegramBotIdentity('222222222').botId;
+  assert.deepEqual(controller.status().bots.map((bot) => bot.accessPolicy), [
+    { accessMode: TELEGRAM_ACCESS_MODES.compatible, allowedUsers: [] },
+    { accessMode: TELEGRAM_ACCESS_MODES.compatible, allowedUsers: [] },
+  ]);
+
+  await controller.setAccessPolicy(botA, {
+    accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
+    allowedUsers: ['6087707998', '1202499116'],
+  });
+  assert.equal(runtimeRecords.filter((record) => record.botId === botA).length, 2);
+  assert.equal(runtimeRecords.filter((record) => record.botId === botB).length, 1);
+  assert.equal(runtimeRecords.find((record) => record.botId === botA).stops, 1);
+  assert.equal(runtimeRecords.find((record) => record.botId === botB).stops, 0);
+  assert.deepEqual(controller.status().bots.find((bot) => bot.botId === botA).accessPolicy, {
+    accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
+    allowedUsers: ['6087707998', '1202499116'],
+  });
+  assert.deepEqual(controller.status().bots.find((bot) => bot.botId === botB).accessPolicy, {
+    accessMode: TELEGRAM_ACCESS_MODES.compatible,
+    allowedUsers: [],
+  });
+
+  await controller.setAccessPolicy(botA, {
+    accessMode: TELEGRAM_ACCESS_MODES.compatible,
+    allowedUsers: ['6087707998', '1202499116'],
+  });
+  assert.equal(configStore.get(botA).accessMode, TELEGRAM_ACCESS_MODES.compatible);
+  assert.deepEqual(configStore.get(botA).allowedUsers, ['6087707998', '1202499116']);
+  await controller.setAccessPolicy(botA, {
+    accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
+    allowedUsers: ['6087707998', '1202499116'],
+  });
+  assert.deepEqual(controller.status().bots.find((bot) => bot.botId === botA).accessPolicy, {
+    accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
+    allowedUsers: ['6087707998', '1202499116'],
+  });
+
+  await controller.bindCredentials({ token: TOKEN });
+  assert.deepEqual(configStore.get(botA).allowedUsers, ['6087707998', '1202499116']);
+  assert.equal(configStore.get(botA).accessMode, TELEGRAM_ACCESS_MODES.privateAllowlist);
+
+  const reloaded = await new TelegramConfigStore(configPath).load();
+  assert.deepEqual(reloaded.get(botA).allowedUsers, ['6087707998', '1202499116']);
+  assert.equal(reloaded.get(botB).accessMode, undefined);
+  await controller.close();
+});
+
+test('Telegram access policy rejects invalid modes and user IDs', () => {
+  assert.throws(() => normalizeTelegramAccessPolicy({
+    accessMode: 'allow-everything',
+    allowedUsers: [],
+  }), /accessMode/);
+  assert.throws(() => normalizeTelegramAccessPolicy({
+    accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
+    allowedUsers: ['0', '-1001', '@username'],
+  }), /invalid Telegram User ID/);
+});
+
+test('Telegram policy update is serialized with deletion and cannot restore a deleted bot', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-im-telegram-policy-delete-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const configStore = await new TelegramConfigStore(join(directory, 'config.json')).load();
+  const credentialStore = credentials();
+  const unsetStarted = deferred();
+  const releaseUnset = deferred();
+  const unset = credentialStore.unset;
+  credentialStore.unset = async (ref) => {
+    unsetStarted.resolve();
+    await releaseUnset.promise;
+    return unset(ref);
+  };
+  const controller = new TelegramController({
+    credentials: credentialStore,
+    configStore,
+    inspectToken: async () => ({
+      platformId: '123456789', name: 'Harness Telegram', username: 'harness_bot',
+    }),
+    createRuntime: async () => ({
+      status: { ready: true, connectionState: 'connected', harnessReachable: true },
+      async start() {},
+      async stop() {},
+    }),
+  });
+  await controller.bindCredentials({ token: TOKEN });
+  const botId = deriveTelegramBotIdentity('123456789').botId;
+
+  const deletion = controller.deleteBot(botId);
+  await unsetStarted.promise;
+  const policyUpdate = controller.setAccessPolicy(botId, {
+    accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
+    allowedUsers: ['6087707998'],
+  });
+  releaseUnset.resolve();
+
+  await deletion;
+  await assert.rejects(policyUpdate, /Unknown Telegram bot/);
+  assert.equal(configStore.get(botId), null);
+  assert.equal(credentialStore.values.size, 0);
+  assert.equal(controller.status().totals.configured, 0);
+});
+
+test('Telegram queued policy update cannot persist after controller close begins', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-im-telegram-policy-close-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const configStore = await new TelegramConfigStore(join(directory, 'config.json')).load();
+  const reconnectStarted = deferred();
+  const releaseReconnect = deferred();
+  let runtimeCount = 0;
+  const controller = new TelegramController({
+    credentials: credentials(),
+    configStore,
+    inspectToken: async () => ({
+      platformId: '123456789', name: 'Harness Telegram', username: 'harness_bot',
+    }),
+    createRuntime: async () => {
+      runtimeCount += 1;
+      const current = runtimeCount;
+      return {
+        status: { ready: true, connectionState: 'connected', harnessReachable: true },
+        async start() {
+          if (current === 2) {
+            reconnectStarted.resolve();
+            await releaseReconnect.promise;
+          }
+        },
+        async stop() {},
+      };
+    },
+  });
+  await controller.bindCredentials({ token: TOKEN });
+  const botId = deriveTelegramBotIdentity('123456789').botId;
+
+  const reconnect = controller.reconnectBot(botId);
+  await reconnectStarted.promise;
+  const policyUpdate = controller.setAccessPolicy(botId, {
+    accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
+    allowedUsers: ['6087707998'],
+  });
+  const rejectedPolicy = assert.rejects(policyUpdate, /controller is closed/);
+  const closing = controller.close();
+  releaseReconnect.resolve();
+
+  await reconnect;
+  await rejectedPolicy;
+  await closing;
+  assert.equal(configStore.get(botId).accessMode, undefined);
+  assert.equal(configStore.get(botId).allowedUsers, undefined);
 });
 
 test('Telegram RPC accepts only token binding and strips credential internals', async () => {
@@ -226,6 +447,13 @@ test('Telegram RPC accepts only token binding and strips credential internals', 
     }),
     sendConnectionTest: async (botId) => { connectionTests.push(botId); },
     deleteBot: async () => ({ bots: [], totals: { configured: 0, connected: 0 } }),
+    setAccessPolicy: async (botId, policy) => {
+      calls.push({ botId, policy });
+      return {
+        bots: [{ botId, accessPolicy: policy }],
+        totals: { configured: 1, connected: 0 },
+      };
+    },
   };
   const handler = createTelegramRpcHandler(controller);
   const result = await handler(TELEGRAM_ENDPOINTS.bindCredentials, { token: TOKEN });
@@ -266,6 +494,31 @@ test('Telegram RPC accepts only token binding and strips credential internals', 
     sent: false,
     code: 'test-target-unavailable',
   });
+
+  const access = await handler(TELEGRAM_ENDPOINTS.setAccessPolicy, {
+    botId: 'telegram_123',
+    accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
+    allowedUsers: ['6087707998', '6087707998'],
+  });
+  assert.equal(access.ok, true);
+  assert.deepEqual(calls.at(-1), {
+    botId: 'telegram_123',
+    policy: {
+      accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
+      allowedUsers: ['6087707998'],
+    },
+  });
+  assert.equal((await handler(TELEGRAM_ENDPOINTS.setAccessPolicy, {
+    botId: 'telegram_123',
+    accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
+    allowedUsers: ['@username'],
+  })).error.code, 'bad-request');
+  assert.equal((await handler(TELEGRAM_ENDPOINTS.setAccessPolicy, {
+    botId: 'telegram_123',
+    accessMode: TELEGRAM_ACCESS_MODES.compatible,
+    allowedUsers: [],
+    extra: true,
+  })).error.code, 'bad-request');
 });
 
 test('shared token RPC never sends a connection test after reconnect is cancelled', async () => {
@@ -278,6 +531,7 @@ test('shared token RPC never sends a connection test after reconnect is cancelle
     reconnectBot: async () => reconnect,
     sendConnectionTest: async () => { sendCalls += 1; },
     deleteBot: async () => ({ bots: [] }),
+    setAccessPolicy: async () => ({ bots: [] }),
   };
   const abort = new AbortController();
   const result = createTelegramRpcHandler(controller)(TELEGRAM_ENDPOINTS.reconnectBot, {
@@ -352,12 +606,21 @@ test('Telegram normalizes private messages and requires an explicit group addres
   assert.equal(topicTwo.replyTarget.messageThreadId, 200);
 });
 
-test('Telegram blocks every group and admits only allowlisted private senders', () => {
+test('Telegram compatible mode preserves old routing and private allowlist mode restricts inbound messages', () => {
   const allowed = new Set(['6087707998', '1202499116']);
-  assert.equal(telegramInboundAllowed({ kind: 'group', senderId: '6087707998' }, allowed), false);
-  assert.equal(telegramInboundAllowed({ kind: 'direct', senderId: '6087707998' }, allowed), true);
-  assert.equal(telegramInboundAllowed({ kind: 'direct', senderId: '999999999' }, allowed), false);
-  assert.equal(telegramInboundAllowed({ kind: 'direct', senderId: '6087707998' }, new Set()), false);
+  assert.equal(telegramInboundAllowed({ kind: 'group', senderId: '6087707998' }), true);
+  assert.equal(telegramInboundAllowed({ kind: 'direct', senderId: '999999999' }), true);
+  const policy = {
+    accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
+    allowedPrivateUserIds: allowed,
+  };
+  assert.equal(telegramInboundAllowed({ kind: 'group', senderId: '6087707998' }, policy), false);
+  assert.equal(telegramInboundAllowed({ kind: 'direct', senderId: '6087707998' }, policy), true);
+  assert.equal(telegramInboundAllowed({ kind: 'direct', senderId: '999999999' }, policy), false);
+  assert.equal(telegramInboundAllowed({ kind: 'direct', senderId: '6087707998' }, {
+    ...policy,
+    allowedPrivateUserIds: new Set(),
+  }), false);
 });
 
 test('Telegram normalizes photo captions and image documents into one downloadable image', async () => {
@@ -512,6 +775,95 @@ test('Telegram runtime validates webhook state and starts a cancellable long pol
   assert.equal(runtime.status.ready, false);
   assert.deepEqual(calls[0], { offset: -1, timeout: 0 });
   await rm(directory, { recursive: true, force: true });
+});
+
+test('Telegram runtime enforces the selected bot private allowlist', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-im-telegram-allowlist-runtime-'));
+  const state = await new TelegramStateStore(join(directory, 'state.json')).load();
+  const asked = [];
+  let delivered = false;
+  let nextMessageId = 500;
+  const updates = [
+    {
+      update_id: 0,
+      message: {
+        message_id: 100,
+        chat: { id: -1001, type: 'group' },
+        from: { id: 7, is_bot: false },
+        text: '@HarnessBot group',
+        entities: [{ type: 'mention', offset: 0, length: 11 }],
+      },
+    },
+    {
+      update_id: 1,
+      message: {
+        message_id: 101,
+        chat: { id: 7, type: 'private' },
+        from: { id: 7, is_bot: false },
+        text: 'allowed direct',
+      },
+    },
+    {
+      update_id: 2,
+      message: {
+        message_id: 102,
+        chat: { id: 8, type: 'private' },
+        from: { id: 8, is_bot: false },
+        text: 'denied direct',
+      },
+    },
+  ];
+  const fakeApi = {
+    getMe: async () => ({ id: 123456789, is_bot: true }),
+    getWebhookInfo: async () => ({ url: '' }),
+    getUpdates: async ({ timeout, signal }) => {
+      if (timeout === 0) return [];
+      if (!delivered) {
+        delivered = true;
+        return updates;
+      }
+      return new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    },
+    sendChatAction: async () => true,
+    sendMessage: async () => ({ message_id: nextMessageId++ }),
+    editMessageText: async () => true,
+  };
+  const runtime = new TelegramRuntime({
+    config: {
+      botId: 'telegram_allowlist',
+      platformId: '123456789',
+      username: 'HarnessBot',
+      accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
+      allowedUsers: ['7'],
+    },
+    token: TOKEN,
+    harness: {
+      ensureRunning: async () => true,
+      createSession: async () => 'session-allowlist',
+      ask: async (_sessionId, text) => {
+        asked.push(text);
+        return 'done';
+      },
+    },
+    state,
+    createApi: () => fakeApi,
+  });
+
+  try {
+    await runtime.start();
+    await bounded((async () => {
+      while (state.cursor() !== 3 || asked.length !== 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    })(), 'Telegram safe-mode updates were not processed');
+    assert.deepEqual(asked, ['allowed direct']);
+    assert.equal(runtime.status.messagesRejected, 2);
+  } finally {
+    await runtime.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('Telegram runtime keeps polling while a Harness question waits for its answer', async () => {

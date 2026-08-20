@@ -1,6 +1,10 @@
 import { createEditableMessageStream, splitMessageText } from '../shared/editable-message-stream.mjs';
 import { TelegramApi } from './telegram-api.mjs';
 import { createTelegramBridgeStatus, TelegramHarnessBridge } from './telegram-bridge.mjs';
+import {
+  TELEGRAM_ACCESS_MODES,
+  normalizeTelegramAccessPolicy,
+} from './config-store.mjs';
 
 function escaped(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -115,7 +119,11 @@ export function normalizeTelegramUpdate(update, { botId, username, loadFile = as
   };
 }
 
-export function telegramInboundAllowed(message, allowedPrivateUserIds) {
+export function telegramInboundAllowed(message, {
+  accessMode = TELEGRAM_ACCESS_MODES.compatible,
+  allowedPrivateUserIds = new Set(),
+} = {}) {
+  if (accessMode !== TELEGRAM_ACCESS_MODES.privateAllowlist) return true;
   return message?.kind === 'direct'
     && allowedPrivateUserIds instanceof Set
     && allowedPrivateUserIds.has(String(message.senderId));
@@ -204,6 +212,7 @@ export class TelegramRuntime {
   #logger;
   #replyTimeoutMs;
   #createApi;
+  #accessMode;
   #allowedPrivateUserIds;
   #status = createTelegramRuntimeStatus();
   #api = null;
@@ -220,7 +229,6 @@ export class TelegramRuntime {
     logger = console,
     replyTimeoutMs = 600_000,
     createApi = (options) => new TelegramApi(options),
-    allowedPrivateUserIds = [],
   }) {
     if (!config || !token || !harness || !state) {
       throw new TypeError('TelegramRuntime requires config, token, Harness, and state');
@@ -232,9 +240,9 @@ export class TelegramRuntime {
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#createApi = createApi;
-    this.#allowedPrivateUserIds = new Set(
-      Array.isArray(allowedPrivateUserIds) ? allowedPrivateUserIds.map(String) : [],
-    );
+    const accessPolicy = normalizeTelegramAccessPolicy(config);
+    this.#accessMode = accessPolicy.accessMode;
+    this.#allowedPrivateUserIds = new Set(accessPolicy.allowedUsers);
   }
 
   get status() {
@@ -334,7 +342,10 @@ export class TelegramRuntime {
           username: this.#config.username,
           loadFile: (fileId, options) => this.#api.downloadFile({ fileId, ...options }),
         });
-        if (message && telegramInboundAllowed(message, this.#allowedPrivateUserIds)) {
+        if (message && telegramInboundAllowed(message, {
+          accessMode: this.#accessMode,
+          allowedPrivateUserIds: this.#allowedPrivateUserIds,
+        })) {
           void this.#bridge.accept(message).catch((error) => {
             if (signal.aborted) return;
             this.#logger.error?.(

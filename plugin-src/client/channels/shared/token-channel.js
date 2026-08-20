@@ -59,9 +59,11 @@ export function createTokenChannelSettings(definition) {
     credentialCloseLabel = '收起凭据',
     credentialNoun = 'Bot Token',
     emptyActionLabel = '填写 Bot Token',
+    AccountSettings = null,
+    accountSettingsEndpoint = null,
   } = definition;
 
-  function AccountCard({ account, busy, testNotice, removing, onReconnect, onWorkspaceSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
+  function AccountCard({ account, busy, testNotice, removing, onReconnect, onWorkspaceSave, onAccountSettingsSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
     const state = busy === 'reconnect' ? 'connecting' : account.state;
     const tone = account.connected ? 'success' : state === 'error' ? 'error' : 'warning';
     const stateLabel = account.connected ? '运行正常' : state === 'connecting' ? '正在连接' : '连接未就绪';
@@ -88,6 +90,11 @@ export function createTokenChannelSettings(definition) {
           disabled: Boolean(busy),
           onSave: onWorkspaceSave,
         }),
+        AccountSettings ? h(AccountSettings, {
+          account,
+          busy: Boolean(busy),
+          onSave: onAccountSettingsSave,
+        }) : null,
         h('div', { className: 'ddt-accountFooter dim-cardFooter' },
           summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
           testNotice ? h('div', { className: 'ddt-summary dim-cardSummary', role: 'status' }, testNotice) : null,
@@ -260,6 +267,14 @@ export function createTokenChannelSettings(definition) {
                 endpoints.setWorkspace,
                 { botId: account.botId, workspace },
               ),
+              onAccountSettingsSave: AccountSettings && accountSettingsEndpoint
+                ? (payload) => botAction(
+                    account,
+                    'settings',
+                    accountSettingsEndpoint,
+                    { botId: account.botId, ...payload },
+                  )
+                : undefined,
               onRequestRemove: () => setRemoveTarget(account.botId),
               onCancelRemove: () => setRemoveTarget(null),
               onConfirmRemove: async () => {

@@ -54,7 +54,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 | 企业微信 | 使用企业微信 App 扫码创建智能机器人，或使用 Bot ID + Secret 手动绑定 | 官方 WebSocket 长连接；原生显示“正在思考中”、工具执行进度和流式回答 |
 | QQ | 使用手机 QQ 扫码创建机器人，或使用 AppID + AppSecret 手动绑定 | WebSocket 长连接；私聊显示“正在输入”和流式回答，群聊被 @ 后回复 |
 | Slack | 使用预置 App Manifest 创建应用，再填写 Bot Token（`xoxb-`）和 App Token（`xapp-`） | Socket Mode 长连接；私聊直接回复，频道被 @ 后响应，优先使用官方流式消息 API |
-| Telegram | 使用 @BotFather 生成的 Bot Token | Bot API 长轮询；群聊全部忽略，私聊仅接受 `telegram.allowedUsers` 中的数字 User ID，通过编辑消息流式显示回答 |
+| Telegram | 使用 @BotFather 生成的 Bot Token | Bot API 长轮询；默认私聊直接响应、群聊被提及或回复时响应，也可为每个机器人独立启用私聊白名单安全模式；通过编辑消息流式显示回答 |
 | Discord | 使用 Developer Portal 生成的 Bot Token | Gateway v10 长连接；私信直接回复，服务器频道被提及时响应，通过编辑消息流式显示回答 |
 | WhatsApp | 使用手机 WhatsApp 扫码关联设备 | WhatsApp Web 长连接；显示已读和“正在输入”，再发送最终回答 |
 
@@ -97,17 +97,7 @@ GitHub 源安装会直接拉取并构建 Git 依赖；pnpm 10 及以上版本可
 | 机器人工作区 | 每个机器人独立保存工作区。新机器人默认使用 Host 当时的工作目录；之后可在机器人卡片中修改。 |
 | Agent Preset | 新会话默认继承 Harness 的 `agent-presets.default`；渠道显式配置优先，已有会话不受后续修改影响。 |
 
-Telegram 默认拒绝所有入站消息。请在 Web profile 的 `cordis.patch.yml` 中配置允许私聊机器人的数字 User ID；群聊无论是否提及机器人都会被忽略：
-
-```yaml
-- id: xmanrui-dsh-im
-  config:
-    telegram:
-      allowedUsers:
-        - 123456789
-```
-
-`allowedUsers` 接受数字或十进制字符串、会去重，并在插件启动时拒绝无效值。空白名单保持全部拒绝。
+每个 Telegram 机器人都可以在自己的卡片中切换访问模式。旧机器人和新接入机器人均默认使用**兼容模式**：私聊直接响应，群聊仅在提及机器人或回复机器人消息时响应。只有主动切换到**安全模式（私聊白名单）**后，机器人才会忽略全部群聊，并只接受该机器人白名单中的数字 User ID。白名单每行一个 ID、按机器人独立保存；切回兼容模式时会保留但不使用，再切回安全模式即可继续使用。安全模式的空白名单会拒绝该机器人的所有入站消息。
 
 ## 机器人命令
 
@@ -149,7 +139,7 @@ Telegram 默认拒绝所有入站消息。请在 Web profile 的 `cordis.patch.y
 - `/session` 只接受一个由 `/sessionlist` 获得的 Session ID。它不会新建会话或立即向模型发送消息；绑定成功后，当前聊天的后续消息会继续该会话。普通归档会话可以绑定但不会自动取消归档，子代理会话不能绑定。
 - `/session` 会自动定位会话唯一所属的工作区。同工作区绑定只替换当前聊天的映射；跨工作区绑定会切换该机器人的工作区、清除该机器人所有聊天的旧会话映射，再绑定当前聊天，因此会影响该机器人的其他聊天。已经开始生成的回复仍可完成。
 - 工作区切换和会话绑定只会清除或替换 dsh-im 的聊天映射，不会删除、清空或归档任何旧 Session 内容；旧 Session 仍可再次列出和绑定。
-- 除 Telegram 外，任何已在对应平台可见范围内、能够正常向机器人发消息的用户都可以执行这些命令，不区分管理员和普通用户；Telegram 仅允许 `telegram.allowedUsers` 中的私聊用户执行，群聊命令始终忽略。
+- 任何已在对应平台可见范围内、能够正常向机器人发消息的用户都可以执行这些命令，不区分管理员和普通用户。Telegram 兼容模式遵循原有私聊及群聊提及/回复规则；安全模式只允许当前机器人白名单中的私聊用户执行，群聊命令始终忽略。
 - 工作区列表来自 Harness Host 的全局登记信息，可能包含其他机器人、其他渠道或非 IM 项目的本机绝对路径。请将机器人可见范围限制给可信用户。
 - 会话列表同样来自该全局 Harness Host；会话 ID 和标题可能属于其他机器人、其他渠道或非 IM 项目，并可能包含敏感元数据。开放命令前请确保所有可见用户都可信。
 - 任何能执行 `/session` 的用户都能接续所选会话，并通过后续消息写入会话或触发其可用工具。请只向可信用户开放机器人及其会话列表。
@@ -172,7 +162,7 @@ Telegram 默认拒绝所有入站消息。请在 Web profile 的 `cordis.patch.y
 - 设置页跟随 DeepSeek Harness 的语言选择，在中文和 English 之间即时切换；
 - 左侧使用 Logo 切换微信、飞书、钉钉、企业微信、QQ、Slack、Telegram、Discord、WhatsApp 和 AI Office，不使用启用/停用开关；
 - 九个 IM 渠道保持独立的 RPC、凭据、连接监督和会话映射；Office Connector 另行维护设备凭据、Job 租约、审批等待与并发上限；
-- 浏览器只获得二维码、Manifest 和脱敏状态；手动输入的 Secret 或 Token 仅单向提交给本机 Host，任何 RPC 响应都不会返回 App Secret、`bot_token`、钉钉 `client_secret`、企业微信 Secret、QQ `app_secret`、Slack Bot/App Token、Telegram/Discord Bot Token、WhatsApp 关联设备密钥、AI Office Device Token 或原始用户标识。
+- 浏览器只获得二维码、Manifest、脱敏状态，以及用户为当前 Telegram 机器人主动保存的访问模式和白名单 User ID；手动输入的 Secret 或 Token 仅单向提交给本机 Host，任何 RPC 响应都不会返回 App Secret、`bot_token`、钉钉 `client_secret`、企业微信 Secret、QQ `app_secret`、Slack Bot/App Token、Telegram/Discord Bot Token、WhatsApp 关联设备密钥、AI Office Device Token，或从平台消息中观察到的其他原始用户标识。
 
 ## 本地开发
 

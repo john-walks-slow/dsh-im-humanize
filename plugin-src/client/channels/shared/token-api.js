@@ -27,7 +27,9 @@ export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   setWorkspace: 'bot.workspace.set',
 });
 
-export function createTokenChannelApi(channel, connectionSummary) {
+export function createTokenChannelApi(channel, connectionSummary, {
+  normalizeBotExtension = () => ({}),
+} = {}) {
   const unwrapRpcResult = (result) => {
     if (!isRecord(result) || typeof result.ok !== 'boolean') {
       throw new Error(`${channel} 服务返回了无法识别的响应`);
@@ -44,6 +46,7 @@ export function createTokenChannelApi(channel, connectionSummary) {
     if (!isRecord(value) || !id(value.botId)) return undefined;
     const connected = value.connected === true;
     const state = ACCOUNT_STATES.has(value.state) ? value.state : 'offline';
+    const extension = normalizeBotExtension(value);
     return {
       botId: id(value.botId),
       connected,
@@ -65,6 +68,7 @@ export function createTokenChannelApi(channel, connectionSummary) {
         code: text(value.error.code, `${channel.toUpperCase()}_ACCOUNT_ERROR`, 80),
         message: text(value.error.message, `${channel}连接尚未就绪`),
       } : null,
+      ...(isRecord(extension) ? extension : {}),
     };
   };
 

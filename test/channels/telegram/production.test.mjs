@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { normalizeTelegramAllowedUsers } from '../../../plugin-src/host/channels/telegram/production.mjs';
 
-test('Telegram production normalizes and validates private-message allowlists', () => {
+test('Telegram per-bot policy normalizes and validates private-message allowlists', () => {
   assert.deepEqual(normalizeTelegramAllowedUsers(undefined), []);
   assert.deepEqual(
     normalizeTelegramAllowedUsers([6087707998, '1202499116', '6087707998']),
