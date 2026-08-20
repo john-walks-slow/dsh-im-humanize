@@ -63,7 +63,9 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 「AI Office」页让本机 Harness 主动连接公网 Office，本机无需公网 IP、端口转发或 WebSocket 服务。Device Token 只写入 Harness 凭据存储；普通配置文件仅保存设备 ID、Office Origin、工作区 alias 和 Instruction Preset alias。Office 只能选择 alias，不会收到本机绝对路径。
 
-当前协议版本为 `office-harness.v1`。连接器使用 `POST /api/harness/connector/heartbeat` 完成鉴权和能力握手，再以 `GET /api/harness/connector/stream` 建立 SSE 下行；任务状态与结果使用 Harness 主动发起的 HTTPS POST。设置页会从 Office Base URL 自动展示全部固定 Hook，并在断线后按退避策略自动重连。Office 端尚未部署时，HTTP 404 会明确显示为 Hook 未就绪。
+当前协议版本为 `office-harness.v1`。连接器使用 `POST /api/harness/connector/heartbeat` 完成鉴权和能力握手，再以 `GET /api/harness/connector/stream` 建立 SSE 下行；设置页会从 Office Base URL 自动展示全部固定 Hook，并在断线后按退避策略自动重连。
+
+Office 的 `job.available` 会触发本机拉取任务、校验 Workspace/Preset alias、领取 90 秒租约并每 30 秒续租。连接器创建独立 Harness Session，把状态、工具名和增量文字安全回传 Office，终态只允许写入一次。Harness 发起的工具审批或补充问题会进入 Office 人工面板；批准、拒绝或文字答案再经 SSE 回到原 Session，断线时由租约与 Heartbeat 恢复。
 
 Heartbeat 成功响应必须是 JSON：`{"ok":true,"protocolVersion":"office-harness.v1"}`。这使「连接测试通过」代表命中了兼容的 Office Connector，而不只是某个碰巧返回 200 的网址。
 
@@ -166,7 +168,7 @@ Telegram 默认拒绝所有入站消息。请在 Web profile 的 `cordis.patch.y
 - 九个渠道及 Office Connector 的 Host、客户端与运行时源码都在本仓库维护，不依赖外部独立插件；
 - 设置页跟随 DeepSeek Harness 的语言选择，在中文和 English 之间即时切换；
 - 左侧使用 Logo 切换微信、飞书、钉钉、企业微信、QQ、Slack、Telegram、Discord、WhatsApp 和 AI Office，不使用启用/停用开关；
-- 九个渠道保持独立的 RPC、凭据、连接监督和会话映射；
+- 九个 IM 渠道保持独立的 RPC、凭据、连接监督和会话映射；Office Connector 另行维护设备凭据、Job 租约、审批等待与并发上限；
 - 浏览器只获得二维码、Manifest 和脱敏状态；手动输入的 Secret 或 Token 仅单向提交给本机 Host，任何 RPC 响应都不会返回 App Secret、`bot_token`、钉钉 `client_secret`、企业微信 Secret、QQ `app_secret`、Slack Bot/App Token、Telegram/Discord Bot Token、WhatsApp 关联设备密钥、AI Office Device Token 或原始用户标识。
 
 ## 本地开发

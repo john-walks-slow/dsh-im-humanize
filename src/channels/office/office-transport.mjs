@@ -3,7 +3,8 @@ import { OFFICE_HOOK_PATHS, OFFICE_PROTOCOL_VERSION, officeHookUrls } from './pr
 function safeTransportError(operation, response) {
   const error = new Error(`AI Office ${operation} failed: HTTP ${response.status}`);
   error.code = response.status === 401 ? 'invalid-device-token'
-    : response.status === 404 ? 'office-hook-unavailable' : 'office-transport-failed';
+    : response.status === 404 ? 'office-hook-unavailable'
+      : response.status === 409 ? 'office-job-conflict' : 'office-transport-failed';
   return error;
 }
 
@@ -78,6 +79,57 @@ export class OfficeTransport {
       throw transportFailure('AI Office heartbeat protocol does not match', 'office-protocol-mismatch');
     }
     return value;
+  }
+
+  async #jobRequest(path, { method = 'POST', body, leaseToken, signal } = {}) {
+    const headers = this.#headers({ accept: 'application/json' });
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    if (leaseToken) headers['x-harness-lease-token'] = leaseToken;
+    let response;
+    try {
+      response = await this.#fetch(new URL(path, this.#baseUrl), {
+        method,
+        headers,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal,
+        redirect: 'error',
+        cache: 'no-store',
+      });
+    } catch (error) {
+      if (isAbort(error, signal)) throw error;
+      throw transportFailure('AI Office Job request could not be completed', undefined, error);
+    }
+    if (!response.ok) throw safeTransportError('Job request', response);
+    try { return await response.json(); }
+    catch (error) { throw transportFailure('AI Office Job returned invalid JSON', 'office-protocol-mismatch', error); }
+  }
+
+  async getJob(jobId, options = {}) {
+    return this.#jobRequest(OFFICE_HOOK_PATHS.job.replace(':id', jobId), { ...options, method: 'GET' });
+  }
+
+  async acceptJob(jobId, options = {}) {
+    return this.#jobRequest(OFFICE_HOOK_PATHS.accept.replace(':id', jobId), options);
+  }
+
+  async renewJob(jobId, leaseToken, options = {}) {
+    return this.#jobRequest(OFFICE_HOOK_PATHS.renew.replace(':id', jobId), { ...options, leaseToken });
+  }
+
+  async progressJob(jobId, leaseToken, body, options = {}) {
+    return this.#jobRequest(OFFICE_HOOK_PATHS.progress.replace(':id', jobId), { ...options, leaseToken, body });
+  }
+
+  async requestApproval(jobId, leaseToken, body, options = {}) {
+    return this.#jobRequest(OFFICE_HOOK_PATHS.approval.replace(':id', jobId), { ...options, leaseToken, body });
+  }
+
+  async completeJob(jobId, leaseToken, body, options = {}) {
+    return this.#jobRequest(OFFICE_HOOK_PATHS.result.replace(':id', jobId), { ...options, leaseToken, body });
+  }
+
+  async failJob(jobId, leaseToken, body, options = {}) {
+    return this.#jobRequest(OFFICE_HOOK_PATHS.fail.replace(':id', jobId), { ...options, leaseToken, body });
   }
 
   async stream({ signal, lastEventId, onOpen, onEvent }) {

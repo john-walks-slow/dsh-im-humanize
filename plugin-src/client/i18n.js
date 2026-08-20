@@ -21,6 +21,8 @@ const EN = Object.freeze({
   '最近心跳': 'Last heartbeat',
   '最近事件': 'Last event',
   '重连次数': 'Reconnects',
+  '运行 Job': 'Running Jobs',
+  '完成 Job': 'Completed Jobs',
   '尚无': 'None yet',
   '设备连接': 'Device connection',
   'Token 只写入本机凭据存储': 'Token is written only to the local credential store',

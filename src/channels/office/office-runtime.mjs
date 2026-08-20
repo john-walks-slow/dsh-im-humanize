@@ -2,6 +2,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import { OfficeTransport } from './office-transport.mjs';
 import { OFFICE_PROTOCOL_VERSION } from './protocol.mjs';
+import { OfficeJobExecutor } from './office-job-executor.mjs';
 
 const RETRY_DELAYS = Object.freeze([1_000, 3_000, 10_000, 30_000]);
 
@@ -24,8 +25,9 @@ export class OfficeRuntime {
   #controller = null;
   #task = null;
   #status;
+  #jobs;
 
-  constructor({ config, token, logger = console, transport }) {
+  constructor({ config, token, logger = console, transport, createHarness, jobExecutor }) {
     this.#config = config;
     this.#token = token;
     this.#logger = logger;
@@ -37,9 +39,20 @@ export class OfficeRuntime {
       lastEventAt: null, lastEventId: null, lastEventType: null, reconnects: 0,
       jobsOffered: 0, error: null,
     };
+    this.#jobs = jobExecutor ?? (createHarness ? new OfficeJobExecutor({
+      config,
+      transport: this.#transport,
+      createHarness,
+      logger,
+    }) : null);
   }
 
-  get status() { return structuredClone(this.#status); }
+  get status() {
+    return structuredClone({
+      ...this.#status,
+      ...(this.#jobs ? { jobs: this.#jobs.status } : {}),
+    });
+  }
 
   capabilities() {
     return {
@@ -75,9 +88,10 @@ export class OfficeRuntime {
       const attemptController = new AbortController();
       const attemptSignal = AbortSignal.any([signal, attemptController.signal]);
       try {
-        await this.#transport.heartbeat(this.capabilities(), { signal: attemptSignal });
+        const heartbeat = await this.#transport.heartbeat(this.capabilities(), { signal: attemptSignal });
+        this.#offerJobs(heartbeat?.jobs);
         this.#status.lastHeartbeatAt = new Date().toISOString();
-        const heartbeat = this.#heartbeatLoop(attemptSignal);
+        const heartbeatTask = this.#heartbeatLoop(attemptSignal);
         const stream = this.#transport.stream({
           signal: attemptSignal,
           lastEventId: this.#status.lastEventId,
@@ -92,9 +106,10 @@ export class OfficeRuntime {
             this.#status.lastEventId = event.id ?? this.#status.lastEventId;
             this.#status.lastEventType = event.type;
             if (event.type === 'job.available') this.#status.jobsOffered += 1;
+            this.#jobs?.handleEvent(event);
           },
         });
-        await Promise.race([stream, heartbeat]);
+        await Promise.race([stream, heartbeatTask]);
       } catch (error) {
         if (signal.aborted) break;
         this.#status.connected = false;
@@ -115,8 +130,16 @@ export class OfficeRuntime {
   async #heartbeatLoop(signal) {
     while (!signal.aborted) {
       await sleep(this.#config.heartbeatSeconds * 1_000, undefined, { signal });
-      await this.#transport.heartbeat(this.capabilities(), { signal });
+      const heartbeat = await this.#transport.heartbeat(this.capabilities(), { signal });
+      this.#offerJobs(heartbeat?.jobs);
       this.#status.lastHeartbeatAt = new Date().toISOString();
+    }
+  }
+
+  #offerJobs(jobs) {
+    if (!Array.isArray(jobs)) return;
+    for (const job of jobs) {
+      if (typeof job?.id === 'string' && this.#jobs?.offer(job.id)) this.#status.jobsOffered += 1;
     }
   }
 
@@ -125,6 +148,7 @@ export class OfficeRuntime {
     this.#controller?.abort();
     this.#controller = null;
     if (task) await task.catch(() => undefined);
+    await this.#jobs?.close();
     this.#status.connected = false;
     this.#status.state = 'idle';
     return this.status;

@@ -10,6 +10,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { OfficeConfigStore } from '../../../src/channels/office/config-store.mjs';
 import { OfficeController } from '../../../src/channels/office/office-controller.mjs';
 import { OfficeTransport } from '../../../src/channels/office/office-transport.mjs';
+import { OfficeJobExecutor } from '../../../src/channels/office/office-job-executor.mjs';
 import {
   OFFICE_PROTOCOL_VERSION,
   OFFICE_RPC_ENDPOINTS,
@@ -19,6 +20,15 @@ import { createOfficeRpcHandler } from '../../../plugin-src/host/channels/office
 import { OfficeSettingsTab } from '../../../plugin-src/client/channels/office/index.js';
 
 const TOKEN = 'office-device-token-ABCDEFGHIJKLMNOPQRSTUVWXYZ-123456';
+
+async function eventually(predicate, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail('condition did not become true');
+}
 
 function config(overrides = {}) {
   return {
@@ -93,6 +103,28 @@ test('AI Office transport authenticates heartbeat and parses SSE frames', async 
   assert.deepEqual(events, [{
     id: 'evt-1', type: 'job.available', data: { type: 'job.available', jobId: 'job-1' },
   }]);
+});
+
+test('AI Office transport uses fixed Job hooks and keeps the lease outside JSON bodies', async () => {
+  const calls = [];
+  const transport = new OfficeTransport({
+    baseUrl: 'https://fission.gridmind.ai',
+    deviceId: 'mac-a004',
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      calls.push({ url: String(url), options });
+      return Response.json({ ok: true });
+    },
+  });
+  const jobId = 'job-1234567890abcdef1234567890abcdef';
+  await transport.getJob(jobId);
+  await transport.acceptJob(jobId);
+  await transport.progressJob(jobId, 'lease-secret', { kind: 'status', message: 'running' });
+  assert.equal(calls[0].url, `https://fission.gridmind.ai/api/harness/connector/jobs/${jobId}`);
+  assert.equal(calls[0].options.method, 'GET');
+  assert.equal(calls[1].url.endsWith(`/${jobId}/accept`), true);
+  assert.equal(calls[2].options.headers['x-harness-lease-token'], 'lease-secret');
+  assert.equal(calls[2].options.body.includes('lease-secret'), false);
 });
 
 test('AI Office controller stores the token in credentials and returns only safe status', async () => {
@@ -195,4 +227,71 @@ test('AI Office settings renders connection fields and fixed hook preview', () =
   assert.match(markup, /Device Token/);
   assert.match(markup, /Workspace 映射/);
   assert.match(markup, /api\/harness\/connector\/stream/);
+});
+
+test('AI Office Job executor claims, reports, approves, and returns one Harness result', async () => {
+  const jobId = 'job-1234567890abcdef1234567890abcdef';
+  const progress = [];
+  const approvals = [];
+  const results = [];
+  const responses = [];
+  let executor;
+  const transport = {
+    getJob: async () => ({ job: {
+      id: jobId,
+      workspaceAlias: 'office-project',
+      instructionPreset: 'execute',
+      instruction: 'Return evidence.',
+      markdown: '# Office timeline',
+    } }),
+    acceptJob: async () => ({ leaseToken: 'lease-token-1234567890' }),
+    renewJob: async () => ({ leaseExpiresAt: new Date(Date.now() + 90_000).toISOString() }),
+    progressJob: async (_id, _lease, value) => { progress.push(value); return { ok: true }; },
+    requestApproval: async (_id, _lease, value) => {
+      approvals.push(value);
+      queueMicrotask(() => executor.handleEvent({
+        type: 'approval.reply',
+        data: { jobId, approvalId: value.id, decision: 'approved' },
+      }));
+      return { ok: true };
+    },
+    completeJob: async (_id, _lease, value) => { results.push(value); return { ok: true }; },
+    failJob: async () => { throw new Error('must not fail'); },
+  };
+  const harness = {
+    createSession: async () => 'session-office-one',
+    ask: async (_sessionId, prompt, options) => {
+      assert.match(prompt, /Return evidence/);
+      await options.onUpdate({ type: 'tool', name: 'apply_patch' });
+      await options.onInteraction({
+        kind: 'approval',
+        interactionId: 'approval-one',
+        sessionId: 'session-office-one',
+        payload: {
+          type: 'approval/requested', sessionId: 'session-office-one',
+          approvalId: 'approval-one', toolName: 'apply_patch', callId: 'call-one',
+        },
+        toolCall: { callId: 'call-one', name: 'apply_patch', arguments: '{"patch":"safe"}' },
+        respond: async (value) => { responses.push(value); return { accepted: true }; },
+      });
+      return '# Completed\n\nVerified.';
+    },
+    rpc: async () => ({ ok: true }),
+  };
+  executor = new OfficeJobExecutor({
+    config: {
+      maxConcurrency: 1,
+      workspaces: { 'office-project': '/Users/a004/project' },
+      instructionPresets: { execute: 'Execute carefully.' },
+    },
+    transport,
+    createHarness: () => harness,
+  });
+  assert.equal(executor.offer(jobId), true);
+  await eventually(() => executor.status.completed === 1);
+  assert.equal(approvals[0].kind, 'approval');
+  assert.equal(responses[0].value.outcome, 'allowed-once');
+  assert.ok(progress.some((item) => item.kind === 'tool'));
+  assert.deepEqual(results, [{ resultMarkdown: '# Completed\n\nVerified.', sessionId: 'session-office-one' }]);
+  await executor.close();
 });

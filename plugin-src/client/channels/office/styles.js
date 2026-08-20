@@ -31,7 +31,7 @@ const CSS = `
 .dof-error, .dof-notice { margin: 10px 0 0; padding: 9px 11px; border-radius: 9px; font-size: 12px; line-height: 1.5; }
 .dof-error { color: var(--dsw-alias-state-error-primary, #d54941); background: var(--dsw-alias-state-error-secondary, #fff0ef); }
 .dof-notice { color: var(--dsw-alias-label-secondary, #646a73); background: var(--dsw-alias-interactive-bg-hover, #f7f8fa); }
-.dof-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.dof-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
 .dof-metric { min-width: 0; padding: 9px; border-radius: 10px; background: var(--dsw-alias-interactive-bg-hover, #f7f8fa); }
 .dof-metric span { display: block; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 10px; }
 .dof-metric strong { display: block; overflow: hidden; margin-top: 4px; color: var(--dsw-alias-label-primary, #1f2329); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
