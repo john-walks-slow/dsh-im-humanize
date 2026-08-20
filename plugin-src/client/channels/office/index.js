@@ -49,7 +49,7 @@ export function OfficeSettingsTab({ rpcCall, initialStatus }) {
   const [error, setError] = React.useState('');
   const [notice, setNotice] = React.useState('');
   const [form, setForm] = React.useState({
-    baseUrl: 'https://fission.gridmind.ai', deviceId: 'local-harness', deviceToken: '',
+    baseUrl: '', deviceId: 'local-harness', deviceToken: '',
     maxConcurrency: '1', heartbeatSeconds: '30', workspaces: '', instructionPresets: '',
   });
 
@@ -113,7 +113,7 @@ export function OfficeSettingsTab({ rpcCall, initialStatus }) {
       h('div', { className: 'dof-cardTitle' }, h('h4', null, '设备连接'), h('span', null, 'Token 只写入本机凭据存储')),
       h('div', { className: 'dof-grid' },
         h('label', { className: 'dof-field', 'data-wide': 'true' }, 'Office Base URL',
-          h('input', { value: form.baseUrl, placeholder: 'https://fission.gridmind.ai', onChange: (event) => setForm({ ...form, baseUrl: event.target.value }) })),
+          h('input', { value: form.baseUrl, placeholder: 'https://office.example.com', onChange: (event) => setForm({ ...form, baseUrl: event.target.value }) })),
         h('label', { className: 'dof-field' }, 'Device ID',
           h('input', { value: form.deviceId, placeholder: 'local-harness', onChange: (event) => setForm({ ...form, deviceId: event.target.value }) })),
         h('label', { className: 'dof-field' }, 'Device Token',

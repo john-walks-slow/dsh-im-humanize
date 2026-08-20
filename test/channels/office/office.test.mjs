@@ -73,7 +73,7 @@ function pendingUntilAbort(signal) {
 function config(overrides = {}) {
   return {
     version: 1,
-    baseUrl: 'https://fission.gridmind.ai',
+    baseUrl: 'https://office.example.com',
     deviceId: 'mac-a004',
     deviceTokenRef: 'DSH_OFFICE_DEVICE_TOKEN_1234567890ABCDEF12345678',
     maxConcurrency: 1,
@@ -95,10 +95,10 @@ function credentials() {
 }
 
 test('AI Office protocol derives every fixed hook from one HTTPS origin', () => {
-  const hooks = officeHookUrls('https://fission.gridmind.ai');
+  const hooks = officeHookUrls('https://office.example.com');
   assert.equal(OFFICE_PROTOCOL_VERSION, 'office-harness.v1');
-  assert.equal(hooks.stream, 'https://fission.gridmind.ai/api/harness/connector/stream');
-  assert.equal(hooks.result, 'https://fission.gridmind.ai/api/harness/connector/jobs/:id/result');
+  assert.equal(hooks.stream, 'https://office.example.com/api/harness/connector/stream');
+  assert.equal(hooks.result, 'https://office.example.com/api/harness/connector/jobs/:id/result');
   assert.throws(() => officeHookUrls('http://public.example'), /must use HTTPS/);
   assert.equal(officeHookUrls('http://127.0.0.1:4300').heartbeat, 'http://127.0.0.1:4300/api/harness/connector/heartbeat');
 });
@@ -133,7 +133,7 @@ test('AI Office transport authenticates heartbeat and parses SSE frames', async 
     }), { headers: { 'content-type': 'text/event-stream' } });
   };
   const transport = new OfficeTransport({
-    baseUrl: 'https://fission.gridmind.ai', deviceId: 'mac-a004', token: TOKEN, fetchImpl,
+    baseUrl: 'https://office.example.com', deviceId: 'mac-a004', token: TOKEN, fetchImpl,
   });
   await transport.heartbeat({ protocolVersion: OFFICE_PROTOCOL_VERSION });
   const events = [];
@@ -148,7 +148,7 @@ test('AI Office transport authenticates heartbeat and parses SSE frames', async 
 test('AI Office transport uses fixed Job hooks and keeps the lease outside JSON bodies', async () => {
   const calls = [];
   const transport = new OfficeTransport({
-    baseUrl: 'https://fission.gridmind.ai',
+    baseUrl: 'https://office.example.com',
     deviceId: 'mac-a004',
     token: TOKEN,
     fetchImpl: async (url, options) => {
@@ -160,7 +160,7 @@ test('AI Office transport uses fixed Job hooks and keeps the lease outside JSON 
   await transport.getJob(jobId);
   await transport.acceptJob(jobId);
   await transport.progressJob(jobId, 'lease-secret', { kind: 'status', message: 'running' });
-  assert.equal(calls[0].url, `https://fission.gridmind.ai/api/harness/connector/jobs/${jobId}`);
+  assert.equal(calls[0].url, `https://office.example.com/api/harness/connector/jobs/${jobId}`);
   assert.equal(calls[0].options.method, 'GET');
   assert.equal(calls[1].url.endsWith(`/${jobId}/accept`), true);
   assert.equal(calls[2].options.headers['x-harness-lease-token'], 'lease-secret');
@@ -288,7 +288,7 @@ test('AI Office controller stores the token in credentials and returns only safe
     },
   });
   const status = await controller.configure({
-    baseUrl: 'https://fission.gridmind.ai', deviceId: 'mac-a004', deviceToken: TOKEN,
+    baseUrl: 'https://office.example.com', deviceId: 'mac-a004', deviceToken: TOKEN,
     maxConcurrency: 1, heartbeatSeconds: 30,
     workspaces: { 'office-project': '/Users/a004/project' },
     instructionPresets: { 'action-items': 'Make tasks.' },
@@ -324,10 +324,10 @@ test('AI Office controller normalizes the origin and tolerates a missing local c
   assert.equal(initial.state, 'missing-token');
 
   await controller.configure({
-    baseUrl: 'https://fission.gridmind.ai/path/', deviceId: 'mac-a004', deviceToken: TOKEN,
+    baseUrl: 'https://office.example.com/path/', deviceId: 'mac-a004', deviceToken: TOKEN,
     maxConcurrency: 1, heartbeatSeconds: 30, workspaces: {}, instructionPresets: {},
   });
-  assert.equal(stored.baseUrl, 'https://fission.gridmind.ai');
+  assert.equal(stored.baseUrl, 'https://office.example.com');
   assert.equal(credentialStore.values.size, 1);
   await controller.close();
 });
@@ -345,7 +345,7 @@ test('AI Office RPC validates configuration and keeps transport failures safe', 
     ok: false, error: { code: 'bad-request', message: 'Invalid AI Office connector request.' },
   });
   assert.equal((await handler(OFFICE_RPC_ENDPOINTS.configure, {
-    baseUrl: 'https://fission.gridmind.ai', deviceId: 'mac-a004', deviceToken: TOKEN,
+    baseUrl: 'https://office.example.com', deviceId: 'mac-a004', deviceToken: TOKEN,
     workspaces: {}, instructionPresets: {},
   })).ok, true);
   assert.equal(calls.length, 1);
@@ -361,9 +361,11 @@ test('AI Office settings renders connection fields and fixed hook preview', () =
   }));
   assert.match(markup, /AI Office Connector/);
   assert.match(markup, /Office Base URL/);
+  assert.match(markup, /<input placeholder="https:\/\/office\.example\.com" value=""\/>/);
+  assert.doesNotMatch(markup, /fission\.gridmind\.ai/);
   assert.match(markup, /Device Token/);
   assert.match(markup, /Workspace 映射/);
-  assert.match(markup, /api\/harness\/connector\/stream/);
+  assert.match(markup, /Base URL 无效/);
 });
 
 test('AI Office Job executor claims, reports, approves, and returns one Harness result', async () => {
