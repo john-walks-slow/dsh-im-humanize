@@ -1,10 +1,12 @@
-<h1><img src="assets/logo-icon.png" alt="dsh-im logo" width="40" align="absmiddle" style="vertical-align: middle;"> dsh-im</h1>
+<p align="center">
+  <img src="assets/logo-dsh-im-connecting-readme-3x2.png" alt="DSH-IM — Connecting DeepSeek Harness" width="600">
+</p>
 
 ---
 
 <div align="center">
   <p><strong>让 DeepSeek Harness 触手可及</strong></p>
-  <p><strong>DeepSeek Harness, always within reach</strong></p>
+  <p><strong>Connecting DeepSeek Harness</strong></p>
 
   <p>
     <img src="https://dsh-im-random-badge.xmanrui-dsh-im.workers.dev" alt="滑动变祖器：今天是梁子或今天是梁圣（随机）">
