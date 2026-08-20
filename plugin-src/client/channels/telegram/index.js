@@ -29,6 +29,7 @@ function allowedUsersFromText(value) {
 export function TelegramAccessSettings({ account, busy = false, onSave }) {
   const policy = policyFor(account);
   const sourceUsers = policy.allowedUsers.join('\n');
+  const accessHelpId = React.useId();
   const [accessMode, setAccessMode] = React.useState(policy.accessMode);
   const [allowedUsers, setAllowedUsers] = React.useState(sourceUsers);
   const [error, setError] = React.useState(null);
@@ -56,13 +57,28 @@ export function TelegramAccessSettings({ account, busy = false, onSave }) {
   const emptyAllowlist = privateAllowlist && allowedUsers.trim() === '';
   return h('form', { className: 'dtg-access', onSubmit: save },
     h('div', { className: 'dtg-accessHeading' },
-      h('div', null,
-        h('strong', null, '访问设置'),
-        h('p', null, savedPrivateAllowlist
-          ? '群聊全部忽略，私聊仅允许白名单用户。'
-          : '保持原有行为：私聊直接响应，群聊在被提及或回复时响应。')),
-      h('span', { className: 'dtg-accessBadge', 'data-mode': policy.accessMode },
-        savedPrivateAllowlist ? '已生效：安全模式' : '已生效：兼容模式')),
+      h('strong', null, '访问设置'),
+      h('span', { className: 'dtg-accessStatus' },
+        h('span', { className: 'dtg-accessBadge', 'data-mode': policy.accessMode },
+          savedPrivateAllowlist ? '已生效：安全模式' : '已生效：兼容模式'),
+        h('span', { className: 'dtg-accessHelp' },
+          h('button', {
+            type: 'button',
+            className: 'dtg-accessHelpButton',
+            'aria-label': '查看 Telegram 访问模式说明',
+            'aria-describedby': accessHelpId,
+          }, h('span', { 'aria-hidden': 'true' }, '?')),
+          h('span', {
+            id: accessHelpId,
+            className: 'dtg-accessTooltip',
+            role: 'tooltip',
+          },
+          h('span', { className: 'dtg-accessTooltipItem' },
+            h('strong', null, '兼容模式'),
+            h('span', null, '保持原有行为：私聊直接响应，群聊在被提及或回复时响应。')),
+          h('span', { className: 'dtg-accessTooltipItem' },
+            h('strong', null, '安全模式'),
+            h('span', null, '群聊全部忽略，私聊仅允许白名单用户。')))))),
     h('label', { className: 'dtg-accessField' },
       h('span', null, '模式'),
       h('select', {
@@ -77,7 +93,7 @@ export function TelegramAccessSettings({ account, busy = false, onSave }) {
       h('span', null, '允许私聊的 Telegram User ID'),
       h('textarea', {
         value: allowedUsers,
-        disabled: busy,
+        disabled: busy || !privateAllowlist,
         rows: 3,
         placeholder: '每行一个数字 User ID',
         'aria-label': '允许私聊的 Telegram User ID',

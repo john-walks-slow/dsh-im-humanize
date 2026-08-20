@@ -284,6 +284,7 @@ const EN = Object.freeze({
   '访问模式': 'Access mode',
   '访问设置': 'Access settings',
   'Telegram 访问模式': 'Telegram access mode',
+  '查看 Telegram 访问模式说明': 'View Telegram access mode details',
   '群聊全部忽略，私聊仅允许白名单用户。': 'All group messages are ignored; only allowlisted users may send DMs.',
   '保持原有行为：私聊直接响应，群聊在被提及或回复时响应。': 'Keep the original behavior: respond to DMs and to group mentions or replies.',
   '安全模式': 'Safe mode',
