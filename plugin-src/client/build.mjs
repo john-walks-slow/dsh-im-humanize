@@ -8,7 +8,7 @@ const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(sourceDirectory, '../..');
 const outputPath = resolve(packageRoot, 'lib/client.js');
 const loaderId = process.env.DSH_IM_CLIENT_ID ?? '@xmanrui/dsh-im';
-const logoPath = resolve(packageRoot, 'assets/logo-icon.png');
+const logoPath = resolve(packageRoot, 'assets/logo-plugin-phone.png');
 const logoDataUrl = `data:image/png;base64,${(await readFile(logoPath)).toString('base64')}`;
 
 const result = await build({

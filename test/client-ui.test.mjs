@@ -113,7 +113,7 @@ test('IM settings renders nine compact logo channel tabs without enable switches
   assert.match(markup, /IM机器人/);
   assert.match(markup, /让 DeepSeek Harness 触手可及/);
   assert.match(markup, /class="dim-brand"/);
-  assert.match(markup, /<img class="dim-brandLogo" src="assets\/logo-icon\.png" alt="dsh-im" width="48" height="48"\/>/);
+  assert.match(markup, /<img class="dim-brandLogo" src="assets\/logo-plugin-phone\.png" alt="dsh-im" width="48" height="48"\/>/);
   assert.match(markup, /href="https:\/\/github\.com\/xmanrui\/dsh-im"/);
   assert.match(markup, /target="_blank"/);
   assert.match(markup, /rel="noopener noreferrer"/);
@@ -123,7 +123,8 @@ test('IM settings renders nine compact logo channel tabs without enable switches
   assert.match(styles, /\.dim-title \{[^}]*margin: 0 0 18px;/);
   assert.match(styles, /\.dim-title p \{[^}]*color: var\(--dsw-alias-label-primary, #1f2329\);[^}]*font-size: 14px;[^}]*font-weight: 600;/);
   assert.match(styles, /\.dim-brand \{[^}]*display: flex;[^}]*align-items: center;[^}]*gap: 12px;/);
-  assert.match(styles, /\.dim-brandLogo \{[^}]*width: 48px;[^}]*height: 48px;[^}]*object-fit: contain;[^}]*filter: grayscale\(1\) contrast\(1\.08\);/);
+  assert.match(styles, /\.dim-brandLogo \{[^}]*width: 48px;[^}]*height: 48px;[^}]*object-fit: contain;/);
+  assert.doesNotMatch(styles, /\.dim-brandLogo \{[^}]*filter:/);
   assert.match(styles, /\.dim-githubLink \{[^}]*border: 1px solid var\(--dsw-alias-border-l2, #dfe1e5\);[^}]*text-decoration: none;/);
   assert.match(styles, /\.dim-githubTooltip \{[^}]*bottom: calc\(100% \+ 8px\);[^}]*transform: translateY\(3px\);/);
   assert.match(styles, /\.dim-githubAction:hover \.dim-githubTooltip, \.dim-githubAction:focus-within \.dim-githubTooltip \{[^}]*opacity: 1;[^}]*visibility: visible;/);

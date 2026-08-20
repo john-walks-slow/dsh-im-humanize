@@ -44,7 +44,7 @@ import { WorkspaceDirectoryPickerContext } from './workspace-editor.js';
 export const name = 'im-settings';
 export const inject = ['slots', 'connection', 'locale', 'workspaces'];
 
-const IM_PLUGIN_LOGO_URL = globalThis.__DSH_IM_LOGO_DATA_URL__ ?? 'assets/logo-icon.png';
+const IM_PLUGIN_LOGO_URL = globalThis.__DSH_IM_LOGO_DATA_URL__ ?? 'assets/logo-plugin-phone.png';
 
 const CHANNELS = Object.freeze([
   { id: 'weixin', label: '微信' },
