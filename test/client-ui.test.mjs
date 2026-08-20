@@ -140,7 +140,7 @@ test('IM settings renders nine IM channels plus the AI Office connector', async 
   assert.match(markup, />Telegram</);
   assert.match(markup, />Discord</);
   assert.match(markup, />WhatsApp</);
-  assert.match(markup, />AI Office</);
+  assert.match(markup, />AI Office<\/strong><small class="dim-channelNote">（实验功能）<\/small>/);
   assert.match(markup, /dim-logoWeixin/);
   assert.match(markup, /dim-logoFeishu/);
   assert.match(markup, /dim-logoDingtalk/);
@@ -648,6 +648,7 @@ test('client registers a live bilingual locale seat and directory picker for the
     assert.match(markup, /Help &amp; feedback · Open GitHub/);
     assert.match(markup, />WeChat<|>Feishu<|>DingTalk<|>WeCom</);
     assert.match(markup, />QQ<[^]*>Slack<[^]*>Telegram<[^]*>Discord<[^]*>WhatsApp</);
+    assert.match(markup, />AI Office<\/strong><small class="dim-channelNote">\(Experimental\)<\/small>/);
     assert.doesNotMatch(markup, /[\p{Script=Han}]/u);
   } finally {
     setImTranslator(null);

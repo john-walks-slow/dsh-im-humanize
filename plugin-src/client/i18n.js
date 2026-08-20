@@ -9,6 +9,7 @@ const EN = Object.freeze({
   'IM 渠道': 'IM channels',
   '让 DeepSeek Harness 触手可及': 'DeepSeek Harness, always within reach',
   'AI Office': 'AI Office',
+  '（实验功能）': '(Experimental)',
   'AI Office 设置': 'AI Office settings',
   'AI Office 设置页缺少 RPC 连接': 'AI Office settings are missing an RPC connection',
   '正在读取 AI Office Connector…': 'Loading AI Office Connector…',

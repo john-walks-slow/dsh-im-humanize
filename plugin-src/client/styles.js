@@ -52,8 +52,9 @@ const CSS = String.raw`
 .dim-logoSlack svg { width: 21px; height: 21px; }
 .dim-logoWhatsapp { color: white; background: #25d366; }
 .dim-logoWhatsapp svg { width: 21px; height: 21px; }
-.dim-channelCopy { min-width: 0; display: block; }
+.dim-channelCopy { min-width: 0; display: grid; }
 .dim-channelCopy strong { overflow: hidden; color: inherit; font-size: 14px; line-height: 20px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }
+.dim-channelNote { overflow: hidden; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 10px; line-height: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .dim-divider { width: 1px; min-height: 520px; background: var(--dsw-alias-border-l1, #eef0f3); }
 .dim-panel { min-width: 0; container-type: inline-size; }
 .dim-panel .bxf-page, .dim-panel .dxw-page, .dim-panel .ddt-page, .dim-panel .dqq-page, .dim-panel .dwecom-page, .dim-panel .dsl-page, .dim-panel .dwa-page { width: 100%; max-width: none; padding: 0 0 24px; }

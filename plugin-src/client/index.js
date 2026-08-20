@@ -58,7 +58,7 @@ const CHANNELS = Object.freeze([
   { id: 'telegram', label: 'Telegram' },
   { id: 'discord', label: 'Discord' },
   { id: 'whatsapp', label: 'WhatsApp' },
-  { id: 'office', label: 'AI Office' },
+  { id: 'office', label: 'AI Office', note: '（实验功能）' },
 ]);
 
 function WeixinLogo() {
@@ -176,6 +176,7 @@ export function IMSettingsTab({
         h(ChannelLogo, { channel: channel.id }),
         h('span', { className: 'dim-channelCopy' },
           h('strong', null, channel.label),
+          channel.note ? h('small', { className: 'dim-channelNote' }, channel.note) : null,
         )))),
       h('div', { className: 'dim-divider', 'aria-hidden': 'true' }),
       h('main', {
