@@ -167,7 +167,7 @@ test('sendText emits the iLink message envelope without reflecting the token in 
   assert.equal(body.msg.context_token, 'message-context');
   assert.equal(body.msg.item_list[0].text_item.text, 'Harness reply');
   assert.equal(body.base_info.channel_version, '2.4.6');
-  assert.equal(body.base_info.bot_agent, 'DeepSeekHarness/0.13.0');
+  assert.equal(body.base_info.bot_agent, 'DeepSeekHarness/0.14.0');
   assert.doesNotMatch(calls[0].init.body, /host-only-token/);
 });
 
