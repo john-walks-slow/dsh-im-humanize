@@ -12,9 +12,9 @@ const CSS = String.raw`
 }
 .dim-page *, .dim-page *::before, .dim-page *::after { box-sizing: border-box; }
 .dim-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 18px; }
-.dim-brand { min-width: 0; display: flex; align-items: center; gap: 12px; }
-.dim-brandLogo { width: 48px; height: 48px; flex: 0 0 48px; display: block; object-fit: contain; }
-.dim-title p { margin: 0; color: var(--dsw-alias-label-primary, #1f2329); font-size: 14px; line-height: 20px; font-weight: 600; white-space: nowrap; }
+.dim-brand { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
+.dim-brandName { color: var(--dsw-alias-label-primary, #1f2329); font-size: 20px; line-height: 24px; font-weight: 800; letter-spacing: .04em; }
+.dim-title p { margin: 0; color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; line-height: 18px; font-weight: 500; white-space: nowrap; }
 .dim-githubAction { position: relative; display: inline-flex; flex: none; }
 .dim-githubLink { min-height: 30px; display: inline-flex; align-items: center; gap: 5px; flex: none; padding: 0 10px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 8px; color: var(--dsw-alias-label-secondary, #646a73); background: var(--dsw-alias-bg-layer-1, #fff); font-size: 12px; line-height: normal; font-weight: 560; text-decoration: none; transition: border-color .15s ease, color .15s ease, background .15s ease; }
 .dim-githubLink:hover { border-color: #aeb3bb; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-interactive-bg-hover, #f7f8fa); }
