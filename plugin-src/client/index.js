@@ -4,6 +4,7 @@ import {
   DingtalkLogoGlyph,
   DiscordLogoGlyph,
   FeishuLogoGlyph,
+  OfficeLogoGlyph,
   QqLogoGlyph,
   SlackLogoGlyph,
   TelegramLogoGlyph,
@@ -22,6 +23,9 @@ import { installFeishuStyles } from './channels/feishu/styles.js';
 import { QQ_RPC_CHANNEL } from './channels/qq/api.js';
 import { QqSettingsTab } from './channels/qq/index.js';
 import { installQqStyles } from './channels/qq/styles.js';
+import { OFFICE_RPC_CHANNEL } from './channels/office/api.js';
+import { OfficeSettingsTab } from './channels/office/index.js';
+import { installOfficeStyles } from './channels/office/styles.js';
 import { SLACK_RPC_CHANNEL } from './channels/slack/api.js';
 import { SlackSettingsTab } from './channels/slack/index.js';
 import { installSlackStyles } from './channels/slack/styles.js';
@@ -54,6 +58,7 @@ const CHANNELS = Object.freeze([
   { id: 'telegram', label: 'Telegram' },
   { id: 'discord', label: 'Discord' },
   { id: 'whatsapp', label: 'WhatsApp' },
+  { id: 'office', label: 'AI Office' },
 ]);
 
 function WeixinLogo() {
@@ -99,6 +104,11 @@ function WhatsappLogo() {
     h(WhatsappLogoGlyph));
 }
 
+function OfficeLogo() {
+  return h('span', { className: 'dim-logo dim-logoOffice', 'aria-hidden': 'true' },
+    h(OfficeLogoGlyph));
+}
+
 function ChannelLogo({ channel }) {
   if (channel === 'weixin') return h(WeixinLogo);
   if (channel === 'feishu') return h(FeishuLogo);
@@ -108,7 +118,8 @@ function ChannelLogo({ channel }) {
   if (channel === 'slack') return h(SlackLogo);
   if (channel === 'telegram') return h(TelegramLogo);
   if (channel === 'discord') return h(DiscordLogo);
-  return h(WhatsappLogo);
+  if (channel === 'whatsapp') return h(WhatsappLogo);
+  return h(OfficeLogo);
 }
 
 export function IMSettingsTab({
@@ -121,6 +132,7 @@ export function IMSettingsTab({
   wecomRpcCall,
   weixinRpcCall,
   whatsappRpcCall,
+  officeRpcCall,
   workspaceDirectoryPicker,
 }) {
   const [selected, setSelected] = React.useState('weixin');
@@ -187,7 +199,9 @@ export function IMSettingsTab({
                   ? h(TelegramSettingsTab, { rpcCall: telegramRpcCall })
                   : active.id === 'discord'
                     ? h(DiscordSettingsTab, { rpcCall: discordRpcCall })
-                    : h(WhatsappSettingsTab, { rpcCall: whatsappRpcCall })),
+                    : active.id === 'whatsapp'
+                      ? h(WhatsappSettingsTab, { rpcCall: whatsappRpcCall })
+                      : h(OfficeSettingsTab, { rpcCall: officeRpcCall })),
     ),
   ));
 }
@@ -210,6 +224,7 @@ export function apply(ctx) {
       installTelegramStyles(),
       installDiscordStyles(),
       installWhatsappStyles(),
+      installOfficeStyles(),
       installImStyles(),
     ];
     return () => {
@@ -235,6 +250,8 @@ export function apply(ctx) {
     ctx.connection.rpc.call(WHATSAPP_RPC_CHANNEL, endpoint, payload, signal);
   const slackRpcCall = (endpoint, payload, signal) =>
     ctx.connection.rpc.call(SLACK_RPC_CHANNEL, endpoint, payload, signal);
+  const officeRpcCall = (endpoint, payload, signal) =>
+    ctx.connection.rpc.call(OFFICE_RPC_CHANNEL, endpoint, payload, signal);
   const workspaceDirectoryPicker = Object.freeze({
     listDirectory: (path, signal) => ctx.workspaces.listDirectory(path, signal),
     pickDirectory: () => ctx.workspaces.pickDirectory(),
@@ -256,6 +273,7 @@ export function apply(ctx) {
       wecomRpcCall,
       weixinRpcCall,
       whatsappRpcCall,
+      officeRpcCall,
       workspaceDirectoryPicker,
     }),
   }, IMSettingsTab));

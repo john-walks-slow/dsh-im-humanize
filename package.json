@@ -1,7 +1,7 @@
 {
   "name": "@xmanrui/dsh-im",
-  "version": "0.13.0",
-  "description": "通过扫码或机器人凭据把IM机器人接入DeepSeek Harness（支持飞书、微信、钉钉、企业微信、QQ、Slack、Telegram、Discord和WhatsApp）。 Connect IM bots to DeepSeek Harness via QR code or credentials (9 channels).",
+  "version": "0.14.0",
+  "description": "把九种 IM 机器人和公网 AI Office 接入本机 DeepSeek Harness。 Connect nine IM channels and a public AI Office to a local DeepSeek Harness.",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -19,7 +19,8 @@
     "slack",
     "telegram",
     "discord",
-    "whatsapp"
+    "whatsapp",
+    "ai-office"
   ],
   "author": {
     "name": "xmanrui",

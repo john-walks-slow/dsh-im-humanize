@@ -96,7 +96,7 @@ const QQ_SOURCE_URL = new URL(
   import.meta.url,
 );
 
-test('IM settings renders nine compact logo channel tabs without enable switches', async () => {
+test('IM settings renders nine IM channels plus the AI Office connector', async () => {
   const styles = await readFile(STYLES_URL, 'utf8');
   const markup = renderToStaticMarkup(React.createElement(IMSettingsTab, {
     feishuRpcCall: async () => ({ ok: true, value: {} }),
@@ -108,6 +108,7 @@ test('IM settings renders nine compact logo channel tabs without enable switches
     telegramRpcCall: async () => ({ ok: true, value: {} }),
     discordRpcCall: async () => ({ ok: true, value: {} }),
     whatsappRpcCall: async () => ({ ok: true, value: {} }),
+    officeRpcCall: async () => ({ ok: true, value: {} }),
   }));
 
   assert.match(markup, /IM机器人/);
@@ -139,6 +140,7 @@ test('IM settings renders nine compact logo channel tabs without enable switches
   assert.match(markup, />Telegram</);
   assert.match(markup, />Discord</);
   assert.match(markup, />WhatsApp</);
+  assert.match(markup, />AI Office</);
   assert.match(markup, /dim-logoWeixin/);
   assert.match(markup, /dim-logoFeishu/);
   assert.match(markup, /dim-logoDingtalk/);
@@ -148,8 +150,9 @@ test('IM settings renders nine compact logo channel tabs without enable switches
   assert.match(markup, /dim-logoTelegram/);
   assert.match(markup, /dim-logoDiscord/);
   assert.match(markup, /dim-logoWhatsapp/);
+  assert.match(markup, /dim-logoOffice/);
   assert.match(styles, /\.dim-logoFeishu svg \{ width: 28px; height: 28px; \}/);
-  assert.equal((markup.match(/role="tab"/g) ?? []).length, 9);
+  assert.equal((markup.match(/role="tab"/g) ?? []).length, 10);
   assert.equal((markup.match(/aria-selected="true"/g) ?? []).length, 1);
   assert.doesNotMatch(markup, /role="switch"|type="checkbox"/);
   assert.doesNotMatch(markup, /dim-chevron|扫码绑定<\/small>|扫码接入<\/small>/);

@@ -115,6 +115,12 @@ export function normalizeTelegramUpdate(update, { botId, username, loadFile = as
   };
 }
 
+export function telegramInboundAllowed(message, allowedPrivateUserIds) {
+  return message?.kind === 'direct'
+    && allowedPrivateUserIds instanceof Set
+    && allowedPrivateUserIds.has(String(message.senderId));
+}
+
 class TelegramBotClient {
   #api;
   #signal;
@@ -198,6 +204,7 @@ export class TelegramRuntime {
   #logger;
   #replyTimeoutMs;
   #createApi;
+  #allowedPrivateUserIds;
   #status = createTelegramRuntimeStatus();
   #api = null;
   #bridge = null;
@@ -213,6 +220,7 @@ export class TelegramRuntime {
     logger = console,
     replyTimeoutMs = 600_000,
     createApi = (options) => new TelegramApi(options),
+    allowedPrivateUserIds = [],
   }) {
     if (!config || !token || !harness || !state) {
       throw new TypeError('TelegramRuntime requires config, token, Harness, and state');
@@ -224,6 +232,9 @@ export class TelegramRuntime {
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#createApi = createApi;
+    this.#allowedPrivateUserIds = new Set(
+      Array.isArray(allowedPrivateUserIds) ? allowedPrivateUserIds.map(String) : [],
+    );
   }
 
   get status() {
@@ -323,7 +334,7 @@ export class TelegramRuntime {
           username: this.#config.username,
           loadFile: (fileId, options) => this.#api.downloadFile({ fileId, ...options }),
         });
-        if (message) {
+        if (message && telegramInboundAllowed(message, this.#allowedPrivateUserIds)) {
           void this.#bridge.accept(message).catch((error) => {
             if (signal.aborted) return;
             this.#logger.error?.(
@@ -331,6 +342,9 @@ export class TelegramRuntime {
               error,
             );
           });
+        } else if (message) {
+          this.#status.messagesRejected += 1;
+          this.#status.lastRejectedAt = new Date().toISOString();
         }
         cursor = update.update_id + 1;
         await this.#state.setCursor(cursor);
