@@ -18,6 +18,7 @@ import { TelegramHarnessBridge } from '../../../src/channels/telegram/telegram-b
 import {
   TelegramRuntime,
   normalizeTelegramUpdate,
+  telegramInboundAllowed,
 } from '../../../src/channels/telegram/telegram-runtime.mjs';
 import { TelegramStateStore } from '../../../src/channels/telegram/state-store.mjs';
 import {
@@ -351,6 +352,14 @@ test('Telegram normalizes private messages and requires an explicit group addres
   assert.equal(topicTwo.replyTarget.messageThreadId, 200);
 });
 
+test('Telegram blocks every group and admits only allowlisted private senders', () => {
+  const allowed = new Set(['6087707998', '1202499116']);
+  assert.equal(telegramInboundAllowed({ kind: 'group', senderId: '6087707998' }, allowed), false);
+  assert.equal(telegramInboundAllowed({ kind: 'direct', senderId: '6087707998' }, allowed), true);
+  assert.equal(telegramInboundAllowed({ kind: 'direct', senderId: '999999999' }, allowed), false);
+  assert.equal(telegramInboundAllowed({ kind: 'direct', senderId: '6087707998' }, new Set()), false);
+});
+
 test('Telegram normalizes photo captions and image documents into one downloadable image', async () => {
   const loads = [];
   const groupPhoto = normalizeTelegramUpdate({
@@ -622,6 +631,7 @@ test('Telegram runtime keeps polling while a Harness question waits for its answ
     state,
     createApi: () => fakeApi,
     logger: { error() {}, warn() {} },
+    allowedPrivateUserIds: ['7'],
   });
 
   try {

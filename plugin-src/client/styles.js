@@ -44,6 +44,8 @@ const CSS = String.raw`
 .dim-logoWecom svg { width: 22px; height: 22px; }
 .dim-logoTelegram { color: white; background: #229ed9; }
 .dim-logoTelegram svg { width: 21px; height: 21px; }
+.dim-logoOffice { color: white; background: linear-gradient(145deg, #12213f, #3964fe); }
+.dim-logoOffice svg { width: 23px; height: 23px; }
 .dim-logoDiscord { color: white; background: #5865f2; }
 .dim-logoDiscord svg { width: 21px; height: 21px; }
 .dim-logoSlack { color: white; background: #4a154b; }

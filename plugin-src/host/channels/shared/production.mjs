@@ -32,7 +32,9 @@ export function pluginPaths(config, channel) {
 }
 
 export async function createTokenProductionController(ctx, config, internals, definitions) {
-  const { channel, ConfigStore, StateStore, HarnessClient, Controller, Runtime } = definitions;
+  const {
+    channel, ConfigStore, StateStore, HarnessClient, Controller, Runtime, runtimeOptions,
+  } = definitions;
   if (!ctx?.credentials) throw new TypeError(`dsh-im ${channel} requires ctx.credentials`);
   if (!ctx?.webServer) throw new TypeError(`dsh-im ${channel} requires ctx.webServer`);
 
@@ -41,6 +43,11 @@ export async function createTokenProductionController(ctx, config, internals, de
   const ResolvedHarness = internals.HarnessClient ?? HarnessClient;
   const ResolvedController = internals.Controller ?? Controller;
   const ResolvedRuntime = internals.Runtime ?? Runtime;
+  const channelRuntimeOptions = typeof runtimeOptions === 'function' ? runtimeOptions(config) : {};
+  if (!channelRuntimeOptions || typeof channelRuntimeOptions !== 'object'
+    || Array.isArray(channelRuntimeOptions)) {
+    throw new TypeError(`dsh-im ${channel} runtimeOptions must return an object`);
+  }
   const createSupervisor = internals.createConnectionSupervisor ?? createTokenConnectionSupervisor;
   const logger = typeof ctx.logger === 'function'
     ? ctx.logger(`dsh-im:${channel}`) : (ctx.logger ?? console);
@@ -91,6 +98,7 @@ export async function createTokenProductionController(ctx, config, internals, de
       await workspaces.ensure(botId);
       const workspaceScope = createBotWorkspaceScope(harness, { botId, workspaces, state });
       return new ResolvedRuntime({
+        ...channelRuntimeOptions,
         config: botConfig,
         token,
         harness: workspaceScope.harness,
