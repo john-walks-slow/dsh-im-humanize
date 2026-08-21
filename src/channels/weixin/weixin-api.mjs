@@ -184,7 +184,7 @@ function authenticatedHeaders(token) {
 function baseInfo() {
   return {
     channel_version: WEIXIN_PROTOCOL_VERSION,
-    bot_agent: 'DeepSeekHarness/0.17.1',
+    bot_agent: 'DeepSeekHarness/0.18.0',
   };
 }
 
