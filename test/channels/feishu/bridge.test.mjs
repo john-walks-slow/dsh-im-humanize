@@ -2045,7 +2045,9 @@ test('session list paginates by page number across 25 sessions', async () => {
   const firstButton = firstLayout?.columns?.[0]?.elements?.[0];
   assert.equal(firstButton?.tag, 'button');
   assert.equal(Object.hasOwn(firstButton, 'value'), false, 'V2 buttons must not use the legacy value field');
-  assert.equal(callbackAction(firstButton), 'use:session-01');
+  assert.equal(callbackAction(firstButton), 'watch:session-01', 'the watch toggle leads each row');
+  const sessionButton = firstLayout?.columns?.[1]?.elements?.[0];
+  assert.equal(callbackAction(sessionButton), 'use:session-01');
   assert.equal(useActionsFromCard(page0).length, 10);
   assert.equal(useActionsFromCard(page0)[0], 'session-01');
 
@@ -2081,7 +2083,8 @@ test('number replies on a later session page use page-local labels', async () =>
   await bridge.waitForIdle();
 
   const page2Buttons = buttonsFromCard(cards(sent).at(-1).content);
-  assert.match(page2Buttons[0].text.content, /^1\. Session 21$/);
+  const sessionButtons = page2Buttons.filter((candidate) => (callbackAction(candidate) ?? '').startsWith('use:'));
+  assert.match(sessionButtons[0].text.content, /^1\. Session 21$/);
 
   await bridge.accept(event('sessions-number-pick', '1', { senderOpenId: 'ou_owner' }));
   await bridge.waitForIdle();
@@ -2127,7 +2130,8 @@ test('session pagination preserves an explicitly selected workspace', async () =
   await bridge.onCardAction(cardActionEvent('om_card_1', 'sessions:1', 'ou_owner'));
   await bridge.waitForIdle();
   assert.equal(useActionsFromCard(cards(sent).at(-1).content)[0], 'selected-11');
-  assert.match(JSON.stringify(cards(sent).at(-1).content), new RegExp(workspaceB.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  const header = cards(sent).at(-1).content.body.elements[0].text.content;
+  assert.match(header, new RegExp(workspaceB.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
 
 const REPAIR_APP_ID = 'cli_repair_test';
@@ -2403,4 +2407,370 @@ test('repair monitor reports expiry without claiming that the callback was fixed
     .map((outgoing) => JSON.parse(outgoing.content).text)
     .find((text) => text.includes('授权链接已过期'));
   assert.doesNotMatch(terminal, /修复完成/);
+});
+
+// ── Watches: read-only tracking, persistence, compensation, dedup ─────────
+
+import { StateStore } from '../../../src/channels/feishu/state-store.mjs';
+
+function watchHarness({ sessionsByWorkspace = { 'C:/work': [] }, current = 'C:/work', history = [] } = {}) {
+  const listeners = [];
+  let currentHistory = history;
+  return {
+    ensureRunning: async () => true,
+    currentWorkspace: () => current,
+    listWorkspaces: async () => Object.keys(sessionsByWorkspace),
+    listWorkspaceSessions: async (workspace) => ({ workspace, sessions: sessionsByWorkspace[workspace] ?? [] }),
+    bindWorkspaceSession: async (_key, sessionId) => ({ sessionId, title: `Title ${sessionId}` }),
+    switchWorkspace: async (path) => path,
+    rpc: async (method, params) => (method === 'session.history' ? { events: currentHistory } : null),
+    watchHarnessEvents: ({ signal, onSessionEvent, onReconnect }) => {
+      listeners.push({ signal, onSessionEvent, onReconnect });
+      return new Promise((resolve) => {
+        if (signal.aborted) resolve();
+        else signal.addEventListener('abort', resolve, { once: true });
+      });
+    },
+    _listeners: listeners,
+    _setHistory: (next) => { currentHistory = next; },
+  };
+}
+
+async function watchStoreFixture(seedSessions = []) {
+  const path = join(tmpdir(), `dsh-im-watch-test-${Math.random().toString(36).slice(2)}.json`);
+  const store = new StateStore(path);
+  await store.load();
+  for (const [key, sessionId] of seedSessions) await store.setSession(key, sessionId);
+  return { path, store, state: store };
+}
+
+test('/watch resolves read-only: no binding, no workspace switch', async () => {
+  const { state } = await watchStoreFixture([['p2p:ou_owner', 'bound-session']]);
+  let bindCalls = 0;
+  let switchCalls = 0;
+  const harness = watchHarness({
+    sessionsByWorkspace: { 'C:/work': [{ sessionId: 'target-session', title: 'Target' }] },
+  });
+  harness.bindWorkspaceSession = async () => { bindCalls += 1; throw new Error('must not bind'); };
+  harness.switchWorkspace = async () => { switchCalls += 1; throw new Error('must not switch'); };
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('watch-1', '/watch 1', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.match(sent.at(-1), /已关注会话「Target」/);
+  assert.equal(bindCalls, 0, 'watch must not bind the conversation');
+  assert.equal(switchCalls, 0, 'watch must not switch workspaces');
+  assert.equal(state.sessionFor('p2p:ou_owner'), 'bound-session', 'existing binding unchanged');
+  const entry = state.watchEntry('p2p:ou_owner', 'target-session');
+  assert.ok(entry, 'watch entry persisted');
+  assert.equal(entry.chatId, 'oc_chat');
+});
+
+test('/watch finds a session in another workspace without switching', async () => {
+  const { state } = await watchStoreFixture();
+  const harness = watchHarness({
+    current: 'C:/work',
+    sessionsByWorkspace: {
+      'C:/work': [],
+      'D:/other': [{ sessionId: 'other-session', title: 'Other Session' }],
+    },
+  });
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('watch-x', '/watch other-session', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.match(sent.at(-1), /已关注会话「Other Session」/);
+  assert.equal(state.sessionFor('p2p:ou_owner'), null, 'cross-workspace watch must not bind');
+  assert.ok(state.watchEntry('p2p:ou_owner', 'other-session'));
+});
+
+test('persisted watches resume the event watcher at runtime start', async () => {
+  const { path, state } = await watchStoreFixture();
+  await state.setWatch('p2p:ou_owner', { sessionId: 'kept-session', title: 'Kept', chatId: 'oc_chat', lastSeq: 3 });
+  const reloadedState = await new StateStore(path).load();
+  const harness = watchHarness();
+
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async () => {}),
+    channel: {},
+    harness,
+    state: reloadedState,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(harness._listeners.length, 1, 'watcher must restart from persisted state');
+  assert.ok(bridge);
+});
+
+test('reconnect compensation replays missed turn/end and dedups duplicates', async () => {
+  const { state } = await watchStoreFixture();
+  await state.setWatch('p2p:ou_owner', { sessionId: 'watched-session', title: 'Watched', chatId: 'oc_chat', lastSeq: 9 });
+  const harness = watchHarness({
+    history: [
+      { event: { type: 'turn/end', seq: 11, data: { turn: 't2', reason: { kind: 'stopped' } } } },
+      { event: { type: 'turn/end', seq: 10, data: { turn: 't1', reason: { kind: 'completed' } } } },
+    ],
+  });
+  const cards = [];
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async ({ msgType, content }) => {
+      if (msgType === 'interactive') cards.push(content);
+    }),
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(harness._listeners.length, 1);
+
+  // Real history wraps events and may return them out of order.
+  harness._listeners[0].onReconnect();
+  await bridge.waitForIdle();
+  assert.equal(cards.length, 2);
+  assert.match(JSON.stringify(cards[0]), /已完成/);
+  assert.match(JSON.stringify(cards[1]), /已停止/);
+  assert.equal(state.watchEntry('p2p:ou_owner', 'watched-session').lastSeq, 11);
+
+  // Reconnect and an overlapping live frame are both deduplicated by lastSeq.
+  harness._listeners[0].onReconnect();
+  harness._listeners[0].onSessionEvent({
+    sessionId: 'watched-session',
+    event: { type: 'turn/end', seq: 11, data: { turn: 't2', reason: { kind: 'stopped' } } },
+  });
+  await bridge.waitForIdle();
+  assert.equal(cards.length, 2);
+});
+
+test('/watch baselines existing history and completion-card buttons keep their route', async () => {
+  const { state } = await watchStoreFixture();
+  const work = realpathSync(tmpdir());
+  const oldCompletion = {
+    event: { type: 'turn/end', seq: 10, data: { turn: 'old', reason: { kind: 'completed' } } },
+  };
+  const harness = watchHarness({
+    current: work,
+    sessionsByWorkspace: { [work]: [{ sessionId: 'watched-session', title: 'Watched' }] },
+    history: [oldCompletion],
+  });
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async (outgoing) => sent.push(outgoing)),
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('watch-baseline', '/watch 1', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.equal(state.watchEntry('p2p:ou_owner', 'watched-session').lastSeq, 10);
+  assert.equal(cards(sent).length, 0, 'a new watch must not replay an older completion');
+
+  harness._listeners[0].onReconnect();
+  await bridge.waitForIdle();
+  assert.equal(cards(sent).length, 0);
+
+  harness._setHistory([
+    oldCompletion,
+    { event: { type: 'turn/end', seq: 11, data: { turn: 'new', reason: { kind: 'completed' } } } },
+  ]);
+  harness._listeners[0].onReconnect();
+  await bridge.waitForIdle();
+  assert.equal(cards(sent).length, 1);
+
+  // The text confirmation is om_card_1, so the completion is om_card_2.
+  await bridge.onCardAction(cardActionEvent('om_card_2', 'sessions', 'ou_owner'));
+  await bridge.waitForIdle();
+  assert.equal(cards(sent).length, 2);
+  assert.equal(cards(sent).at(-1).content.header.title.content, '📂 会话列表');
+});
+
+test('a failed completion push keeps its watermark and later activity retries it', async () => {
+  const { state } = await watchStoreFixture();
+  await state.setWatch('p2p:ou_owner', {
+    sessionId: 'cross-workspace-session',
+    title: 'Cross Workspace Title',
+    chatId: 'oc_chat',
+    lastSeq: 10,
+  });
+  const completion = {
+    event: { type: 'turn/end', seq: 11, data: { turn: 'retry', reason: { kind: 'completed' } } },
+  };
+  const laterCompletion = {
+    event: { type: 'turn/end', seq: 12, data: { turn: 'later', reason: { kind: 'completed' } } },
+  };
+  const harness = watchHarness({ history: [laterCompletion, completion] });
+  const cardsSent = [];
+  let failNext = true;
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async ({ msgType, content }) => {
+      if (msgType !== 'interactive') return;
+      if (failNext) {
+        failNext = false;
+        throw new Error('temporary Feishu failure');
+      }
+      cardsSent.push(content);
+    }),
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+    logger: { warn: () => undefined },
+  });
+  await eventually(() => harness._listeners.length === 1);
+
+  harness._listeners[0].onSessionEvent({
+    sessionId: 'cross-workspace-session',
+    event: completion.event,
+  });
+  await bridge.waitForIdle();
+  assert.equal(state.watchEntry('p2p:ou_owner', 'cross-workspace-session').lastSeq, 10);
+  assert.equal(cardsSent.length, 0);
+
+  // A later live completion recovers the earlier failure through history;
+  // no socket reconnect is required to unstick this watch.
+  harness._listeners[0].onSessionEvent({
+    sessionId: 'cross-workspace-session',
+    event: laterCompletion.event,
+  });
+  await bridge.waitForIdle();
+  assert.equal(state.watchEntry('p2p:ou_owner', 'cross-workspace-session').lastSeq, 12);
+  assert.equal(cardsSent.length, 2);
+  assert.match(JSON.stringify(cardsSent[0]), /Cross Workspace Title/);
+});
+
+test('legacy watches establish a baseline without replaying old completions', async () => {
+  const { state } = await watchStoreFixture();
+  await state.setWatch('p2p:ou_owner', {
+    sessionId: 'legacy-session',
+    title: 'Legacy',
+    chatId: 'oc_chat',
+    lastSeq: null,
+  });
+  const harness = watchHarness({
+    history: [{ event: { type: 'turn/end', seq: 20, data: { turn: 'old' } } }],
+  });
+  const cardsSent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async ({ msgType, content }) => {
+      if (msgType === 'interactive') cardsSent.push(content);
+    }),
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+  await eventually(() => harness._listeners.length === 1);
+
+  harness._listeners[0].onReconnect();
+  await bridge.waitForIdle();
+  assert.equal(cardsSent.length, 0);
+  assert.equal(state.watchEntry('p2p:ou_owner', 'legacy-session').lastSeq, 20);
+});
+
+test('runtime abort stops the old event watcher before a new bridge starts', async () => {
+  const firstHarness = watchHarness();
+  const firstController = new AbortController();
+  const { state: firstState } = await watchStoreFixture();
+  new FeishuHarnessBridge({
+    client: textClient(async () => {}),
+    channel: {},
+    harness: firstHarness,
+    state: firstState,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+    signal: firstController.signal,
+  });
+  await eventually(() => firstHarness._listeners.length === 1);
+  assert.equal(firstHarness._listeners[0].signal.aborted, false);
+  firstController.abort();
+  assert.equal(firstHarness._listeners[0].signal.aborted, true);
+
+  const secondHarness = watchHarness();
+  const secondController = new AbortController();
+  const { state: secondState } = await watchStoreFixture();
+  new FeishuHarnessBridge({
+    client: textClient(async () => {}),
+    channel: {},
+    harness: secondHarness,
+    state: secondState,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+    signal: secondController.signal,
+  });
+  await eventually(() => secondHarness._listeners.length === 1);
+  assert.equal(secondHarness._listeners[0].signal.aborted, false);
+  secondController.abort();
+});
+
+test('archived sessions are hidden by default; /archived on reveals them', async () => {
+  const { state } = await watchStoreFixture();
+  const workRaw = join(tmpdir(), 'dsh-im-archived-test-work');
+  mkdirSync(workRaw, { recursive: true });
+  const work = realpathSync(workRaw);
+  const harness = watchHarness({
+    current: work,
+    sessionsByWorkspace: {
+      [work]: [
+        { sessionId: 'live-session', title: 'Live', archived: false },
+        { sessionId: 'old-session', title: 'Old', archived: true },
+      ],
+    },
+  });
+  const sent = [];
+  const cards = [];
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async ({ msgType, content }) => {
+      if (msgType === 'interactive') cards.push(content);
+    }),
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+  bridge._sent = sent;
+
+  // Default: hidden. The explicit toggle re-enables inclusion for the card check.
+  assert.equal(state.includesArchivedSessions(), false);
+
+  await bridge.accept(event('sessions-arch', '/sessionlist', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  const use = useActionsFromCard(cards.at(-1));
+  assert.deepEqual(use, ['live-session'], 'archived session hidden');
+
+  // The numeric watch index must resolve against the filtered list too.
+  await bridge.accept(event('watch-arch', '/watch 1', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.ok(state.watchEntry('p2p:ou_owner', 'live-session'));
+  assert.equal(state.watchEntry('p2p:ou_owner', 'old-session'), null);
+
+  await bridge.accept(event('archived-on', '/archived on', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  await bridge.accept(event('sessions-arch-2', '/sessionlist', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  const useOn = useActionsFromCard(cards.at(-1));
+  assert.deepEqual(useOn, ['live-session', 'old-session'], '/archived on restores archived sessions');
 });

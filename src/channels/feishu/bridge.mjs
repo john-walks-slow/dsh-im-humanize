@@ -32,11 +32,14 @@ import { runWorkspaceCommand, resolveSessionListWorkspace, workspacePathSnapshot
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 import {
   MENU_PAGE_SIZE,
+  completionCard,
   menuCard,
   menuHelpText,
   sessionListCard,
+  watchListCard,
   workspaceListCard,
 } from './feishu-cards.mjs';
+import { MAX_WATCHES_PER_KEY } from './state-store.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
 const RESOLVED_REPLY_TTL_MS = 30 * 60_000;
@@ -44,6 +47,9 @@ const RESOLVED_REPLY_TTL_MS = 30 * 60_000;
 const MENU_COMMAND = /^\/m(?:enu)?$/i;
 const REPAIR_COMMAND_PREFIX = /^\/repair(?:\s|$)/i;
 const REPAIR_COMMAND = /^\/repair(?:\s+(qr|status|cancel|verify))?\s*$/i;
+const WATCH_COMMAND = /^\/watch(?:\s+([^\s]+))?$/i;
+const UNWATCH_COMMAND = /^\/unwatch(?:\s+([^\s]+))?$/i;
+const WATCHLIST_COMMAND = /^\/watchlist$/i;
 const SESSION_LIST_PREFIX = /^\/sessionlist(?:\s|$)/i;
 const WORKSPACE_LIST_COMMAND = /^\/workspacelist$/i;
 const NUMBER_REPLY = /^\d{1,2}$/;
@@ -83,8 +89,14 @@ const HELP_TEXT = [
   '/status  检查连接状态',
   '/repair  修复卡片按钮回调',
   '/m（或 /menu）  打开交互卡片菜单',
+  '/watch [Session ID 或序号]  关注会话，任务完成自动推送',
+  '/unwatch [Session ID 或序号]  取消关注',
+  '/watchlist  查看关注列表',
+  '/archived on|off  会话列表是否包含归档会话',
   '/help  显示本帮助',
 ].join('\n');
+
+const ARCHIVED_COMMAND = /^\/archived(?:\s+(on|off))?$/i;
 
 /** Safe user-facing text for bind/workspace failures (no raw messages). */
 function safeErrorText(error) {
@@ -104,6 +116,13 @@ function safeErrorText(error) {
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function orderedHistoryEvents(history) {
+  return (Array.isArray(history?.events) ? history.events : [])
+    .map((entry) => entry?.event ?? entry)
+    .filter((entry) => entry && typeof entry === 'object' && Number.isFinite(entry.seq))
+    .sort((left, right) => left.seq - right.seq);
 }
 
 function senderOpenId(event) {
@@ -240,6 +259,12 @@ export class FeishuHarnessBridge {
   #menus = new Map();
   /** Interactive-card message id → route context for button callbacks. */
   #cardKeys = new Map();
+  /** The global event-mux watcher (one per bridge). */
+  #eventWatcher = null;
+  /** Serializes live completions and reconnect compensation. */
+  #eventTail = Promise.resolve();
+  /** Earliest completion that still needs delivery for each watch. */
+  #failedWatchSeqs = new Map();
 
   constructor({
     client,
@@ -295,6 +320,11 @@ export class FeishuHarnessBridge {
     this.#approvals = new HarnessApprovalQueue({ label: 'Feishu', logger });
     this.#signal = signal;
     ensureStatus(this.#status);
+    // Persisted watches must resume at runtime start, not on the first
+    // message. Older hosts without the mux watcher simply skip this.
+    if (typeof this.#harness?.watchHarnessEvents === 'function') {
+      queueMicrotask(() => this.#ensureEventWatcher());
+    }
   }
 
   accept(event) {
@@ -519,6 +549,7 @@ export class FeishuHarnessBridge {
       )),
       ...this.#interactionTasks,
       ...this.#commandTasks,
+      this.#eventTail,
     ]);
   }
 
@@ -602,6 +633,36 @@ export class FeishuHarnessBridge {
     }
     if (WORKSPACE_LIST_COMMAND.test(commandText)) {
       await this.#showWorkspaces({ chatId: event.message.chat_id, key });
+      return;
+    }
+    if (WATCH_COMMAND.test(commandText)) {
+      const target = (WATCH_COMMAND.exec(commandText)?.[1] ?? '').trim() || null;
+      await this.#runWatch(key, event.message.chat_id, target);
+      return;
+    }
+    if (UNWATCH_COMMAND.test(commandText)) {
+      const target = (UNWATCH_COMMAND.exec(commandText)?.[1] ?? '').trim() || null;
+      await this.#runUnwatch(key, event.message.chat_id, target);
+      return;
+    }
+    if (WATCHLIST_COMMAND.test(commandText)) {
+      await this.#showWatchList(key, event.message.chat_id);
+      return;
+    }
+    if (ARCHIVED_COMMAND.test(commandText)) {
+      const match = ARCHIVED_COMMAND.exec(commandText);
+      const value = match[1]?.toLowerCase();
+      if (value !== 'on' && value !== 'off') {
+        await this.#send(event.message.chat_id, '用法：/archived on（包含归档会话）或 /archived off（隐藏归档会话）');
+        return;
+      }
+      if (typeof this.#state?.setIncludeArchivedSessions === 'function') {
+        await this.#state.setIncludeArchivedSessions(value === 'on');
+      }
+      await this.#send(
+        event.message.chat_id,
+        value === 'on' ? '已开启：会话列表包含归档会话。' : '已关闭：会话列表隐藏归档会话。',
+      );
       return;
     }
     if (NUMBER_REPLY.test(commandText)) {
@@ -991,7 +1052,15 @@ export class FeishuHarnessBridge {
     if (!action) return Promise.resolve();
     const messageId = nonEmptyString(event?.context?.open_message_id);
     const entry = messageId ? this.#cardKeys.get(messageId) : null;
-    if (!entry) return Promise.resolve();
+    if (!entry) {
+      // The card predates this process (the in-memory mapping resets on
+      // restart) or never came from us: nudge instead of staying silent.
+      const chatId = nonEmptyString(event?.context?.open_chat_id);
+      if (chatId) {
+        this.#send(chatId, '这个菜单已过期，请回复 /m 重新打开。').catch(() => undefined);
+      }
+      return Promise.resolve();
+    }
     // The promise is returned so tests (and future callers) can await the
     // action; the runtime dispatcher ignores it.
     return this.#handleCardAction(action, entry).catch((error) => {
@@ -1007,6 +1076,10 @@ export class FeishuHarnessBridge {
     }
     if (action === 'workspaces') {
       await this.#showWorkspaces({ chatId, key });
+      return;
+    }
+    if (action === 'watchlist') {
+      await this.#showWatchList(key, chatId);
       return;
     }
     if (action === 'new') {
@@ -1029,6 +1102,14 @@ export class FeishuHarnessBridge {
     }
     if (action.startsWith('workspace:')) {
       await this.#switchWorkspace(key, chatId, action.slice('workspace:'.length));
+      return;
+    }
+    if (action.startsWith('unwatch:')) {
+      await this.#runUnwatch(key, chatId, action.slice('unwatch:'.length));
+      return;
+    }
+    if (action.startsWith('watch:')) {
+      await this.#runWatch(key, chatId, action.slice('watch:'.length));
     }
   }
 
@@ -1053,7 +1134,7 @@ export class FeishuHarnessBridge {
 
   async #handleMenuPick(menu, number, { chatId, key, event }) {
     if (menu.kind === 'menu') {
-      const action = ['sessions', 'workspaces', 'new', 'status', 'help', 'repair'][number - 1];
+      const action = ['sessions', 'workspaces', 'new', 'status', 'help', 'repair', 'watchlist'][number - 1];
       if (!action) {
         await this.#send(chatId, '菜单没有这个编号，回复 /m 重新打开。');
         return;
@@ -1071,6 +1152,7 @@ export class FeishuHarnessBridge {
         await this.#send(chatId, `本页只有 ${menu.sessions.length} 个会话，回复 /sessionlist 重新查看。`);
         return;
       }
+      // The number label sits on the session (bind) button of the row.
       await this.#handleCardAction(`use:${session.sessionId}`, { chatId, key });
       return;
     }
@@ -1081,7 +1163,24 @@ export class FeishuHarnessBridge {
         return;
       }
       await this.#handleCardAction(`workspace:${workspace}`, { chatId, key });
+      return;
     }
+    if (menu.kind === 'watches') {
+      const entry = menu.entries[number - 1];
+      if (!entry?.sessionId) {
+        await this.#send(chatId, `关注列表只有 ${menu.entries.length} 个会话。`);
+        return;
+      }
+      await this.#handleCardAction(`unwatch:${entry.sessionId}`, { chatId, key });
+    }
+  }
+
+  /** The sessions visible under the bot's archived policy. */
+  #visibleSessions(sessions) {
+    if (this.#state?.includesArchivedSessions?.() === false) {
+      return sessions.filter((session) => session.archived !== true);
+    }
+    return sessions;
   }
 
   async #showSessions({ chatId, key }, selector, page = 0) {
@@ -1092,7 +1191,7 @@ export class FeishuHarnessBridge {
         return;
       }
       const listed = await this.#harness.listWorkspaceSessions(resolved.workspace);
-      const sessions = Array.isArray(listed?.sessions) ? listed.sessions : [];
+      const sessions = this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : []);
       const workspace = listed?.workspace ?? resolved.workspace;
       if (sessions.length === 0) {
         await this.#send(chatId, `工作区：${workspace}\n该工作区暂无会话。`);
@@ -1100,16 +1199,24 @@ export class FeishuHarnessBridge {
       }
       const pageCount = Math.ceil(sessions.length / MENU_PAGE_SIZE);
       const safePage = Number.isSafeInteger(page) && page > 0 ? Math.min(page, pageCount - 1) : 0;
+      const watchedSet = new Set(
+        (this.#state.watchEntries?.(key) ?? []).map((entry) => entry.sessionId),
+      );
+      const pageSlice = sessions.slice(safePage * MENU_PAGE_SIZE, (safePage + 1) * MENU_PAGE_SIZE);
       this.#rememberMenu(key, {
         kind: 'sessions',
-        sessions: sessions.slice(safePage * MENU_PAGE_SIZE, (safePage + 1) * MENU_PAGE_SIZE),
+        sessions: pageSlice.map((session) => ({ ...session, watched: watchedSet.has(session.sessionId) })),
       });
-      await this.#sendCard(chatId, sessionListCard(workspace, sessions, safePage, sessions.length), {
-        key,
-        // Keep the canonical selector result for later page callbacks. The
-        // list response's workspace is display data and is not authoritative.
-        sessionWorkspace: resolved.workspace,
-      });
+      await this.#sendCard(
+        chatId,
+        sessionListCard(workspace, sessions, safePage, sessions.length, watchedSet),
+        {
+          key,
+          // Keep the canonical selector result for later page callbacks. The
+          // list response's workspace is display data and is not authoritative.
+          sessionWorkspace: resolved.workspace,
+        },
+      );
     } catch (error) {
       this.#logger.warn?.('[dsh-feishu] session list failed:', error.message);
       await this.#send(chatId, '暂时无法获取会话列表，请稍后重试。');
@@ -1169,6 +1276,256 @@ export class FeishuHarnessBridge {
       }
     }
     return messageId;
+  }
+
+  // ── Watches: read-only session tracking + completion pushes ─────────────
+
+  #ensureEventWatcher() {
+    if (this.#eventWatcher) return;
+    if (typeof this.#harness?.watchHarnessEvents !== 'function') return;
+    if (this.#signal?.aborted) return;
+    const signal = this.#signal ?? new AbortController().signal;
+    try {
+      this.#eventWatcher = this.#harness.watchHarnessEvents({
+        signal,
+        onSessionEvent: (payload) => this.#onHarnessEvent(payload),
+        onReconnect: () => {
+          void this.#queueEventTask(() => this.#compensateMissedEvents());
+        },
+      });
+      Promise.resolve(this.#eventWatcher).catch((error) => {
+        if (!signal.aborted) {
+          this.#logger.warn?.('[dsh-feishu] event watcher stopped:', error.message);
+        }
+      });
+    } catch (error) {
+      this.#eventWatcher = null;
+      this.#logger.warn?.('[dsh-feishu] event watcher failed to start:', error.message);
+    }
+  }
+
+  #queueEventTask(task) {
+    const next = this.#eventTail.then(task, task).catch((error) => {
+      if (!this.#signal?.aborted) {
+        this.#logger.warn?.('[dsh-feishu] completion event failed:', error.message);
+      }
+    });
+    this.#eventTail = next;
+    return next;
+  }
+
+  /**
+   * Resolve a /watch target READ-ONLY: a session id is validated against
+   * the registered workspaces' listings, an index against the current
+   * workspace. Nothing is bound and no workspace is switched.
+   */
+  async #resolveWatchTarget(target) {
+    if (typeof target !== 'string' || target === '') {
+      return { error: '用法：/watch <Session ID 或当前工作区序号>' };
+    }
+    const numeric = /^\d{1,4}$/.test(target) ? Number(target) : null;
+    const currentPath = typeof this.#harness?.currentWorkspace === 'function'
+      ? this.#harness.currentWorkspace()
+      : null;
+    const listSessions = async (workspace) => {
+      const listed = await this.#harness.listWorkspaceSessions(workspace);
+      return Array.isArray(listed?.sessions) ? listed.sessions : [];
+    };
+    if (numeric !== null) {
+      if (!currentPath) return { error: '当前机器人没有可用的工作区，无法按序号解析会话。' };
+      const sessions = this.#visibleSessions(await listSessions(currentPath));
+      const session = sessions[numeric - 1];
+      if (!session?.sessionId) {
+        return { error: `当前工作区只有 ${sessions.length} 个会话。` };
+      }
+      return { sessionId: session.sessionId, title: session.title ?? '暂无标题' };
+    }
+    const extraPaths = typeof this.#harness?.listWorkspaces === 'function'
+      ? (await this.#harness.listWorkspaces()).filter((path) => path !== currentPath)
+      : [];
+    const paths = [currentPath, ...extraPaths].filter(Boolean);
+    for (const workspace of paths) {
+      const sessions = await listSessions(workspace);
+      const session = sessions.find((candidate) => candidate.sessionId === target);
+      if (session) return { sessionId: target, title: session.title ?? '暂无标题' };
+    }
+    return { error: '没有找到这个会话，请用 /sessionlist 查看可用会话。' };
+  }
+
+  async #latestSessionSeq(sessionId) {
+    if (typeof this.#harness?.rpc !== 'function') return null;
+    const history = await this.#harness.rpc(
+      'session.history',
+      { sessionId, maxMessages: 20 },
+      30_000,
+      { signal: this.#signal },
+    );
+    return orderedHistoryEvents(history).at(-1)?.seq ?? -1;
+  }
+
+  async #runWatch(key, chatId, target) {
+    this.#ensureEventWatcher();
+    if (typeof this.#state?.setWatch !== 'function') {
+      await this.#send(chatId, '当前状态存储不支持关注。');
+      return;
+    }
+    let resolved;
+    try {
+      resolved = await this.#resolveWatchTarget(target);
+    } catch (error) {
+      await this.#send(chatId, `无法解析会话：${safeErrorText(error)}`);
+      return;
+    }
+    if (resolved.error) {
+      await this.#send(chatId, resolved.error);
+      return;
+    }
+    const existing = this.#state.watchEntries?.(key) ?? [];
+    const existingEntry = existing.find((entry) => entry.sessionId === resolved.sessionId);
+    if (!existingEntry && existing.length >= MAX_WATCHES_PER_KEY) {
+      await this.#send(chatId, `每个聊天最多关注 ${MAX_WATCHES_PER_KEY} 个会话。`);
+      return;
+    }
+    try {
+      const lastSeq = typeof existingEntry?.lastSeq === 'number'
+        ? existingEntry.lastSeq
+        : await this.#latestSessionSeq(resolved.sessionId);
+      await this.#state.setWatch(key, {
+        sessionId: resolved.sessionId,
+        title: resolved.title,
+        chatId,
+        lastSeq,
+      });
+      await this.#send(chatId, `已关注会话「${String(resolved.title).replace(/\s+/gu, ' ')}」，任务完成会推送结果。`);
+      await this.#queueEventTask(() => this.#compensateSession(resolved.sessionId));
+    } catch (error) {
+      await this.#send(chatId, `关注失败：${safeErrorText(error)}`);
+    }
+  }
+
+  async #runUnwatch(key, chatId, target) {
+    if (typeof this.#state?.removeWatch !== 'function') return;
+    const entries = this.#state.watchEntries?.(key) ?? [];
+    const entry = typeof target === 'string' && /^\d{1,4}$/.test(target)
+      ? entries[Number(target) - 1]
+      : entries.find((candidate) => candidate.sessionId === target);
+    if (!entry) {
+      await this.#send(chatId, '关注列表里没有这个会话，回复 /watchlist 查看。');
+      return;
+    }
+    try {
+      await this.#state.removeWatch(key, entry.sessionId);
+      this.#failedWatchSeqs.delete(`${key}\0${entry.sessionId}`);
+      await this.#send(chatId, `已取消关注「${String(entry.title ?? '').replace(/\s+/gu, ' ')}」。`);
+    } catch (error) {
+      await this.#send(chatId, `取消失败：${safeErrorText(error)}`);
+    }
+  }
+
+  async #showWatchList(key, chatId) {
+    const entries = this.#state.watchEntries?.(key) ?? [];
+    this.#rememberMenu(key, { kind: 'watches', entries });
+    await this.#sendCard(chatId, watchListCard(entries), { key });
+  }
+
+  /** Queue live turn completions behind any reconnect compensation. */
+  #onHarnessEvent({ sessionId, event }) {
+    if (this.#signal?.aborted
+      || !sessionId
+      || !event
+      || typeof event !== 'object'
+      || event.type !== 'turn/end'
+      || !Number.isFinite(event.seq)) return;
+    void this.#queueEventTask(async () => {
+      const hasFailedDelivery = (this.#state.keysWatching?.(sessionId) ?? [])
+        .some((key) => this.#failedWatchSeqs.has(`${key}\0${sessionId}`));
+      if (hasFailedDelivery) await this.#compensateSession(sessionId);
+      await this.#deliverCompletion(sessionId, event);
+    });
+  }
+
+  async #deliverCompletion(sessionId, event) {
+    if (this.#signal?.aborted || typeof this.#state?.keysWatching !== 'function') return;
+    const reason = event?.data?.reason?.kind ?? event?.data?.reason ?? null;
+    for (const key of this.#state.keysWatching(sessionId)) {
+      if (this.#signal?.aborted) return;
+      const entry = this.#state.watchEntry?.(key, sessionId);
+      const deliveryKey = `${key}\0${sessionId}`;
+      let failedSeq = this.#failedWatchSeqs.get(deliveryKey);
+      if (typeof failedSeq === 'number'
+        && typeof entry?.lastSeq === 'number'
+        && entry.lastSeq >= failedSeq) {
+        this.#failedWatchSeqs.delete(deliveryKey);
+        failedSeq = undefined;
+      }
+      if (!entry?.chatId
+        || (typeof entry.lastSeq === 'number' && entry.lastSeq >= event.seq)
+        || (typeof failedSeq === 'number' && event.seq > failedSeq)) continue;
+      try {
+        await this.#sendCard(
+          entry.chatId,
+          completionCard(sessionId, entry.title, reason),
+          { key },
+        );
+        const current = this.#state.watchEntry?.(key, sessionId);
+        if (!current
+          || current.chatId !== entry.chatId
+          || (typeof current.lastSeq === 'number' && current.lastSeq >= event.seq)) continue;
+        await this.#state.setWatch(key, { ...current, lastSeq: event.seq });
+        if (failedSeq === event.seq) this.#failedWatchSeqs.delete(deliveryKey);
+      } catch (error) {
+        this.#failedWatchSeqs.set(
+          deliveryKey,
+          typeof failedSeq === 'number' ? Math.min(failedSeq, event.seq) : event.seq,
+        );
+        this.#logger.warn?.('[dsh-feishu] completion push failed:', error.message);
+      }
+    }
+  }
+
+  async #compensateSession(sessionId) {
+    if (this.#signal?.aborted || typeof this.#harness?.rpc !== 'function') return;
+    try {
+      const history = await this.#harness.rpc(
+        'session.history',
+        { sessionId, maxMessages: 20 },
+        30_000,
+        { signal: this.#signal },
+      );
+      const events = orderedHistoryEvents(history);
+      const latestSeq = events.at(-1)?.seq ?? -1;
+      const keys = typeof this.#state?.keysWatching === 'function'
+        ? this.#state.keysWatching(sessionId)
+        : [];
+
+      // Watches created by older versions have no baseline. Establish one
+      // without replaying completions that predate the watch.
+      for (const key of keys) {
+        const entry = this.#state.watchEntry?.(key, sessionId);
+        if (entry && typeof entry.lastSeq !== 'number') {
+          await this.#state.setWatch(key, { ...entry, lastSeq: latestSeq });
+        }
+      }
+
+      for (const event of events) {
+        if (event.type === 'turn/end') await this.#deliverCompletion(sessionId, event);
+      }
+    } catch (error) {
+      if (!this.#signal?.aborted) {
+        this.#logger.warn?.(`[dsh-feishu] watch compensation failed for ${sessionId}:`, error.message);
+      }
+    }
+  }
+
+  /** Replay recent turn completions missed while the mux was disconnected. */
+  async #compensateMissedEvents() {
+    const sessionIds = typeof this.#state?.watchedSessionIds === 'function'
+      ? this.#state.watchedSessionIds()
+      : [];
+    for (const sessionId of sessionIds) {
+      if (this.#signal?.aborted) return;
+      await this.#compensateSession(sessionId);
+    }
   }
 
   #interactionAskOptions(event, key) {

@@ -4,10 +4,14 @@
  * `im.message.create` API expects as `content` for `msg_type: interactive`
  * (card schema 2.0; callback buttons live inside a column_set/column layout).
  *
- * Buttons carry a small `{ action }` callback behavior that
- * `card.action.trigger` events echo back (when the app subscribes that
- * callback); every button also carries a numeric label so the number-reply
- * fallback stays usable without button callbacks.
+ * The session list lays each row out as a `column_set` (fixed-width ⭐
+ * watch-toggle column + weighted session-button column), which is how V2
+ * expresses a row of buttons.
+ *
+ * Buttons carry a small `{ action }` value object that `card.action.trigger`
+ * events echo back (when the app subscribes that event); every numbered
+ * button also has a numeric label so the number-reply fallback stays usable
+ * without button callbacks.
  */
 
 export const MENU_PAGE_SIZE = 10;
@@ -39,6 +43,17 @@ function button(content, actionValue) {
   };
 }
 
+/** The raw button element (without the full-width column_set wrapper). */
+function buttonElement(content, actionValue) {
+  return {
+    tag: 'button',
+    text: plainText(content),
+    type: 'default',
+    width: 'fill',
+    behaviors: [{ type: 'callback', value: { action: actionValue } }],
+  };
+}
+
 function safeTitle(value) {
   const title = String(value ?? '').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').replace(/\s+/gu, ' ').trim();
   return title || '暂无标题';
@@ -65,6 +80,7 @@ export function menuCard() {
     // have card.action.trigger yet, so rendering it as a callback button would
     // send the user straight back to Feishu's broken callback setup popup.
     { tag: 'div', text: markdown('**6 · 修复卡片按钮**（请直接回复数字 **6**）') },
+    button('7 · 关注列表', 'watchlist'),
   ]);
 }
 
@@ -101,23 +117,43 @@ export function cardActionProbeCard(nonce) {
 }
 
 /**
- * One page of the workspace's sessions. Each row is a bind button; the
- * number label equals the reply-number for the same action (fallback).
+ * One page of the workspace's sessions. Each row is a `column_set` pair:
+ * the fixed-width ⭐ watch toggle (`⭐关注` / `⭐取关` for already-watched
+ * sessions) followed by the session button that carries the page-local
+ * number label (reply-number fallback = bind). Archived sessions are marked
+ * in the label. `watchedSessionIds` is a Set-like of ids this conversation
+ * already watches.
  */
-export function sessionListCard(workspace, sessions, page, total) {
+export function sessionListCard(workspace, sessions, page, total, watchedSessionIds = new Set()) {
   const start = page * MENU_PAGE_SIZE;
   const slice = sessions.slice(start, start + MENU_PAGE_SIZE);
   const pageCount = Math.max(1, Math.ceil(total / MENU_PAGE_SIZE));
+  const watched = (id) => typeof watchedSessionIds?.has === 'function' && watchedSessionIds.has(id);
+  /** One row: fixed 90px watch toggle + the session button filling the rest. */
+  const row = (watchButton, sessionButton) => ({
+    tag: 'column_set',
+    flex_mode: 'none',
+    horizontal_spacing: 'default',
+    columns: [
+      { tag: 'column', width: '90px', vertical_align: 'center', elements: [watchButton] },
+      { tag: 'column', width: 'weighted', weight: 1, vertical_align: 'center', elements: [sessionButton] },
+    ],
+  });
   const elements = [
     { tag: 'div', text: markdown(`**工作区**：\`${workspace}\`\n共 **${total}** 个会话${total > MENU_PAGE_SIZE ? `（第 ${page + 1}/${pageCount} 页）` : ''}`) },
-    ...slice.map((session, offset) => button(
-      `${offset + 1}. ${safeTitle(session.title)}`,
-      `use:${session.sessionId}`,
-    )),
+    ...slice.map((session, offset) => {
+      // Page-local numbering: number replies resolve against this page.
+      const label = `${offset + 1}. ${safeTitle(session.title)}${session.archived === true ? '（已归档）' : ''}`;
+      const watching = watched(session.sessionId);
+      return row(
+        buttonElement(watching ? '⭐取关' : '⭐关注', watching ? `unwatch:${session.sessionId}` : `watch:${session.sessionId}`),
+        buttonElement(label, `use:${session.sessionId}`),
+      );
+    }),
   ];
   if (page > 0) elements.push(button('◀ 上一页', `sessions:${page - 1}`));
   if (page + 1 < pageCount) elements.push(button('下一页 ▶', `sessions:${page + 1}`));
-  elements.push({ tag: 'div', text: markdown('回复数字（1~N）同样可以绑定本页会话。') });
+  elements.push({ tag: 'div', text: markdown('回复数字（1~N）绑定本页会话。') });
   return cardWith('📂 会话列表', elements);
 }
 
@@ -146,10 +182,49 @@ export function menuHelpText() {
     '4 · /status  连接状态',
     '5 · /help  本帮助',
     '6 · /repair  修复卡片按钮（请回复数字 6）',
+    '7 · /watchlist  关注列表',
     '',
     '直接发送文字/图片即继续当前会话。',
     '/session ID 或序号  绑定已有会话',
+    '/watch ID 或序号  关注会话（完成后推送）',
     '/compact  压缩上下文',
     '/workspace 绝对路径  切换工作区',
   ].join('\n');
+}
+
+/** The watch list for one conversation (unwatch buttons + reply fallback). */
+export function watchListCard(entries) {
+  const elements = entries.length === 0
+    ? [{ tag: 'div', text: markdown('当前没有关注的会话。\n`/watch <ID|序号>` 关注后，任务完成会自动推送。') }]
+    : [
+        { tag: 'div', text: markdown('任务完成会自动推送，回复数字或点按钮取消关注：') },
+        ...entries.map((entry, index) => button(
+          `${index + 1}. ${safeTitle(entry.title)}`,
+          `unwatch:${entry.sessionId}`,
+        )),
+      ];
+  return cardWith('👁 关注列表', elements);
+}
+
+/**
+ * The completion push card. `title` is the session title, `reason` the
+ * turn-end kind (completed / stopped / aborted).
+ */
+export function completionCard(sessionId, title, reason) {
+  const reasonText = reason === 'completed'
+    ? '已完成'
+    : reason === 'stopped'
+      ? '已停止'
+      : reason === 'aborted'
+        ? '已中止'
+        : reason === 'cancelled'
+          ? '已取消'
+          : '已结束';
+  return cardWith('✅ 任务完成', [
+    { tag: 'div', text: markdown(`**${safeTitle(title)}**\n\`${sessionId}\``) },
+    { tag: 'div', text: markdown(`**状态**：${reasonText}`) },
+    button('打开会话列表', 'sessions'),
+    button('工作区', 'workspaces'),
+    { tag: 'div', text: markdown('绑定该会话后可继续追问，输入文字即可。') },
+  ]);
 }
