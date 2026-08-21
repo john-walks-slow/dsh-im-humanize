@@ -11,6 +11,7 @@ export const FEISHU_RPC_CHANNEL = "/feishu";
 export const FEISHU_ENDPOINTS = Object.freeze({
   status: "connection.status",
   beginProvisioning: "provision.begin",
+  beginCallbackRepair: "bot.callback-repair.begin",
   pollProvisioning: "provision.poll",
   cancelProvisioning: "provision.cancel",
   bindCredentials: "bot.bind-credentials",
@@ -21,6 +22,11 @@ export const FEISHU_ENDPOINTS = Object.freeze({
   // Kept for rolling upgrades. The multi-bot UI never calls these endpoints.
   testConnection: "connection.test",
   disconnect: "connection.disconnect",
+});
+
+export const FEISHU_REGISTRATION_OPERATIONS = Object.freeze({
+  PROVISION: "provision",
+  CALLBACK_REPAIR: "callback_repair",
 });
 
 const CONNECTION_STATES = new Set([
@@ -67,6 +73,12 @@ function clamp(value, min, max, fallback) {
     : fallback;
 }
 
+function normalizeRegistrationOperation(value) {
+  return value === FEISHU_REGISTRATION_OPERATIONS.CALLBACK_REPAIR
+    ? FEISHU_REGISTRATION_OPERATIONS.CALLBACK_REPAIR
+    : FEISHU_REGISTRATION_OPERATIONS.PROVISION;
+}
+
 export function unwrapRpcResult(result) {
   if (!isRecord(result) || typeof result.ok !== "boolean") {
     throw new Error("飞书服务返回了无法识别的响应");
@@ -88,16 +100,25 @@ export function normalizeProvisioning(value, now = Date.now()) {
     ?? optionalString(source.provisioningId);
   const verificationUrl = optionalString(source.verificationUrl);
   const qrCodeDataUrl = optionalString(source.qrCodeDataUrl);
-  if (!attemptId || (!verificationUrl && !qrCodeDataUrl)) {
+  const submitted = source.submitted === true;
+  if (!attemptId || (!verificationUrl && !qrCodeDataUrl && !submitted)) {
     throw new Error("飞书服务返回的二维码信息不完整");
   }
 
   const explicitExpiry = optionalTimestamp(source.expiresAt);
   const expireIn = clamp(source.expireIn, 1, 60 * 60, 5 * 60);
+  const operation = normalizeRegistrationOperation(source.operation);
+  const botId = optionalString(source.botId);
+  if (operation === FEISHU_REGISTRATION_OPERATIONS.CALLBACK_REPAIR && !botId) {
+    throw new Error("飞书服务返回的修复信息缺少 botId");
+  }
   return {
     attemptId,
+    operation,
+    botId,
     verificationUrl,
     qrCodeDataUrl,
+    submitted,
     expiresAt: explicitExpiry ?? now + expireIn * 1000,
     pollIntervalMs: clamp(source.pollIntervalMs, 800, 10_000, 1_800),
   };
@@ -296,6 +317,7 @@ export function normalizePollResult(value) {
 
   const normalized = {
     status,
+    operation: normalizeRegistrationOperation(value.operation),
     botId: optionalString(value.botId),
     message: optionalString(value.error?.message) ?? optionalString(value.message),
     connection: undefined,

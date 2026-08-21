@@ -183,3 +183,34 @@ test('periodic snapshots cannot restore locally cancelled Weixin or Feishu provi
     'fs_attempt_stale',
   );
 });
+
+test('Feishu restores a submitted callback repair as non-cancellable connecting state', () => {
+  const current = {
+    phase: 'ready',
+    revision: 3,
+    bots: [],
+    totals: { configured: 1, connected: 1 },
+    provisioning: null,
+    pageError: null,
+    statusError: null,
+  };
+  const restored = mergeFeishuSnapshotState(current, {
+    revision: 4,
+    // The target runtime can remain connected while the callback proof is
+    // pending, so Host aggregate state alone cannot identify this phase.
+    state: 'connected',
+    bots: [],
+    totals: { configured: 1, connected: 1 },
+    provisioning: {
+      attemptId: 'reg_committed',
+      operation: 'callback_repair',
+      botId: 'bot_target',
+      submitted: true,
+      expiresAt: 1,
+      pollIntervalMs: 800,
+    },
+  }, { restoreProvisioning: true, now: 2_000 });
+
+  assert.equal(restored.provisioning.phase, 'connecting');
+  assert.equal(restored.provisioning.expired, false);
+});

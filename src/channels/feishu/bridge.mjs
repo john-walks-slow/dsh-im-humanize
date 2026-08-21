@@ -1,3 +1,4 @@
+import QRCode from 'qrcode';
 import {
   conversationKey,
   extractInboundMessage,
@@ -41,12 +42,28 @@ const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无
 const RESOLVED_REPLY_TTL_MS = 30 * 60_000;
 
 const MENU_COMMAND = /^\/m(?:enu)?$/i;
+const REPAIR_COMMAND_PREFIX = /^\/repair(?:\s|$)/i;
+const REPAIR_COMMAND = /^\/repair(?:\s+(qr|status|cancel|verify))?\s*$/i;
 const SESSION_LIST_PREFIX = /^\/sessionlist(?:\s|$)/i;
 const WORKSPACE_LIST_COMMAND = /^\/workspacelist$/i;
 const NUMBER_REPLY = /^\d{1,2}$/;
 /** A displayed menu stays number-tappable for this long. */
 const MENU_TTL_MS = 10 * 60_000;
 const MAX_TRACKED_MENUS = 50;
+const REPAIR_LINK_WAIT_MS = 15_000;
+const REPAIR_POLL_INTERVAL_MS = 1_000;
+const REPAIR_ACTIVE_STATES = new Set([
+  'starting', 'qr_ready', 'polling', 'slow_down', 'domain_switched', 'saving',
+]);
+const REPAIR_TERMINAL_STATES = new Set([
+  'succeeded', 'expired', 'cancelled', 'error',
+]);
+const REPAIR_URL_HOSTS = new Set([
+  'accounts.feishu.cn',
+  'open.feishu.cn',
+  'accounts.larksuite.com',
+  'open.larksuite.com',
+]);
 
 const HELP_TEXT = [
   '北汇星河 AIOS 已连接 DeepSeek Harness。',
@@ -64,6 +81,7 @@ const HELP_TEXT = [
   '/stop  停止当前任务',
   '/steer 补充指令  纠偏当前任务',
   '/status  检查连接状态',
+  '/repair  修复卡片按钮回调',
   '/m（或 /menu）  打开交互卡片菜单',
   '/help  显示本帮助',
 ].join('\n');
@@ -91,6 +109,87 @@ function nonEmptyString(value) {
 function senderOpenId(event) {
   return nonEmptyString(event?.sender?.sender_id?.open_id)
     ?? nonEmptyString(event?.sender?.sender_id?.user_id);
+}
+
+function strictSenderOpenId(event) {
+  return nonEmptyString(event?.sender?.sender_id?.open_id);
+}
+
+function abortableDelay(milliseconds, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const timer = setTimeout(done, milliseconds);
+    timer.unref?.();
+    function done() {
+      signal?.removeEventListener('abort', aborted);
+      resolve();
+    }
+    function aborted() {
+      clearTimeout(timer);
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    }
+    signal?.addEventListener('abort', aborted, { once: true });
+  });
+}
+
+function repairSnapshot(value, { botId } = {}) {
+  const source = value && typeof value === 'object' ? value : {};
+  const registration = source.registration && typeof source.registration === 'object'
+    ? source.registration
+    : source;
+  const operation = nonEmptyString(registration.operation) ?? nonEmptyString(source.operation);
+  if (operation && operation !== 'callback_repair') {
+    throw new Error('The active Feishu operation is not a callback repair');
+  }
+  const selectedBotId = nonEmptyString(registration.botId) ?? nonEmptyString(source.botId);
+  if (botId && selectedBotId && selectedBotId !== botId) {
+    throw new Error('The Feishu repair belongs to another bot');
+  }
+  const state = nonEmptyString(registration.state);
+  const attempt = registration.attemptId ?? registration.attempt;
+  const attemptId = typeof attempt === 'string' || Number.isFinite(attempt)
+    ? String(attempt)
+    : null;
+  if (!state || !attemptId) throw new Error('Feishu returned an invalid repair status');
+  const verificationUrl = nonEmptyString(registration.verificationUrl)
+    ?? nonEmptyString(registration.qrCodeUrl);
+  const expiresAt = Number(registration.expiresAt);
+  const remainingSeconds = Number(registration.remainingSeconds);
+  const pollIntervalMs = Number(registration.pollIntervalMs)
+    || (Number(registration.pollIntervalSeconds) * 1000);
+  return {
+    state,
+    attemptId,
+    botId: selectedBotId,
+    verificationUrl,
+    expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
+    remainingSeconds: Number.isFinite(remainingSeconds) ? remainingSeconds : null,
+    pollIntervalMs: Number.isFinite(pollIntervalMs) && pollIntervalMs > 0
+      ? pollIntervalMs
+      : null,
+    error: registration.error && typeof registration.error === 'object'
+      ? { code: nonEmptyString(registration.error.code), message: nonEmptyString(registration.error.message) }
+      : null,
+  };
+}
+
+function safeRepairUrl(rawUrl, expectedAppId) {
+  const url = new URL(rawUrl);
+  if (url.protocol !== 'https:' || !REPAIR_URL_HOSTS.has(url.hostname)) {
+    throw new Error('Feishu returned an untrusted repair URL');
+  }
+  if (url.searchParams.get('tp') !== 'sdk'
+    || url.searchParams.get('clientID') !== expectedAppId
+    || url.searchParams.has('createOnly')) {
+    throw new Error('Feishu returned an invalid existing-app repair URL');
+  }
+  if (url.toString().includes('{{client_id}}') || url.toString().includes('%7B%7Bclient_id%7D%7D')) {
+    throw new Error('Feishu returned an unresolved client id placeholder');
+  }
+  return url.toString();
 }
 
 function canClaimInteractionReply(event, pending) {
@@ -129,6 +228,14 @@ export class FeishuHarnessBridge {
   #replyTimeoutMs;
   #logger;
   #signal;
+  #botId;
+  #appId;
+  #repair;
+  #repairOwnerOpenIds;
+  #repairAttempt = null;
+  #repairMonitorVersion = 0;
+  #repairPollIntervalMs;
+  #repairLinkWaitMs;
   /** Number-tappable menus: conversation key → menu state. */
   #menus = new Map();
   /** Interactive-card message id → route context for button callbacks. */
@@ -141,6 +248,12 @@ export class FeishuHarnessBridge {
     state,
     status,
     allowedSenderOpenIds = new Set(),
+    botId,
+    appId,
+    repair,
+    repairOwnerOpenIds,
+    repairPollIntervalMs = REPAIR_POLL_INTERVAL_MS,
+    repairLinkWaitMs = REPAIR_LINK_WAIT_MS,
     replyTimeoutMs = 600_000,
     logger = console,
     signal,
@@ -148,12 +261,35 @@ export class FeishuHarnessBridge {
     if (!client || !harness || !state || !status) {
       throw new TypeError('Feishu bridge dependencies are required');
     }
+    if (repair !== undefined && repair !== null) {
+      if (!repair || typeof repair.start !== 'function'
+        || typeof repair.status !== 'function'
+        || typeof repair.cancel !== 'function') {
+        throw new TypeError('Feishu repair capability requires start/status/cancel');
+      }
+      if (!nonEmptyString(botId) || !nonEmptyString(appId)) {
+        throw new TypeError('Feishu repair capability requires botId and appId');
+      }
+    }
+    if (!Number.isFinite(repairPollIntervalMs) || repairPollIntervalMs <= 0
+      || !Number.isFinite(repairLinkWaitMs) || repairLinkWaitMs <= 0) {
+      throw new TypeError('Feishu repair timing values must be positive numbers');
+    }
     this.#client = client;
     this.#channel = channel;
     this.#harness = harness;
     this.#state = state;
     this.#status = status;
     this.#allowedSenderOpenIds = allowedSenderOpenIds;
+    this.#botId = nonEmptyString(botId);
+    this.#appId = nonEmptyString(appId);
+    this.#repair = repair ?? null;
+    const repairOwners = repairOwnerOpenIds ?? allowedSenderOpenIds;
+    this.#repairOwnerOpenIds = new Set(
+      [...(repairOwners ?? [])].filter((value) => typeof value === 'string' && value && value !== '*'),
+    );
+    this.#repairPollIntervalMs = repairPollIntervalMs;
+    this.#repairLinkWaitMs = repairLinkWaitMs;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#logger = logger;
     this.#approvals = new HarnessApprovalQueue({ label: 'Feishu', logger });
@@ -436,6 +572,10 @@ export class FeishuHarnessBridge {
       return;
     }
 
+    if (commandText !== null && REPAIR_COMMAND_PREFIX.test(commandText)) {
+      await this.#handleRepairCommand(event, commandText);
+      return;
+    }
     if (commandText === '/help') {
       await this.#send(event.message.chat_id, HELP_TEXT);
       return;
@@ -467,7 +607,11 @@ export class FeishuHarnessBridge {
     if (NUMBER_REPLY.test(commandText)) {
       const menu = this.#takeMenu(key);
       if (menu) {
-        await this.#handleMenuPick(menu, Number(commandText), { chatId: event.message.chat_id, key });
+        await this.#handleMenuPick(menu, Number(commandText), {
+          chatId: event.message.chat_id,
+          key,
+          event,
+        });
         return;
       }
     }
@@ -507,6 +651,321 @@ export class FeishuHarnessBridge {
   }
 
   // ── Interactive cards: menus and session/workspace lists ────────────────
+
+  // Existing-app callback repair. This path deliberately uses ordinary text
+  // and number replies because callback buttons are the capability being fixed.
+  async #handleRepairCommand(event, commandText) {
+    if (event?.message?.chat_type !== 'p2p') {
+      await this.#send(event.message.chat_id, '为避免授权链接暴露，请私聊机器人发送 /repair。');
+      return;
+    }
+    const actorOpenId = strictSenderOpenId(event);
+    if (!actorOpenId || !this.#repairOwnerOpenIds.has(actorOpenId)) {
+      await this.#send(
+        event.message.chat_id,
+        this.#repairOwnerOpenIds.size === 0
+          ? '当前机器人没有可验证的接入者身份，不能从聊天发起修复；请先在插件页设置管理员。'
+          : '此操作只能由机器人接入者在私聊中发起，未进行任何修改。',
+      );
+      return;
+    }
+    if (!this.#repair) {
+      await this.#send(event.message.chat_id, '当前 Host 版本暂不支持聊天内修复，请先更新插件。');
+      return;
+    }
+
+    const parsed = REPAIR_COMMAND.exec(commandText);
+    if (!parsed) {
+      await this.#send(event.message.chat_id, '用法：/repair、/repair qr、/repair status、/repair cancel 或 /repair verify');
+      return;
+    }
+    const operation = parsed[1]?.toLowerCase() ?? 'start';
+    const chatId = event.message.chat_id;
+    if (operation === 'start') {
+      await this.#startRepair({ actorOpenId, chatId });
+      return;
+    }
+
+    const attempt = this.#repairAttempt;
+    if (!attempt) {
+      await this.#send(
+        chatId,
+        '当前 Runtime 没有可恢复的修复任务记录（机器人可能刚完成密钥更新并重启）。本命令不会启动新的授权；请查看机器人发送的验证结果，确认上一次任务已结束后再发送 /repair。',
+      );
+      return;
+    }
+    if (attempt.actorOpenId !== actorOpenId) {
+      await this.#send(chatId, '另一位管理员正在修复该机器人，本次不会显示其授权信息。');
+      return;
+    }
+    if (operation === 'cancel') {
+      let snapshot;
+      try {
+        const result = await this.#repair.cancel(this.#repairArgs(attempt));
+        snapshot = repairSnapshot(result, { botId: this.#botId });
+        attempt.snapshot = snapshot;
+      } catch {
+        await this.#send(chatId, '暂时无法取消修复任务，请稍后重试。');
+        return;
+      }
+      if (snapshot.state === 'cancelled') {
+        attempt.stopped = true;
+        this.#repairMonitorVersion += 1;
+      }
+      await this.#send(chatId, this.#repairStatusText(snapshot));
+      return;
+    }
+
+    let snapshot;
+    try {
+      snapshot = await this.#refreshRepairAttempt(attempt);
+    } catch {
+      await this.#send(chatId, '暂时无法查询修复状态，请稍后重试。');
+      return;
+    }
+    if (operation === 'qr') {
+      if (!REPAIR_ACTIVE_STATES.has(snapshot.state) || !attempt.verificationUrl) {
+        await this.#send(chatId, this.#repairStatusText(snapshot, { verificationFocused: true }));
+        return;
+      }
+      await this.#sendRepairQr(chatId, attempt.verificationUrl, snapshot);
+      return;
+    }
+    await this.#send(chatId, this.#repairStatusText(snapshot, {
+      verificationFocused: operation === 'verify',
+    }));
+  }
+
+  #repairArgs(attempt) {
+    return {
+      botId: this.#botId,
+      attemptId: attempt.attemptId,
+      actorOpenId: attempt.actorOpenId,
+      chatId: attempt.chatId,
+    };
+  }
+
+  async #startRepair({ actorOpenId, chatId }) {
+    const previous = this.#repairAttempt;
+    if (previous && REPAIR_ACTIVE_STATES.has(previous.snapshot.state)) {
+      if (previous.actorOpenId !== actorOpenId) {
+        await this.#send(chatId, '另一位管理员正在修复该机器人，本次不会显示其授权信息。');
+        return;
+      }
+      try {
+        const current = await this.#refreshRepairAttempt(previous);
+        if (REPAIR_ACTIVE_STATES.has(current.state) && previous.verificationUrl) {
+          await this.#sendRepairLink(chatId, previous.verificationUrl, current, { existing: true });
+          return;
+        }
+      } catch {
+        await this.#send(chatId, '暂时无法查询修复状态，请稍后重试。');
+        return;
+      }
+    }
+
+    let snapshot;
+    try {
+      snapshot = repairSnapshot(await this.#repair.start({
+        botId: this.#botId,
+        actorOpenId,
+        chatId,
+      }), { botId: this.#botId });
+      snapshot = await this.#waitForRepairLink(snapshot, { actorOpenId, chatId });
+    } catch {
+      await this.#send(chatId, '修复流程暂时失败，现有机器人连接不受影响；请稍后发送 /repair 重试。');
+      return;
+    }
+    const attempt = {
+      attemptId: snapshot.attemptId,
+      actorOpenId,
+      chatId,
+      snapshot,
+      verificationUrl: null,
+      stopped: false,
+      announcedSaving: false,
+      announcedTerminal: false,
+    };
+    this.#repairAttempt = attempt;
+
+    if (snapshot.verificationUrl) {
+      try {
+        attempt.verificationUrl = safeRepairUrl(snapshot.verificationUrl, this.#appId);
+      } catch {
+        attempt.stopped = true;
+        await this.#repair.cancel(this.#repairArgs(attempt)).catch(() => undefined);
+        await this.#send(chatId, '飞书返回了无法安全验证的授权链接，已中止本次修复。');
+        return;
+      }
+    }
+    if (REPAIR_TERMINAL_STATES.has(snapshot.state)) {
+      attempt.announcedTerminal = true;
+      if (snapshot.state !== 'succeeded') {
+        await this.#send(chatId, this.#repairStatusText(snapshot));
+      }
+      return;
+    }
+    if (!attempt.verificationUrl) {
+      attempt.stopped = true;
+      await this.#send(chatId, '飞书未返回授权链接，已中止本次修复。');
+      return;
+    }
+    await this.#sendRepairLink(chatId, attempt.verificationUrl, snapshot);
+    this.#monitorRepair(attempt);
+  }
+
+  async #waitForRepairLink(initial, context) {
+    let current = initial;
+    const deadline = Date.now() + this.#repairLinkWaitMs;
+    while (!current.verificationUrl && REPAIR_ACTIVE_STATES.has(current.state)) {
+      if (Date.now() >= deadline) throw new Error('Feishu repair link timed out');
+      await abortableDelay(Math.min(100, this.#repairPollIntervalMs), this.#signal);
+      current = repairSnapshot(await this.#repair.status({
+        botId: this.#botId,
+        attemptId: current.attemptId,
+        actorOpenId: context.actorOpenId,
+        chatId: context.chatId,
+      }), { botId: this.#botId });
+    }
+    return current;
+  }
+
+  async #refreshRepairAttempt(attempt) {
+    const snapshot = repairSnapshot(
+      await this.#repair.status(this.#repairArgs(attempt)),
+      { botId: this.#botId },
+    );
+    if (snapshot.attemptId !== attempt.attemptId) {
+      throw new Error('Feishu repair attempt changed unexpectedly');
+    }
+    attempt.snapshot = snapshot;
+    if (snapshot.verificationUrl) {
+      attempt.verificationUrl = safeRepairUrl(snapshot.verificationUrl, this.#appId);
+    }
+    return snapshot;
+  }
+
+  #monitorRepair(attempt) {
+    const version = ++this.#repairMonitorVersion;
+    void (async () => {
+      while (!attempt.stopped && this.#repairAttempt === attempt
+        && this.#repairMonitorVersion === version
+        && !this.#signal?.aborted) {
+        const delayMs = Math.max(
+          250,
+          Math.min(10_000, attempt.snapshot.pollIntervalMs ?? this.#repairPollIntervalMs),
+        );
+        await abortableDelay(delayMs, this.#signal);
+        if (attempt.stopped || this.#repairAttempt !== attempt || this.#repairMonitorVersion !== version) return;
+        const snapshot = await this.#refreshRepairAttempt(attempt);
+        if (snapshot.state === 'saving' && !attempt.announcedSaving) {
+          attempt.announcedSaving = true;
+          await this.#send(
+            attempt.chatId,
+            '授权已确认，正在发送并等待测试按钮回调；收到真实回调后才会完成。',
+          );
+        }
+        if (REPAIR_TERMINAL_STATES.has(snapshot.state)) {
+          attempt.stopped = true;
+          // Runtime sends the verified-success notice before resolving the
+          // controller probe. Avoid duplicating it here; failure terminals
+          // still need an explicit chat-side explanation.
+          if (snapshot.state !== 'succeeded' && !attempt.announcedTerminal) {
+            attempt.announcedTerminal = true;
+            await this.#send(attempt.chatId, this.#repairStatusText(snapshot));
+          }
+          return;
+        }
+      }
+    })().catch(async () => {
+      if (this.#signal?.aborted || attempt.stopped || this.#repairAttempt !== attempt) return;
+      attempt.stopped = true;
+      this.#logger.warn?.('[dsh-feishu] callback repair status monitoring failed');
+      await this.#send(
+        attempt.chatId,
+        '修复状态查询中断，现有机器人连接不受影响；发送 /repair status 重试查询。',
+      ).catch(() => undefined);
+    });
+  }
+
+  async #sendRepairLink(chatId, url, snapshot, { existing = false } = {}) {
+    const remaining = snapshot.remainingSeconds
+      ?? (snapshot.expiresAt ? Math.max(0, Math.ceil((snapshot.expiresAt - Date.now()) / 1000)) : null);
+    const expiry = remaining === null
+      ? '链接为短期有效'
+      : `链接约 ${Math.max(1, Math.ceil(remaining / 60))} 分钟后过期`;
+    await this.#send(chatId, [
+      existing ? '已有一个修复任务在等待授权。' : '🔧 准备修复卡片按钮。',
+      '本次只会增量添加 card.action.trigger。请核对确认页只显示这一项；若出现其他权限或事件，请取消。',
+      '',
+      '当前设备直接打开：',
+      url,
+      '',
+      `若要用另一台设备扫码，发送 /repair qr。${expiry}。`,
+    ].join('\n'));
+  }
+
+  async #sendRepairQr(chatId, url, snapshot) {
+    try {
+      const image = await QRCode.toBuffer(url, {
+        errorCorrectionLevel: 'M', margin: 1, width: 480, type: 'png',
+      });
+      const uploaded = await this.#client.im.v1.image.create({
+        data: { image_type: 'message', image },
+      });
+      const imageKey = nonEmptyString(uploaded?.image_key) ?? nonEmptyString(uploaded?.data?.image_key);
+      if (!imageKey) throw new Error('Feishu QR upload returned no image key');
+      const remaining = snapshot.remainingSeconds
+        ?? (snapshot.expiresAt ? Math.max(0, Math.ceil((snapshot.expiresAt - Date.now()) / 1000)) : null);
+      await this.#send(
+        chatId,
+        `请用另一台设备扫码完成授权${remaining === null ? '' : `（剩余约 ${Math.max(1, Math.ceil(remaining / 60))} 分钟）`}。`,
+      );
+      const response = await this.#client.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: chatId,
+          msg_type: 'image',
+          content: JSON.stringify({ image_key: imageKey }),
+        },
+      });
+      if (response?.code && response.code !== 0) throw new Error('Feishu QR message send failed');
+    } catch {
+      await this.#send(chatId, `二维码暂时无法发送，请直接打开授权链接：\n${url}`);
+    }
+  }
+
+  #repairStatusText(snapshot, { verificationFocused = false } = {}) {
+    if (snapshot.state === 'succeeded') {
+      return '✅ 修复完成：已实测收到 card.action.trigger，菜单按钮现在可用。';
+    }
+    if (snapshot.state === 'expired' || snapshot.error?.code === 'expired_token') {
+      return '授权链接已过期；平台未返回成功结果，无法确认已修复。发送 /repair 生成新链接。';
+    }
+    if (snapshot.state === 'cancelled' || snapshot.error?.code === 'abort') {
+      return '已取消本次修复授权，未确认完成修复。';
+    }
+    if (snapshot.error?.code === 'access_denied') {
+      return '你已取消或拒绝授权，没有确认修复；发送 /repair 可重试。';
+    }
+    if (snapshot.error?.code === 'card_action_probe_timeout'
+      || snapshot.error?.code === 'card-action-probe-timeout') {
+      return '授权已提交，但未收到测试按钮回调。可能尚未点击或配置仍在传播；稍后发送 /repair verify 查询，不要盲目重复授权。';
+    }
+    if (snapshot.state === 'error') {
+      return '修复流程暂时失败，现有机器人连接不受影响；发送 /repair 可重试。';
+    }
+    if (snapshot.state === 'saving') {
+      return '授权已确认，正在等待专用测试按钮的真实回调；回调到达前不会宣告成功。';
+    }
+    if (verificationFocused) {
+      return '授权尚未完成，暂时不能验证卡片按钮。请先打开授权链接并确认。';
+    }
+    const remaining = snapshot.remainingSeconds === null
+      ? ''
+      : `，剩余约 ${Math.max(1, Math.ceil(snapshot.remainingSeconds / 60))} 分钟`;
+    return `修复任务正在等待授权${remaining}。发送 /repair qr 可获取二维码，/repair cancel 可取消。`;
+  }
 
   /**
    * Card button callback (card.action.trigger). The operator must be an
@@ -592,11 +1051,15 @@ export class FeishuHarnessBridge {
     return menu;
   }
 
-  async #handleMenuPick(menu, number, { chatId, key }) {
+  async #handleMenuPick(menu, number, { chatId, key, event }) {
     if (menu.kind === 'menu') {
-      const action = ['sessions', 'workspaces', 'new', 'status', 'help'][number - 1];
+      const action = ['sessions', 'workspaces', 'new', 'status', 'help', 'repair'][number - 1];
       if (!action) {
         await this.#send(chatId, '菜单没有这个编号，回复 /m 重新打开。');
+        return;
+      }
+      if (action === 'repair') {
+        await this.#handleRepairCommand(event, '/repair');
         return;
       }
       await this.#handleCardAction(action, { chatId, key });

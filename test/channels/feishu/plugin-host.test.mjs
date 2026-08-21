@@ -195,6 +195,244 @@ test('RPC dispatch matches every endpoint in client/api.js', async () => {
   assert.doesNotMatch(JSON.stringify(attemptedSecret), /must-not-cross-browser-boundary/);
 });
 
+test('callback repair begins for exactly one bot and returns only a safe official QR projection', async () => {
+  const calls = [];
+  const repair = status({
+    schemaVersion: 2,
+    phase: 'registering',
+    configured: true,
+    registration: {
+      state: 'qr_ready',
+      attempt: 'reg_repair',
+      operation: 'callback_repair',
+      botId: 'bot_target',
+      qrCodeUrl: 'https://open.feishu.cn/page/launcher?tp=sdk&clientID=cli_target&addons=encoded&user_code=opaque',
+      expiresAt: Date.now() + 60_000,
+    },
+    bots: [{
+      botId: 'bot_target',
+      connected: true,
+      configured: true,
+      bot: { name: '目标机器人', appIdMasked: 'cli_tar••••rget' },
+      connection: { ready: true, feishuLongConnectionState: 'connected', harnessReachable: true },
+    }],
+  });
+  const controller = {
+    status: async () => repair,
+    registrationStatus: async () => repair,
+    startRegistration: async () => status(),
+    startCallbackRepair: async (botId) => { calls.push(botId); return repair; },
+    cancelRegistration: async () => repair,
+    disconnect: async () => status(),
+  };
+  const fx = await rpcFixture(controller);
+  const result = await fx.registration.handler(
+    FEISHU_ENDPOINTS.beginCallbackRepair,
+    { botId: 'bot_target' },
+    signal(),
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, ['bot_target']);
+  assert.equal(result.value.operation, 'callback_repair');
+  assert.equal(result.value.botId, 'bot_target');
+  assert.equal(
+    result.value.verificationUrl,
+    'https://open.feishu.cn/page/launcher?tp=sdk&clientID=cli_target&addons=encoded&user_code=opaque',
+  );
+  assert.match(result.value.qrCodeDataUrl, /^data:image\/png;base64,/);
+  assert.doesNotMatch(JSON.stringify(result), /client_secret|appSecret/);
+
+  const restored = await fx.registration.handler(FEISHU_ENDPOINTS.status, {}, signal());
+  assert.equal(restored.value.provisioning.operation, 'callback_repair');
+  assert.equal(restored.value.provisioning.botId, 'bot_target');
+
+  for (const payload of [
+    {},
+    { botId: '../target' },
+    { botId: 'bot_target', appSecret: 'must-not-leak' },
+  ]) {
+    const invalid = await fx.registration.handler(
+      FEISHU_ENDPOINTS.beginCallbackRepair,
+      payload,
+      signal(),
+    );
+    assert.equal(invalid.ok, false);
+    assert.equal(invalid.error.code, 'bad-request');
+    assert.doesNotMatch(JSON.stringify(invalid), /must-not-leak|\.\.\/target/);
+  }
+  await fx.dispose();
+});
+
+test('status preserves a submitted callback repair attempt after its QR URL is discarded', async () => {
+  const secret = 'must-never-cross-the-rpc-boundary';
+  const saving = status({
+    schemaVersion: 2,
+    phase: 'connecting',
+    configured: true,
+    registration: {
+      state: 'saving',
+      attempt: 'reg_committed',
+      operation: 'callback_repair',
+      botId: 'bot_target',
+    },
+    bots: [{
+      botId: 'bot_target',
+      configured: true,
+      bot: { name: '目标机器人', domain: 'feishu', appSecret: secret },
+    }],
+  });
+  const controller = {
+    status: async () => saving,
+    startRegistration: async () => status(),
+    cancelRegistration: async () => saving,
+    disconnect: async () => status(),
+  };
+  const fx = await rpcFixture(controller);
+  const restored = await fx.registration.handler(FEISHU_ENDPOINTS.status, {}, signal());
+
+  assert.equal(restored.ok, true);
+  assert.equal(restored.value.state, 'connecting');
+  assert.deepEqual(
+    {
+      attemptId: restored.value.provisioning.attemptId,
+      operation: restored.value.provisioning.operation,
+      botId: restored.value.provisioning.botId,
+      submitted: restored.value.provisioning.submitted,
+    },
+    {
+      attemptId: 'reg_committed',
+      operation: 'callback_repair',
+      botId: 'bot_target',
+      submitted: true,
+    },
+  );
+  assert.equal(restored.value.provisioning.verificationUrl, undefined);
+  assert.equal(restored.value.provisioning.qrCodeDataUrl, undefined);
+  assert.doesNotMatch(JSON.stringify(restored), new RegExp(secret));
+  await fx.dispose();
+});
+
+test('callback repair failures cross RPC only as fixed safe public errors', async () => {
+  const expected = new Map([
+    ['repair_app_mismatch', 'The authorized Feishu app does not match the selected bot.'],
+    ['repair_domain_mismatch', 'The authorized Feishu tenant does not match the selected bot.'],
+    ['repair_owner_mismatch', 'The authorizing Feishu account is not an owner of the selected bot.'],
+    ['repair_target_changed', 'The selected bot changed while repair was in progress. Start the repair again.'],
+    ['credential_update_failed', 'Unable to store the repaired Feishu credentials.'],
+    ['repair_connection_failed', 'The callback update was accepted, but the selected bot could not reconnect.'],
+    ['card_action_probe_send_failed', 'The callback update was accepted, but the verification card could not be sent.'],
+    ['card_action_probe_unavailable', 'The selected bot is not connected, so its card button cannot be verified.'],
+    ['card_action_probe_timeout', 'Feishu accepted the update, but the card button was not verified in time. Start the repair again and click the test button within two minutes.'],
+  ]);
+  for (const [code, message] of expected) {
+    const failed = status({
+      phase: 'error',
+      registration: {
+        state: 'error',
+        attempt: 'reg_failed',
+        operation: 'callback_repair',
+        botId: 'bot_target',
+        error: { code, message: 'secret=must-not-cross' },
+      },
+    });
+    const controller = {
+      status: async () => failed,
+      startRegistration: async () => status(),
+      cancelRegistration: async () => failed,
+      disconnect: async () => status(),
+    };
+    const fx = await rpcFixture(controller);
+    const result = await fx.registration.handler(FEISHU_ENDPOINTS.status, {}, signal());
+    assert.deepEqual(result.value.error, { code, message });
+    assert.doesNotMatch(JSON.stringify(result), /must-not-cross/);
+    await fx.dispose();
+  }
+});
+
+test('callback repair refuses placeholder, non-SDK, and non-official verification links', async () => {
+  for (const qrCodeUrl of [
+    'https://open.feishu.cn/page/launcher?tp=sdk&clientID=%7B%7Bclient_id%7D%7D',
+    'https://open.feishu.cn/page/launcher?tp=card&clientID=cli_target',
+    'https://evil.example/device?tp=sdk&clientID=cli_target',
+    'http://open.feishu.cn/page/launcher?tp=sdk&clientID=cli_target',
+    'https://accounts.feishu.cn/device?tp=sdk&clientID=cli_target',
+    'https://open.feishu.cn/page/launcher?tp=sdk&clientID=cli_target&addons=x&createOnly=true',
+  ]) {
+    const repair = status({
+      phase: 'registering',
+      configured: true,
+      registration: {
+        state: 'qr_ready',
+        attempt: 'reg_unsafe',
+        operation: 'callback_repair',
+        botId: 'bot_target',
+        qrCodeUrl,
+        expiresAt: Date.now() + 60_000,
+      },
+    });
+    const controller = {
+      status: async () => repair,
+      registrationStatus: async () => repair,
+      startRegistration: async () => status(),
+      startCallbackRepair: async () => repair,
+      cancelRegistration: async () => repair,
+      disconnect: async () => status(),
+    };
+    const fx = await rpcFixture(controller);
+    const result = await fx.registration.handler(
+      FEISHU_ENDPOINTS.beginCallbackRepair,
+      { botId: 'bot_target' },
+      signal(),
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'internal');
+    assert.equal(JSON.stringify(result).includes(qrCodeUrl), false);
+    await fx.dispose();
+  }
+});
+
+test('callback repair cannot be cancelled after configuration enters saving', async () => {
+  let cancels = 0;
+  const saving = status({
+    phase: 'connecting',
+    configured: true,
+    registration: {
+      state: 'saving',
+      attempt: 'reg_committed',
+      operation: 'callback_repair',
+      botId: 'bot_target',
+    },
+  });
+  const controller = {
+    status: async () => saving,
+    registrationStatus: async () => saving,
+    startRegistration: async () => status(),
+    cancelRegistration: async () => { cancels += 1; return saving; },
+    disconnect: async () => status(),
+  };
+  const fx = await rpcFixture(controller);
+  const result = await fx.registration.handler(
+    FEISHU_ENDPOINTS.cancelProvisioning,
+    { attemptId: 'reg_committed' },
+    signal(),
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.value.status, 'connecting');
+  assert.equal(result.value.operation, 'callback_repair');
+  assert.equal(result.value.botId, 'bot_target');
+  assert.equal(cancels, 1);
+
+  const polled = await fx.registration.handler(
+    FEISHU_ENDPOINTS.pollProvisioning,
+    { attemptId: 'reg_committed' },
+    signal(),
+  );
+  assert.equal(polled.ok, true);
+  assert.equal(polled.value.status, 'connecting');
+  await fx.dispose();
+});
+
 test('connection.test does not restart an already healthy long connection', async () => {
   let reconnects = 0;
   const healthy = status({
@@ -739,6 +977,7 @@ test('production assembly needs only ctx credentials and the active DSH webServe
   });
   assert.match(constructed.statePath, /integrations\/dsh-feishu\/state\.json$/);
   assert.equal(constructed.runtime.appSecret, 'host-only');
+  const repair = { start() {}, status() {}, cancel() {} };
   await constructed.controller.createRuntime({
     botId: 'bot_alpha',
     config: {
@@ -749,8 +988,11 @@ test('production assembly needs only ctx credentials and the active DSH webServe
       ownerOpenIds: ['ou_alpha'],
     },
     appSecret: 'alpha-secret',
+    repair,
   });
   const alphaState = constructed.runtime.state;
+  assert.equal(constructed.runtime.botId, 'bot_alpha');
+  assert.equal(constructed.runtime.repair, repair);
   await constructed.controller.createRuntime({
     botId: 'bot_beta',
     config: {

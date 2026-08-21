@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { connectionTestMessage } from '../shared/connection-test.mjs';
 import { RegistrationManager } from './registration-manager.mjs';
+import {
+  CALLBACK_REPAIR_OPERATION,
+  CallbackRepairManager,
+} from './repair-manager.mjs';
 import { REQUIRED_TENANT_SCOPES } from './plugin-controller.mjs';
 
 const ACTIVE_REGISTRATION_STATES = new Set([
@@ -8,6 +12,8 @@ const ACTIVE_REGISTRATION_STATES = new Set([
 ]);
 const MUTABLE_REGISTRATION_STATES = new Set([...ACTIVE_REGISTRATION_STATES, 'saving']);
 const ALL_VISIBLE_SENDERS = '*';
+const DEFAULT_CALLBACK_PROBE_TIMEOUT_MS = 120_000;
+const MAX_CALLBACK_PROBE_TIMEOUT_MS = 600_000;
 
 function idleConnection() {
   return {
@@ -60,6 +66,26 @@ function secretRefFor(botId) {
   return `DSH_FEISHU_APP_SECRET_${botId.slice(4).toUpperCase()}`;
 }
 
+function configuredBotFingerprint(config) {
+  return JSON.stringify({
+    id: config.id,
+    appId: config.appId,
+    secretRef: config.secretRef,
+    ownerOpenIds: config.ownerOpenIds,
+    domain: config.domain,
+    botName: config.botName,
+    botOpenId: config.botOpenId,
+    activated: config.activated,
+    deletionPending: config.deletionPending === true,
+    connectedAt: config.connectedAt ?? null,
+    createdAt: config.createdAt ?? null,
+  });
+}
+
+function optionalNonEmptyString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
 /**
  * Multi-account Feishu orchestration. Each bot owns its credential reference,
  * runtime and session store. Config commits are serialized, while unrelated
@@ -77,11 +103,13 @@ export class MultiBotDshFeishuController {
   #runtimes = new Map();
   #botErrors = new Map();
   #registrations = new Map();
+  #activeRepairs = new Map();
   #botOwnership = new Map();
   #latestRegistrationId = null;
   #configTransition = Promise.resolve();
   #botTransitions = new Map();
   #revision = 1;
+  #callbackProbeTimeoutMs;
   #closed = false;
 
   constructor({
@@ -93,6 +121,7 @@ export class MultiBotDshFeishuController {
     deleteState = async () => {},
     createBotId = makeBotId,
     createRegistrationId = makeRegistrationId,
+    callbackProbeTimeoutMs = DEFAULT_CALLBACK_PROBE_TIMEOUT_MS,
   }) {
     if (typeof registerApp !== 'function') throw new Error('registerApp is required');
     if (typeof verifyApp !== 'function') throw new Error('verifyApp is required');
@@ -102,6 +131,11 @@ export class MultiBotDshFeishuController {
     }
     if (typeof createRuntime !== 'function') throw new Error('createRuntime is required');
     if (typeof deleteState !== 'function') throw new Error('deleteState must be a function');
+    if (!Number.isFinite(callbackProbeTimeoutMs)
+      || callbackProbeTimeoutMs <= 0
+      || callbackProbeTimeoutMs > MAX_CALLBACK_PROBE_TIMEOUT_MS) {
+      throw new TypeError('callbackProbeTimeoutMs must be between 1 and 600000ms');
+    }
     this.#registerApp = registerApp;
     this.#verifyApp = verifyApp;
     this.#credentials = credentials;
@@ -110,6 +144,7 @@ export class MultiBotDshFeishuController {
     this.#deleteState = deleteState;
     this.#createBotId = createBotId;
     this.#createRegistrationId = createRegistrationId;
+    this.#callbackProbeTimeoutMs = callbackProbeTimeoutMs;
   }
 
   async initialize() {
@@ -194,6 +229,63 @@ export class MultiBotDshFeishuController {
     return this.registrationStatus(id);
   }
 
+  startCallbackRepair(botId, { actorOpenId, chatId } = {}) {
+    this.#assertOpen();
+    const target = this.#requireBot(botId);
+    if (target.deletionPending) throw new Error('Cannot repair a Feishu bot pending deletion');
+
+    const activeId = this.#activeRepairs.get(botId);
+    const active = activeId ? this.#registrations.get(activeId) : null;
+    if (active && MUTABLE_REGISTRATION_STATES.has(active.manager.status().state)) {
+      return this.registrationStatus(active.id);
+    }
+    this.#activeRepairs.delete(botId);
+
+    const id = this.#createRegistrationId();
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id) || this.#registrations.has(id)) {
+      throw new Error('Registration id generator returned an invalid or duplicate id');
+    }
+    const record = {
+      id,
+      operation: CALLBACK_REPAIR_OPERATION,
+      manager: null,
+      botId,
+      createdNew: false,
+      cancelled: false,
+      remoteCommitted: false,
+      processing: null,
+      publicError: null,
+      stage: 'authorizing',
+      target: structuredClone(target),
+      targetFingerprint: configuredBotFingerprint(target),
+      initiator: {
+        actorOpenId: optionalNonEmptyString(actorOpenId),
+        chatId: optionalNonEmptyString(chatId),
+      },
+    };
+    record.manager = new CallbackRepairManager({
+      registerApp: this.#registerApp,
+      appId: target.appId,
+      domain: target.domain,
+      onCredentials: (result) => {
+        record.remoteCommitted = true;
+        const processing = this.#acceptCallbackRepair(record, result);
+        const tracked = processing.finally(() => {
+          if (record.processing === tracked) record.processing = null;
+        });
+        record.processing = tracked;
+        return tracked;
+      },
+    });
+    this.#registrations.set(id, record);
+    this.#activeRepairs.set(botId, id);
+    this.#latestRegistrationId = id;
+    this.#trimRegistrations();
+    record.manager.start();
+    this.#touch();
+    return this.registrationStatus(id);
+  }
+
   hasRegistration(attemptId) {
     return this.#registrations.has(attemptId);
   }
@@ -207,7 +299,14 @@ export class MultiBotDshFeishuController {
   async cancelRegistration(attemptId = this.#latestRegistrationId) {
     const record = this.#registrations.get(attemptId);
     if (!record) return this.status();
-    if (!MUTABLE_REGISTRATION_STATES.has(record.manager.status().state)) {
+    const state = record.manager.status().state;
+    // Once registerApp has returned, the platform-side update has committed.
+    // A repair must finish converging the returned credential and callback
+    // probe; cancelling here cannot roll that remote mutation back.
+    if (record.operation === CALLBACK_REPAIR_OPERATION && state === 'saving') {
+      return this.registrationStatus(attemptId);
+    }
+    if (!MUTABLE_REGISTRATION_STATES.has(state)) {
       return this.registrationStatus(attemptId);
     }
     record.cancelled = true;
@@ -398,12 +497,28 @@ export class MultiBotDshFeishuController {
   async close() {
     if (this.#closed) return;
     this.#closed = true;
+    const repairProcessing = [];
     for (const record of this.#registrations.values()) {
-      if (MUTABLE_REGISTRATION_STATES.has(record.manager.status().state)) {
+      const state = record.manager.status().state;
+      if (record.operation === CALLBACK_REPAIR_OPERATION && state === 'saving') {
+        // Stop projecting an in-flight repair, but do not request its local
+        // credential rollback after the remote update has committed.
+        record.manager.cancel();
+        if (record.processing) repairProcessing.push(record.processing);
+      } else if (MUTABLE_REGISTRATION_STATES.has(state)) {
         record.cancelled = true;
         record.manager.cancel();
       }
     }
+    await this.#configTransition;
+    await Promise.allSettled([...this.#botTransitions.values()]);
+    await Promise.allSettled([...this.#runtimes.keys()].map((id) => this.#stopRuntime(id)));
+    await Promise.allSettled(repairProcessing);
+    // A committed repair can be between SDK completion and its serialized
+    // credential/runtime transition when close begins. Waiting for the repair
+    // can therefore create a replacement runtime after the first drain. Drain
+    // both transition queues again, then stop every runtime created by that
+    // late forward-convergence work.
     await this.#configTransition;
     await Promise.allSettled([...this.#botTransitions.values()]);
     await Promise.allSettled([...this.#runtimes.keys()].map((id) => this.#stopRuntime(id)));
@@ -462,7 +577,224 @@ export class MultiBotDshFeishuController {
       ...snapshot,
       attempt: record.id,
       ...(record.botId ? { botId: record.botId } : {}),
+      ...(record.operation ? { operation: record.operation } : {}),
+      ...(record.stage ? { stage: record.stage } : {}),
+      ...(snapshot.state === 'error' && record.publicError
+        ? { error: { ...record.publicError } }
+        : {}),
     };
+  }
+
+  async #acceptCallbackRepair(record, result) {
+    const appId = result.client_id;
+    const appSecret = result.client_secret;
+    const ownerOpenId = optionalNonEmptyString(result.user_info?.open_id);
+    const tenantBrand = result.user_info?.tenant_brand;
+    const target = record.target;
+
+    if (record.cancelled) {
+      throw this.#callbackRepairError(
+        record,
+        'abort',
+        'Callback repair was cancelled before local activation.',
+      );
+    }
+    if (appId !== target.appId) {
+      throw this.#callbackRepairError(
+        record,
+        'repair_app_mismatch',
+        'Feishu returned credentials for a different app.',
+      );
+    }
+    if (!ownerOpenId) {
+      throw this.#callbackRepairError(
+        record,
+        'repair_owner_missing',
+        'Feishu returned no repair operator identity.',
+      );
+    }
+    if (tenantBrand !== undefined && tenantBrand !== target.domain) {
+      throw this.#callbackRepairError(
+        record,
+        'repair_domain_mismatch',
+        'Feishu returned credentials for a different account domain.',
+      );
+    }
+    if (record.initiator.actorOpenId && record.initiator.actorOpenId !== ownerOpenId) {
+      throw this.#callbackRepairError(
+        record,
+        'repair_owner_mismatch',
+        'The Feishu repair was confirmed by a different operator.',
+      );
+    }
+    if (!target.ownerOpenIds.includes(ALL_VISIBLE_SENDERS)
+      && !target.ownerOpenIds.includes(ownerOpenId)) {
+      throw this.#callbackRepairError(
+        record,
+        'repair_owner_mismatch',
+        'The Feishu repair operator is not an owner of this configured bot.',
+      );
+    }
+
+    record.stage = 'verifying_identity';
+    let verified;
+    try {
+      verified = await this.#verifyApp({
+        appId,
+        appSecret,
+        domain: target.domain,
+      });
+    } catch (error) {
+      throw this.#callbackRepairError(
+        record,
+        'repair_credentials_invalid',
+        'Feishu could not verify the repaired app credentials.',
+        error,
+      );
+    }
+    if (target.botOpenId && verified?.openId !== target.botOpenId) {
+      throw this.#callbackRepairError(
+        record,
+        'repair_bot_mismatch',
+        'The repaired Feishu app belongs to a different bot identity.',
+      );
+    }
+
+    const runtime = await this.#serializeConfig(() => this.#withBotTransition(
+      record.botId,
+      async () => {
+        const current = this.#configStore.getBot(record.botId);
+        if (!current
+          || current.deletionPending
+          || configuredBotFingerprint(current) !== record.targetFingerprint) {
+          throw this.#callbackRepairError(
+            record,
+            'repair_target_changed',
+            'The Feishu bot changed while its callback repair was in progress.',
+          );
+        }
+
+        let previous;
+        try {
+          previous = await this.#credentials.resolve(current.secretRef);
+        } catch (error) {
+          throw this.#callbackRepairError(
+            record,
+            'credential_update_failed',
+            'Unable to read the current Feishu credential.',
+            error,
+          );
+        }
+        const credentialChanged = previous?.value !== appSecret;
+        if (credentialChanged) {
+          record.stage = 'persisting_secret';
+          try {
+            await this.#credentials.set(current.secretRef, appSecret);
+          } catch (writeError) {
+            const observed = await this.#credentials.resolve(current.secretRef).catch(() => null);
+            if (observed?.value !== appSecret) {
+              throw this.#callbackRepairError(
+                record,
+                'credential_update_failed',
+                'Unable to store the repaired Feishu credential.',
+                writeError,
+              );
+            }
+          }
+          const persisted = await this.#credentials.resolve(current.secretRef).catch(() => null);
+          if (persisted?.value !== appSecret) {
+            throw this.#callbackRepairError(
+              record,
+              'credential_state_unknown',
+              'The repaired Feishu credential could not be confirmed after writing.',
+            );
+          }
+        }
+
+        let currentRuntime;
+        // Callback subscriptions are delivered over the long connection.
+        // Always replace it after the platform-side callback update commits,
+        // even when registerApp returns the same secret and the old socket
+        // still reports healthy, so the probe never runs on stale metadata.
+        record.stage = 'restarting';
+        try {
+          await this.#startRuntime(current, appSecret);
+          currentRuntime = this.#runtimes.get(record.botId);
+        } catch (error) {
+          // The returned credential was already verified and persisted. Do
+          // not restore a potentially revoked old secret; reconnectBot can
+          // safely retry this forward state later.
+          this.#botErrors.set(record.botId, {
+            code: 'connection_failed',
+            message: '机器人回调修复已保存，但长连接未就绪，请点击重试。',
+          });
+          this.#touch();
+          throw this.#callbackRepairError(
+            record,
+            'repair_connection_failed',
+            'The repaired Feishu runtime could not be started.',
+            error,
+          );
+        }
+        if (!currentRuntime) {
+          throw this.#callbackRepairError(
+            record,
+            'repair_connection_failed',
+            'The repaired Feishu runtime is unavailable.',
+          );
+        }
+        this.#botErrors.delete(record.botId);
+        this.#touch();
+        return currentRuntime;
+      },
+    ));
+
+    if (typeof runtime.beginCardActionProbe !== 'function') {
+      throw this.#callbackRepairError(
+        record,
+        'card_action_probe_unavailable',
+        'The Feishu runtime cannot verify card callbacks.',
+      );
+    }
+    record.stage = 'awaiting_callback';
+    try {
+      const proof = await runtime.beginCardActionProbe({
+        expectedOperatorOpenId: ownerOpenId,
+        timeoutMs: this.#callbackProbeTimeoutMs,
+        ...(record.initiator.chatId ? { chatId: record.initiator.chatId } : {}),
+      });
+      if (proof?.verified !== true) {
+        const error = new Error('Feishu runtime returned no callback proof');
+        error.code = 'card_action_probe_failed';
+        throw error;
+      }
+    } catch (error) {
+      const code = error?.code === 'card_action_probe_timeout'
+        ? 'card_action_probe_timeout'
+        : error?.code === 'card_action_probe_unavailable'
+          ? 'card_action_probe_unavailable'
+          : error?.code === 'card_action_probe_send_failed'
+            ? 'card_action_probe_send_failed'
+            : 'card_action_probe_failed';
+      throw this.#callbackRepairError(
+        record,
+        code,
+        code === 'card_action_probe_timeout'
+          ? 'Timed out waiting for the Feishu callback verification button.'
+          : 'The Feishu card callback probe failed.',
+        error,
+      );
+    }
+    record.stage = 'verified';
+    record.publicError = null;
+    this.#touch();
+  }
+
+  #callbackRepairError(record, code, message, cause) {
+    record.publicError = { code, message };
+    const error = new Error(message, cause ? { cause } : undefined);
+    error.code = code;
+    return error;
   }
 
   async #acceptCredentials(record, result) {
@@ -611,6 +943,7 @@ export class MultiBotDshFeishuController {
       botId: config.id,
       config,
       appSecret,
+      repair: this.#runtimeRepairCapability(config.id),
     });
     this.#runtimes.set(config.id, runtime);
     try {
@@ -620,6 +953,27 @@ export class MultiBotDshFeishuController {
       await runtime.stop({ preserveError: true }).catch(() => undefined);
       throw error;
     }
+  }
+
+  #runtimeRepairCapability(botId) {
+    const ownedAttempt = (attemptId) => {
+      const record = this.#registrations.get(attemptId);
+      return record?.operation === CALLBACK_REPAIR_OPERATION && record.botId === botId
+        ? record
+        : null;
+    };
+    return Object.freeze({
+      start: ({ actorOpenId, chatId } = {}) => this.startCallbackRepair(botId, {
+        actorOpenId,
+        chatId,
+      }),
+      status: ({ attemptId } = {}) => ownedAttempt(attemptId)
+        ? this.registrationStatus(attemptId)
+        : null,
+      cancel: async ({ attemptId } = {}) => ownedAttempt(attemptId)
+        ? this.cancelRegistration(attemptId)
+        : this.status(botId),
+    });
   }
 
   async #stopRuntime(botId) {

@@ -130,13 +130,15 @@ export async function createProductionController(ctx, config = {}, internals = {
     verifyApp,
     credentials: ctx.credentials,
     configStore: observedConfigStore,
-    createRuntime: async ({ botId, config: botConfig, appSecret }) => {
+    createRuntime: async ({ botId, config: botConfig, appSecret, repair }) => {
       const state = await stateFor(botConfig);
       const id = botId ?? botConfig.id ?? botConfig.appId;
       await workspaces.ensure(id);
       const workspaceScope = createBotWorkspaceScope(harness, { botId: id, workspaces, state });
       return new Runtime({
         lark,
+        botId: id,
+        repair,
         appId: botConfig.appId,
         appSecret,
         domain: botConfig.domain,

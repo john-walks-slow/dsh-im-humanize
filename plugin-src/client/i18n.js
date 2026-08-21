@@ -197,6 +197,27 @@ const EN = Object.freeze({
   '保持本页打开，等待新机器人的长连接就绪': 'Keep this page open until the bot connection is ready',
   '在飞书中打开': 'Open in Feishu',
   '取消添加': 'Cancel',
+  '使用飞书扫码修复卡片按钮': 'Scan with Feishu to repair card buttons',
+  '扫码会更新现有飞书应用，只增量补充卡片按钮回调；不会创建新应用。确认后此机器人会短暂重连，其他机器人不受影响。': 'Scanning updates the existing Feishu app with only the card-button callback. It does not create a new app. This bot reconnects briefly after confirmation; other bots are not affected.',
+  '核对现有应用名称，并确认只新增卡片回调': 'Review the existing app name and confirm that only the card callback is added',
+  '保持本页打开，等待卡片按钮修复完成': 'Keep this page open until card-button repair finishes',
+  '取消修复': 'Cancel repair',
+  '已确认，正在完成卡片按钮修复': 'Confirmed. Finishing card-button repair',
+  '正在准备修复二维码': 'Preparing the repair QR code',
+  '配置已提交，正在验证卡片按钮回调并重连此机器人；此阶段无法取消，其他机器人不会中断。': 'The update was submitted. Verifying the card callback and reconnecting this bot. This stage cannot be cancelled; other bots will not be interrupted.',
+  '正在为现有飞书应用申请一次性更新二维码，请稍候。': 'Requesting a one-time update QR code for the existing Feishu app…',
+  '卡片按钮没有修复完成': 'Card-button repair did not finish',
+  '修复卡片按钮': 'Repair card buttons',
+  '等待扫码…': 'Waiting for scan…',
+  '飞书服务返回了不匹配的卡片修复二维码': 'Feishu returned a repair QR code for a different bot',
+  '飞书服务返回的修复信息缺少 botId': 'Feishu repair status is missing the bot ID',
+  '飞书服务返回了不匹配的注册进度': 'Feishu returned registration progress for a different operation',
+  '此机器人': 'this bot',
+  '${botName ?? "机器人"}的修复二维码已生成，请使用飞书扫码。': 'Repair QR code generated for ${botName ?? "bot"}. Scan it with Feishu.',
+  '${targetBot.bot.name}已连接，可以在飞书中开始聊天。': '${targetBot.bot.name} is connected and ready to chat in Feishu.',
+  '已取消卡片按钮修复。': 'Card-button repair was cancelled.',
+  '卡片按钮已更新，但暂时无法确认机器人连接状态': 'The card callback was updated, but the bot connection could not be confirmed yet',
+  '飞书卡片按钮修复失败': 'Could not repair the Feishu card buttons',
   '已确认，正在连接新机器人': 'Confirmed. Connecting the new bot',
   '正在安全保存凭据并检查新机器人的消息通道，其他机器人不会中断。': 'Saving credentials and checking the new bot connection. Existing bots will not be interrupted.',
   '正在向飞书申请一次性授权二维码，请稍候。': 'Requesting a one-time authorization QR code from Feishu…',
@@ -481,6 +502,16 @@ function translateDynamic(text) {
   if (match) return `Remove “${match[1]}” from DeepSeek Harness?`;
   match = /^从 DeepSeek Harness 移除(.+)$/.exec(text);
   if (match) return `Remove ${match[1]} from DeepSeek Harness`;
+  match = /^用于修复(.+)卡片按钮的一次性授权二维码$/.exec(text);
+  if (match) return `One-time QR code for repairing card buttons for ${match[1]}`;
+  match = /^正在修复「(.+)」$/.exec(text);
+  if (match) return `Repairing “${match[1]}”`;
+  match = /^修复(.+)的卡片按钮$/.exec(text);
+  if (match) return `Repair card buttons for ${match[1]}`;
+  match = /^(.+)的修复二维码已生成，请使用飞书扫码。$/.exec(text);
+  if (match) return `Repair QR code generated for ${match[1]}. Scan it with Feishu.`;
+  match = /^(.+)的卡片按钮已修复。$/.exec(text);
+  if (match) return `Card buttons repaired for ${match[1]}.`;
   match = /^(检查连接|重试连接)(.+)$/.exec(text);
   if (match) return `${localizeText(match[1])} ${match[2]}`;
   match = /^移除(.+)$/.exec(text);

@@ -2129,3 +2129,278 @@ test('session pagination preserves an explicitly selected workspace', async () =
   assert.equal(useActionsFromCard(cards(sent).at(-1).content)[0], 'selected-11');
   assert.match(JSON.stringify(cards(sent).at(-1).content), new RegExp(workspaceB.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
+
+const REPAIR_APP_ID = 'cli_repair_test';
+const REPAIR_BOT_ID = 'bot_repair_test';
+const REPAIR_URL = `https://open.feishu.cn/page/launcher?tp=sdk&clientID=${REPAIR_APP_ID}&addons=safe`;
+
+function repairStatus(state = 'qr_ready', overrides = {}) {
+  return {
+    registration: {
+      operation: 'callback_repair',
+      state,
+      attempt: 'repair_attempt_1',
+      botId: REPAIR_BOT_ID,
+      qrCodeUrl: REPAIR_URL,
+      expiresAt: Date.now() + 60_000,
+      remainingSeconds: 60,
+      ...overrides,
+    },
+  };
+}
+
+function repairCapability({
+  startStatus = repairStatus(),
+  status = startStatus,
+  cancelStatus = repairStatus('cancelled', { qrCodeUrl: undefined }),
+} = {}) {
+  const calls = { start: [], status: [], cancel: [] };
+  return {
+    calls,
+    capability: {
+      async start(args) { calls.start.push(args); return startStatus; },
+      async status(args) {
+        calls.status.push(args);
+        return typeof status === 'function' ? status(calls.status.length) : status;
+      },
+      async cancel(args) {
+        calls.cancel.push(args);
+        return typeof cancelStatus === 'function'
+          ? cancelStatus(calls.cancel.length)
+          : cancelStatus;
+      },
+    },
+  };
+}
+
+function repairBridge({
+  allowedSenderOpenIds = new Set(['ou_owner']),
+  repairOwnerOpenIds,
+  capability,
+  client,
+  sent = [],
+} = {}) {
+  const fixture = stateFixture();
+  let asks = 0;
+  const activeClient = client ?? cardClient(async (outgoing) => sent.push(outgoing));
+  return {
+    fixture,
+    sent,
+    get asks() { return asks; },
+    bridge: new FeishuHarnessBridge({
+      client: activeClient,
+      channel: {},
+      harness: {
+        ensureRunning: async () => true,
+        ask: async () => { asks += 1; return 'unexpected'; },
+      },
+      state: fixture.state,
+      status: bridgeStatus(),
+      allowedSenderOpenIds,
+      repairOwnerOpenIds,
+      botId: REPAIR_BOT_ID,
+      appId: REPAIR_APP_ID,
+      repair: capability,
+      repairPollIntervalMs: 5,
+      repairLinkWaitMs: 100,
+    }),
+  };
+}
+
+test('/repair sends a validated ordinary SDK link without prompting Harness', async () => {
+  const repair = repairCapability();
+  const fx = repairBridge({ capability: repair.capability });
+
+  await fx.bridge.accept(event('repair-start', '/repair', { senderOpenId: 'ou_owner' }));
+  await fx.bridge.waitForIdle();
+
+  assert.equal(repair.calls.start.length, 1);
+  assert.deepEqual(repair.calls.start[0], {
+    botId: REPAIR_BOT_ID,
+    actorOpenId: 'ou_owner',
+    chatId: 'oc_chat',
+  });
+  assert.equal(fx.asks, 0);
+  const message = JSON.parse(fx.sent.at(-1).content).text;
+  assert.match(message, /card\.action\.trigger/);
+  assert.match(message, new RegExp(REPAIR_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(message, /\/repair qr/);
+});
+
+test('/repair status after a runtime restart never starts a duplicate authorization', async () => {
+  const repair = repairCapability();
+  const fx = repairBridge({ capability: repair.capability });
+
+  await fx.bridge.accept(event('repair-restarted-status', '/repair status', {
+    senderOpenId: 'ou_owner',
+  }));
+  await fx.bridge.waitForIdle();
+
+  assert.equal(repair.calls.start.length, 0);
+  assert.equal(repair.calls.status.length, 0);
+  assert.equal(repair.calls.cancel.length, 0);
+  const message = JSON.parse(fx.sent.at(-1).content).text;
+  assert.match(message, /没有可恢复的修复任务记录/);
+  assert.match(message, /不会启动新的授权/);
+});
+
+test('menu repair entry is number-only and reply 6 starts the same repair flow', async () => {
+  const repair = repairCapability();
+  const fx = repairBridge({ capability: repair.capability });
+
+  await fx.bridge.accept(event('repair-menu-open', '/m', { senderOpenId: 'ou_owner' }));
+  await fx.bridge.waitForIdle();
+  const menu = cards(fx.sent)[0].content;
+  assert.match(JSON.stringify(menu), /6 · 修复卡片按钮/);
+  assert.equal(buttonsFromCard(menu).some((button) => callbackAction(button) === 'repair'), false);
+
+  await fx.bridge.accept(event('repair-menu-six', '6', { senderOpenId: 'ou_owner' }));
+  await fx.bridge.waitForIdle();
+  assert.equal(repair.calls.start.length, 1);
+  assert.equal(fx.asks, 0);
+  assert.match(JSON.parse(fx.sent.at(-1).content).text, /card\.action\.trigger/);
+});
+
+test('chat repair requires a private chat and an exact owner; wildcard never authorizes it', async () => {
+  const wildcardRepair = repairCapability();
+  const wildcard = repairBridge({
+    allowedSenderOpenIds: new Set(['*']),
+    capability: wildcardRepair.capability,
+  });
+  await wildcard.bridge.accept(event('repair-wildcard', '/repair', { senderOpenId: 'ou_anyone' }));
+  await wildcard.bridge.waitForIdle();
+  assert.equal(wildcardRepair.calls.start.length, 0);
+  assert.match(JSON.parse(wildcard.sent.at(-1).content).text, /没有可验证的接入者身份/);
+
+  const mixedRepair = repairCapability();
+  const mixed = repairBridge({
+    allowedSenderOpenIds: new Set(['*', 'ou_owner']),
+    capability: mixedRepair.capability,
+  });
+  await mixed.bridge.accept(event('repair-mixed-intruder', '/repair', { senderOpenId: 'ou_other' }));
+  await mixed.bridge.waitForIdle();
+  assert.equal(mixedRepair.calls.start.length, 0);
+  assert.match(JSON.parse(mixed.sent.at(-1).content).text, /只能由机器人接入者/);
+  await mixed.bridge.accept(event('repair-mixed-owner', '/repair', { senderOpenId: 'ou_owner' }));
+  await mixed.bridge.waitForIdle();
+  assert.equal(mixedRepair.calls.start.length, 1);
+
+  const groupRepair = repairCapability();
+  const group = repairBridge({ capability: groupRepair.capability });
+  await group.bridge.accept(event('repair-group', '/repair', {
+    senderOpenId: 'ou_owner',
+    chat_type: 'group',
+    chat_id: 'oc_group',
+  }));
+  await group.bridge.waitForIdle();
+  assert.equal(groupRepair.calls.start.length, 0);
+  assert.match(JSON.parse(group.sent.at(-1).content).text, /请私聊机器人/);
+});
+
+test('/repair qr, status, verify and cancel stay scoped to the initiating owner', async () => {
+  const sent = [];
+  let sequence = 0;
+  const client = {
+    im: { v1: {
+      image: { create: async ({ data }) => {
+        assert.equal(data.image_type, 'message');
+        assert.equal(Buffer.isBuffer(data.image), true);
+        return { image_key: 'img_repair_qr' };
+      } },
+      message: { create: async (request) => {
+        sent.push(request);
+        sequence += 1;
+        return { code: 0, data: { message_id: `om_repair_${sequence}` } };
+      } },
+    } },
+  };
+  const repair = repairCapability();
+  const fx = repairBridge({ capability: repair.capability, client, sent });
+
+  await fx.bridge.accept(event('repair-commands-start', '/repair', { senderOpenId: 'ou_owner' }));
+  await fx.bridge.waitForIdle();
+  await fx.bridge.accept(event('repair-commands-qr', '/repair qr', { senderOpenId: 'ou_owner' }));
+  await fx.bridge.waitForIdle();
+  assert.equal(sent.some((request) => request.data.msg_type === 'image'
+    && JSON.parse(request.data.content).image_key === 'img_repair_qr'), true);
+
+  await fx.bridge.accept(event('repair-commands-status', '/repair status', { senderOpenId: 'ou_owner' }));
+  await fx.bridge.accept(event('repair-commands-verify', '/repair verify', { senderOpenId: 'ou_owner' }));
+  await fx.bridge.waitForIdle();
+  const textMessages = sent
+    .filter((request) => request.data.msg_type === 'text')
+    .map((request) => JSON.parse(request.data.content).text);
+  assert.equal(textMessages.some((text) => text.includes('修复任务正在等待授权')), true);
+  assert.equal(textMessages.some((text) => text.includes('授权尚未完成')), true);
+
+  await fx.bridge.accept(event('repair-commands-cancel', '/repair cancel', { senderOpenId: 'ou_owner' }));
+  await fx.bridge.waitForIdle();
+  assert.equal(repair.calls.cancel.length, 1);
+  assert.equal(repair.calls.cancel[0].actorOpenId, 'ou_owner');
+});
+
+test('/repair cancel only reports cancellation when the controller confirms it', async () => {
+  for (const state of ['saving', 'succeeded']) {
+    const repair = repairCapability({
+      cancelStatus: repairStatus(state, { qrCodeUrl: undefined }),
+      status: repairStatus(state, { qrCodeUrl: undefined }),
+    });
+    const fx = repairBridge({ capability: repair.capability });
+    await fx.bridge.accept(event(`repair-cancel-${state}-start`, '/repair', {
+      senderOpenId: 'ou_owner',
+    }));
+    await fx.bridge.waitForIdle();
+    await fx.bridge.accept(event(`repair-cancel-${state}`, '/repair cancel', {
+      senderOpenId: 'ou_owner',
+    }));
+    await fx.bridge.waitForIdle();
+
+    const reply = JSON.parse(fx.sent.at(-1).content).text;
+    assert.doesNotMatch(reply, /已取消本次修复授权/);
+    assert.match(reply, state === 'saving' ? /正在等待专用测试按钮/ : /修复完成/);
+    await eventually(() => repair.calls.status.length > 0);
+  }
+});
+
+test('/repair rejects placeholder or mismatched launcher links and cancels the attempt', async () => {
+  for (const badUrl of [
+    'https://open.feishu.cn/page/launcher?tp=sdk&clientID=%7B%7Bclient_id%7D%7D',
+    'https://open.feishu.cn/page/launcher?tp=sdk&clientID=cli_other_app',
+    `https://open.feishu.cn/page/launcher?tp=card&clientID=${REPAIR_APP_ID}`,
+  ]) {
+    const repair = repairCapability({
+      startStatus: repairStatus('qr_ready', { qrCodeUrl: badUrl }),
+    });
+    const fx = repairBridge({ capability: repair.capability });
+    await fx.bridge.accept(event(`repair-bad-${repair.calls.start.length}-${badUrl.length}`, '/repair', {
+      senderOpenId: 'ou_owner',
+    }));
+    await fx.bridge.waitForIdle();
+    assert.equal(repair.calls.cancel.length, 1);
+    const text = JSON.parse(fx.sent.at(-1).content).text;
+    assert.match(text, /无法安全验证/);
+    assert.doesNotMatch(text, /\{\{client_id\}\}|cli_other_app/);
+  }
+});
+
+test('repair monitor reports expiry without claiming that the callback was fixed', async () => {
+  const repair = repairCapability({
+    status: repairStatus('expired', {
+      qrCodeUrl: undefined,
+      remainingSeconds: 0,
+      error: { code: 'expired_token', message: 'safe' },
+    }),
+  });
+  const fx = repairBridge({ capability: repair.capability });
+  await fx.bridge.accept(event('repair-expiry', '/repair', { senderOpenId: 'ou_owner' }));
+  await fx.bridge.waitForIdle();
+  await eventually(() => fx.sent.some((outgoing) => (
+    outgoing.msgType === 'text'
+      && JSON.parse(outgoing.content).text.includes('授权链接已过期')
+  )));
+  const terminal = fx.sent
+    .filter((outgoing) => outgoing.msgType === 'text')
+    .map((outgoing) => JSON.parse(outgoing.content).text)
+    .find((text) => text.includes('授权链接已过期'));
+  assert.doesNotMatch(terminal, /修复完成/);
+});

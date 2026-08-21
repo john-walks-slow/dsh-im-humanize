@@ -15,6 +15,7 @@ import {
 } from '../../../plugin-src/client/channels/feishu/api.js';
 
 test('multi-bot endpoints are bot-scoped and keep legacy operations separate', () => {
+  assert.equal(FEISHU_ENDPOINTS.beginCallbackRepair, 'bot.callback-repair.begin');
   assert.equal(FEISHU_ENDPOINTS.reconnectBot, 'bot.reconnect');
   assert.equal(FEISHU_ENDPOINTS.disconnectBot, 'bot.disconnect');
   assert.equal(FEISHU_ENDPOINTS.deleteBot, 'bot.delete');
@@ -76,6 +77,7 @@ test('provision polling preserves the newly connected botId', () => {
     botId: 'bot-new',
   }), {
     status: 'connected',
+    operation: 'provision',
     botId: 'bot-new',
     message: undefined,
     connection: undefined,
@@ -121,6 +123,47 @@ test('client accepts a Host-rendered QR code without exposing credentials', () =
   assert.equal(provisioning.attemptId, '7');
   assert.equal(provisioning.qrCodeDataUrl, 'data:image/png;base64,AAAA');
   assert.equal('clientSecret' in provisioning, false);
+});
+
+test('client preserves callback repair identity across QR and poll projections', () => {
+  const provisioning = normalizeProvisioning({
+    attemptId: 'reg_repair',
+    operation: 'callback_repair',
+    botId: 'bot_target',
+    verificationUrl: 'https://accounts.feishu.cn/device?tp=sdk&clientID=cli_target',
+    qrCodeDataUrl: 'data:image/png;base64,AAAA',
+  });
+  assert.equal(provisioning.operation, 'callback_repair');
+  assert.equal(provisioning.botId, 'bot_target');
+
+  const poll = normalizePollResult({
+    status: 'connecting',
+    operation: 'callback_repair',
+    botId: 'bot_target',
+  });
+  assert.equal(poll.operation, 'callback_repair');
+  assert.equal(poll.botId, 'bot_target');
+  assert.throws(() => normalizeProvisioning({
+    attemptId: 'reg_broken',
+    operation: 'callback_repair',
+    verificationUrl: 'https://accounts.feishu.cn/device',
+  }), /botId/);
+});
+
+test('client restores a submitted callback repair without requiring an expired QR URL', () => {
+  const provisioning = normalizeProvisioning({
+    attemptId: 'reg_committed',
+    operation: 'callback_repair',
+    botId: 'bot_target',
+    submitted: true,
+    pollIntervalMs: 800,
+  });
+  assert.equal(provisioning.attemptId, 'reg_committed');
+  assert.equal(provisioning.operation, 'callback_repair');
+  assert.equal(provisioning.botId, 'bot_target');
+  assert.equal(provisioning.submitted, true);
+  assert.equal(provisioning.verificationUrl, undefined);
+  assert.equal(provisioning.qrCodeDataUrl, undefined);
 });
 
 test('client unwraps RpcResult and redacts credential-shaped error text', () => {

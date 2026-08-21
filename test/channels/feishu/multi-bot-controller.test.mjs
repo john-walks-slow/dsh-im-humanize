@@ -53,6 +53,9 @@ function fixture({
   failResolveRefs = new Set(),
   failUnsetRefs = new Set(),
   runtimeStart,
+  callbackProbe,
+  verifyApp,
+  credentialSet,
   deleteState,
 } = {}) {
   const configStore = new MemoryConfigStore(bots);
@@ -70,17 +73,20 @@ function fixture({
       registrationRuns.push({ options, resolve, reject });
       return promise;
     },
-    verifyApp: async ({ appId }) => ({
+    verifyApp: verifyApp ?? (async ({ appId }) => ({
       name: `已验证 ${appId}`,
       openId: `ou_bot_${appId}`,
       activated: 1,
-    }),
+    })),
     credentials: {
       async resolve(ref) {
         if (failResolveRefs.has(ref)) throw new Error('credential provider unavailable');
         return values.has(ref) ? { value: values.get(ref), source: 'file' } : undefined;
       },
-      async set(ref, value) { values.set(ref, value); },
+      async set(ref, value) {
+        if (credentialSet) await credentialSet({ ref, value, values });
+        else values.set(ref, value);
+      },
       async unset(ref) {
         unsetCalls.push(ref);
         if (failUnsetRefs.has(ref)) throw new Error('credential provider is read-only');
@@ -88,7 +94,7 @@ function fixture({
       },
     },
     configStore,
-    createRuntime: async ({ botId, config, appSecret }) => {
+    createRuntime: async ({ botId, config, appSecret, repair }) => {
       const status = {
         ready: false,
         feishuLongConnectionState: 'idle',
@@ -101,6 +107,8 @@ function fixture({
         starts: 0,
         stops: 0,
         sentTests: [],
+        probes: [],
+        repair,
         get status() { return structuredClone(status); },
         async start() {
           runtime.starts += 1;
@@ -118,6 +126,11 @@ function fixture({
           runtime.sentTests.push(text);
           return { sent: true };
         },
+        async beginCardActionProbe(options) {
+          runtime.probes.push(structuredClone(options));
+          if (callbackProbe) return callbackProbe({ botId, runtime, options });
+          return { verified: true };
+        },
       };
       const history = runtimes.get(botId) ?? [];
       history.push(runtime);
@@ -131,6 +144,7 @@ function fixture({
       return id;
     },
     createRegistrationId: () => `reg_${++registrationSequence}`,
+    callbackProbeTimeoutMs: 50,
   });
   return { controller, configStore, values, unsetCalls, registrationRuns, runtimes };
 }
@@ -148,6 +162,11 @@ async function completeScan(fx, result) {
   return fx.controller.registrationStatus(attemptId);
 }
 
+function callbackRepairQrUrl(appId, domain = 'feishu') {
+  const host = domain === 'lark' ? 'open.larksuite.com' : 'open.feishu.cn';
+  return `https://${host}/page/launcher?tp=sdk&clientID=${encodeURIComponent(appId)}&addons=encoded`;
+}
+
 test('QR registration separates events from card callbacks', async () => {
   const fx = fixture({ createBotIds: ['bot_callbacks'] });
   const started = fx.controller.startRegistration();
@@ -162,6 +181,420 @@ test('QR registration separates events from card callbacks', async () => {
     user_info: { open_id: 'ou_callbacks', tenant_brand: 'feishu' },
   });
   await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'succeeded');
+  await fx.controller.close();
+});
+
+test('callback repair is deduplicated per bot, updates only its secret, and proves the callback', async () => {
+  const existing = bot('bot_existing', 'existing');
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+    verifyApp: async () => ({
+      name: existing.botName,
+      openId: existing.botOpenId,
+      activated: existing.activated,
+    }),
+  });
+  await fx.controller.initialize();
+  const oldRuntime = fx.runtimes.get(existing.id)[0];
+
+  const started = fx.controller.startCallbackRepair(existing.id, {
+    actorOpenId: existing.ownerOpenIds[0],
+    chatId: 'oc_repair_chat',
+  });
+  const duplicate = fx.controller.startCallbackRepair(existing.id, {
+    actorOpenId: existing.ownerOpenIds[0],
+    chatId: 'oc_repair_chat',
+  });
+  const attemptId = started.registration.attempt;
+  assert.equal(duplicate.registration.attempt, attemptId);
+  assert.equal(started.registration.operation, 'callback_repair');
+  assert.equal(started.registration.botId, existing.id);
+
+  await waitFor(() => fx.registrationRuns.length === 1);
+  const run = fx.registrationRuns.shift();
+  assert.equal(run.options.appId, existing.appId);
+  assert.equal(run.options.domain, 'accounts.feishu.cn');
+  assert.equal(Object.hasOwn(run.options, 'createOnly'), false);
+  assert.equal(Object.hasOwn(run.options, 'appPreset'), false);
+  assert.deepEqual(run.options.addons, {
+    preset: false,
+    callbacks: { items: ['card.action.trigger'] },
+  });
+  run.options.onQRCodeReady({
+    url: callbackRepairQrUrl(existing.appId),
+    expireIn: 60,
+  });
+  run.resolve({
+    client_id: existing.appId,
+    client_secret: 'rotated-secret',
+    user_info: { open_id: existing.ownerOpenIds[0], tenant_brand: 'feishu' },
+  });
+
+  await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'succeeded');
+  const result = fx.controller.registrationStatus(attemptId);
+  const history = fx.runtimes.get(existing.id);
+  assert.equal(result.registration.operation, 'callback_repair');
+  assert.equal(result.registration.botId, existing.id);
+  assert.equal(result.registration.stage, 'verified');
+  assert.deepEqual(fx.configStore.list(), [existing]);
+  assert.equal(fx.values.get(existing.secretRef), 'rotated-secret');
+  assert.equal(history.length, 2);
+  assert.equal(oldRuntime.stops, 1);
+  assert.equal(history[1].appSecret, 'rotated-secret');
+  assert.deepEqual(history[1].probes, [{
+    expectedOperatorOpenId: existing.ownerOpenIds[0],
+    timeoutMs: 50,
+    chatId: 'oc_repair_chat',
+  }]);
+  assert.doesNotMatch(
+    JSON.stringify(result),
+    /rotated-secret|stable-secret|ownerOpenIds|secretRef/,
+  );
+  await fx.controller.close();
+});
+
+test('callback repair with an unchanged secret still refreshes the target runtime before probing', async () => {
+  const existing = bot('bot_existing', 'existing');
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+    verifyApp: async () => ({ openId: existing.botOpenId }),
+  });
+  await fx.controller.initialize();
+  const oldRuntime = fx.runtimes.get(existing.id)[0];
+  const started = fx.controller.startCallbackRepair(existing.id);
+  const attemptId = started.registration.attempt;
+  await waitFor(() => fx.registrationRuns.length === 1);
+  const run = fx.registrationRuns.shift();
+  run.options.onQRCodeReady({ url: callbackRepairQrUrl(existing.appId), expireIn: 60 });
+  run.resolve({
+    client_id: existing.appId,
+    client_secret: 'stable-secret',
+    user_info: { open_id: existing.ownerOpenIds[0], tenant_brand: 'feishu' },
+  });
+
+  await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'succeeded');
+  const history = fx.runtimes.get(existing.id);
+  assert.equal(history.length, 2);
+  assert.equal(oldRuntime.stops, 1);
+  assert.deepEqual(oldRuntime.probes, []);
+  assert.deepEqual(history[1].probes, [{
+    expectedOperatorOpenId: existing.ownerOpenIds[0],
+    timeoutMs: 50,
+  }]);
+  await fx.controller.close();
+});
+
+test('close drains a repair runtime created after delayed credential verification', async () => {
+  const existing = bot('bot_existing', 'existing');
+  let releaseVerify;
+  const verifyGate = new Promise((resolve) => { releaseVerify = resolve; });
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+    verifyApp: async () => {
+      await verifyGate;
+      return { openId: existing.botOpenId };
+    },
+  });
+  await fx.controller.initialize();
+  const oldRuntime = fx.runtimes.get(existing.id)[0];
+  const started = fx.controller.startCallbackRepair(existing.id);
+  const attemptId = started.registration.attempt;
+  await waitFor(() => fx.registrationRuns.length === 1);
+  const run = fx.registrationRuns.shift();
+  run.options.onQRCodeReady({ url: callbackRepairQrUrl(existing.appId), expireIn: 60 });
+  run.resolve({
+    client_id: existing.appId,
+    client_secret: 'rotated-secret',
+    user_info: { open_id: existing.ownerOpenIds[0], tenant_brand: 'feishu' },
+  });
+  await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'saving');
+
+  const closing = fx.controller.close();
+  await waitFor(() => oldRuntime.stops === 1);
+  releaseVerify();
+  await closing;
+
+  const history = fx.runtimes.get(existing.id);
+  assert.equal(history.length, 2);
+  assert.equal(history[1].starts, 1);
+  assert.equal(history[1].stops, 1);
+  assert.equal(fx.values.get(existing.secretRef), 'rotated-secret');
+  assert.equal(fx.controller.status().totals.connected, 0);
+});
+
+test('close waits for a delayed callback probe before its final runtime drain', async () => {
+  const existing = bot('bot_existing', 'existing');
+  let releaseProbe;
+  const probeGate = new Promise((resolve) => { releaseProbe = resolve; });
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+    verifyApp: async () => ({ openId: existing.botOpenId }),
+    callbackProbe: async () => probeGate,
+  });
+  await fx.controller.initialize();
+  const started = fx.controller.startCallbackRepair(existing.id);
+  const attemptId = started.registration.attempt;
+  await waitFor(() => fx.registrationRuns.length === 1);
+  const run = fx.registrationRuns.shift();
+  run.options.onQRCodeReady({ url: callbackRepairQrUrl(existing.appId), expireIn: 60 });
+  run.resolve({
+    client_id: existing.appId,
+    client_secret: 'rotated-secret',
+    user_info: { open_id: existing.ownerOpenIds[0], tenant_brand: 'feishu' },
+  });
+  await waitFor(() => fx.runtimes.get(existing.id)?.at(-1).probes.length === 1);
+
+  let closeFinished = false;
+  const closing = fx.controller.close().then(() => { closeFinished = true; });
+  await flush();
+  assert.equal(closeFinished, false);
+  releaseProbe({ verified: true });
+  await closing;
+
+  const history = fx.runtimes.get(existing.id);
+  assert.equal(history.length, 2);
+  assert.equal(history[1].stops, 1);
+  assert.equal(closeFinished, true);
+  assert.equal(fx.controller.status().totals.connected, 0);
+});
+
+test('web callback repair accepts wildcard visibility but probes the precise SDK operator', async () => {
+  const existing = bot('bot_existing', 'existing');
+  existing.ownerOpenIds = ['*'];
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+    verifyApp: async () => ({ openId: existing.botOpenId }),
+  });
+  await fx.controller.initialize();
+  const oldRuntime = fx.runtimes.get(existing.id)[0];
+  const started = fx.controller.startCallbackRepair(existing.id);
+  const attemptId = started.registration.attempt;
+  await waitFor(() => fx.registrationRuns.length === 1);
+  const run = fx.registrationRuns.shift();
+  run.options.onQRCodeReady({ url: callbackRepairQrUrl(existing.appId), expireIn: 60 });
+  run.resolve({
+    client_id: existing.appId,
+    client_secret: 'stable-secret',
+    user_info: { open_id: 'ou_sdk_operator', tenant_brand: 'feishu' },
+  });
+
+  await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'succeeded');
+  assert.deepEqual(fx.configStore.list(), [existing]);
+  const history = fx.runtimes.get(existing.id);
+  assert.equal(history.length, 2);
+  assert.equal(oldRuntime.stops, 1);
+  assert.deepEqual(history[1].probes, [{
+    expectedOperatorOpenId: 'ou_sdk_operator',
+    timeoutMs: 50,
+  }]);
+  await fx.controller.close();
+});
+
+test('chat callback repair rejects SDK authorization by a different operator', async () => {
+  const existing = bot('bot_existing', 'existing');
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+    verifyApp: async () => ({ openId: existing.botOpenId }),
+  });
+  await fx.controller.initialize();
+  const runtime = fx.runtimes.get(existing.id)[0];
+  const started = fx.controller.startCallbackRepair(existing.id, {
+    actorOpenId: existing.ownerOpenIds[0],
+    chatId: 'oc_owner_chat',
+  });
+  const attemptId = started.registration.attempt;
+  await waitFor(() => fx.registrationRuns.length === 1);
+  const run = fx.registrationRuns.shift();
+  run.options.onQRCodeReady({ url: callbackRepairQrUrl(existing.appId), expireIn: 60 });
+  run.resolve({
+    client_id: existing.appId,
+    client_secret: 'rotated-secret',
+    user_info: { open_id: 'ou_different_operator', tenant_brand: 'feishu' },
+  });
+
+  await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'error');
+  const result = fx.controller.registrationStatus(attemptId);
+  assert.equal(result.registration.error.code, 'repair_owner_mismatch');
+  assert.equal(fx.values.get(existing.secretRef), 'stable-secret');
+  assert.equal(fx.runtimes.get(existing.id).length, 1);
+  assert.equal(runtime.stops, 0);
+  assert.deepEqual(runtime.probes, []);
+  await fx.controller.close();
+});
+
+test('callback repair rejects an app mismatch without changing local bot state', async () => {
+  const existing = bot('bot_existing', 'existing');
+  let verifyCalls = 0;
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+    verifyApp: async () => {
+      verifyCalls += 1;
+      return { openId: existing.botOpenId };
+    },
+  });
+  await fx.controller.initialize();
+  const runtime = fx.runtimes.get(existing.id)[0];
+  const started = fx.controller.startCallbackRepair(existing.id);
+  const attemptId = started.registration.attempt;
+  await waitFor(() => fx.registrationRuns.length === 1);
+  const run = fx.registrationRuns.shift();
+  run.options.onQRCodeReady({ url: callbackRepairQrUrl(existing.appId), expireIn: 60 });
+  run.resolve({
+    client_id: 'cli_wrong_app',
+    client_secret: 'wrong-secret',
+    user_info: { open_id: existing.ownerOpenIds[0], tenant_brand: 'feishu' },
+  });
+
+  await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'error');
+  const result = fx.controller.registrationStatus(attemptId);
+  assert.equal(result.registration.error.code, 'repair_app_mismatch');
+  assert.equal(verifyCalls, 0);
+  assert.deepEqual(fx.configStore.list(), [existing]);
+  assert.equal(fx.values.get(existing.secretRef), 'stable-secret');
+  assert.equal(fx.runtimes.get(existing.id).length, 1);
+  assert.equal(runtime.stops, 0);
+  assert.deepEqual(runtime.probes, []);
+  assert.doesNotMatch(JSON.stringify(result), /wrong-secret/);
+  await fx.controller.close();
+});
+
+test('callback probe timeout keeps the verified rotated secret and ready runtime', async () => {
+  const existing = bot('bot_existing', 'existing');
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+    verifyApp: async () => ({ openId: existing.botOpenId }),
+    callbackProbe: async () => {
+      const error = new Error('probe timed out with sensitive diagnostics');
+      error.code = 'card_action_probe_timeout';
+      throw error;
+    },
+  });
+  await fx.controller.initialize();
+  const started = fx.controller.startCallbackRepair(existing.id);
+  const attemptId = started.registration.attempt;
+  await waitFor(() => fx.registrationRuns.length === 1);
+  const run = fx.registrationRuns.shift();
+  run.options.onQRCodeReady({ url: callbackRepairQrUrl(existing.appId), expireIn: 60 });
+  run.resolve({
+    client_id: existing.appId,
+    client_secret: 'rotated-secret',
+    user_info: { open_id: existing.ownerOpenIds[0], tenant_brand: 'feishu' },
+  });
+
+  await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'error');
+  const result = fx.controller.registrationStatus(attemptId);
+  const history = fx.runtimes.get(existing.id);
+  assert.equal(result.registration.error.code, 'card_action_probe_timeout');
+  assert.equal(result.registration.stage, 'awaiting_callback');
+  assert.equal(fx.values.get(existing.secretRef), 'rotated-secret');
+  assert.equal(history.length, 2);
+  assert.equal(history.at(-1).appSecret, 'rotated-secret');
+  assert.equal(result.bots[0].connected, true);
+  assert.doesNotMatch(JSON.stringify(result), /sensitive diagnostics|rotated-secret/);
+  await fx.controller.close();
+});
+
+test('callback repair restart failure keeps the remotely committed secret for reconnect', async () => {
+  const existing = bot('bot_existing', 'existing');
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+    verifyApp: async () => ({ openId: existing.botOpenId }),
+    runtimeStart: async ({ runtime }) => {
+      if (runtime.appSecret === 'rotated-secret') throw new Error('new secret handshake failed');
+    },
+  });
+  await fx.controller.initialize();
+  const started = fx.controller.startCallbackRepair(existing.id);
+  const attemptId = started.registration.attempt;
+  await waitFor(() => fx.registrationRuns.length === 1);
+  const run = fx.registrationRuns.shift();
+  run.options.onQRCodeReady({ url: callbackRepairQrUrl(existing.appId), expireIn: 60 });
+  run.resolve({
+    client_id: existing.appId,
+    client_secret: 'rotated-secret',
+    user_info: { open_id: existing.ownerOpenIds[0], tenant_brand: 'feishu' },
+  });
+
+  await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'error');
+  const result = fx.controller.registrationStatus(attemptId);
+  assert.equal(result.registration.error.code, 'repair_connection_failed');
+  assert.deepEqual(fx.configStore.list(), [existing]);
+  assert.equal(fx.values.get(existing.secretRef), 'rotated-secret');
+  assert.equal(fx.runtimes.get(existing.id).length, 2);
+  assert.equal(fx.runtimes.get(existing.id).at(-1).appSecret, 'rotated-secret');
+  assert.equal(result.bots[0].connected, false);
+  assert.equal(result.bots[0].error.code, 'connection_failed');
+  assert.doesNotMatch(JSON.stringify(result), /new secret handshake failed|rotated-secret/);
+  await fx.controller.close();
+});
+
+test('callback repair leaves the existing runtime intact when the new secret cannot be stored', async () => {
+  const existing = bot('bot_existing', 'existing');
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+    verifyApp: async () => ({ openId: existing.botOpenId }),
+    credentialSet: async () => { throw new Error('credential provider is read-only'); },
+  });
+  await fx.controller.initialize();
+  const runtime = fx.runtimes.get(existing.id)[0];
+  const started = fx.controller.startCallbackRepair(existing.id);
+  const attemptId = started.registration.attempt;
+  await waitFor(() => fx.registrationRuns.length === 1);
+  const run = fx.registrationRuns.shift();
+  run.options.onQRCodeReady({ url: callbackRepairQrUrl(existing.appId), expireIn: 60 });
+  run.resolve({
+    client_id: existing.appId,
+    client_secret: 'rotated-secret',
+    user_info: { open_id: existing.ownerOpenIds[0], tenant_brand: 'feishu' },
+  });
+
+  await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'error');
+  const result = fx.controller.registrationStatus(attemptId);
+  assert.equal(result.registration.error.code, 'credential_update_failed');
+  assert.equal(fx.values.get(existing.secretRef), 'stable-secret');
+  assert.equal(fx.runtimes.get(existing.id).length, 1);
+  assert.equal(runtime.stops, 0);
+  assert.equal(result.bots[0].connected, true);
+  assert.doesNotMatch(JSON.stringify(result), /credential provider is read-only|rotated-secret/);
+  await fx.controller.close();
+});
+
+test('runtime repair capability is bot-bound and can cancel a pre-commit attempt', async () => {
+  const alpha = bot('bot_alpha', 'alpha');
+  const beta = bot('bot_beta', 'beta');
+  const fx = fixture({
+    bots: [alpha, beta],
+    secrets: { [alpha.secretRef]: 'secret-a', [beta.secretRef]: 'secret-b' },
+  });
+  await fx.controller.initialize();
+  const alphaRepair = fx.runtimes.get(alpha.id)[0].repair;
+  const betaRepair = fx.runtimes.get(beta.id)[0].repair;
+
+  const started = alphaRepair.start({
+    actorOpenId: alpha.ownerOpenIds[0],
+    chatId: 'oc_alpha',
+  });
+  const attemptId = started.registration.attempt;
+  assert.equal(started.registration.botId, alpha.id);
+  assert.equal(alphaRepair.status({ attemptId }).registration.attempt, attemptId);
+  assert.equal(betaRepair.status({ attemptId }), null);
+  const cancelled = await alphaRepair.cancel({ attemptId });
+  assert.equal(cancelled.registration.state, 'cancelled');
+  assert.deepEqual(fx.configStore.list(), [alpha, beta]);
+  assert.equal(fx.values.get(alpha.secretRef), 'secret-a');
+  assert.equal(fx.values.get(beta.secretRef), 'secret-b');
+  assert.equal(fx.runtimes.get(alpha.id).length, 1);
+  assert.equal(fx.runtimes.get(beta.id).length, 1);
   await fx.controller.close();
 });
 

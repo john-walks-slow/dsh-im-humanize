@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { FeishuHarnessBridge } from './bridge.mjs';
+import { cardActionProbeCard } from './feishu-cards.mjs';
 import { VerifiedFeishuChannel } from './feishu-channel.mjs';
 import {
   connectionTestTargetUnavailable,
@@ -6,6 +8,25 @@ import {
 } from '../shared/connection-test.mjs';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+const CALLBACK_PROBE_SUCCESS_NOTICE = '✅ 修复完成：已实测收到 card.action.trigger，菜单按钮现在可用。';
+const CALLBACK_PROBE_TIMEOUT_NOTICE = '⚠️ 修复验证超时：未收到测试卡按钮的 card.action.trigger，不能确认按钮已修复。请不要重复授权；先检查飞书开放平台的卡片回调配置，确认后再发送 /repair。';
+const CALLBACK_PROBE_SEND_FAILURE_NOTICE = '⚠️ 修复验证失败：无法发送专用测试卡，不能确认 card.action.trigger 已恢复。请不要重复授权；先检查机器人消息权限和连接状态。';
+const CALLBACK_PROBE_ABORT_NOTICE = '⚠️ 修复验证中断：Runtime 已停止，未完成 card.action.trigger 实测，不能确认修复成功。请不要重复授权；先等待机器人恢复连接。';
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function strictCardOperatorOpenId(event) {
+  return nonEmptyString(event?.operator?.open_id)
+    ?? nonEmptyString(event?.operator?.operator_id?.open_id);
+}
+
+function probeError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
 
 function httpInstanceWithTimeout(httpInstance, timeoutMs) {
   if (!httpInstance || typeof httpInstance.request !== 'function') return undefined;
@@ -41,9 +62,12 @@ export function createBridgeStatus({ allowedSenderCount = 1 } = {}) {
     streamUpdates: 0,
     streamFallbacks: 0,
     streamErrors: 0,
+    cardActionsReceived: 0,
+    cardActionProbesVerified: 0,
     lastMessageAt: null,
     lastReplyAt: null,
     lastRejectedAt: null,
+    lastCardActionAt: null,
     lastError: null,
     agentPreset: 'standard',
     authorizationMode: 'sender-open-id-allowlist',
@@ -59,6 +83,7 @@ export function createBridgeStatus({ allowedSenderCount = 1 } = {}) {
  */
 export class FeishuRuntime {
   #lark;
+  #botId;
   #appId;
   #appSecret;
   #domain;
@@ -69,15 +94,18 @@ export class FeishuRuntime {
   #connectTimeoutMs;
   #requestTimeoutMs;
   #logger;
+  #repair;
   #client = null;
   #bridge = null;
   #wsClient = null;
   #starting = null;
   #abortController = null;
+  #pendingCardActionProbes = new Map();
   #status;
 
   constructor({
     lark,
+    botId,
     appId,
     appSecret,
     domain = 'feishu',
@@ -85,6 +113,7 @@ export class FeishuRuntime {
     ownerOpenIds,
     harness,
     state,
+    repair,
     replyTimeoutMs = 600000,
     connectTimeoutMs = 15000,
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
@@ -97,17 +126,22 @@ export class FeishuRuntime {
     if (normalizedOwners.length === 0) throw new Error('FeishuRuntime requires at least one owner open_id');
     if (!harness) throw new Error('FeishuRuntime requires a Harness client');
     if (!state) throw new Error('FeishuRuntime requires a state store');
+    if (repair !== undefined && repair !== null && !nonEmptyString(botId)) {
+      throw new TypeError('FeishuRuntime repair capability requires a botId');
+    }
     if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) {
       throw new TypeError('FeishuRuntime requestTimeoutMs must be a positive number');
     }
 
     this.#lark = lark;
+    this.#botId = nonEmptyString(botId);
     this.#appId = appId;
     this.#appSecret = appSecret;
     this.#domain = domain;
     this.#ownerOpenIds = normalizedOwners;
     this.#harness = harness;
     this.#state = state;
+    this.#repair = repair ?? null;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#requestTimeoutMs = requestTimeoutMs;
@@ -166,6 +200,10 @@ export class FeishuRuntime {
         state: this.#state,
         status: this.#status,
         allowedSenderOpenIds: new Set(this.#ownerOpenIds),
+        botId: this.#botId,
+        appId: this.#appId,
+        repair: this.#repair,
+        repairOwnerOpenIds: new Set(this.#ownerOpenIds.filter((value) => value !== '*')),
         replyTimeoutMs: this.#replyTimeoutMs,
         signal,
         logger: this.#logger,
@@ -182,7 +220,9 @@ export class FeishuRuntime {
         // subscribes card.action.trigger; the number-reply fallback covers
         // apps that do not).
         'card.action.trigger': (event) => {
-          this.#bridge.onCardAction(event);
+          this.#status.cardActionsReceived += 1;
+          this.#status.lastCardActionAt = new Date().toISOString();
+          if (!this.#consumeCardActionProbe(event)) this.#bridge.onCardAction(event);
           return {};
         },
       });
@@ -251,6 +291,147 @@ export class FeishuRuntime {
     }
   }
 
+  /**
+   * Send a one-shot callback card and resolve only after Feishu delivers the
+   * exact message/nonce/operator tuple over card.action.trigger. The controller
+   * uses this as the final proof for both browser- and chat-initiated repairs.
+   */
+  async beginCardActionProbe({ expectedOperatorOpenId, timeoutMs = 90_000 } = {}) {
+    if (!this.#status.ready || !this.#client) {
+      throw probeError('card_action_probe_unavailable', '飞书机器人尚未连接');
+    }
+    const operatorOpenId = nonEmptyString(expectedOperatorOpenId);
+    if (!operatorOpenId || operatorOpenId === '*') {
+      throw new TypeError('A precise Feishu operator open_id is required');
+    }
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 10 * 60_000) {
+      throw new TypeError('Card-action probe timeout must be between 1 and 600000ms');
+    }
+
+    const nonce = randomUUID().replaceAll('-', '');
+    let response;
+    try {
+      response = await this.#client.im.v1.message.create({
+        params: { receive_id_type: 'open_id' },
+        data: {
+          receive_id: operatorOpenId,
+          msg_type: 'interactive',
+          content: cardActionProbeCard(nonce),
+        },
+      });
+    } catch {
+      void this.#sendCardActionProbeNotice(
+        operatorOpenId,
+        CALLBACK_PROBE_SEND_FAILURE_NOTICE,
+        'failure',
+      );
+      throw probeError('card_action_probe_send_failed', '无法发送飞书卡片回调测试');
+    }
+    if (response?.code && response.code !== 0) {
+      void this.#sendCardActionProbeNotice(
+        operatorOpenId,
+        CALLBACK_PROBE_SEND_FAILURE_NOTICE,
+        'failure',
+      );
+      throw probeError('card_action_probe_send_failed', '无法发送飞书卡片回调测试');
+    }
+    const messageId = nonEmptyString(response?.data?.message_id)
+      ?? nonEmptyString(response?.message_id);
+    if (!messageId) {
+      void this.#sendCardActionProbeNotice(
+        operatorOpenId,
+        CALLBACK_PROBE_SEND_FAILURE_NOTICE,
+        'failure',
+      );
+      throw probeError('card_action_probe_send_failed', '飞书未返回测试卡片的消息 ID');
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        const current = this.#pendingCardActionProbes.get(messageId);
+        if (!current || current.nonce !== nonce) return;
+        this.#pendingCardActionProbes.delete(messageId);
+        void this.#sendCardActionProbeNotice(
+          operatorOpenId,
+          CALLBACK_PROBE_TIMEOUT_NOTICE,
+          'timeout',
+        );
+        reject(probeError(
+          'card_action_probe_timeout',
+          '在规定时间内未收到飞书卡片按钮回调',
+        ));
+      }, timeoutMs);
+      timeout.unref?.();
+      this.#pendingCardActionProbes.set(messageId, {
+        messageId,
+        nonce,
+        expectedOperatorOpenId: operatorOpenId,
+        timeout,
+        resolve,
+        reject,
+      });
+    });
+  }
+
+  #consumeCardActionProbe(event) {
+    const messageId = nonEmptyString(event?.context?.open_message_id);
+    if (!messageId) return false;
+    const probe = this.#pendingCardActionProbes.get(messageId);
+    if (!probe) return false;
+    const value = event?.action?.value;
+    const operatorOpenId = strictCardOperatorOpenId(event);
+    if (value?.action !== 'repair_verify'
+      || value?.nonce !== probe.nonce
+      || operatorOpenId !== probe.expectedOperatorOpenId) {
+      return false;
+    }
+    clearTimeout(probe.timeout);
+    this.#pendingCardActionProbes.delete(messageId);
+    this.#status.cardActionProbesVerified += 1;
+    // Start the terminal notification before resolving the controller-facing
+    // probe. A repair may rotate the App Secret and immediately replace this
+    // runtime after resolution; initiating the send here keeps chat and web
+    // repair flows equally observable. Notification failure never invalidates
+    // the callback proof itself.
+    void this.#sendCardActionProbeNotice(
+      operatorOpenId,
+      CALLBACK_PROBE_SUCCESS_NOTICE,
+      'success',
+    ).finally(() => {
+      probe.resolve({
+        verified: true,
+        messageId,
+        operatorOpenId,
+      });
+    });
+    return true;
+  }
+
+  #sendCardActionProbeNotice(operatorOpenId, text, outcome) {
+    const client = this.#client;
+    if (!client) {
+      this.#logger.warn?.(`[dsh-feishu] unable to send the callback repair ${outcome} notice`);
+      return Promise.resolve(false);
+    }
+    return Promise.resolve().then(async () => {
+      const response = await client.im.v1.message.create({
+        params: { receive_id_type: 'open_id' },
+        data: {
+          receive_id: operatorOpenId,
+          msg_type: 'text',
+          content: JSON.stringify({ text }),
+        },
+      });
+      if (response?.code && response.code !== 0) {
+        throw new Error('Feishu callback repair notice failed');
+      }
+      return true;
+    }).catch(() => {
+      this.#logger.warn?.(`[dsh-feishu] unable to send the callback repair ${outcome} notice`);
+      return false;
+    });
+  }
+
   async sendConnectionTest(text) {
     if (!this.#status.ready || !this.#client) {
       const error = new Error('飞书机器人尚未连接');
@@ -297,6 +478,16 @@ export class FeishuRuntime {
     const abortController = this.#abortController;
     this.#abortController = null;
     abortController?.abort(new DOMException('Feishu runtime stopped', 'AbortError'));
+    for (const probe of this.#pendingCardActionProbes.values()) {
+      clearTimeout(probe.timeout);
+      void this.#sendCardActionProbeNotice(
+        probe.expectedOperatorOpenId,
+        CALLBACK_PROBE_ABORT_NOTICE,
+        'abort',
+      );
+      probe.reject(probeError('abort', '飞书运行时已停止'));
+    }
+    this.#pendingCardActionProbes.clear();
     this.#status.ready = false;
     if (this.#wsClient) {
       this.#wsClient.close({ force: true });

@@ -61,6 +61,42 @@ export function menuCard() {
     button('3 · 新会话', 'new'),
     button('4 · 状态', 'status'),
     button('5 · 帮助', 'help'),
+    // Repair must remain number-driven. Apps that need this command do not
+    // have card.action.trigger yet, so rendering it as a callback button would
+    // send the user straight back to Feishu's broken callback setup popup.
+    { tag: 'div', text: markdown('**6 · 修复卡片按钮**（请直接回复数字 **6**）') },
+  ]);
+}
+
+/** One-shot callback probe used only after an existing app was re-authorized. */
+export function cardActionProbeCard(nonce) {
+  if (typeof nonce !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) {
+    throw new TypeError('A safe card-action probe nonce is required');
+  }
+  return cardWith('🧪 验证卡片按钮', [
+    {
+      tag: 'div',
+      text: markdown('授权已提交。请点击下方按钮；机器人真实收到回调后才会判定修复成功。'),
+    },
+    {
+      tag: 'column_set',
+      flex_mode: 'none',
+      columns: [{
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        elements: [{
+          tag: 'button',
+          text: plainText('完成验证'),
+          type: 'primary',
+          width: 'fill',
+          behaviors: [{
+            type: 'callback',
+            value: { action: 'repair_verify', nonce },
+          }],
+        }],
+      }],
+    },
   ]);
 }
 
@@ -109,6 +145,7 @@ export function menuHelpText() {
     '3 · /new  开启新会话',
     '4 · /status  连接状态',
     '5 · /help  本帮助',
+    '6 · /repair  修复卡片按钮（请回复数字 6）',
     '',
     '直接发送文字/图片即继续当前会话。',
     '/session ID 或序号  绑定已有会话',

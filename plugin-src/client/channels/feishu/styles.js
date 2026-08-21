@@ -412,6 +412,8 @@ const CSS = String.raw`
 .bxf-healthSummary[data-error="true"] { color: var(--bxf-error); }
 .bxf-botActions { flex: none; flex-wrap: nowrap; gap: 8px; margin-top: 0; justify-content: flex-end; }
 .bxf-botActions .bxf-button { flex: none; white-space: nowrap; }
+.bxf-botActions .bxf-repairButton { color: var(--bxf-accent); border-color: color-mix(in srgb, var(--bxf-accent) 35%, var(--dsw-alias-border-l2, #dee0e3)); }
+.bxf-botActions .bxf-repairButton:hover:not(:disabled) { background: color-mix(in srgb, var(--bxf-accent) 7%, transparent); }
 
 .bxf-confirm {
   border-top: 1px solid var(--dsw-alias-border-l2, #dee0e3);

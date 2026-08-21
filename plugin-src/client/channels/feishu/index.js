@@ -5,6 +5,7 @@ import { CredentialActionIcon, CredentialBindingPanel, QrActionIcon } from "../.
 import { h } from "../../i18n.js";
 import {
   FEISHU_ENDPOINTS,
+  FEISHU_REGISTRATION_OPERATIONS,
   FEISHU_RPC_CHANNEL,
   formatRemaining,
   normalizeBotsSnapshot,
@@ -20,6 +21,12 @@ import { installFeishuStyles } from "./styles.js";
 
 export const name = "feishu-settings";
 export const inject = ["slots", "connection"];
+
+const CALLBACK_REPAIR_OPERATION = FEISHU_REGISTRATION_OPERATIONS.CALLBACK_REPAIR;
+
+function isCallbackRepair(value) {
+  return value?.operation === CALLBACK_REPAIR_OPERATION;
+}
 
 function SvgIcon({ children, size = 18, className, viewBox = "0 0 24 24" }) {
   return h("svg", {
@@ -197,7 +204,18 @@ function safeVerificationHref(value) {
   if (!value) return undefined;
   try {
     const url = new URL(value);
-    return url.protocol === "https:" ? url.toString() : undefined;
+    return url.protocol === "https:"
+      && [
+        "accounts.feishu.cn",
+        "accounts.larksuite.com",
+        "open.feishu.cn",
+        "open.larksuite.com",
+      ].includes(url.hostname)
+      && !url.port
+      && !url.username
+      && !url.password
+      ? url.toString()
+      : undefined;
   } catch {
     return undefined;
   }
@@ -217,6 +235,8 @@ function QrPane({ provision, now, onRefresh, onCancel, busy }) {
   const remaining = Math.max(0, provision.expiresAt - now);
   const expired = provision.expired === true || remaining === 0;
   const progress = Math.min(1, remaining / Math.max(1, provision.durationMs ?? remaining));
+  const repairing = isCallbackRepair(provision);
+  const botName = provision.botName ?? "此机器人";
 
   React.useEffect(() => setImageFailed(false), [qrSource]);
 
@@ -225,9 +245,11 @@ function QrPane({ provision, now, onRefresh, onCancel, busy }) {
       h("div", { className: "bxf-qrColumn dim-qrColumn" },
         h("div", { className: "bxf-qrFrame dim-qrFrame" },
           qrSource && !imageFailed
-            ? h("img", {
+              ? h("img", {
                 src: qrSource,
-                alt: "用于新增 DeepSeek Harness 飞书机器人的一次性授权二维码",
+                alt: repairing
+                  ? `用于修复${botName}卡片按钮的一次性授权二维码`
+                  : "用于新增 DeepSeek Harness 飞书机器人的一次性授权二维码",
                 onError: () => setImageFailed(true),
               })
             : h("div", { className: "bxf-qrFallback dim-qrFallback" },
@@ -251,13 +273,21 @@ function QrPane({ provision, now, onRefresh, onCancel, busy }) {
       h("div", { className: "bxf-qrCopy dim-qrCopy" },
         h("div", { className: "bxf-stateLabel dim-stateLabel" },
           h("span", { className: "bxf-dot dim-stateDot", "data-tone": "warning" }),
-          h("span", null, "正在添加新机器人")),
-        h("h3", null, expired ? "刷新二维码后继续" : "使用飞书扫码创建机器人"),
-        h("p", null, "扫码只会新增一个机器人，已接入的机器人会继续正常收发消息。"),
+          h("span", null, repairing ? `正在修复「${botName}」` : "正在添加新机器人")),
+        h("h3", null, expired
+          ? "刷新二维码后继续"
+          : repairing ? "使用飞书扫码修复卡片按钮" : "使用飞书扫码创建机器人"),
+        h("p", null, repairing
+          ? "扫码会更新现有飞书应用，只增量补充卡片按钮回调；不会创建新应用。确认后此机器人会短暂重连，其他机器人不受影响。"
+          : "扫码只会新增一个机器人，已接入的机器人会继续正常收发消息。"),
         h("ol", { className: "bxf-steps dim-steps" },
           h("li", null, "打开飞书移动端，使用扫一扫读取二维码"),
-          h("li", null, "核对应用名称与权限范围，并确认创建"),
-          h("li", null, "保持本页打开，等待新机器人的长连接就绪")),
+          h("li", null, repairing
+            ? "核对现有应用名称，并确认只新增卡片回调"
+            : "核对应用名称与权限范围，并确认创建"),
+          h("li", null, repairing
+            ? "保持本页打开，等待卡片按钮修复完成"
+            : "保持本页打开，等待新机器人的长连接就绪")),
         h("div", { className: "bxf-actions dim-viewActions" },
           expired
             ? h(Button, {
@@ -272,35 +302,43 @@ function QrPane({ provision, now, onRefresh, onCancel, busy }) {
           !expired
             ? h(Button, { onClick: onRefresh, disabled: busy }, "换一个二维码")
             : null,
-          h(Button, { onClick: onCancel, disabled: busy }, "取消添加")),
+          h(Button, { onClick: onCancel, disabled: busy }, repairing ? "取消修复" : "取消添加")),
       ),
     ),
   );
 }
 
-function ProvisionProgress({ phase, onCancel, busy }) {
+function ProvisionProgress({ phase, provision, onCancel, busy }) {
   const connecting = phase === "connecting";
+  const repairing = isCallbackRepair(provision);
   return h("div", {
     className: "bxf-card bxf-provisionCard dim-surfaceCard dim-loadingView",
     "aria-busy": "true",
   },
     h("div", { className: "dim-spinner", "aria-hidden": "true" }),
-    h("h3", null, connecting ? "已确认，正在连接新机器人" : "正在准备授权二维码"),
+    h("h3", null, connecting
+      ? repairing ? "已确认，正在完成卡片按钮修复" : "已确认，正在连接新机器人"
+      : repairing ? "正在准备修复二维码" : "正在准备授权二维码"),
     h("p", null, connecting
-      ? "正在安全保存凭据并检查新机器人的消息通道，其他机器人不会中断。"
-      : "正在向飞书申请一次性授权二维码，请稍候。"),
-    connecting
+      ? repairing
+        ? "配置已提交，正在验证卡片按钮回调并重连此机器人；此阶段无法取消，其他机器人不会中断。"
+        : "正在安全保存凭据并检查新机器人的消息通道，其他机器人不会中断。"
+      : repairing
+        ? "正在为现有飞书应用申请一次性更新二维码，请稍候。"
+        : "正在向飞书申请一次性授权二维码，请稍候。"),
+    connecting && onCancel
       ? h("div", { className: "bxf-actions dim-viewActions", style: { justifyContent: "center" } },
-          h(Button, { onClick: onCancel, disabled: busy }, "取消添加"))
+          h(Button, { onClick: onCancel, disabled: busy }, repairing ? "取消修复" : "取消添加"))
       : null,
   );
 }
 
-function ProvisionError({ error, onRetry, onCancel, busy }) {
+function ProvisionError({ error, provision, onRetry, onCancel, busy }) {
+  const repairing = isCallbackRepair(provision);
   return h("div", { className: "bxf-card bxf-provisionCard dim-surfaceCard" },
     h("div", { className: "bxf-inlineError dim-inlineError", role: "alert" },
       h("div", null,
-        h("h3", null, "新机器人没有添加完成"),
+        h("h3", null, repairing ? "卡片按钮没有修复完成" : "新机器人没有添加完成"),
         h("p", null, error.message),
         error.code ? h("span", { className: "bxf-errorCode" }, error.code) : null,
         h("div", { className: "bxf-actions dim-viewActions" },
@@ -373,10 +411,12 @@ function RemoveConfirmation({ bot, busy, onConfirm, onCancel }) {
 export function BotCard({
   connection,
   busy,
+  repairDisabled,
   actionError,
   testNotice,
   removing,
   onReconnect,
+  onRepairCallback,
   onWorkspaceSave,
   onRequestRemove,
   onConfirmRemove,
@@ -442,6 +482,13 @@ export function BotCard({
             "aria-label": `${connected ? "检查连接" : "重试连接"}${bot.name}`,
           }, busy === "reconnect" ? (connected ? "检查中…" : "正在连接…") : connected ? "检查连接" : "重试连接"),
           h(Button, {
+            className: "bxf-repairButton dim-cardAction",
+            onClick: onRepairCallback,
+            disabled: Boolean(busy) || repairDisabled,
+            "aria-busy": busy === "callback-repair" ? "true" : undefined,
+            "aria-label": `修复${bot.name}的卡片按钮`,
+          }, busy === "callback-repair" ? "等待扫码…" : "修复卡片按钮"),
+          h(Button, {
             className: "dim-cardAction", kind: "danger", onClick: onRequestRemove,
             disabled: Boolean(busy), ref: removeButtonRef,
             "aria-label": `从 DeepSeek Harness 移除${bot.name}`,
@@ -467,11 +514,15 @@ function BotList(props) {
       props.bots.map((bot) => h("li", { key: bot.botId },
         h(BotCard, {
           connection: bot,
-          busy: props.busyByBot[bot.botId],
+          busy: props.busyByBot[bot.botId]
+            ?? (isCallbackRepair(props.provisioning)
+              && props.provisioning.botId === bot.botId ? "callback-repair" : undefined),
+          repairDisabled: Boolean(props.provisioning),
           actionError: props.errorsByBot[bot.botId],
           testNotice: props.testNoticesByBot[bot.botId],
           removing: props.removeTargetId === bot.botId,
           onReconnect: () => props.onReconnect(bot),
+          onRepairCallback: () => props.onRepairCallback(bot),
           onWorkspaceSave: (workspace) => props.onWorkspaceSave(bot, workspace),
           onRequestRemove: () => props.onRequestRemove(bot),
           onConfirmRemove: () => props.onConfirmRemove(bot),
@@ -507,11 +558,12 @@ export function mergeFeishuSnapshotState(
   if (snapshot.revision > 0 && current.revision > snapshot.revision) return current;
   let provisioning = current.provisioning;
   if (!provisioning && restoreProvisioning && snapshot.provisioning) {
+    const submitted = snapshot.provisioning.submitted === true;
     provisioning = {
-      phase: snapshot.state === "connecting" ? "connecting" : "qr",
+      phase: submitted || snapshot.state === "connecting" ? "connecting" : "qr",
       ...snapshot.provisioning,
       durationMs: Math.max(1, snapshot.provisioning.expiresAt - now),
-      expired: snapshot.provisioning.expiresAt <= now,
+      expired: !submitted && snapshot.provisioning.expiresAt <= now,
     };
   }
   return {
@@ -640,7 +692,15 @@ export function FeishuSettingsTab({ rpcCall }) {
     setFocusBotId(null);
   }, [focusBotId, model.bots]);
 
-  const startProvisioning = React.useCallback(async ({ replace = false } = {}) => {
+  const startProvisioning = React.useCallback(async ({
+    replace = false,
+    operation = FEISHU_REGISTRATION_OPERATIONS.PROVISION,
+    bot,
+  } = {}) => {
+    const repairing = operation === CALLBACK_REPAIR_OPERATION;
+    const botId = repairing ? bot?.botId ?? model.provisioning?.botId : undefined;
+    const botName = repairing ? bot?.bot?.name ?? model.provisioning?.botName : undefined;
+    if (repairing && !botId) return;
     setCredentialOpen(false);
     setCredentialError(null);
     setProvisionBusy(true);
@@ -649,16 +709,33 @@ export function FeishuSettingsTab({ rpcCall }) {
     setModel((current) => ({
       ...current,
       phase: current.phase === "loading" ? "ready" : current.phase,
-      provisioning: { phase: "creating" },
+      provisioning: {
+        phase: "creating",
+        operation,
+        ...(botId ? { botId } : {}),
+        ...(botName ? { botName } : {}),
+      },
     }));
     try {
       if (replace && previousAttemptId) {
-        await invoke(FEISHU_ENDPOINTS.cancelProvisioning, { attemptId: previousAttemptId });
+        // A Host restart intentionally drops its in-memory registration map.
+        // Replacing a stale browser attempt must still be able to start a new
+        // authoritative attempt; both controller start paths already
+        // supersede/deduplicate a still-live registration safely.
+        try {
+          await invoke(FEISHU_ENDPOINTS.cancelProvisioning, { attemptId: previousAttemptId });
+        } catch {
+          // Continue with begin. It is the source of truth for the new attempt.
+        }
       }
       const provision = normalizeProvisioning(await invoke(
-        FEISHU_ENDPOINTS.beginProvisioning,
-        { locale: "zh-CN" },
+        repairing ? FEISHU_ENDPOINTS.beginCallbackRepair : FEISHU_ENDPOINTS.beginProvisioning,
+        repairing ? { botId } : { locale: "zh-CN" },
       ));
+      if (repairing
+        && (provision.operation !== CALLBACK_REPAIR_OPERATION || provision.botId !== botId)) {
+        throw new Error("飞书服务返回了不匹配的卡片修复二维码");
+      }
       const timestamp = Date.now();
       setNow(timestamp);
       setModel((current) => ({
@@ -666,20 +743,36 @@ export function FeishuSettingsTab({ rpcCall }) {
         provisioning: {
           phase: "qr",
           ...provision,
+          ...(botName ? { botName } : {}),
           durationMs: Math.max(1, provision.expiresAt - timestamp),
           expired: false,
         },
       }));
-      announce("授权二维码已生成，请使用飞书扫码。");
+      announce(repairing
+        ? `${botName ?? "机器人"}的修复二维码已生成，请使用飞书扫码。`
+        : "授权二维码已生成，请使用飞书扫码。");
     } catch (error) {
       setModel((current) => ({
         ...current,
-        provisioning: { phase: "error", error: presentError(error) },
+        provisioning: {
+          phase: "error",
+          operation,
+          ...(botId ? { botId } : {}),
+          ...(botName ? { botName } : {}),
+          ...(replace && previousAttemptId ? { attemptId: previousAttemptId } : {}),
+          error: presentError(error),
+        },
       }));
     } finally {
       setProvisionBusy(false);
     }
-  }, [announce, invoke, model.provisioning?.attemptId]);
+  }, [
+    announce,
+    invoke,
+    model.provisioning?.attemptId,
+    model.provisioning?.botId,
+    model.provisioning?.botName,
+  ]);
 
   const bindCredentials = React.useCallback(async ({ identity, secret }) => {
     const snapshotVersion = workspaceFence.beginMutation();
@@ -705,23 +798,71 @@ export function FeishuSettingsTab({ rpcCall }) {
   }, [announce, invoke, loadStatus, mergeSnapshot, workspaceFence]);
 
   const cancelProvisioning = React.useCallback(async () => {
-    const attemptId = model.provisioning?.attemptId;
+    const activeProvision = model.provisioning;
+    const attemptId = activeProvision?.attemptId;
+    const repairing = isCallbackRepair(activeProvision);
+    const targetBot = repairing
+      ? model.bots.find((bot) => bot.botId === activeProvision?.botId)
+      : undefined;
     setProvisionBusy(true);
     try {
-      if (attemptId) await invoke(FEISHU_ENDPOINTS.cancelProvisioning, { attemptId });
+      const result = attemptId
+        ? normalizePollResult(await invoke(FEISHU_ENDPOINTS.cancelProvisioning, { attemptId }))
+        : null;
+      if (repairing && result) {
+        if (result.operation !== CALLBACK_REPAIR_OPERATION
+          || result.botId !== activeProvision.botId) {
+          throw new Error("飞书服务返回了不匹配的注册进度");
+        }
+        if (result.status === "connecting") {
+          setModel((current) => current.provisioning?.attemptId === attemptId
+            ? {
+                ...current,
+                provisioning: {
+                  ...current.provisioning,
+                  ...(result.provisioning ?? {}),
+                  phase: "connecting",
+                  submitted: true,
+                  expired: false,
+                },
+              }
+            : current);
+          announce("配置已提交，正在验证卡片按钮回调并重连此机器人；此阶段无法取消，其他机器人不会中断。");
+          return;
+        }
+        if (result.status === "connected") {
+          const targetBotName = targetBot?.bot.name ?? activeProvision.botName ?? "机器人";
+          setModel((current) => ({ ...current, provisioning: null }));
+          announce(`${targetBotName}的卡片按钮已修复。`);
+          if (activeProvision.botId) setFocusBotId(activeProvision.botId);
+          await loadStatus({ silent: true, restoreProvisioning: false });
+          return;
+        }
+      }
       setModel((current) => ({ ...current, provisioning: null }));
-      announce("已取消添加机器人。");
+      announce(repairing ? "已取消卡片按钮修复。" : "已取消添加机器人。");
       await loadStatus({ silent: true, restoreProvisioning: false });
-      scheduleAnimationFrame(() => addButtonRef.current?.focus(), "focus");
+      scheduleAnimationFrame(() => {
+        if (repairing && activeProvision.botId) {
+          cardRefs.current.get(activeProvision.botId)?.focus();
+        } else {
+          addButtonRef.current?.focus();
+        }
+      }, "focus");
     } catch (error) {
       setModel((current) => ({
         ...current,
-        provisioning: { phase: "error", attemptId, error: presentError(error) },
+        provisioning: {
+          ...activeProvision,
+          phase: "error",
+          attemptId,
+          error: presentError(error),
+        },
       }));
     } finally {
       setProvisionBusy(false);
     }
-  }, [announce, invoke, loadStatus, model.provisioning?.attemptId, scheduleAnimationFrame]);
+  }, [announce, invoke, loadStatus, model.bots, model.provisioning, scheduleAnimationFrame]);
 
   const countdownAttemptId = model.provisioning?.attemptId;
   const countdownPhase = model.provisioning?.phase;
@@ -758,27 +899,36 @@ export function FeishuSettingsTab({ rpcCall }) {
           { attemptId: provision.attemptId },
           controller.signal,
         ));
+        if (result.operation !== provision.operation
+          || (isCallbackRepair(provision) && result.botId !== provision.botId)) {
+          throw new Error("飞书服务返回了不匹配的注册进度");
+        }
         if (result.status === "connected") {
           const snapshot = await loadStatus({ signal: controller.signal, silent: true, restoreProvisioning: false });
-          const newBot = snapshot?.bots.find((bot) => bot.botId === result.botId);
+          const targetBot = snapshot?.bots.find((bot) => bot.botId === result.botId);
           if (!snapshot) {
-            throw new Error("机器人已经创建，但暂时无法确认连接状态");
+            throw new Error(isCallbackRepair(provision)
+              ? "卡片按钮已更新，但暂时无法确认机器人连接状态"
+              : "机器人已经创建，但暂时无法确认连接状态");
           }
-          if (!newBot?.connected) {
+          if (!targetBot?.connected) {
             setModel((current) => current.provisioning?.attemptId === provision.attemptId
               ? { ...current, provisioning: { ...current.provisioning, phase: "connecting" } }
               : current);
             return;
           }
           setModel((current) => ({ ...current, provisioning: null }));
-          announce(newBot
-            ? `${newBot.bot.name}已连接，可以在飞书中开始聊天。`
-            : "新飞书机器人已连接，可以开始聊天。");
+          announce(isCallbackRepair(provision)
+            ? `${targetBot.bot.name}的卡片按钮已修复。`
+            : targetBot
+              ? `${targetBot.bot.name}已连接，可以在飞书中开始聊天。`
+              : "新飞书机器人已连接，可以开始聊天。");
           if (result.botId) setFocusBotId(result.botId);
           return;
         }
         if (result.status === "failed") {
-          const error = new Error(result.message ?? "飞书应用创建失败");
+          const error = new Error(result.message
+            ?? (isCallbackRepair(provision) ? "飞书卡片按钮修复失败" : "飞书应用创建失败"));
           error.code = "FEISHU_PROVISION_FAILED";
           throw error;
         }
@@ -806,6 +956,7 @@ export function FeishuSettingsTab({ rpcCall }) {
           ? {
               ...current,
               provisioning: {
+                ...current.provisioning,
                 phase: "error",
                 attemptId: provision.attemptId,
                 error: presentError(error),
@@ -837,6 +988,21 @@ export function FeishuSettingsTab({ rpcCall }) {
       return next;
     });
   }, []);
+
+  const repairCallback = React.useCallback((connection) => {
+    if (model.provisioning) return;
+    setRemoveTargetId(null);
+    setBotError(connection.botId, null);
+    setTestNoticesByBot((current) => {
+      const next = { ...current };
+      delete next[connection.botId];
+      return next;
+    });
+    void startProvisioning({
+      operation: CALLBACK_REPAIR_OPERATION,
+      bot: connection,
+    });
+  }, [model.provisioning, setBotError, startProvisioning]);
 
   const reconnectOneBot = React.useCallback(async (connection) => {
     const { botId, bot } = connection;
@@ -938,27 +1104,48 @@ export function FeishuSettingsTab({ rpcCall }) {
   }, [announce, invoke, loadStatus, mergeSnapshot, scheduleAnimationFrame, setBotBusy, setBotError, workspaceFence]);
 
   const provision = model.provisioning;
+  const provisionBot = provision?.botId
+    ? model.bots.find((bot) => bot.botId === provision.botId)
+      ?? { botId: provision.botId, bot: { name: provision.botName ?? "此机器人" } }
+    : undefined;
+  const restartProvisioning = ({ replace = false } = {}) => startProvisioning({
+    replace,
+    operation: provision?.operation ?? FEISHU_REGISTRATION_OPERATIONS.PROVISION,
+    bot: provisionBot,
+  });
   let provisionContent = null;
   if (provision?.phase === "creating") {
-    provisionContent = h(ProvisionProgress, { phase: "creating", busy: provisionBusy });
+    provisionContent = h(ProvisionProgress, {
+      phase: "creating", provision, busy: provisionBusy,
+    });
   } else if (provision?.phase === "qr") {
     provisionContent = h(QrPane, {
       provision, now,
-      onRefresh: () => void startProvisioning({ replace: true }),
+      onRefresh: () => void restartProvisioning({ replace: true }),
       onCancel: () => void cancelProvisioning(),
       busy: provisionBusy || model.phase !== "ready",
     });
   } else if (provision?.phase === "connecting") {
     provisionContent = h(ProvisionProgress, {
       phase: "connecting",
-      onCancel: () => void cancelProvisioning(),
+      provision,
+      onCancel: isCallbackRepair(provision) ? undefined : () => void cancelProvisioning(),
       busy: provisionBusy,
     });
   } else if (provision?.phase === "error") {
     provisionContent = h(ProvisionError, {
       error: provision.error,
-      onRetry: () => void startProvisioning({ replace: Boolean(provision.attemptId) }),
-      onCancel: () => void cancelProvisioning(),
+      provision,
+      onRetry: () => void restartProvisioning({ replace: Boolean(provision.attemptId) }),
+      onCancel: () => {
+        const targetBotId = provision.botId;
+        setModel((current) => ({ ...current, provisioning: null }));
+        void loadStatus({ silent: true, restoreProvisioning: false });
+        scheduleAnimationFrame(() => {
+          if (targetBotId) cardRefs.current.get(targetBotId)?.focus();
+          else addButtonRef.current?.focus();
+        }, "focus");
+      },
       busy: provisionBusy,
     });
   }
@@ -1026,7 +1213,9 @@ export function FeishuSettingsTab({ rpcCall }) {
                   errorsByBot,
                   testNoticesByBot,
                   removeTargetId,
+                  provisioning: provision,
                   onReconnect: (bot) => void reconnectOneBot(bot),
+                  onRepairCallback: repairCallback,
                   onWorkspaceSave: saveWorkspace,
                   onRequestRemove: requestRemove,
                   onConfirmRemove: (bot) => void confirmRemove(bot),

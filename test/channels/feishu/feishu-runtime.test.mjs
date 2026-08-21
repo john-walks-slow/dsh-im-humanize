@@ -39,8 +39,9 @@ class FakeWSClient {
     FakeWSClient.instances.push(this);
   }
 
-  async start() {
+  async start({ eventDispatcher } = {}) {
     this.state = 'connecting';
+    this.dispatcher = eventDispatcher;
   }
 
   becomeReady() {
@@ -201,4 +202,155 @@ test('FeishuRuntime fails closed when Harness is unavailable', async () => {
   assert.equal(runtime.status.ready, false);
   assert.equal(runtime.status.feishuLongConnectionState, 'failed');
   assert.equal(runtime.status.lastError, 'Harness unavailable');
+});
+
+async function startRuntimeForProbe(options = {}) {
+  const runtime = new FeishuRuntime({
+    lark: fakeLark(),
+    botId: 'bot_probe',
+    appId: 'cli_probe',
+    appSecret: 'secret',
+    ownerOpenIds: ['ou_owner'],
+    harness: { async ensureRunning() {} },
+    state: { hasSeen: () => false },
+    ...options,
+  });
+  const starting = runtime.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  FakeWSClient.instances[0].becomeReady();
+  await starting;
+  return runtime;
+}
+
+function probeAction({ messageId = 'message-1', nonce, operatorOpenId = 'ou_owner' } = {}) {
+  return {
+    operator: { open_id: operatorOpenId },
+    action: { value: { action: 'repair_verify', nonce } },
+    context: { open_message_id: messageId },
+  };
+}
+
+test('FeishuRuntime resolves a card-action probe only for the exact message, nonce and operator', async () => {
+  const runtime = await startRuntimeForProbe();
+  let settled = false;
+  const probe = runtime.beginCardActionProbe({
+    expectedOperatorOpenId: 'ou_owner',
+    timeoutMs: 1_000,
+  }).then((value) => {
+    settled = true;
+    return value;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const request = FakeClient.sent[0];
+  assert.deepEqual(request.params, { receive_id_type: 'open_id' });
+  assert.equal(request.data.receive_id, 'ou_owner');
+  assert.equal(request.data.msg_type, 'interactive');
+  const card = JSON.parse(request.data.content);
+  const behavior = card.body.elements[1].columns[0].elements[0].behaviors[0];
+  assert.equal(behavior.value.action, 'repair_verify');
+  const nonce = behavior.value.nonce;
+  assert.match(nonce, /^[A-Za-z0-9_-]{16,128}$/);
+
+  const dispatch = FakeWSClient.instances[0].dispatcher.handlers['card.action.trigger'];
+  dispatch(probeAction({ messageId: 'message-other', nonce }));
+  dispatch(probeAction({ nonce: `${nonce}x` }));
+  dispatch(probeAction({ nonce, operatorOpenId: 'ou_other' }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+
+  dispatch(probeAction({ nonce }));
+  assert.deepEqual(await probe, {
+    verified: true,
+    messageId: 'message-1',
+    operatorOpenId: 'ou_owner',
+  });
+  assert.equal(runtime.status.cardActionsReceived, 4);
+  assert.equal(runtime.status.cardActionProbesVerified, 1);
+  assert.equal(FakeClient.sent.length, 2);
+  assert.deepEqual(FakeClient.sent[1], {
+    params: { receive_id_type: 'open_id' },
+    data: {
+      receive_id: 'ou_owner',
+      msg_type: 'text',
+      content: JSON.stringify({
+        text: '✅ 修复完成：已实测收到 card.action.trigger，菜单按钮现在可用。',
+      }),
+    },
+  });
+  await runtime.stop();
+});
+
+test('FeishuRuntime times out and aborts pending card-action probes with stable codes', async () => {
+  const runtime = await startRuntimeForProbe();
+  await assert.rejects(
+    runtime.beginCardActionProbe({ expectedOperatorOpenId: 'ou_owner', timeoutMs: 10 }),
+    (error) => error?.code === 'card_action_probe_timeout',
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(
+    JSON.parse(FakeClient.sent.at(-1).data.content).text,
+    /修复验证超时.*不能确认按钮已修复.*不要重复授权/,
+  );
+
+  const pending = runtime.beginCardActionProbe({
+    expectedOperatorOpenId: 'ou_owner',
+    timeoutMs: 1_000,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await runtime.stop();
+  await assert.rejects(pending, (error) => error?.code === 'abort');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(
+    JSON.parse(FakeClient.sent.at(-1).data.content).text,
+    /修复验证中断.*不能确认修复成功.*不要重复授权/,
+  );
+});
+
+test('FeishuRuntime reports probe-card send failure without masking its stable error', async () => {
+  const runtime = await startRuntimeForProbe();
+  const client = FakeClient.instances[0];
+  client.im.v1.message.create = async (payload) => {
+    FakeClient.sent.push(payload);
+    if (payload.data.msg_type === 'interactive') return { code: 230001 };
+    return { code: 0, data: { message_id: 'failure-notice' } };
+  };
+
+  await assert.rejects(
+    runtime.beginCardActionProbe({ expectedOperatorOpenId: 'ou_owner', timeoutMs: 1_000 }),
+    (error) => error?.code === 'card_action_probe_send_failed',
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(FakeClient.sent.length, 2);
+  assert.match(
+    JSON.parse(FakeClient.sent[1].data.content).text,
+    /修复验证失败.*不能确认 card\.action\.trigger 已恢复.*不要重复授权/,
+  );
+  await runtime.stop();
+});
+
+test('FeishuRuntime rejects imprecise probe operators and probes before connection', async () => {
+  const runtime = new FeishuRuntime({
+    lark: fakeLark(),
+    botId: 'bot_probe',
+    appId: 'cli_probe',
+    appSecret: 'secret',
+    ownerOpenIds: ['*'],
+    harness: { async ensureRunning() {} },
+    state: { hasSeen: () => false },
+  });
+  await assert.rejects(
+    runtime.beginCardActionProbe({ expectedOperatorOpenId: 'ou_owner' }),
+    (error) => error?.code === 'card_action_probe_unavailable',
+  );
+
+  const starting = runtime.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  FakeWSClient.instances[0].becomeReady();
+  await starting;
+  await assert.rejects(
+    runtime.beginCardActionProbe({ expectedOperatorOpenId: '*' }),
+    /precise Feishu operator/,
+  );
+  await runtime.stop();
 });

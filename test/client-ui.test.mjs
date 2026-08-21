@@ -232,7 +232,7 @@ test('Feishu bot cards place the application identifier under the bot name', asy
   assert.match(markup, /<button[^>]*aria-label="检查连接今天是牢梁"[^>]*><span>检查连接<\/span><\/button>/);
   assert.match(markup, /class="bxf-connectedFooter dim-cardFooter"/);
   assert.doesNotMatch(markup, /dim-cardSummary|长连接运行正常/);
-  assert.equal((markup.match(/dim-cardAction(?: |")/g) ?? []).length, 2);
+  assert.equal((markup.match(/dim-cardAction(?: |")/g) ?? []).length, 3);
   assert.doesNotMatch(markup, /连接状态：|bxf-divider/);
   assert.doesNotMatch(markup, /custom-bot-avatar/);
   assert.equal((markup.match(/class="bxf-metric dim-botMetric"/g) ?? []).length, 2);

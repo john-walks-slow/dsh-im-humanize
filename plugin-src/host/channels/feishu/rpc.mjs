@@ -21,7 +21,16 @@ const REGISTRATION_STATES = new Set([
   'idle', 'starting', 'qr_ready', 'polling', 'slow_down',
   'domain_switched', 'saving', 'succeeded', 'expired', 'cancelled', 'error',
 ]);
+const REGISTRATION_OPERATIONS = new Set(['provision', 'callback_repair']);
+const CALLBACK_REPAIR_OPERATION = 'callback_repair';
+const OFFICIAL_REGISTRATION_HOSTS = new Set([
+  'accounts.feishu.cn',
+  'accounts.larksuite.com',
+  'open.feishu.cn',
+  'open.larksuite.com',
+]);
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const SAFE_FEISHU_APP_ID = /^cli_[A-Za-z0-9_-]+$/;
 
 const PUBLIC_ERROR_MESSAGES = Object.freeze({
   abort: 'Registration was cancelled.',
@@ -35,6 +44,20 @@ const PUBLIC_ERROR_MESSAGES = Object.freeze({
   state_cleanup_failed: 'Unable to remove the bot session data. Please retry.',
   deletion_pending: 'Bot deletion is incomplete. Retry removal to finish cleanup.',
   missing_credentials: 'The bot credentials are missing. Delete it and scan again.',
+  repair_app_mismatch: 'The authorized Feishu app does not match the selected bot.',
+  repair_owner_missing: 'Feishu did not return the authorizing account identity.',
+  repair_domain_mismatch: 'The authorized Feishu tenant does not match the selected bot.',
+  repair_owner_mismatch: 'The authorizing Feishu account is not an owner of the selected bot.',
+  repair_credentials_invalid: 'Feishu returned credentials that could not be verified for the selected bot.',
+  repair_bot_mismatch: 'The verified Feishu bot does not match the selected bot.',
+  repair_target_changed: 'The selected bot changed while repair was in progress. Start the repair again.',
+  credential_update_failed: 'Unable to store the repaired Feishu credentials.',
+  credential_state_unknown: 'The repaired Feishu credentials could not be confirmed after saving.',
+  repair_connection_failed: 'The callback update was accepted, but the selected bot could not reconnect.',
+  card_action_probe_unavailable: 'The selected bot is not connected, so its card button cannot be verified.',
+  card_action_probe_send_failed: 'The callback update was accepted, but the verification card could not be sent.',
+  card_action_probe_timeout: 'Feishu accepted the update, but the card button was not verified in time. Start the repair again and click the test button within two minutes.',
+  card_action_probe_failed: 'Feishu accepted the update, but the card button verification failed.',
 });
 
 const POLL_STATUS_BY_REGISTRATION = Object.freeze({
@@ -81,6 +104,9 @@ function publicRegistration(registration) {
     ? registration.attempt
     : (finiteNumber(registration.attempt) ?? 0);
   const result = { state, attempt };
+  result.operation = REGISTRATION_OPERATIONS.has(registration.operation)
+    ? registration.operation
+    : 'provision';
   const updatedAt = finiteNumber(registration.updatedAt);
   const expiresAt = finiteNumber(registration.expiresAt);
   const remainingSeconds = finiteNumber(registration.remainingSeconds);
@@ -96,6 +122,40 @@ function publicRegistration(registration) {
   const error = publicError(registration.error);
   if (error) result.error = error;
   return result;
+}
+
+function safeRegistrationUrl(value, operation, expectedHost) {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:'
+      || !OFFICIAL_REGISTRATION_HOSTS.has(url.hostname)
+      || url.port
+      || url.username
+      || url.password) return undefined;
+    if (operation === CALLBACK_REPAIR_OPERATION) {
+      const clientIds = url.searchParams.getAll('clientID');
+      const transportKinds = url.searchParams.getAll('tp');
+      const addons = url.searchParams.getAll('addons');
+      const hasPlaceholder = [...url.searchParams.values()].some((item) => (
+        item.includes('{{') || item.includes('}}')
+      ));
+      if (clientIds.length !== 1
+        || transportKinds.length !== 1
+        || transportKinds[0] !== 'sdk'
+        || !SAFE_FEISHU_APP_ID.test(clientIds[0] ?? '')
+        || url.hostname !== expectedHost
+        || url.searchParams.has('createOnly')
+        || addons.length !== 1
+        || !addons[0]?.trim()
+        || hasPlaceholder) {
+        return undefined;
+      }
+    }
+    return url.toString();
+  } catch {
+    return undefined;
+  }
 }
 
 function connectionFacts(connection) {
@@ -151,15 +211,35 @@ async function qrCodeDataUrl(verificationUrl) {
   });
 }
 
-async function publicProvisioning(registration, encodeQr) {
-  if (!registration.qrCodeUrl) return undefined;
-  return {
+async function publicProvisioning(registration, encodeQr, expectedHost) {
+  const verificationUrl = safeRegistrationUrl(
+    registration.qrCodeUrl,
+    registration.operation,
+    expectedHost,
+  );
+  const projection = {
     attemptId: String(registration.attempt),
-    verificationUrl: registration.qrCodeUrl,
-    qrCodeDataUrl: await encodeQr(registration.qrCodeUrl),
+    operation: registration.operation,
+    ...(registration.botId ? { botId: registration.botId } : {}),
     expiresAt: registration.expiresAt ?? Date.now() + (5 * 60_000),
     pollIntervalMs: Math.max(800, Math.min(10_000, (registration.pollIntervalSeconds ?? 1.8) * 1000)),
   };
+  if (verificationUrl) {
+    return {
+      ...projection,
+      verificationUrl,
+      qrCodeDataUrl: await encodeQr(verificationUrl),
+    };
+  }
+  // RegistrationManager deliberately removes the device URL as soon as the
+  // remote update is committed. Keep only the opaque attempt identity so a
+  // browser reload can resume polling the non-cancellable verification phase.
+  if (registration.state === 'saving'
+    && registration.operation === CALLBACK_REPAIR_OPERATION
+    && registration.botId) {
+    return { ...projection, submitted: true };
+  }
+  return undefined;
 }
 
 function publicBotEntry(entry) {
@@ -188,7 +268,19 @@ export async function toPublicFeishuStatus(status, { encodeQr = qrCodeDataUrl } 
   const registration = publicRegistration(source.registration);
   const facts = connectionFacts(source.connection);
   const connected = source.connected === true || facts.connected;
-  const provisioning = await publicProvisioning(registration, encodeQr);
+  const repairTarget = registration.operation === CALLBACK_REPAIR_OPERATION
+    && registration.botId
+    && Array.isArray(source.bots)
+    ? source.bots.find((entry) => entry?.botId === registration.botId)
+    : undefined;
+  const expectedRegistrationHost = repairTarget?.bot?.domain === 'lark'
+    ? 'open.larksuite.com'
+    : 'open.feishu.cn';
+  const provisioning = await publicProvisioning(
+    registration,
+    encodeQr,
+    expectedRegistrationHost,
+  );
   const error = publicError(source.error) ?? registration.error ?? null;
   const bots = Array.isArray(source.bots)
     ? source.bots.map(publicBotEntry).filter(Boolean)
@@ -240,6 +332,11 @@ function validPayload(endpoint, payload) {
       return 'replaceAttemptId must be a valid opaque id.';
     }
     return null;
+  }
+  if (endpoint === FEISHU_ENDPOINTS.beginCallbackRepair) {
+    return hasOnlyKeys(payload, new Set(['botId'])) && safeOpaqueId(payload.botId)
+      ? null
+      : 'Callback repair requires a single valid botId.';
   }
   if (endpoint === FEISHU_ENDPOINTS.bindCredentials) {
     return hasOnlyKeys(payload, new Set(['appId', 'appSecret']))
@@ -386,6 +483,20 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
         value = (await toPublicFeishuStatus(ready, { encodeQr: cachedEncodeQr })).provisioning;
         if (!value) throw new Error('Provisioning did not produce a QR code.');
         attemptQr.set(attemptId, value.verificationUrl);
+      } else if (endpoint === FEISHU_ENDPOINTS.beginCallbackRepair) {
+        if (typeof controller.startCallbackRepair !== 'function') {
+          throw new Error('Feishu callback repair is unavailable.');
+        }
+        const started = await controller.startCallbackRepair(payload.botId);
+        const attemptId = String(publicRegistration(started?.registration).attempt);
+        const ready = await waitForQr(controller, started, attemptId, signal);
+        value = (await toPublicFeishuStatus(ready, { encodeQr: cachedEncodeQr })).provisioning;
+        if (!value
+          || value.operation !== CALLBACK_REPAIR_OPERATION
+          || value.botId !== payload.botId) {
+          throw new Error('Callback repair did not produce a safe QR code.');
+        }
+        attemptQr.set(attemptId, value.verificationUrl);
       } else if (endpoint === FEISHU_ENDPOINTS.pollProvisioning) {
         const current = await statusForRegistration(controller, payload.attemptId);
         if (!current || !sameAttempt(current, payload.attemptId)) {
@@ -395,6 +506,7 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
         const connection = await toPublicFeishuStatus(current, { encodeQr: cachedEncodeQr });
         value = {
           status: pollStatus(current),
+          operation: registration.operation,
           ...(registration.botId ? { botId: registration.botId } : {}),
           ...(connection.provisioning ? { provisioning: connection.provisioning } : {}),
           ...(registration.botId && connection.connected ? { connection } : {}),
@@ -412,12 +524,34 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
         }
         const multi = typeof controller.registrationStatus === 'function';
         const registration = publicRegistration(current.registration);
-        if (!multi && registration.state === 'saving') await controller.disconnect();
-        else await controller.cancelRegistration(payload.attemptId);
-        const url = attemptQr.get(payload.attemptId);
-        if (url) qrCache.delete(url);
-        attemptQr.delete(payload.attemptId);
-        value = { status: 'failed', message: 'Registration was cancelled.' };
+        let after;
+        if (!multi && registration.state === 'saving') {
+          after = await controller.disconnect();
+        } else {
+          after = await controller.cancelRegistration(payload.attemptId);
+        }
+        const afterRegistration = publicRegistration(after?.registration);
+        if (registration.operation === CALLBACK_REPAIR_OPERATION
+          && registration.state === 'saving'
+          && ['saving', 'succeeded'].includes(afterRegistration.state)) {
+          value = {
+            status: pollStatus(after),
+            operation: afterRegistration.operation,
+            ...(afterRegistration.botId ? { botId: afterRegistration.botId } : {}),
+            message: 'Callback repair was already submitted and is still being verified.',
+          };
+        }
+        if (value?.status !== 'connecting') {
+          const url = attemptQr.get(payload.attemptId);
+          if (url) qrCache.delete(url);
+          attemptQr.delete(payload.attemptId);
+          value ??= {
+            status: 'failed',
+            operation: registration.operation,
+            ...(registration.botId ? { botId: registration.botId } : {}),
+            message: 'Registration was cancelled.',
+          };
+        }
       } else if (endpoint === FEISHU_ENDPOINTS.bindCredentials) {
         if (typeof controller.bindCredentials !== 'function') {
           throw new Error('Credential binding is unavailable');
