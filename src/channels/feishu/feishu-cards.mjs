@@ -2,13 +2,12 @@
  * Feishu interactive-card builders for the dsh-im menu / session-list /
  * workspace-list UX. All builders return the JSON string the
  * `im.message.create` API expects as `content` for `msg_type: interactive`
- * (card schema 2.0; buttons are plain body elements — the `action` container
- * is gone in V2).
+ * (card schema 2.0; callback buttons live inside a column_set/column layout).
  *
- * Buttons carry a small `{ action }` value object that `card.action.trigger`
- * events echo back (when the app subscribes that event); every button also
- * carries a numeric label so the number-reply fallback stays usable without
- * button callbacks.
+ * Buttons carry a small `{ action }` callback behavior that
+ * `card.action.trigger` events echo back (when the app subscribes that
+ * callback); every button also carries a numeric label so the number-reply
+ * fallback stays usable without button callbacks.
  */
 
 export const MENU_PAGE_SIZE = 10;
@@ -23,10 +22,20 @@ function markdown(content) {
 
 function button(content, actionValue) {
   return {
-    tag: 'button',
-    text: plainText(content),
-    type: 'default',
-    value: { action: actionValue },
+    tag: 'column_set',
+    flex_mode: 'none',
+    columns: [{
+      tag: 'column',
+      width: 'weighted',
+      weight: 1,
+      elements: [{
+        tag: 'button',
+        text: plainText(content),
+        type: 'default',
+        width: 'fill',
+        behaviors: [{ type: 'callback', value: { action: actionValue } }],
+      }],
+    }],
   };
 }
 
@@ -66,7 +75,7 @@ export function sessionListCard(workspace, sessions, page, total) {
   const elements = [
     { tag: 'div', text: markdown(`**工作区**：\`${workspace}\`\n共 **${total}** 个会话${total > MENU_PAGE_SIZE ? `（第 ${page + 1}/${pageCount} 页）` : ''}`) },
     ...slice.map((session, offset) => button(
-      `${start + offset + 1}. ${safeTitle(session.title)}`,
+      `${offset + 1}. ${safeTitle(session.title)}`,
       `use:${session.sessionId}`,
     )),
   ];

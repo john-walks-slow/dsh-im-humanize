@@ -131,7 +131,7 @@ export class FeishuHarnessBridge {
   #signal;
   /** Number-tappable menus: conversation key → menu state. */
   #menus = new Map();
-  /** Interactive-card message id → { key, chatId } for button callbacks. */
+  /** Interactive-card message id → route context for button callbacks. */
   #cardKeys = new Map();
 
   constructor({
@@ -514,9 +514,15 @@ export class FeishuHarnessBridge {
    * session binding, workspace switches or other card actions.
    */
   onCardAction(event) {
-    const operatorOpenId = nonEmptyString(event?.operator?.operator_id?.open_id)
+    const operatorOpenId = nonEmptyString(event?.operator?.open_id)
+      ?? nonEmptyString(event?.operator?.user_id)
+      // Keep accepting the legacy nested shape while preferring the current
+      // card.action.trigger v2 payload used by the official SDK.
+      ?? nonEmptyString(event?.operator?.operator_id?.open_id)
       ?? nonEmptyString(event?.operator?.operator_id?.user_id);
-    if (operatorOpenId === null || !this.#allowedSenderOpenIds.has(operatorOpenId)) {
+    const operatorAllowed = operatorOpenId !== null
+      && (this.#allowedSenderOpenIds.has('*') || this.#allowedSenderOpenIds.has(operatorOpenId));
+    if (!operatorAllowed) {
       this.#logger.warn?.('[dsh-feishu] ignoring card action from an unallowed sender');
       return Promise.resolve();
     }
@@ -534,10 +540,10 @@ export class FeishuHarnessBridge {
     });
   }
 
-  async #handleCardAction(action, { chatId, key }) {
+  async #handleCardAction(action, { chatId, key, sessionWorkspace = null }) {
     if (action === 'sessions' || /^sessions:\d+$/.test(action)) {
       const page = action === 'sessions' ? 0 : Number(action.slice('sessions:'.length));
-      await this.#showSessions({ chatId, key }, null, page);
+      await this.#showSessions({ chatId, key }, sessionWorkspace, page);
       return;
     }
     if (action === 'workspaces') {
@@ -635,7 +641,12 @@ export class FeishuHarnessBridge {
         kind: 'sessions',
         sessions: sessions.slice(safePage * MENU_PAGE_SIZE, (safePage + 1) * MENU_PAGE_SIZE),
       });
-      await this.#sendCard(chatId, sessionListCard(workspace, sessions, safePage, sessions.length), { key });
+      await this.#sendCard(chatId, sessionListCard(workspace, sessions, safePage, sessions.length), {
+        key,
+        // Keep the canonical selector result for later page callbacks. The
+        // list response's workspace is display data and is not authoritative.
+        sessionWorkspace: resolved.workspace,
+      });
     } catch (error) {
       this.#logger.warn?.('[dsh-feishu] session list failed:', error.message);
       await this.#send(chatId, '暂时无法获取会话列表，请稍后重试。');
@@ -682,7 +693,13 @@ export class FeishuHarnessBridge {
     }
     const messageId = nonEmptyString(response?.data?.message_id);
     if (options.key && messageId) {
-      this.#cardKeys.set(messageId, { key: options.key, chatId });
+      this.#cardKeys.set(messageId, {
+        key: options.key,
+        chatId,
+        sessionWorkspace: typeof options.sessionWorkspace === 'string' && options.sessionWorkspace
+          ? options.sessionWorkspace
+          : null,
+      });
       if (this.#cardKeys.size > 200) {
         const oldest = this.#cardKeys.keys().next().value;
         if (oldest !== undefined) this.#cardKeys.delete(oldest);

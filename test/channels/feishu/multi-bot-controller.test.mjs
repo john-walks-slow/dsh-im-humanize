@@ -148,6 +148,23 @@ async function completeScan(fx, result) {
   return fx.controller.registrationStatus(attemptId);
 }
 
+test('QR registration separates events from card callbacks', async () => {
+  const fx = fixture({ createBotIds: ['bot_callbacks'] });
+  const started = fx.controller.startRegistration();
+  const attemptId = started.registration.attempt;
+  await waitFor(() => fx.registrationRuns.length === 1);
+  const run = fx.registrationRuns.shift();
+  assert.deepEqual(run.options.addons.events.items.tenant, ['im.message.receive_v1']);
+  assert.deepEqual(run.options.addons.callbacks.items, ['card.action.trigger']);
+  run.options.onQRCodeReady({ url: 'https://accounts.feishu.cn/callbacks', expireIn: 60 });
+  run.resolve({
+    client_id: 'cli_callbacks', client_secret: 'callbacks-secret',
+    user_info: { open_id: 'ou_callbacks', tenant_brand: 'feishu' },
+  });
+  await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'succeeded');
+  await fx.controller.close();
+});
+
 test('manual Feishu credentials are verified, stored host-side, and use app visibility for access', async () => {
   const fx = fixture({ createBotIds: ['bot_manual'] });
 

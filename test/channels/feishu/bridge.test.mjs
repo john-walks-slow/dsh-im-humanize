@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FeishuHarnessBridge } from '../../../src/channels/feishu/bridge.mjs';
@@ -1897,20 +1897,36 @@ function cardClient(onSend) {
 
 function cardActionEvent(messageId, action, operatorOpenId) {
   return {
-    operator: { operator_id: { open_id: operatorOpenId } },
+    operator: { open_id: operatorOpenId },
     action: { value: { action } },
     context: { open_message_id: messageId },
   };
 }
 
-function useActionsFromCard(content) {
-  const values = [];
-  for (const element of content.body.elements) {
-    if (element.tag === 'button' && typeof element.value?.action === 'string' && element.value.action.startsWith('use:')) {
-      values.push(element.value.action.slice('use:'.length));
+function buttonsFromCard(content) {
+  const buttons = [];
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
     }
-  }
-  return values;
+    if (!value || typeof value !== 'object') return;
+    if (value.tag === 'button') buttons.push(value);
+    for (const child of Object.values(value)) visit(child);
+  };
+  visit(content.body?.elements);
+  return buttons;
+}
+
+function callbackAction(button) {
+  return button.behaviors?.find((behavior) => behavior?.type === 'callback')?.value?.action;
+}
+
+function useActionsFromCard(content) {
+  return buttonsFromCard(content)
+    .map(callbackAction)
+    .filter((action) => typeof action === 'string' && action.startsWith('use:'))
+    .map((action) => action.slice('use:'.length));
 }
 
 function sessionsHarness(count) {
@@ -1953,6 +1969,13 @@ test('card buttons from an unallowed sender are ignored', async () => {
   await bridge.onCardAction(cardActionEvent('om_card_1', 'new', 'ou_evil'));
   await bridge.waitForIdle();
   assert.equal(fixture.sessions.size, 0, 'unallowed card operator must not act');
+
+  await bridge.onCardAction({
+    action: { value: { action: 'new' } },
+    context: { open_message_id: 'om_card_1' },
+  });
+  await bridge.waitForIdle();
+  assert.equal(sent.length, 1, 'a card action without an operator must fail closed');
 });
 
 test('card buttons from an allowed sender work', async () => {
@@ -1978,6 +2001,26 @@ test('card buttons from an allowed sender work', async () => {
   assert.equal(sent.length, 2, 'allowed operator click should send a reply');
 });
 
+test('card buttons honor the wildcard sender allowlist', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async (outgoing) => sent.push(outgoing)),
+    channel: {},
+    harness: sessionsHarness(3),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['*']),
+  });
+
+  await bridge.accept(event('menu-open-wildcard', '/m', { senderOpenId: 'ou_any_user' }));
+  await bridge.waitForIdle();
+  await bridge.onCardAction(cardActionEvent('om_card_1', 'status', 'ou_another_user'));
+  await bridge.waitForIdle();
+
+  assert.equal(sent.length, 2, 'wildcard access must apply to card callbacks too');
+});
+
 function cards(messages) { return messages.filter((m) => m.msgType === 'interactive'); }
 
 test('session list paginates by page number across 25 sessions', async () => {
@@ -1998,6 +2041,11 @@ test('session list paginates by page number across 25 sessions', async () => {
   await bridge.waitForIdle();
   assert.equal(cards(sent).length, 1);
   const page0 = cards(sent).at(-1).content;
+  const firstLayout = page0.body.elements.find((element) => element.tag === 'column_set');
+  const firstButton = firstLayout?.columns?.[0]?.elements?.[0];
+  assert.equal(firstButton?.tag, 'button');
+  assert.equal(Object.hasOwn(firstButton, 'value'), false, 'V2 buttons must not use the legacy value field');
+  assert.equal(callbackAction(firstButton), 'use:session-01');
   assert.equal(useActionsFromCard(page0).length, 10);
   assert.equal(useActionsFromCard(page0)[0], 'session-01');
 
@@ -2013,4 +2061,71 @@ test('session list paginates by page number across 25 sessions', async () => {
   const page1 = cards(sent).at(-1).content;
   assert.equal(useActionsFromCard(page1).length, 10);
   assert.equal(useActionsFromCard(page1)[0], 'session-11');
+});
+
+test('number replies on a later session page use page-local labels', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async (outgoing) => sent.push(outgoing)),
+    channel: {},
+    harness: sessionsHarness(25),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('sessions-number-open', '/sessionlist', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  await bridge.onCardAction(cardActionEvent('om_card_1', 'sessions:2', 'ou_owner'));
+  await bridge.waitForIdle();
+
+  const page2Buttons = buttonsFromCard(cards(sent).at(-1).content);
+  assert.match(page2Buttons[0].text.content, /^1\. Session 21$/);
+
+  await bridge.accept(event('sessions-number-pick', '1', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.match(JSON.parse(sent.at(-1).content).text, /ID：session-21/);
+});
+
+test('session pagination preserves an explicitly selected workspace', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const workspaceARaw = join(tmpdir(), `dsh-im-card-current-${process.pid}`);
+  const workspaceBRaw = join(tmpdir(), `dsh-im-card-selected-${process.pid}`);
+  mkdirSync(workspaceARaw, { recursive: true });
+  mkdirSync(workspaceBRaw, { recursive: true });
+  const workspaceA = realpathSync(workspaceARaw);
+  const workspaceB = realpathSync(workspaceBRaw);
+  const sessionSet = (prefix) => Array.from({ length: 25 }, (_, index) => ({
+    sessionId: `${prefix}-${String(index + 1).padStart(2, '0')}`,
+    title: `${prefix} Session ${index + 1}`,
+  }));
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async (outgoing) => sent.push(outgoing)),
+    channel: {},
+    harness: {
+      ensureRunning: async () => true,
+      currentWorkspace: () => workspaceA,
+      listWorkspaces: async () => [workspaceA, workspaceB],
+      listWorkspaceSessions: async (workspace) => ({
+        workspace,
+        sessions: workspace === workspaceB ? sessionSet('selected') : sessionSet('current'),
+      }),
+      bindWorkspaceSession: async (_key, sessionId) => ({ sessionId, title: sessionId }),
+      switchWorkspace: async (path) => path,
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('selected-workspace-open', '/sessionlist 2', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.equal(useActionsFromCard(cards(sent).at(-1).content)[0], 'selected-01');
+
+  await bridge.onCardAction(cardActionEvent('om_card_1', 'sessions:1', 'ou_owner'));
+  await bridge.waitForIdle();
+  assert.equal(useActionsFromCard(cards(sent).at(-1).content)[0], 'selected-11');
+  assert.match(JSON.stringify(cards(sent).at(-1).content), new RegExp(workspaceB.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
