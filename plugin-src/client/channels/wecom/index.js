@@ -4,6 +4,11 @@ import { WecomLogoGlyph } from '../../channel-logos.js';
 import { CredentialActionIcon, CredentialBindingPanel, QrActionIcon } from '../../credential-binding.js';
 import { h } from '../../i18n.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
+import {
+  AgentPresetCatalogContext,
+  AgentPresetEditor,
+  EMPTY_AGENT_PRESET_CATALOG,
+} from '../../agent-preset.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import { installDingtalkStyles } from '../dingtalk/styles.js';
 import {
@@ -155,6 +160,7 @@ export function AccountCard({
   removing,
   onReconnect,
   onWorkspaceSave,
+  onAgentPresetSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -179,6 +185,11 @@ export function AccountCard({
         disabled: Boolean(busy),
         onSave: onWorkspaceSave,
       }),
+      h(AgentPresetEditor, {
+        agentPreset: account.agentPreset,
+        disabled: Boolean(busy),
+        onSave: onAgentPresetSave,
+      }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
         feedback ? h('div', {
@@ -195,7 +206,10 @@ export function AccountCard({
 }
 
 export function WecomSettingsTab({ rpcCall }) {
-  const [model, setModel] = React.useState({ phase: 'loading', bots: [], totals: { configured: 0, connected: 0 }, error: null });
+  const [model, setModel] = React.useState({
+    phase: 'loading', bots: [], totals: { configured: 0, connected: 0 }, error: null,
+    agentPresetCatalog: EMPTY_AGENT_PRESET_CATALOG,
+  });
   const [provision, setProvision] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [busyByBot, setBusyByBot] = React.useState({});
@@ -253,7 +267,10 @@ export function WecomSettingsTab({ rpcCall }) {
       const snapshot = normalizeSnapshot(await invoke(WECOM_ENDPOINTS.status, {}, signal));
       if (!mounted.current || signal?.aborted
         || !workspaceFence.canCommitStatus(workspaceVersion)) return undefined;
-      setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+      setModel({
+        phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
+        agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+      });
       if (restore && snapshot.provisioning) setProvision({
         ...snapshot.provisioning,
         durationMs: Math.max(1, snapshot.provisioning.expiresAt - Date.now()),
@@ -317,7 +334,10 @@ export function WecomSettingsTab({ rpcCall }) {
       ));
       if (!mounted.current) return;
       if (workspaceFence.canCommitMutation(snapshotVersion)) {
-        setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+        setModel({
+          phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
+          agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+        });
       }
       setCredentialOpen(false);
     } catch (error) {
@@ -377,7 +397,10 @@ export function WecomSettingsTab({ rpcCall }) {
     try {
       const snapshot = normalizeSnapshot(await invoke(endpoint, payload));
       if (mounted.current && workspaceFence.canCommitMutation(snapshotVersion)) {
-        setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+        setModel({
+          phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
+          agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+        });
       }
       return snapshot;
     } finally {
@@ -455,6 +478,12 @@ export function WecomSettingsTab({ rpcCall }) {
               WECOM_ENDPOINTS.setWorkspace,
               { botId: account.botId, workspace },
             ),
+            onAgentPresetSave: (agentPreset) => botAction(
+              account,
+              'preset',
+              WECOM_ENDPOINTS.setAgentPreset,
+              { botId: account.botId, agentPreset },
+            ),
             onRequestRemove: () => setRemoveTarget(account.botId),
             onCancelRemove: () => setRemoveTarget(null),
             onConfirmRemove: async () => {
@@ -478,7 +507,9 @@ export function WecomSettingsTab({ rpcCall }) {
       })
     : null;
 
-  return h('section', { className: 'ddt-page dwecom-page dim-channelPage', 'aria-label': '企业微信设置' },
+  return h(AgentPresetCatalogContext.Provider, {
+    value: model.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+  }, h('section', { className: 'ddt-page dwecom-page dim-channelPage', 'aria-label': '企业微信设置' },
     h(Heading, {
       totals: model.totals,
       adding: Boolean(provision),
@@ -497,7 +528,7 @@ export function WecomSettingsTab({ rpcCall }) {
             provisionView,
             model.bots.length === 0 && !provision && !credentialOpen
               ? h(EmptyView, { busy, onStart: () => void startProvisioning() }) : null,
-            botList));
+            botList)));
 }
 
 export function apply(ctx) {

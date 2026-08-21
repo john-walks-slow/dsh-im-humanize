@@ -70,6 +70,7 @@ test('Enterprise WeChat bot cards match the shared two-metric card treatment', (
   assert.equal((markup.match(/class="ddt-metric dim-botMetric"/g) ?? []).length, 2);
   assert.match(markup, />消息通道<[^]*>最近检查</);
   assert.match(markup, />检查连接<[^]*>移除接入</);
+  assert.match(markup, /class="dim-presetSelect"/);
   assert.doesNotMatch(markup, /收到\s*\/\s*回复|dim-cardSummary|企业微信 WebSocket 长连接运行正常/);
 });
 

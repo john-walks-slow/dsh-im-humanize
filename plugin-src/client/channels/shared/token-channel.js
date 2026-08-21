@@ -4,6 +4,11 @@ import { CredentialActionIcon, CredentialBindingPanel } from '../../credential-b
 import { h } from '../../i18n.js';
 import { installDingtalkStyles } from '../dingtalk/styles.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
+import {
+  AgentPresetCatalogContext,
+  AgentPresetEditor,
+  EMPTY_AGENT_PRESET_CATALOG,
+} from '../../agent-preset.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 
 const Button = React.forwardRef(function Button(
@@ -63,7 +68,7 @@ export function createTokenChannelSettings(definition) {
     accountSettingsEndpoint = null,
   } = definition;
 
-  function AccountCard({ account, busy, testNotice, removing, onReconnect, onWorkspaceSave, onAccountSettingsSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
+  function AccountCard({ account, busy, testNotice, removing, onReconnect, onWorkspaceSave, onAgentPresetSave, onAccountSettingsSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
     const state = busy === 'reconnect' ? 'connecting' : account.state;
     const tone = account.connected ? 'success' : state === 'error' ? 'error' : 'warning';
     const stateLabel = account.connected ? '运行正常' : state === 'connecting' ? '正在连接' : '连接未就绪';
@@ -89,6 +94,11 @@ export function createTokenChannelSettings(definition) {
           workspace: account.workspace,
           disabled: Boolean(busy),
           onSave: onWorkspaceSave,
+        }),
+        h(AgentPresetEditor, {
+          agentPreset: account.agentPreset,
+          disabled: Boolean(busy),
+          onSave: onAgentPresetSave,
         }),
         AccountSettings ? h(AccountSettings, {
           account,
@@ -122,6 +132,7 @@ export function createTokenChannelSettings(definition) {
   function SettingsTab({ rpcCall }) {
     const [model, setModel] = React.useState({
       phase: 'loading', bots: [], totals: { configured: 0, connected: 0 }, error: null,
+      agentPresetCatalog: EMPTY_AGENT_PRESET_CATALOG,
     });
     const [credentialOpen, setCredentialOpen] = React.useState(false);
     const [credentialError, setCredentialError] = React.useState(null);
@@ -156,7 +167,10 @@ export function createTokenChannelSettings(definition) {
         const snapshot = api.normalizeSnapshot(await invoke(endpoints.status, {}, signal));
         if (!mounted.current || signal?.aborted
           || !workspaceFence.canCommitStatus(workspaceVersion)) return;
-        setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+        setModel({
+          phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
+          agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+        });
       } catch (error) {
         if (error?.name !== 'AbortError' && mounted.current && !signal?.aborted
           && workspaceFence.canCommitStatus(workspaceVersion)) {
@@ -199,7 +213,10 @@ export function createTokenChannelSettings(definition) {
         ));
         if (!mounted.current) return;
         if (workspaceFence.canCommitMutation(snapshotVersion)) {
-          setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+          setModel({
+          phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
+          agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+        });
         }
         setCredentialOpen(false);
       } catch (error) {
@@ -218,7 +235,10 @@ export function createTokenChannelSettings(definition) {
         const value = await invoke(endpoint, payload);
         const snapshot = api.normalizeSnapshot(value);
         if (mounted.current && workspaceFence.canCommitMutation(snapshotVersion)) {
-          setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+          setModel({
+          phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
+          agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+        });
         }
         if (mounted.current && operation === 'reconnect') {
           setTestNoticeByBot((current) => ({
@@ -267,6 +287,12 @@ export function createTokenChannelSettings(definition) {
                 endpoints.setWorkspace,
                 { botId: account.botId, workspace },
               ),
+              onAgentPresetSave: (agentPreset) => botAction(
+                account,
+                'preset',
+                endpoints.setAgentPreset,
+                { botId: account.botId, agentPreset },
+              ),
               onAccountSettingsSave: AccountSettings && accountSettingsEndpoint
                 ? (payload) => botAction(
                     account,
@@ -287,7 +313,9 @@ export function createTokenChannelSettings(definition) {
             })))))
       : null;
 
-    return h('section', {
+    return h(AgentPresetCatalogContext.Provider, {
+      value: model.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+    }, h('section', {
       className: `ddt-page ${pageClass} dim-channelPage`,
       'aria-label': `${channel} 设置`,
     },
@@ -353,7 +381,7 @@ export function createTokenChannelSettings(definition) {
                       'aria-hidden': 'true',
                     }, h(LogoGlyph, { size: 64 }))))
               : null,
-            botList));
+            botList)));
   }
 
   return { SettingsTab, AccountCard };

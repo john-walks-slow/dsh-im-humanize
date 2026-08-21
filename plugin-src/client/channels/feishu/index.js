@@ -16,6 +16,11 @@ import {
 } from "./api.js";
 import { useAnimationFrameScheduler } from "../../lifecycle.js";
 import { WorkspaceEditor } from "../../workspace-editor.js";
+import {
+  AgentPresetCatalogContext,
+  AgentPresetEditor,
+  EMPTY_AGENT_PRESET_CATALOG,
+} from "../../agent-preset.js";
 import { useWorkspaceSnapshotFence } from "../../workspace-snapshot-fence.js";
 import { installFeishuStyles } from "./styles.js";
 
@@ -418,6 +423,7 @@ export function BotCard({
   onReconnect,
   onRepairCallback,
   onWorkspaceSave,
+  onAgentPresetSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -467,6 +473,11 @@ export function BotCard({
         workspace: connection.workspace,
         disabled: Boolean(busy),
         onSave: onWorkspaceSave,
+      }),
+      h(AgentPresetEditor, {
+        agentPreset: connection.agentPreset,
+        disabled: Boolean(busy),
+        onSave: onAgentPresetSave,
       }),
       h("div", { className: "bxf-connectedFooter dim-cardFooter" },
         summary ? h("div", { className: "bxf-healthSummary dim-cardSummary", "data-error": actionError || connection.error ? "true" : undefined },
@@ -524,6 +535,7 @@ function BotList(props) {
           onReconnect: () => props.onReconnect(bot),
           onRepairCallback: () => props.onRepairCallback(bot),
           onWorkspaceSave: (workspace) => props.onWorkspaceSave(bot, workspace),
+          onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(bot, agentPreset),
           onRequestRemove: () => props.onRequestRemove(bot),
           onConfirmRemove: () => props.onConfirmRemove(bot),
           onCancelRemove: props.onCancelRemove,
@@ -575,6 +587,7 @@ export function mergeFeishuSnapshotState(
     provisioning,
     pageError: null,
     statusError: null,
+    agentPresetCatalog: snapshot.agentPresetCatalog ?? current.agentPresetCatalog,
   };
 }
 
@@ -587,6 +600,7 @@ export function FeishuSettingsTab({ rpcCall }) {
     provisioning: null,
     pageError: null,
     statusError: null,
+    agentPresetCatalog: EMPTY_AGENT_PRESET_CATALOG,
   });
   const [pageBusy, setPageBusy] = React.useState(false);
   const [provisionBusy, setProvisionBusy] = React.useState(false);
@@ -1067,6 +1081,26 @@ export function FeishuSettingsTab({ rpcCall }) {
     }
   }, [invoke, loadStatus, mergeSnapshot, setBotBusy, setBotError, workspaceFence]);
 
+  const saveAgentPreset = React.useCallback(async (connection, agentPreset) => {
+    const { botId } = connection;
+    const snapshotVersion = workspaceFence.beginMutation();
+    setBotBusy(botId, "preset");
+    setBotError(botId, null);
+    try {
+      const snapshot = normalizeBotsSnapshot(await invoke(
+        FEISHU_ENDPOINTS.setAgentPreset,
+        { botId, agentPreset },
+      ));
+      if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
+        mergeSnapshot(snapshot);
+      }
+    } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
+      if (mountedRef.current) setBotBusy(botId, null);
+    }
+  }, [invoke, loadStatus, mergeSnapshot, setBotBusy, setBotError, workspaceFence]);
+
   const requestRemove = React.useCallback((connection) => {
     setRemoveTargetId(connection.botId);
   }, []);
@@ -1173,7 +1207,9 @@ export function FeishuSettingsTab({ rpcCall }) {
     else removeButtonRefs.current.delete(botId);
   }, []);
 
-  return h("section", { className: "bxf-page dim-channelPage", "aria-label": "飞书机器人设置" },
+  return h(AgentPresetCatalogContext.Provider, {
+    value: model.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+  }, h("section", { className: "bxf-page dim-channelPage", "aria-label": "飞书机器人设置" },
     h(Heading, {
       totals: model.totals,
       onAdd: () => void startProvisioning(),
@@ -1217,6 +1253,7 @@ export function FeishuSettingsTab({ rpcCall }) {
                   onReconnect: (bot) => void reconnectOneBot(bot),
                   onRepairCallback: repairCallback,
                   onWorkspaceSave: saveWorkspace,
+                  onAgentPresetSave: saveAgentPreset,
                   onRequestRemove: requestRemove,
                   onConfirmRemove: (bot) => void confirmRemove(bot),
                   onCancelRemove: cancelRemove,
@@ -1225,7 +1262,7 @@ export function FeishuSettingsTab({ rpcCall }) {
                 })
               : null,
           ),
-  );
+  ));
 }
 
 export function apply(ctx) {

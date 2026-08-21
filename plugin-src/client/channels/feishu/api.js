@@ -6,6 +6,8 @@
  * must never be returned by any endpoint on this channel.
  */
 
+import { normalizeAgentPresetCatalog, normalizeAgentPresetId } from "../../agent-preset.js";
+
 export const FEISHU_RPC_CHANNEL = "/feishu";
 
 export const FEISHU_ENDPOINTS = Object.freeze({
@@ -19,6 +21,7 @@ export const FEISHU_ENDPOINTS = Object.freeze({
   disconnectBot: "bot.disconnect",
   deleteBot: "bot.delete",
   setWorkspace: "bot.workspace.set",
+  setAgentPreset: "bot.preset.set",
   // Kept for rolling upgrades. The multi-bot UI never calls these endpoints.
   testConnection: "connection.test",
   disconnect: "connection.disconnect",
@@ -182,6 +185,7 @@ export function normalizeBotConnection(value, fallbackBotId) {
     connected,
     configured: value.configured !== false,
     workspace: optionalString(value.workspace)?.slice(0, 4_096) ?? "",
+    agentPreset: normalizeAgentPresetId(value.agentPreset),
     bot: normalizeBot(value.bot),
     health: normalizeHealth(value.health, connected),
     error: normalizeError(value.error),
@@ -236,6 +240,7 @@ export function normalizeBotsSnapshot(value) {
       ? normalizeProvisioning(value.provisioning)
       : undefined,
     error: normalizeError(value.error),
+    agentPresetCatalog: normalizeAgentPresetCatalog(value.agentPresetCatalog),
   };
 }
 

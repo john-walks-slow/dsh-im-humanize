@@ -20,6 +20,7 @@ import {
   createWorkspaceAwareController,
   observeBotWorkspaceRemovals,
 } from '../../../../src/channels/shared/bot-workspace-store.mjs';
+import { listAgentPresetCatalog } from '../../../../src/channels/shared/agent-preset.mjs';
 
 function harnessOrigin(webServer, configured) {
   if (configured !== undefined) return new URL(configured);
@@ -166,6 +167,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   const controller = createWorkspaceAwareController(coreController, {
     workspaces,
     stateFor: stateForBotId,
+    agentPresetCatalog: await listAgentPresetCatalog(ctx),
   });
 
   const supervisor = createSupervisor({

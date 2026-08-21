@@ -20,6 +20,7 @@ export function publicWorkspaceError(error) {
     'workspace-not-found',
     'workspace-not-directory',
     'workspace-bot-not-found',
+    'agent-preset-invalid',
   ].includes(error?.code)) return null;
   return { code: error.code, message: error.message };
 }

@@ -456,3 +456,59 @@ test('unmount does not cancel a Host provisioning task that already started', as
   );
   assert.equal(clock.frames.size, 0);
 });
+
+test('DingTalk settings save an Agent Preset through bot.preset.set', async (t) => {
+  const clock = createBrowserClock();
+  t.after(() => clock.restore());
+  const bot = {
+    botId: 'dt_test',
+    connected: true,
+    state: 'connected',
+    workspace: '/workspace/current',
+    bot: { name: '钉钉机器人', clientIdMasked: 'ding••••test' },
+    health: { status: 'healthy', summary: '连接正常', lastCheckedAt: Date.now() },
+  };
+  const catalog = {
+    defaultId: 'default',
+    items: [
+      { id: 'coding', label: 'Coding' },
+      { id: 'default', label: 'Default' },
+    ],
+  };
+  const calls = [];
+  const rpcCall = async (endpoint, payload) => {
+    calls.push({ endpoint, payload });
+    if (endpoint === DINGTALK_ENDPOINTS.status) {
+      return ok(snapshot({
+        state: 'connected',
+        bots: [bot],
+        agentPresetCatalog: catalog,
+      }));
+    }
+    if (endpoint === DINGTALK_ENDPOINTS.setAgentPreset) {
+      return ok(snapshot({
+        state: 'connected',
+        bots: [{ ...bot, agentPreset: payload.agentPreset }],
+        agentPresetCatalog: catalog,
+      }));
+    }
+    throw new Error(`unexpected endpoint: ${endpoint}`);
+  };
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(DingtalkSettingsTab, { rpcCall }));
+    await flushMicrotasks();
+  });
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-presetSelect' })
+      .props.onChange({ target: { value: 'coding' } });
+    await flushMicrotasks();
+  });
+
+  assert.deepEqual(
+    calls.find((call) => call.endpoint === DINGTALK_ENDPOINTS.setAgentPreset)?.payload,
+    { botId: 'dt_test', agentPreset: 'coding' },
+  );
+  act(() => renderer.unmount());
+});

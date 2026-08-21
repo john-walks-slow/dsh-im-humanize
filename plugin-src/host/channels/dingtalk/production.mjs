@@ -14,6 +14,7 @@ import {
   createWorkspaceAwareController,
   observeBotWorkspaceRemovals,
 } from '../../../../src/channels/shared/bot-workspace-store.mjs';
+import { listAgentPresetCatalog } from '../../../../src/channels/shared/agent-preset.mjs';
 import { createConnectionSupervisor } from './connection-supervisor.mjs';
 import { createHarnessCommandExecutor } from '../../harness-command-executor.mjs';
 import { createHarnessSessionExecutors } from '../../harness-session-coordinator.mjs';
@@ -135,7 +136,11 @@ export async function createProductionController(ctx, config = {}, internals = {
       }
     },
   });
-  const controller = createWorkspaceAwareController(coreController, { workspaces, stateFor });
+  const controller = createWorkspaceAwareController(coreController, {
+    workspaces,
+    stateFor,
+    agentPresetCatalog: await listAgentPresetCatalog(ctx),
+  });
   const supervisor = createSupervisor({
     controller,
     harness,

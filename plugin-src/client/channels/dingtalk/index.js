@@ -3,6 +3,11 @@ import * as React from 'react';
 import { CredentialActionIcon, CredentialBindingPanel, QrActionIcon } from '../../credential-binding.js';
 import { h } from '../../i18n.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
+import {
+  AgentPresetCatalogContext,
+  AgentPresetEditor,
+  EMPTY_AGENT_PRESET_CATALOG,
+} from '../../agent-preset.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import {
   DINGTALK_ENDPOINTS,
@@ -213,6 +218,7 @@ export function AccountCard({
   removing,
   onReconnect,
   onWorkspaceSave,
+  onAgentPresetSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -240,6 +246,11 @@ export function AccountCard({
         workspace: account.workspace,
         disabled: Boolean(busy),
         onSave: onWorkspaceSave,
+      }),
+      h(AgentPresetEditor, {
+        agentPreset: account.agentPreset,
+        disabled: Boolean(busy),
+        onSave: onAgentPresetSave,
       }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
@@ -272,6 +283,7 @@ function AccountList(props) {
         removing: props.removeTarget === account.botId,
         onReconnect: () => props.onReconnect(account),
         onWorkspaceSave: (workspace) => props.onWorkspaceSave(account, workspace),
+        onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(account, agentPreset),
         onRequestRemove: () => props.onRequestRemove(account),
         onConfirmRemove: () => props.onConfirmRemove(account),
         onCancelRemove: props.onCancelRemove,
@@ -283,6 +295,7 @@ const EMPTY_TOTALS = Object.freeze({ configured: 0, connected: 0 });
 export function DingtalkSettingsTab({ rpcCall }) {
   const [model, setModel] = React.useState({
     phase: 'loading', bots: [], totals: EMPTY_TOTALS, revision: 0, error: null,
+    agentPresetCatalog: EMPTY_AGENT_PRESET_CATALOG,
   });
   const [provision, setProvision] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
@@ -389,6 +402,7 @@ export function DingtalkSettingsTab({ rpcCall }) {
         totals: snapshot.totals,
         revision: snapshot.revision,
         error: null,
+        agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
       });
       discardStaleFeedback(snapshot);
       if (restoreProvisioning && snapshot.provisioning) {
@@ -504,6 +518,7 @@ export function DingtalkSettingsTab({ rpcCall }) {
           totals: snapshot.totals,
           revision: snapshot.revision,
           error: null,
+          agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
         });
         discardStaleFeedback(snapshot);
       }
@@ -638,6 +653,7 @@ export function DingtalkSettingsTab({ rpcCall }) {
           totals: snapshot.totals,
           revision: snapshot.revision,
           error: null,
+          agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
         });
         discardStaleFeedback(snapshot);
       }
@@ -700,6 +716,33 @@ export function DingtalkSettingsTab({ rpcCall }) {
           totals: snapshot.totals,
           revision: snapshot.revision,
           error: null,
+          agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+        });
+        discardStaleFeedback(snapshot);
+      }
+    } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
+      if (mountedRef.current) setBotBusy(account.botId, null);
+    }
+  }, [discardStaleFeedback, invoke, loadStatus, setBotBusy, workspaceFence]);
+
+  const saveAgentPreset = React.useCallback(async (account, agentPreset) => {
+    const snapshotVersion = workspaceFence.beginMutation();
+    setBotBusy(account.botId, 'preset');
+    try {
+      const snapshot = normalizeSnapshot(await invoke(
+        DINGTALK_ENDPOINTS.setAgentPreset,
+        { botId: account.botId, agentPreset },
+      ));
+      if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
+        setModel({
+          phase: 'ready',
+          bots: snapshot.bots,
+          totals: snapshot.totals,
+          revision: snapshot.revision,
+          error: null,
+          agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
         });
         discardStaleFeedback(snapshot);
       }
@@ -762,7 +805,9 @@ export function DingtalkSettingsTab({ rpcCall }) {
       })
     : null;
 
-  return h('section', { className: 'ddt-page dim-channelPage', 'aria-label': '钉钉设置' },
+  return h(AgentPresetCatalogContext.Provider, {
+    value: model.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+  }, h('section', { className: 'ddt-page dim-channelPage', 'aria-label': '钉钉设置' },
     h(Heading, {
       totals: model.totals,
       adding: Boolean(provision),
@@ -798,11 +843,12 @@ export function DingtalkSettingsTab({ rpcCall }) {
                   removeTarget,
                   onReconnect: (account) => void reconnect(account),
                   onWorkspaceSave: saveWorkspace,
+                  onAgentPresetSave: saveAgentPreset,
                   onRequestRemove: (account) => setRemoveTarget(account.botId),
                   onConfirmRemove: (account) => void remove(account),
                   onCancelRemove: () => setRemoveTarget(null),
                 })
-              : null));
+              : null)));
 }
 
 export function apply(ctx) {

@@ -1,3 +1,5 @@
+import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
+
 const ACCOUNT_STATES = new Set(['connected', 'connecting', 'offline', 'error']);
 
 function isRecord(value) {
@@ -25,6 +27,7 @@ export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
   setWorkspace: 'bot.workspace.set',
+  setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
 });
 
 export function createTokenChannelApi(channel, connectionSummary, {
@@ -52,6 +55,7 @@ export function createTokenChannelApi(channel, connectionSummary, {
       connected,
       state: connected ? 'connected' : state,
       workspace: text(value.workspace, '', 4_096),
+      agentPreset: normalizeAgentPresetId(value.agentPreset),
       bot: {
         name: text(value.bot?.name, `${channel}机器人`, 100),
         username: text(value.bot?.username, '', 100),
@@ -82,6 +86,7 @@ export function createTokenChannelApi(channel, connectionSummary, {
       revision: Number.isSafeInteger(source.revision) ? source.revision : 0,
       bots,
       totals: { configured: bots.length, connected: bots.filter((bot) => bot.connected).length },
+      agentPresetCatalog: normalizeAgentPresetCatalog(source.agentPresetCatalog),
     };
   };
 

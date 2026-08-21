@@ -16,6 +16,11 @@ import {
 } from './api.js';
 import { createPollScheduler, useAnimationFrameScheduler } from '../../lifecycle.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
+import {
+  AgentPresetCatalogContext,
+  AgentPresetEditor,
+  EMPTY_AGENT_PRESET_CATALOG,
+} from '../../agent-preset.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import { installWeixinStyles } from './styles.js';
 
@@ -202,6 +207,7 @@ export function AccountCard({
   removing,
   onReconnect,
   onWorkspaceSave,
+  onAgentPresetSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -227,6 +233,11 @@ export function AccountCard({
         workspace: account.workspace,
         disabled: Boolean(busy),
         onSave: onWorkspaceSave,
+      }),
+      h(AgentPresetEditor, {
+        agentPreset: account.agentPreset,
+        disabled: Boolean(busy),
+        onSave: onAgentPresetSave,
       }),
       h('div', { className: 'dxw-accountFooter dim-cardFooter' },
         summary ? h('div', { className: 'dxw-summary dim-cardSummary' }, summary) : null,
@@ -260,6 +271,7 @@ function AccountList(props) {
         removing: props.removeTarget === account.botId,
         onReconnect: () => props.onReconnect(account),
         onWorkspaceSave: (workspace) => props.onWorkspaceSave(account, workspace),
+        onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(account, agentPreset),
         onRequestRemove: () => props.onRequestRemove(account),
         onConfirmRemove: () => props.onConfirmRemove(account),
         onCancelRemove: props.onCancelRemove,
@@ -285,6 +297,7 @@ export function mergeWeixinProvisioningSnapshot(
 export function WeixinSettingsTab({ rpcCall }) {
   const [model, setModel] = React.useState({
     phase: 'loading', bots: [], totals: EMPTY_TOTALS, revision: 0, error: null,
+    agentPresetCatalog: EMPTY_AGENT_PRESET_CATALOG,
   });
   const [provision, setProvision] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
@@ -327,6 +340,7 @@ export function WeixinSettingsTab({ rpcCall }) {
       setModel({
         phase: 'ready', bots: snapshot.bots, totals: snapshot.totals,
         revision: snapshot.revision, error: null,
+        agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
       });
       if (snapshot.provisioning) {
         setProvision((current) => mergeWeixinProvisioningSnapshot(
@@ -515,7 +529,10 @@ export function WeixinSettingsTab({ rpcCall }) {
         { botId: account.botId, sendTest: true },
       ));
       if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
-        setModel((current) => ({ ...current, bots: snapshot.bots, totals: snapshot.totals, revision: snapshot.revision }));
+        setModel((current) => ({
+          ...current, bots: snapshot.bots, totals: snapshot.totals, revision: snapshot.revision,
+          agentPresetCatalog: snapshot.agentPresetCatalog ?? current.agentPresetCatalog,
+        }));
       }
       const refreshed = snapshot.bots.find((bot) => bot.botId === account.botId);
       let feedback;
@@ -559,6 +576,29 @@ export function WeixinSettingsTab({ rpcCall }) {
         setModel({
           phase: 'ready', bots: snapshot.bots, totals: snapshot.totals,
           revision: snapshot.revision, error: null,
+          agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+        });
+      }
+    } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
+      if (mountedRef.current) setBotBusy(account.botId, null);
+    }
+  }, [invoke, loadStatus, setBotBusy, workspaceFence]);
+
+  const saveAgentPreset = React.useCallback(async (account, agentPreset) => {
+    const snapshotVersion = workspaceFence.beginMutation();
+    setBotBusy(account.botId, 'preset');
+    try {
+      const snapshot = normalizeSnapshot(await invoke(
+        WEIXIN_ENDPOINTS.setAgentPreset,
+        { botId: account.botId, agentPreset },
+      ));
+      if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
+        setModel({
+          phase: 'ready', bots: snapshot.bots, totals: snapshot.totals,
+          revision: snapshot.revision, error: null,
+          agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
         });
       }
     } finally {
@@ -577,7 +617,10 @@ export function WeixinSettingsTab({ rpcCall }) {
         confirm: true,
       }));
       if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
-        setModel((current) => ({ ...current, bots: snapshot.bots, totals: snapshot.totals, revision: snapshot.revision }));
+        setModel((current) => ({
+          ...current, bots: snapshot.bots, totals: snapshot.totals, revision: snapshot.revision,
+          agentPresetCatalog: snapshot.agentPresetCatalog ?? current.agentPresetCatalog,
+        }));
       }
       setRemoveTarget(null);
       announce('微信账号及本机凭据已移除。');
@@ -617,7 +660,9 @@ export function WeixinSettingsTab({ rpcCall }) {
     });
   }
 
-  return h('section', { className: 'dxw-page dim-channelPage', 'aria-label': '微信设置' },
+  return h(AgentPresetCatalogContext.Provider, {
+    value: model.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+  }, h('section', { className: 'dxw-page dim-channelPage', 'aria-label': '微信设置' },
     h(Heading, {
       totals: model.totals,
       adding: Boolean(provision),
@@ -650,12 +695,13 @@ export function WeixinSettingsTab({ rpcCall }) {
                   removeTarget,
                   onReconnect: (account) => void reconnect(account),
                   onWorkspaceSave: saveWorkspace,
+                  onAgentPresetSave: saveAgentPreset,
                   onRequestRemove: (account) => setRemoveTarget(account.botId),
                   onConfirmRemove: (account) => void remove(account),
                   onCancelRemove: () => setRemoveTarget(null),
                 })
               : null),
-  );
+  ));
 }
 
 export function apply(ctx) {

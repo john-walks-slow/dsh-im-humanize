@@ -69,6 +69,7 @@ test('WhatsApp account card uses the unified compact channel layout', () => {
   assert.match(markup, /WhatsApp Web/);
   assert.match(markup, /检查连接/);
   assert.match(markup, /移除接入/);
+  assert.match(markup, /class="dim-presetSelect"/);
   assert.match(markup, /role="status"[^>]*>测试消息已发送/);
   assert.equal((markup.match(/class="ddt-metric dim-botMetric"/g) ?? []).length, 2);
 });

@@ -592,11 +592,13 @@ export class HarnessClient {
   }
 
   async createSession(options = {}) {
-    await this.ensureRunning(options);
-    const workspaceId = await this.workspaceId(options);
+    const { agentPreset: requestedPreset, ...rpcOptions } = options;
+    await this.ensureRunning(rpcOptions);
+    const workspaceId = await this.workspaceId(rpcOptions);
     const payload = { workspaceId };
-    if (this.#agentPreset !== undefined) payload.agentPreset = this.#agentPreset;
-    const created = await this.rpc('session.create', payload, 30_000, options);
+    const agentPreset = requestedPreset !== undefined ? requestedPreset : this.#agentPreset;
+    if (agentPreset != null) payload.agentPreset = agentPreset;
+    const created = await this.rpc('session.create', payload, 30_000, rpcOptions);
     return created.sessionId;
   }
 

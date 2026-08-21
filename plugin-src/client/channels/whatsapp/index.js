@@ -4,6 +4,11 @@ import { WhatsappLogoGlyph } from '../../channel-logos.js';
 import { QrActionIcon } from '../../credential-binding.js';
 import { h } from '../../i18n.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
+import {
+  AgentPresetCatalogContext,
+  AgentPresetEditor,
+  EMPTY_AGENT_PRESET_CATALOG,
+} from '../../agent-preset.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import { installDingtalkStyles } from '../dingtalk/styles.js';
 import {
@@ -173,6 +178,7 @@ export function WhatsappAccountCard({
   removing,
   onReconnect,
   onWorkspaceSave,
+  onAgentPresetSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -205,6 +211,11 @@ export function WhatsappAccountCard({
         disabled: Boolean(busy),
         onSave: onWorkspaceSave,
       }),
+      h(AgentPresetEditor, {
+        agentPreset: account.agentPreset,
+        disabled: Boolean(busy),
+        onSave: onAgentPresetSave,
+      }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
         testNotice ? h('div', {
@@ -229,6 +240,7 @@ export function WhatsappAccountCard({
 export function WhatsappSettingsTab({ rpcCall }) {
   const [model, setModel] = React.useState({
     phase: 'loading', bots: [], totals: { configured: 0, connected: 0 }, error: null,
+    agentPresetCatalog: EMPTY_AGENT_PRESET_CATALOG,
   });
   const [provision, setProvision] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
@@ -264,7 +276,10 @@ export function WhatsappSettingsTab({ rpcCall }) {
       const snapshot = normalizeSnapshot(await invoke(WHATSAPP_ENDPOINTS.status, {}, signal));
       if (!mounted.current || signal?.aborted
         || !workspaceFence.canCommitStatus(workspaceVersion)) return undefined;
-      setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+      setModel({
+        phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
+        agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+      });
       if (restore && snapshot.provisioning) setProvision({
         ...snapshot.provisioning,
         durationMs: Math.max(1, snapshot.provisioning.expiresAt - Date.now()),
@@ -392,7 +407,10 @@ export function WhatsappSettingsTab({ rpcCall }) {
       const value = await invoke(endpoint, payload);
       const snapshot = normalizeSnapshot(value);
       if (mounted.current && workspaceFence.canCommitMutation(snapshotVersion)) {
-        setModel({ phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null });
+        setModel({
+          phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
+          agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+        });
         if (operation === 'reconnect') {
           setTestNoticeByBot((current) => ({
             ...current,
@@ -441,6 +459,12 @@ export function WhatsappSettingsTab({ rpcCall }) {
               WHATSAPP_ENDPOINTS.setWorkspace,
               { botId: account.botId, workspace },
             ),
+            onAgentPresetSave: (agentPreset) => botAction(
+              account,
+              'preset',
+              WHATSAPP_ENDPOINTS.setAgentPreset,
+              { botId: account.botId, agentPreset },
+            ),
             onRequestRemove: () => setRemoveTarget(account.botId),
             onCancelRemove: () => setRemoveTarget(null),
             onConfirmRemove: async () => {
@@ -453,7 +477,9 @@ export function WhatsappSettingsTab({ rpcCall }) {
           })))))
     : null;
 
-  return h('section', {
+  return h(AgentPresetCatalogContext.Provider, {
+    value: model.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+  }, h('section', {
     className: 'ddt-page dwa-page dim-channelPage',
     'aria-label': 'WhatsApp 设置',
   },
@@ -490,5 +516,5 @@ export function WhatsappSettingsTab({ rpcCall }) {
               : model.bots.length === 0
                 ? h(EmptyView, { busy, onStart: () => void startProvisioning(false) })
                 : null,
-          botList));
+          botList)));
 }
