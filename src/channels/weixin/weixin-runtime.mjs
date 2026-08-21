@@ -6,6 +6,15 @@ import {
 } from '../shared/connection-test.mjs';
 
 const DEFAULT_START_RETRY_DELAYS_MS = Object.freeze([250, 1_000, 3_000]);
+const HARNESS_HEALTH_ERROR_CODES = new Set([
+  'harness-connect-failed',
+  'harness-timeout',
+  'harness-access-denied',
+  'harness-api-not-found',
+  'harness-http-failed',
+  'harness-response-invalid',
+  'harness-rpc-rejected',
+]);
 
 function startRetryDelays(value) {
   if (value === undefined) return [...DEFAULT_START_RETRY_DELAYS_MS];
@@ -30,6 +39,13 @@ function runtimeStartError(code, cause) {
   error.name = 'WeixinRuntimeStartError';
   error.code = code;
   return error;
+}
+
+function harnessHealthError(cause) {
+  const code = HARNESS_HEALTH_ERROR_CODES.has(cause?.code)
+    ? cause.code
+    : 'harness-check-unknown-failed';
+  return runtimeStartError(code, cause);
 }
 
 function delay(ms, signal) {
@@ -127,7 +143,7 @@ export class WeixinRuntime {
       try {
         await this.#harness.ensureRunning();
       } catch (error) {
-        throw runtimeStartError('harness-unreachable', error);
+        throw harnessHealthError(error);
       }
       this.#status.harnessReachable = true;
       await this.#notifyStart();

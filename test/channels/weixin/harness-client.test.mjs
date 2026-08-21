@@ -6,6 +6,10 @@ import { QqHarnessClient } from '../../../src/channels/qq/harness-client.mjs';
 import { SlackHarnessClient } from '../../../src/channels/slack/harness-client.mjs';
 import { TelegramHarnessClient } from '../../../src/channels/telegram/harness-client.mjs';
 import { WecomHarnessClient } from '../../../src/channels/wecom/harness-client.mjs';
+import {
+  HarnessHealthError,
+  HarnessTransportError,
+} from '../../../src/channels/shared/harness-client.mjs';
 import { HarnessClient, HarnessReplyTracker } from '../../../src/channels/weixin/harness-client.mjs';
 import { WhatsappHarnessClient } from '../../../src/channels/whatsapp/harness-client.mjs';
 
@@ -43,6 +47,91 @@ test('all legacy channel clients now use the shared Harness RPC transport', asyn
     assert.match(request.body.rpcId, new RegExp(`^${prefix}-`));
     assert.equal(request.body.type, 'client-request');
   }
+});
+
+test('shared Harness health checks expose precise safe availability codes', async () => {
+  const clientWithFetch = (fetchImpl) => new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/default-workspace',
+    fetchImpl,
+  });
+
+  const privateConnectionError = new Error('ECONNREFUSED at private loopback port');
+  await assert.rejects(
+    clientWithFetch(async () => { throw privateConnectionError; }).health(),
+    (error) => {
+      assert.ok(error instanceof HarnessTransportError);
+      assert.equal(error.code, 'harness-connect-failed');
+      assert.equal(error.cause, privateConnectionError);
+      assert.doesNotMatch(error.message, /private loopback port/);
+      return true;
+    },
+  );
+
+  const timeoutClient = clientWithFetch((_url, { signal }) => new Promise((_resolve, reject) => {
+    const rejectTimeout = () => reject(signal.reason);
+    if (signal.aborted) rejectTimeout();
+    else signal.addEventListener('abort', rejectTimeout, { once: true });
+  }));
+  await assert.rejects(timeoutClient.rpc('host.describe', {}, 1), (error) => {
+    assert.ok(error instanceof HarnessTransportError);
+    assert.equal(error.code, 'harness-timeout');
+    return true;
+  });
+
+  for (const [status, expectedCode] of [
+    [401, 'harness-access-denied'],
+    [403, 'harness-access-denied'],
+    [404, 'harness-api-not-found'],
+    [500, 'harness-http-failed'],
+  ]) {
+    await assert.rejects(
+      clientWithFetch(async () => ({ ok: false, status })).health(),
+      (error) => {
+        assert.ok(error instanceof HarnessTransportError);
+        assert.equal(error.code, expectedCode);
+        assert.equal(error.status, status);
+        return true;
+      },
+    );
+  }
+
+  await assert.rejects(
+    clientWithFetch(async () => ({
+      ok: true,
+      json: async () => { throw new SyntaxError('private malformed response body'); },
+    })).health(),
+    (error) => {
+      assert.ok(error instanceof HarnessTransportError);
+      assert.equal(error.code, 'harness-response-invalid');
+      assert.doesNotMatch(error.message, /private malformed response body/);
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    clientWithFetch(async (_url, options) => {
+      const { rpcId } = JSON.parse(options.body);
+      return {
+        ok: true,
+        json: async () => ({
+          type: 'server-response',
+          rpcId,
+          result: {
+            ok: false,
+            error: { code: 'private-host-code', message: 'private Host RPC detail' },
+          },
+        }),
+      };
+    }).health(),
+    (error) => {
+      assert.ok(error instanceof HarnessHealthError);
+      assert.equal(error.code, 'harness-rpc-rejected');
+      assert.match(error.cause?.message ?? '', /private Host RPC detail/);
+      assert.doesNotMatch(error.message, /private-host-code|private Host RPC detail/);
+      return true;
+    },
+  );
 });
 
 test('HarnessClient lets the Host resolve an omitted agent preset and forwards an explicit override', async () => {

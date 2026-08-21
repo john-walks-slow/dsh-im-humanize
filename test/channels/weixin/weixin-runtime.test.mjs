@@ -308,7 +308,7 @@ test('runtime refuses to report ready when notifyStart rejects the stored token'
   assert.equal(runtime.status.weixinConnectionState, 'failed');
 });
 
-test('runtime identifies a local Harness health failure without exposing its detail', async () => {
+test('runtime uses an explicit unknown code for an unclassified Harness health failure', async () => {
   const runtime = new WeixinRuntime({
     api: {
       notifyStart: async () => assert.fail('notifyStart must not run while Harness is unavailable'),
@@ -323,13 +323,45 @@ test('runtime identifies a local Harness health failure without exposing its det
   });
 
   await assert.rejects(runtime.start(), (error) => {
-    assert.equal(error.code, 'harness-unreachable');
+    assert.equal(error.code, 'harness-check-unknown-failed');
+    assert.notEqual(error.code, 'harness-unreachable');
     assert.doesNotMatch(error.message, /private loopback transport detail/);
     assert.match(error.cause?.message ?? '', /private loopback transport detail/);
     return true;
   });
   assert.equal(runtime.status.ready, false);
   assert.equal(runtime.status.weixinConnectionState, 'failed');
+});
+
+test('runtime preserves classified Harness health codes without exposing their causes', async () => {
+  for (const code of [
+    'harness-connect-failed',
+    'harness-timeout',
+    'harness-access-denied',
+    'harness-api-not-found',
+    'harness-http-failed',
+    'harness-response-invalid',
+    'harness-rpc-rejected',
+  ]) {
+    const healthError = Object.assign(new Error(`private detail for ${code}`), { code });
+    const runtime = new WeixinRuntime({
+      api: {
+        notifyStart: async () => assert.fail('notifyStart must not run after a failed health check'),
+        notifyStop: async () => {},
+      },
+      config: { botId: `wx_${code}`, baseUrl: 'https://ilinkai.weixin.qq.com/', ownerUserId: 'owner' },
+      token: 'bot-token',
+      harness: { ensureRunning: async () => { throw healthError; } },
+      state: {},
+    });
+
+    await assert.rejects(runtime.start(), (error) => {
+      assert.equal(error.code, code);
+      assert.equal(error.cause, healthError);
+      assert.doesNotMatch(error.message, /private detail/);
+      return true;
+    });
+  }
 });
 
 test('runtime retries a transient notifyStart failure before reporting the account offline', async () => {

@@ -25,7 +25,14 @@ const ACTIVATION_ERROR_MESSAGES = Object.freeze({
   'credential-save-failed': '微信已授权，但登录凭据无法写入 DSH 凭据存储。请检查凭据存储是否可写。',
   'account-config-save-failed': '微信已授权，但账号配置无法写入本机。请检查 DSH_HOME 目录权限。',
   'runtime-prepare-failed': '微信已授权，但无法初始化账号状态或工作区。请检查 DSH_HOME 和工作区目录。',
-  'harness-unreachable': '微信已授权，但插件无法连接本机 Harness。请确认 dsh web 已正常启动。',
+  'harness-connect-failed': '微信已授权，但插件无法连接本机 Harness。请检查 dsh web 地址和端口。',
+  'harness-timeout': '微信已授权，但 Harness 健康检查超时。请确认 dsh web 未阻塞。',
+  'harness-access-denied': '微信已授权，但 Harness 拒绝了本机健康检查。请检查 Host 信任配置。',
+  'harness-api-not-found': '微信已授权，但找不到 Harness 健康检查接口。请确认 Harness 与插件版本兼容。',
+  'harness-http-failed': '微信已授权，但 Harness 健康检查返回服务错误。请查看 dsh web 日志。',
+  'harness-response-invalid': '微信已授权，但 Harness 返回了无法识别的响应。请确认 Harness 与插件版本兼容。',
+  'harness-rpc-rejected': '微信已授权，但 Harness 拒绝了健康检查请求。请查看 dsh web 日志。',
+  'harness-check-unknown-failed': '微信已授权，但 Harness 健康检查发生未知错误。请查看 dsh web 日志。',
   'connection-start-failed': '微信已授权，但消息连接初始化失败。请查看 dsh web 日志后重试。',
 });
 

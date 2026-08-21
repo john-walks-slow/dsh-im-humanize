@@ -364,6 +364,26 @@ export class HarnessRpcError extends Error {
   }
 }
 
+export class HarnessTransportError extends Error {
+  constructor(code, method, { cause, status } = {}) {
+    const statusDetail = Number.isInteger(status) ? `, HTTP ${status}` : '';
+    super(`Harness ${method} transport failed (${code}${statusDetail})`, { cause });
+    this.name = 'HarnessTransportError';
+    this.code = code;
+    this.method = method;
+    if (Number.isInteger(status)) this.status = status;
+  }
+}
+
+export class HarnessHealthError extends Error {
+  constructor(cause) {
+    super('Harness health RPC was rejected', { cause });
+    this.name = 'HarnessHealthError';
+    this.code = 'harness-rpc-rejected';
+    this.method = 'host.describe';
+  }
+}
+
 export class HarnessInteractionError extends Error {
   constructor(code, message) {
     super(message);
@@ -455,24 +475,60 @@ export class HarnessClient {
     const signal = options.signal
       ? AbortSignal.any([options.signal, timeoutSignal])
       : timeoutSignal;
-    const response = await this.#fetch(new URL(`/api/${method}`, this.#baseUrl), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'client-request', rpcId, method, payload }),
-      signal,
-    });
-    if (!response.ok) throw new Error(`Harness transport ${method} failed: HTTP ${response.status}`);
-    const body = await response.json();
+    let response;
+    try {
+      response = await this.#fetch(new URL(`/api/${method}`, this.#baseUrl), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'client-request', rpcId, method, payload }),
+        signal,
+      });
+    } catch (error) {
+      // Preserve an explicit caller cancellation; it is control flow, not a
+      // Harness availability diagnosis.
+      if (options.signal?.aborted) throw error;
+      throw new HarnessTransportError(
+        timeoutSignal.aborted ? 'harness-timeout' : 'harness-connect-failed',
+        method,
+        { cause: error },
+      );
+    }
+    if (!response.ok) {
+      const code = response.status === 401 || response.status === 403
+        ? 'harness-access-denied'
+        : response.status === 404
+          ? 'harness-api-not-found'
+          : 'harness-http-failed';
+      throw new HarnessTransportError(code, method, { status: response.status });
+    }
+    let body;
+    try {
+      body = await response.json();
+    } catch (error) {
+      throw new HarnessTransportError('harness-response-invalid', method, { cause: error });
+    }
     if (body?.type !== 'server-response' || body?.rpcId !== rpcId) {
-      throw new Error(`Harness returned an invalid response for ${method}`);
+      throw new HarnessTransportError('harness-response-invalid', method, {
+        cause: new Error(`Harness returned an invalid response for ${method}`),
+      });
+    }
+    if (!body.result || typeof body.result !== 'object' || typeof body.result.ok !== 'boolean') {
+      throw new HarnessTransportError('harness-response-invalid', method, {
+        cause: new Error(`Harness returned an invalid result for ${method}`),
+      });
     }
     if (!body.result?.ok) throw new HarnessRpcError(method, body.result?.error);
     return body.result.value;
   }
 
   async health(options = {}) {
-    await this.rpc('host.describe', {}, 5_000, options);
-    return true;
+    try {
+      await this.rpc('host.describe', {}, 5_000, options);
+      return true;
+    } catch (error) {
+      if (error instanceof HarnessRpcError) throw new HarnessHealthError(error);
+      throw error;
+    }
   }
 
   async ensureRunning(options = {}) {
@@ -506,7 +562,8 @@ export class HarnessClient {
         lastError = error;
       }
     }
-    throw new Error(`Harness did not become ready: ${lastError?.message ?? 'timeout'}`);
+    if (lastError) throw lastError;
+    throw new HarnessTransportError('harness-timeout', 'host.describe');
   }
 
   async listWorkspaces(options = {}) {

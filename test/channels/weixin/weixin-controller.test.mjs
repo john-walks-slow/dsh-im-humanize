@@ -351,7 +351,7 @@ test('known runtime activation codes cross the provisioning boundary unchanged',
   const configs = configFixture();
   const runtimes = runtimeFactory({
     startError: Object.assign(new Error('loopback transport host-only detail'), {
-      code: 'harness-unreachable',
+      code: 'harness-api-not-found',
     }),
   });
   const controller = new WeixinController({
@@ -377,8 +377,9 @@ test('known runtime activation codes cross the provisioning boundary unchanged',
     (value) => value.status === 'failed',
   );
 
-  assert.equal(failed.error.code, 'harness-unreachable');
-  assert.match(failed.error.message, /无法连接本机 Harness/);
+  assert.equal(failed.error.code, 'harness-api-not-found');
+  assert.notEqual(failed.error.code, 'harness-unreachable');
+  assert.match(failed.error.message, /找不到 Harness 健康检查接口/);
   assert.doesNotMatch(JSON.stringify(failed), /host-only detail|must-be-rolled-back/);
   await controller.close();
 });
