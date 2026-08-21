@@ -189,6 +189,10 @@ export function menuHelpText() {
     '/watch ID 或序号  关注会话（完成后推送）',
     '/compact  压缩上下文',
     '/workspace 绝对路径  切换工作区',
+    '/presetlist  列出可用 Agent Preset',
+    '/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset',
+    '纯数字 ID：/preset id:<ID>',
+    '/preset --default  跟随 Host 默认',
   ].join('\n');
 }
 

@@ -1556,3 +1556,91 @@ test('workspace RPC refreshes the Agent Preset catalog and rejects unavailable c
   assert.equal(cleared.value.bots[0].agentPreset, null);
   assert.deepEqual(cleared.value.agentPresetCatalog, catalog);
 });
+
+test('bot-scoped Agent Preset settings use the latest catalog and persist selections', async (t) => {
+  const { path, defaultWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await workspaces.ensure('bot_preset');
+  let catalog = {
+    defaultId: 'standard',
+    items: [
+      { id: 'standard', name: 'Standard' },
+      { id: 'broken-one', name: 'Broken', broken: 'missing entrypoint' },
+    ],
+  };
+  let catalogFailure = null;
+  const scope = createBotWorkspaceScope({}, {
+    botId: 'bot_preset',
+    workspaces,
+    state: {},
+    agentPresetCatalog: async () => {
+      if (catalogFailure) throw catalogFailure;
+      return catalog;
+    },
+  });
+
+  assert.deepEqual(await scope.harness.agentPresetSettings(), {
+    agentPreset: null,
+    agentPresetCatalog: {
+      defaultId: 'standard',
+      items: [{ id: 'standard', label: 'Standard' }],
+    },
+  });
+
+  catalog = {
+    defaultId: 'marketing-jeep',
+    items: [{ id: 'marketing-jeep', label: 'Marketing' }],
+  };
+  await assert.rejects(scope.harness.updateAgentPreset('standard'), {
+    code: 'agent-preset-unavailable',
+  });
+  assert.equal(workspaces.agentPresetFor('bot_preset'), null);
+
+  assert.deepEqual(await scope.harness.updateAgentPreset('marketing-jeep'), {
+    agentPreset: 'marketing-jeep',
+    agentPresetCatalog: catalog,
+  });
+  assert.equal(workspaces.agentPresetFor('bot_preset'), 'marketing-jeep');
+
+  assert.equal((await scope.harness.updateAgentPreset(null)).agentPreset, null);
+  await scope.harness.updateAgentPreset('marketing-jeep');
+  catalogFailure = new Error('Host catalog temporarily unavailable');
+  assert.deepEqual(await scope.harness.updateAgentPreset('--default'), {
+    agentPreset: null,
+    agentPresetCatalog: { defaultId: '', items: [] },
+  });
+  assert.equal(workspaces.agentPresetFor('bot_preset'), null);
+});
+
+test('old bot scopes cannot read or update Agent Presets after same-id rebinding', async (t) => {
+  const { path, defaultWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await workspaces.ensure('bot_preset_rebind');
+  let releaseCatalog;
+  let catalogCalls = 0;
+  let markCatalogsStarted;
+  const catalogsStarted = new Promise((resolveStarted) => { markCatalogsStarted = resolveStarted; });
+  const catalogGate = new Promise((resolveCatalog) => { releaseCatalog = resolveCatalog; });
+  const oldScope = createBotWorkspaceScope({}, {
+    botId: 'bot_preset_rebind',
+    workspaces,
+    state: {},
+    agentPresetCatalog: async () => {
+      catalogCalls += 1;
+      if (catalogCalls === 2) markCatalogsStarted();
+      await catalogGate;
+      return { defaultId: 'standard', items: [{ id: 'standard', label: 'Standard' }] };
+    },
+  });
+
+  const reading = oldScope.harness.agentPresetSettings();
+  const updating = oldScope.harness.updateAgentPreset('standard');
+  await catalogsStarted;
+  await workspaces.remove('bot_preset_rebind');
+  await workspaces.ensure('bot_preset_rebind');
+  releaseCatalog();
+
+  await assert.rejects(reading, { code: 'workspace-bot-not-found' });
+  await assert.rejects(updating, { code: 'workspace-bot-not-found' });
+  assert.equal(workspaces.agentPresetFor('bot_preset_rebind'), null);
+});

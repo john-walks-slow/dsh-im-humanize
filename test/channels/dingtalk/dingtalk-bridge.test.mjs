@@ -321,11 +321,20 @@ test('DingTalk executes /compact for the bound Session without prompting the mod
   assert.equal(sent.at(-1).text, '暂无可压缩的历史记录。');
 });
 
-test('DingTalk lists models without prompting and help advertises all four commands', async () => {
+test('DingTalk lists models and presets without prompting and advertises fast commands', async () => {
   const fixture = stateFixture();
   const sent = [];
+  const presetUpdates = [];
+  let agentPreset = null;
   let asks = 0;
   let creates = 0;
+  const agentPresetCatalog = {
+    defaultId: 'preset-001',
+    items: Array.from({ length: 70 }, (_, index) => ({
+      id: `preset-${String(index + 1).padStart(3, '0')}`,
+      label: `DingTalk Preset ${index + 1} ${'x'.repeat(64)}`,
+    })),
+  };
   const bridge = new DingtalkHarnessBridge({
     api: { sendText: async (request) => sent.push(request) },
     clientId: 'ding-client',
@@ -339,6 +348,12 @@ test('DingTalk lists models without prompting and help advertises all four comma
         }],
         failures: [],
       }),
+      agentPresetSettings: async () => ({ agentPreset, agentPresetCatalog }),
+      updateAgentPreset: async (value) => {
+        presetUpdates.push(value);
+        agentPreset = value;
+        return { agentPreset, agentPresetCatalog };
+      },
       createSession: async () => { creates += 1; return 'dingtalk-session'; },
       ask: async () => { asks += 1; return 'unexpected model reply'; },
     },
@@ -351,12 +366,42 @@ test('DingTalk lists models without prompting and help advertises all four comma
   assert.equal(creates, 0);
   assert.equal(fixture.sessions.size, 0);
 
+  const presetReplyStart = sent.length;
+  await bridge.accept(message('presets-dingtalk', '/presetlist'));
+  const presetReplies = sent.slice(presetReplyStart).map((entry) => entry.text);
+  assert.ok(presetReplies.length > 1);
+  assert.match(presetReplies.join('\n'), /preset-070/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+  assert.equal(fixture.sessions.size, 0);
+
+  await bridge.accept(message('preset-current-dingtalk', '/preset'));
+  assert.match(sent.at(-1).text, /跟随 Host 默认/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+
+  const selectReplyStart = sent.length;
+  await bridge.accept(message('preset-select-dingtalk', '/preset 2'));
+  assert.deepEqual(presetUpdates, ['preset-002']);
+  assert.equal(sent.length, selectReplyStart + 1);
+  assert.match(sent.at(-1).text, /preset-002/);
+
+  const defaultReplyStart = sent.length;
+  await bridge.accept(message('preset-default-dingtalk', '/preset --default'));
+  assert.deepEqual(presetUpdates, ['preset-002', null]);
+  assert.equal(sent.length, defaultReplyStart + 1);
+  assert.match(sent.at(-1).text, /跟随 Host 默认/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+  assert.equal(fixture.sessions.size, 0);
+
   await bridge.accept(message('help-models-dingtalk', '/help'));
   const help = sent.at(-1).text;
-  for (const command of ['/models', '/model', '/stop', '/steer']) {
+  for (const command of ['/models', '/model', '/presetlist', '/preset', '/preset --default', '/stop', '/steer']) {
     assert.equal(help.includes(command), true, command);
   }
   assert.match(help, /\/model 2/);
+  assert.match(help, /\/preset id:<ID>/);
 });
 
 test('bridge maps a DingTalk direct conversation to one persistent Harness session', async () => {

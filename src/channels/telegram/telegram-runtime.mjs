@@ -15,6 +15,8 @@ export const TELEGRAM_COMMAND_MENU = Object.freeze([
   { command: 'session', description: '将当前聊天绑定到指定会话' },
   { command: 'models', description: '按序号列出所有可用模型' },
   { command: 'model', description: '查看或切换当前会话模型' },
+  { command: 'presetlist', description: '列出可用 Agent Preset' },
+  { command: 'preset', description: '查看或设置新会话 Agent Preset' },
   { command: 'stop', description: '停止当前任务' },
   { command: 'steer', description: '纠偏当前任务' },
   { command: 'status', description: '检查连接状态' },

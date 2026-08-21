@@ -66,6 +66,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   const logger = typeof ctx.logger === 'function'
     ? ctx.logger('dsh-feishu')
     : (ctx.logger ?? console);
+  const agentPresetCatalog = () => listAgentPresetCatalog(ctx);
   const paths = pluginPaths(config);
   const configStore = await new ConfigStore(paths.config).load();
   const defaultWorkspace = resolve(config.workspace ?? process.cwd());
@@ -136,7 +137,9 @@ export async function createProductionController(ctx, config = {}, internals = {
       const state = await stateFor(botConfig);
       const id = botId ?? botConfig.id ?? botConfig.appId;
       await workspaces.ensure(id, { defaultAgentPreset: config.agentPreset });
-      const workspaceScope = createBotWorkspaceScope(harness, { botId: id, workspaces, state });
+      const workspaceScope = createBotWorkspaceScope(harness, {
+        botId: id, workspaces, state, agentPresetCatalog,
+      });
       return new Runtime({
         lark,
         botId: id,
@@ -170,7 +173,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   const controller = createWorkspaceAwareController(coreController, {
     workspaces,
     stateFor: stateForBotId,
-    agentPresetCatalog: () => listAgentPresetCatalog(ctx),
+    agentPresetCatalog,
   });
 
   const supervisor = createSupervisor({

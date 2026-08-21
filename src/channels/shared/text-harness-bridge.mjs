@@ -12,6 +12,10 @@ import {
   isModelCommand,
   runModelCommand,
 } from './model-command.mjs';
+import {
+  isPresetCommand,
+  runPresetCommand,
+} from './preset-command.mjs';
 import { askInWorkspaceSession } from './workspace-session.mjs';
 import { HarnessApprovalQueue } from './harness-approval.mjs';
 import {
@@ -122,7 +126,9 @@ export class TextHarnessBridge {
     const text = cleanText(normalized.content);
     const commandRunner = isControlCommand(text)
       ? runControlCommand
-      : (isModelCommand(text) ? runModelCommand : null);
+      : (isModelCommand(text)
+          ? runModelCommand
+          : (isPresetCommand(text) ? runPresetCommand : null));
     if (commandRunner && (normalized.kind !== 'group' || normalized.addressed === true)) {
       let task;
       task = this.#processFastCommand(
@@ -319,6 +325,10 @@ export class TextHarnessBridge {
           '/models  按序号列出所有可用模型',
           '/model [序号或完整模型ID]  查看或切换当前会话模型',
           '示例：先发 /models，再发 /model 2',
+          '/presetlist  按序号列出可用 Agent Preset',
+          '/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset',
+          '纯数字 ID：/preset id:<ID>',
+          '/preset --default  跟随 Host 默认',
           '/stop  停止当前任务',
           '/steer 补充指令  纠偏当前任务',
           '/status  检查连接状态',

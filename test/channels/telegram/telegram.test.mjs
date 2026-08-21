@@ -168,6 +168,13 @@ test('Telegram API registers the command menu and commands-type menu button', as
   await api.setMyCommands({ commands: TELEGRAM_COMMAND_MENU });
   await api.setChatMenuButton();
   assert.equal(calls.length, 2);
+  assert.deepEqual(
+    TELEGRAM_COMMAND_MENU.filter(({ command }) => command === 'presetlist' || command === 'preset'),
+    [
+      { command: 'presetlist', description: '列出可用 Agent Preset' },
+      { command: 'preset', description: '查看或设置新会话 Agent Preset' },
+    ],
+  );
   assert.match(calls[0].url.pathname, /setMyCommands$/);
   assert.deepEqual(calls[0].body, { commands: TELEGRAM_COMMAND_MENU });
   assert.match(calls[1].url.pathname, /setChatMenuButton$/);

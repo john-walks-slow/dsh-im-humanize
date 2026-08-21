@@ -50,6 +50,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   const QrAuth = internals.QrAuth ?? QqQrAuth;
   const createSupervisor = internals.createConnectionSupervisor ?? createConnectionSupervisor;
   const logger = typeof ctx.logger === 'function' ? ctx.logger('dsh-im:qq') : (ctx.logger ?? console);
+  const agentPresetCatalog = () => listAgentPresetCatalog(ctx);
   const paths = pluginPaths(config);
   const configStore = await new ConfigStore(paths.config).load();
   const defaultWorkspace = resolve(config.workspace ?? process.cwd());
@@ -97,7 +98,9 @@ export async function createProductionController(ctx, config = {}, internals = {
     createRuntime: async ({ botId, config: botConfig, appSecret }) => {
       const state = await stateFor(botId);
       await workspaces.ensure(botId, { defaultAgentPreset: config.agentPreset });
-      const workspaceScope = createBotWorkspaceScope(harness, { botId, workspaces, state });
+      const workspaceScope = createBotWorkspaceScope(harness, {
+        botId, workspaces, state, agentPresetCatalog,
+      });
       return new Runtime({
         config: botConfig,
         appSecret,
@@ -130,7 +133,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   const controller = createWorkspaceAwareController(coreController, {
     workspaces,
     stateFor,
-    agentPresetCatalog: () => listAgentPresetCatalog(ctx),
+    agentPresetCatalog,
   });
   const supervisor = createSupervisor({
     controller,

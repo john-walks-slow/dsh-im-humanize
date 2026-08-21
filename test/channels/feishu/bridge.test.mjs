@@ -164,11 +164,20 @@ test('Feishu executes /compact for the bound Session without prompting the model
   assert.deepEqual(sent, ['暂无可压缩的历史记录。']);
 });
 
-test('Feishu lists models without prompting and help advertises all four commands', async () => {
+test('Feishu lists models and presets without prompting and advertises fast commands', async () => {
   const fixture = stateFixture();
   const sent = [];
+  const presetUpdates = [];
+  let agentPreset = null;
   let asks = 0;
   let creates = 0;
+  const agentPresetCatalog = {
+    defaultId: 'preset-001',
+    items: Array.from({ length: 70 }, (_, index) => ({
+      id: `preset-${String(index + 1).padStart(3, '0')}`,
+      label: `Feishu Preset ${index + 1} ${'x'.repeat(64)}`,
+    })),
+  };
   const bridge = new FeishuHarnessBridge({
     client: textClient(async ({ text }) => sent.push(text)),
     channel: {},
@@ -181,6 +190,12 @@ test('Feishu lists models without prompting and help advertises all four command
         }],
         failures: [],
       }),
+      agentPresetSettings: async () => ({ agentPreset, agentPresetCatalog }),
+      updateAgentPreset: async (value) => {
+        presetUpdates.push(value);
+        agentPreset = value;
+        return { agentPreset, agentPresetCatalog };
+      },
       createSession: async () => { creates += 1; return 'feishu-session'; },
       ask: async () => { asks += 1; return 'unexpected model reply'; },
     },
@@ -196,13 +211,47 @@ test('Feishu lists models without prompting and help advertises all four command
   assert.equal(creates, 0);
   assert.equal(fixture.sessions.size, 0);
 
+  const presetReplyStart = sent.length;
+  await bridge.accept(event('presets-feishu', '/presetlist'));
+  await bridge.waitForIdle();
+  const presetReplies = sent.slice(presetReplyStart);
+  assert.ok(presetReplies.length > 1);
+  assert.match(presetReplies.join('\n'), /preset-070/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+  assert.equal(fixture.sessions.size, 0);
+
+  await bridge.accept(event('preset-current-feishu', '/preset'));
+  await bridge.waitForIdle();
+  assert.match(sent.at(-1), /跟随 Host 默认/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+
+  const selectReplyStart = sent.length;
+  await bridge.accept(event('preset-select-feishu', '/preset 2'));
+  await bridge.waitForIdle();
+  assert.deepEqual(presetUpdates, ['preset-002']);
+  assert.equal(sent.length, selectReplyStart + 1);
+  assert.match(sent.at(-1), /preset-002/);
+
+  const defaultReplyStart = sent.length;
+  await bridge.accept(event('preset-default-feishu', '/preset --default'));
+  await bridge.waitForIdle();
+  assert.deepEqual(presetUpdates, ['preset-002', null]);
+  assert.equal(sent.length, defaultReplyStart + 1);
+  assert.match(sent.at(-1), /跟随 Host 默认/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+  assert.equal(fixture.sessions.size, 0);
+
   await bridge.accept(event('help-feishu', '/help'));
   await bridge.waitForIdle();
   const help = sent.at(-1);
-  for (const command of ['/models', '/model', '/stop', '/steer']) {
+  for (const command of ['/models', '/model', '/presetlist', '/preset', '/preset --default', '/stop', '/steer']) {
     assert.equal(help.includes(command), true, command);
   }
   assert.match(help, /\/model 2/);
+  assert.match(help, /\/preset id:<ID>/);
 });
 
 test('bridge maps a Feishu conversation to a persistent Harness session and replies', async () => {

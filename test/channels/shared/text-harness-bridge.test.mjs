@@ -164,7 +164,7 @@ test('all four shared text channels execute /compact outside the model prompt pa
   }
 });
 
-test('all four shared text channels list models locally and advertise all four commands', async () => {
+test('all four shared text channels list models and presets locally and advertise fast commands', async () => {
   for (const [name, Bridge] of [
     ['slack', SlackHarnessBridge],
     ['telegram', TelegramHarnessBridge],
@@ -173,8 +173,17 @@ test('all four shared text channels list models locally and advertise all four c
   ]) {
     const fixture = stateFixture();
     const sent = [];
+    const presetUpdates = [];
+    let agentPreset = null;
     let asks = 0;
     let creates = 0;
+    const agentPresetCatalog = {
+      defaultId: 'preset-001',
+      items: Array.from({ length: 70 }, (_, index) => ({
+        id: `preset-${String(index + 1).padStart(3, '0')}`,
+        label: `${name} Preset ${index + 1} ${'x'.repeat(64)}`,
+      })),
+    };
     const bridge = new Bridge({
       bot: { sendText: async (_target, text) => sent.push(text) },
       state: fixture.state,
@@ -187,6 +196,12 @@ test('all four shared text channels list models locally and advertise all four c
           }],
           failures: [],
         }),
+        agentPresetSettings: async () => ({ agentPreset, agentPresetCatalog }),
+        updateAgentPreset: async (value) => {
+          presetUpdates.push(value);
+          agentPreset = value;
+          return { agentPreset, agentPresetCatalog };
+        },
         createSession: async () => { creates += 1; return `${name}-session`; },
         ask: async () => { asks += 1; return 'unexpected model reply'; },
       },
@@ -198,12 +213,42 @@ test('all four shared text channels list models locally and advertise all four c
     assert.equal(creates, 0, `${name} create`);
     assert.equal(fixture.sessions.size, 0, `${name} session binding`);
 
+    const presetReplyStart = sent.length;
+    await bridge.accept(message(`presets-${name}`, '/presetlist'));
+    const presetReplies = sent.slice(presetReplyStart);
+    assert.ok(presetReplies.length > 1, `${name} sends every preset-list chunk`);
+    assert.match(presetReplies.join('\n'), /preset-070/, name);
+    assert.equal(asks, 0, `${name} preset ask`);
+    assert.equal(creates, 0, `${name} preset create`);
+    assert.equal(fixture.sessions.size, 0, `${name} preset session binding`);
+
+    await bridge.accept(message(`preset-current-${name}`, '/preset'));
+    assert.match(sent.at(-1), /跟随 Host 默认/, name);
+    assert.equal(asks, 0, `${name} preset current ask`);
+    assert.equal(creates, 0, `${name} preset current create`);
+
+    const selectReplyStart = sent.length;
+    await bridge.accept(message(`preset-select-${name}`, '/preset 2'));
+    assert.deepEqual(presetUpdates, ['preset-002'], `${name} scoped preset update`);
+    assert.equal(sent.length, selectReplyStart + 1, `${name} sends the complete select reply`);
+    assert.match(sent.at(-1), /preset-002/, name);
+
+    const defaultReplyStart = sent.length;
+    await bridge.accept(message(`preset-default-${name}`, '/preset --default'));
+    assert.deepEqual(presetUpdates, ['preset-002', null], `${name} scoped preset reset`);
+    assert.equal(sent.length, defaultReplyStart + 1, `${name} sends the complete default reply`);
+    assert.match(sent.at(-1), /跟随 Host 默认/, name);
+    assert.equal(asks, 0, `${name} mutation ask`);
+    assert.equal(creates, 0, `${name} mutation create`);
+    assert.equal(fixture.sessions.size, 0, `${name} mutation session binding`);
+
     await bridge.accept(message(`help-${name}`, '/help'));
     const help = sent.at(-1);
-    for (const command of ['/models', '/model', '/stop', '/steer']) {
+    for (const command of ['/models', '/model', '/presetlist', '/preset', '/preset --default', '/stop', '/steer']) {
       assert.match(help, new RegExp(`\\${command}`), `${name} ${command}`);
     }
     assert.match(help, /\/model 2/, `${name} numbered model selection`);
+    assert.match(help, /\/preset id:<ID>/, `${name} numeric preset ID selection`);
   }
 });
 

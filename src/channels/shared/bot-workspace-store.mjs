@@ -535,6 +535,19 @@ function resolveAgentPresetCatalog(catalog) {
     : normalizeAgentPresetCatalog(value);
 }
 
+function unavailableAgentPreset() {
+  const error = new Error('Agent Preset 不存在或不可用。');
+  error.code = 'agent-preset-unavailable';
+  return error;
+}
+
+function assertCurrentBotScope(isCurrentScope) {
+  if (isCurrentScope()) return;
+  const error = new Error('找不到要修改的机器人。');
+  error.code = 'workspace-bot-not-found';
+  throw error;
+}
+
 function decorateResult(workspaces, result, catalog) {
   const decorate = (value) => {
     const decorated = workspaces.decorateStatus(value);
@@ -580,14 +593,74 @@ export function observeBotWorkspaceRemovals(
   });
 }
 
-export function createBotWorkspaceScope(harness, { botId, workspaces, state }) {
+export function createBotWorkspaceScope(
+  harness,
+  { botId, workspaces, state, agentPresetCatalog } = {},
+) {
   if (!harness || !workspaces || !state) throw new TypeError('harness, workspaces, and state are required');
   const incarnation = workspaces.incarnationFor(botId);
   const isCurrentScope = () => workspaces.has(botId)
     && workspaces.incarnationFor(botId) === incarnation;
+  const presetSettings = async (catalog = agentPresetCatalog) => {
+    let normalizedCatalog;
+    try {
+      normalizedCatalog = await resolveAgentPresetCatalog(catalog)
+        ?? normalizeAgentPresetCatalog(null);
+    } catch (error) {
+      assertCurrentBotScope(isCurrentScope);
+      throw error;
+    }
+    assertCurrentBotScope(isCurrentScope);
+    return {
+      agentPreset: workspaces.agentPresetFor(botId),
+      agentPresetCatalog: normalizedCatalog,
+    };
+  };
   const sessionGenerations = new Map();
   const scopedHarness = new Proxy(harness, {
     get(target, property) {
+      if (property === 'agentPresetSettings') {
+        return async (options = {}) => {
+          options?.signal?.throwIfAborted();
+          assertCurrentBotScope(isCurrentScope);
+          const settings = await presetSettings();
+          options?.signal?.throwIfAborted();
+          return settings;
+        };
+      }
+      if (property === 'updateAgentPreset') {
+        return async (value, options = {}) => {
+          options?.signal?.throwIfAborted();
+          assertCurrentBotScope(isCurrentScope);
+          const agentPreset = value === '--default' ? null : validateAgentPresetId(value);
+          let catalog = null;
+          if (agentPreset) {
+            ({ agentPresetCatalog: catalog } = await presetSettings());
+            options?.signal?.throwIfAborted();
+            if (!catalog.items.some((item) => item.id === agentPreset)) {
+              throw unavailableAgentPreset();
+            }
+          }
+          await workspaces.setAgentPreset(botId, agentPreset, { incarnation });
+          assertCurrentBotScope(isCurrentScope);
+          if (catalog) {
+            return {
+              agentPreset: workspaces.agentPresetFor(botId),
+              agentPresetCatalog: catalog,
+            };
+          }
+          try {
+            return await presetSettings();
+          } catch (error) {
+            if (error?.code === 'workspace-bot-not-found') throw error;
+            assertCurrentBotScope(isCurrentScope);
+            return {
+              agentPreset: workspaces.agentPresetFor(botId),
+              agentPresetCatalog: normalizeAgentPresetCatalog(null),
+            };
+          }
+        };
+      }
       if (property === 'currentWorkspace') {
         return () => {
           if (!isCurrentScope()) {
@@ -912,9 +985,7 @@ export function createWorkspaceAwareController(controller, { workspaces, stateFo
         : null;
       if (normalizedAgentPreset && agentPresetCatalog
         && !catalog?.items.some((item) => item.id === normalizedAgentPreset)) {
-        const error = new Error('Agent Preset 不存在或不可用。');
-        error.code = 'agent-preset-unavailable';
-        throw error;
+        throw unavailableAgentPreset();
       }
       await workspaces.setAgentPreset(botId, normalizedAgentPreset, { incarnation });
       return decorateResult(

@@ -53,6 +53,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   const logger = typeof ctx.logger === 'function'
     ? ctx.logger('dsh-dingtalk')
     : (ctx.logger ?? console);
+  const agentPresetCatalog = () => listAgentPresetCatalog(ctx);
   const paths = pluginPaths(config);
   const configStore = await new ConfigStore(paths.config).load();
   const defaultWorkspace = resolve(config.workspace ?? process.cwd());
@@ -106,7 +107,9 @@ export async function createProductionController(ctx, config = {}, internals = {
     createRuntime: async ({ botId, config: botConfig, clientSecret }) => {
       const state = await stateFor(botId);
       await workspaces.ensure(botId, { defaultAgentPreset: config.agentPreset });
-      const workspaceScope = createBotWorkspaceScope(harness, { botId, workspaces, state });
+      const workspaceScope = createBotWorkspaceScope(harness, {
+        botId, workspaces, state, agentPresetCatalog,
+      });
       return new Runtime({
         config: botConfig,
         clientSecret,
@@ -140,7 +143,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   const controller = createWorkspaceAwareController(coreController, {
     workspaces,
     stateFor,
-    agentPresetCatalog: () => listAgentPresetCatalog(ctx),
+    agentPresetCatalog,
   });
   const supervisor = createSupervisor({
     controller,

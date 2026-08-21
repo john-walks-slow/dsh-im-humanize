@@ -7,14 +7,9 @@ import test from 'node:test';
 import {
   BotWorkspaceStore,
   createBotWorkspaceScope,
-  createWorkspaceAwareController,
 } from '../src/channels/shared/bot-workspace-store.mjs';
 import { ConversationStateStore } from '../src/channels/shared/conversation-state-store.mjs';
 import { TextHarnessBridge } from '../src/channels/shared/text-harness-bridge.mjs';
-import {
-  TOKEN_BOT_ENDPOINTS,
-  createTokenBotRpcHandler,
-} from '../plugin-src/host/channels/shared/rpc.mjs';
 
 function message(messageId, content) {
   return {
@@ -29,7 +24,7 @@ function message(messageId, content) {
   };
 }
 
-test('an agent preset change applies only after /new creates the next session', async (t) => {
+test('/preset changes only the sessions created after /new and --default follows Host', async (t) => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-im-preset-lifecycle-')));
   t.after(() => rm(root, { recursive: true, force: true }));
 
@@ -46,7 +41,7 @@ test('an agent preset change applies only after /new creates the next session', 
   const sessions = new Set();
   const harness = {
     async createSession(options) {
-      const sessionId = `session-${creations.length === 0 ? 'a' : 'b'}`;
+      const sessionId = `session-${String.fromCharCode(97 + creations.length)}`;
       creations.push({ sessionId, options });
       sessions.add(sessionId);
       return sessionId;
@@ -59,7 +54,19 @@ test('an agent preset change applies only after /new creates the next session', 
       return `answer-from-${sessionId}`;
     },
   };
-  const scope = createBotWorkspaceScope(harness, { botId, workspaces, state });
+  const agentPresetCatalog = {
+    defaultId: 'preset-old',
+    items: [
+      { id: 'preset-old', label: 'Old preset' },
+      { id: 'preset-new', label: 'New preset' },
+    ],
+  };
+  const scope = createBotWorkspaceScope(harness, {
+    botId,
+    workspaces,
+    state,
+    agentPresetCatalog,
+  });
   const sent = [];
   const bridge = new TextHarnessBridge({
     descriptor: { key: 'test', label: 'Test' },
@@ -69,25 +76,6 @@ test('an agent preset change applies only after /new creates the next session', 
     logger: { warn() {}, error() {} },
   });
 
-  const baseController = {
-    status() { return { bots: [{ botId, connected: true }] }; },
-    bindCredentials() { return this.status(); },
-    reconnectBot() { return this.status(); },
-    deleteBot() { return { bots: [] }; },
-  };
-  const controller = createWorkspaceAwareController(baseController, {
-    workspaces,
-    stateFor: async () => state,
-    agentPresetCatalog: {
-      defaultId: 'preset-old',
-      items: [
-        { id: 'preset-old', label: 'Old preset' },
-        { id: 'preset-new', label: 'New preset' },
-      ],
-    },
-  });
-  const rpc = createTokenBotRpcHandler(controller, { channel: 'Test' });
-
   await bridge.accept(message('message-one', 'first prompt'));
   assert.equal(state.sessionFor(conversationKey), 'session-a');
   assert.deepEqual(creations, [{
@@ -95,13 +83,14 @@ test('an agent preset change applies only after /new creates the next session', 
     options: { workspace: root, agentPreset: 'preset-old' },
   }]);
 
-  const updated = await rpc(TOKEN_BOT_ENDPOINTS.setAgentPreset, {
-    botId,
-    agentPreset: 'preset-new',
-  });
-  assert.equal(updated.ok, true);
-  assert.equal(updated.value.bots[0].agentPreset, 'preset-new');
+  await bridge.accept(message('message-list', '/presetlist'));
+  assert.match(sent.at(-1), /2\. New preset（preset-new）/u);
+
+  await bridge.accept(message('message-preset', '/preset 2'));
+  assert.equal(workspaces.agentPresetFor(botId), 'preset-new');
+  assert.match(sent.at(-1), /已有会话不变/u);
   assert.equal(state.sessionFor(conversationKey), 'session-a');
+  assert.equal(creations.length, 1, '/preset itself must not create a session');
 
   await bridge.accept(message('message-two', 'still in the current chat'));
   assert.equal(creations.length, 1, 'the current chat must reuse session A');
@@ -123,15 +112,24 @@ test('an agent preset change applies only after /new creates the next session', 
       options: { workspace: root, agentPreset: 'preset-new' },
     },
   ]);
+
+  await bridge.accept(message('message-default', '/preset --default'));
+  assert.equal(workspaces.agentPresetFor(botId), null);
+  assert.equal(state.sessionFor(conversationKey), 'session-b');
+  assert.equal(creations.length, 2, '--default itself must not create a session');
+
+  await bridge.accept(message('message-new-default', '/new'));
+  await bridge.accept(message('message-four', 'first prompt using Host default'));
+  assert.equal(state.sessionFor(conversationKey), 'session-c');
+  assert.deepEqual(creations.at(-1), {
+    sessionId: 'session-c',
+    options: { workspace: root },
+  });
   assert.deepEqual(asks, [
     { sessionId: 'session-a', text: 'first prompt' },
     { sessionId: 'session-a', text: 'still in the current chat' },
     { sessionId: 'session-b', text: 'first prompt after /new' },
+    { sessionId: 'session-c', text: 'first prompt using Host default' },
   ]);
-  assert.deepEqual(sent, [
-    'answer-from-session-a',
-    'answer-from-session-a',
-    '已开启新会话。请发送你的问题。',
-    'answer-from-session-b',
-  ]);
+  assert.equal(sent.at(-1), 'answer-from-session-c');
 });

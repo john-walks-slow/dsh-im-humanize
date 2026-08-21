@@ -19,6 +19,10 @@ import {
   isModelCommand,
   runModelCommand,
 } from '../shared/model-command.mjs';
+import {
+  isPresetCommand,
+  runPresetCommand,
+} from '../shared/preset-command.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 import {
@@ -45,6 +49,10 @@ const HELP_TEXT = [
   '/models  按序号列出所有可用模型',
   '/model [序号或完整模型ID]  查看或切换当前会话模型',
   '示例：先发 /models，再发 /model 2',
+  '/presetlist  按序号列出可用 Agent Preset',
+  '/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset',
+  '纯数字 ID：/preset id:<ID>',
+  '/preset --default  跟随 Host 默认',
   '/stop  停止当前任务',
   '/steer 补充指令  纠偏当前任务',
   '/status  检查连接状态',
@@ -166,7 +174,9 @@ export class WeixinHarnessBridge {
     const commandText = nonEmptyString(extractWeixinText(message)) ?? '';
     const commandRunner = isControlCommand(commandText)
       ? runControlCommand
-      : (isModelCommand(commandText) ? runModelCommand : null);
+      : (isModelCommand(commandText)
+          ? runModelCommand
+          : (isPresetCommand(commandText) ? runPresetCommand : null));
     if (commandRunner && sender === this.#ownerUserId) {
       let task;
       task = this.#processFastCommand(

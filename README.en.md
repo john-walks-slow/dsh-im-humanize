@@ -106,6 +106,10 @@ Each Telegram bot has its own access-mode control on its bot card. Existing and 
 | `/models` | List every currently configured model with a number. |
 | `/model` | Show the model used by the Session bound to this chat. |
 | `/model <number or provider/model-id>` | Switch the model for the Session bound to this chat. |
+| `/presetlist` | List the Host's currently available Agent Presets, marking the Host default and this bot's selection. |
+| `/preset` | Show this bot's Agent Preset setting for new Sessions. |
+| `/preset <number or Preset ID>` | Set this bot's Agent Preset; use `/preset id:<ID>` for a numeric ID. |
+| `/preset --default` | Clear this bot's explicit selection so later new Sessions follow the Host default. |
 | `/stop` | Immediately stop this chat's running task while preserving work that has not started. |
 | `/steer <additional instruction>` | Inject an additional instruction into this chat's running task. |
 | `/compact` | Immediately compact older context in the Session bound to the current chat. |
@@ -116,7 +120,9 @@ Each Telegram bot has its own access-mode control on its bot card. Existing and 
 | Interactive question | Reply with an option number, option label, or custom text; separate multiple choices with commas. |
 | Remote approval | Reply with `批准` / `拒绝` / `同意` / `不同意` / `yes` / `no`. |
 
-Example: send `/models`, then `/model 2` to switch to the second model in the list. Other examples: `/help`, `/new`, `/status`, `/model deepseek-official/deepseek-v4-pro`, `/steer inspect only the configuration file`, `/stop`, `/compact`, `/workspace /Users/alice/projects/my-app`, `/sessionlist 2`, `/sessionlist /Users/alice/projects/my-app`, or `/session session-id`
+Example: send `/models`, then `/model 2` to switch to the second model in the list; send `/presetlist`, then `/preset 2` to select the second Agent Preset for this bot. Other examples: `/help`, `/new`, `/status`, `/model deepseek-official/deepseek-v4-pro`, `/preset marketing-jeep`, `/preset --default`, `/steer inspect only the configuration file`, `/stop`, `/compact`, `/workspace /Users/alice/projects/my-app`, `/sessionlist 2`, `/sessionlist /Users/alice/projects/my-app`, or `/session session-id`
+
+If the Slack desktop app has no native Slash Command registered with the same name, it intercepts messages that begin directly with `/`. Send the command with one leading space instead, for example ` /presetlist` or ` /preset 2`; the plugin command layer trims surrounding whitespace, so it executes exactly like the unspaced form.
 
 ### Command details
 
@@ -126,6 +132,10 @@ Example: send `/models`, then `/model 2` to switch to the second model in the li
 - `/models` takes no arguments and never creates a Session. It assigns a number to every currently configured Harness model and also shows its stable, copyable `provider/model-id`. If one provider fails, models from the remaining providers are still shown.
 - Bare `/model` only displays the current Session model. A model can be selected by the number or exact full ID returned by `/models`, for example `/model 2`. When the chat has no Session yet, a valid switch creates and binds a blank Session without prompting the model. The switch affects only that Session; Harness also attempts to save it as the default for future Sessions, while other existing Sessions remain unchanged.
 - A model cannot be switched while a task is running or waiting for an approval or question answer. Wait for it to finish or use `/stop` first. A Session containing images cannot switch to a model that does not accept image input.
+- `/presetlist` takes no arguments and never creates a Session. It reads the Host's currently available Agent Presets every time, showing their names, stable IDs, the Host default, and this bot's selection. A selected Preset that has been deleted or become broken is retained and marked unavailable instead of being cleared automatically. Only safe names and IDs are shown; paths, errors, and other Host internals are never exposed.
+- Bare `/preset` shows this bot's setting for future new Sessions; it does not inspect or change the current Session. With an argument, it accepts a number from the most recent `/presetlist` in this chat or an exact ID; use `/preset id:<ID>` for a numeric ID. A numbered selection resolves the ID from that displayed list and then validates it against the latest Host catalog, asking for a fresh list if it has changed.
+- `/preset --default` clears this bot's explicit override so future Sessions resolve the Host default when they are created. Explicitly selecting an ID that currently matches the Host default pins that ID instead. Following the Host default remains available even while the catalog cannot be read.
+- An Agent Preset change is bot-wide: it affects future new Sessions in every chat for this bot, but never modifies, stops, unbinds, or rebuilds an existing Session and never runs `/new` automatically. If this chat already has a Session, ordinary messages keep using it; the first ordinary message after `/new` creates a Session with the new setting. Presets can still be queried or changed while a task is running or awaiting interaction because the command does not touch that Session.
 - `/stop` and `/steer` control only a running task started by this chat. Even when multiple chats bind the same Session, they do not intentionally control another chat's task. `/stop` does not delete the Session or its history, preserves queued work that has not started, and is safe to repeat.
 - `/steer` accepts text only, including multiple lines. It neither creates another Session nor starts a second task. Send an ordinary message when no task is running; while an approval or question is pending, answer it first or use `/stop`.
 - `/compact` acts only on the Harness Session already bound to the current chat and is never sent to the model. The bot reports the applicable status when the chat has no Session yet, the Session is generating a reply, or there is no compactable history.
@@ -137,6 +147,7 @@ Example: send `/models`, then `/model 2` to switch to the second model in the li
 - `/session` locates the session's unique workspace automatically. Binding inside the current workspace replaces only this chat's mapping. A cross-workspace binding switches the bot workspace, clears the old session mappings for all of that bot's chats, and then binds this chat, so it affects the bot's other chats. A reply already being generated may still finish.
 - Workspace switches and session bindings only clear or replace dsh-im chat mappings. They never delete, empty, or archive old Session contents; an old Session can still be listed and bound again.
 - Any user within the platform bot's visibility scope who can normally message it can run these commands; there is no separate administrator role. Telegram Compatible mode follows the original DM and group mention/reply rules. Safe mode admits only private users in that bot's allowlist and always ignores group commands.
+- Agent Preset names and IDs come from the same Harness Host, and any command-authorized user can change the Preset used by all future new Sessions across this bot's chats. Expose `/presetlist` and `/preset` only to trusted users.
 - The list comes from the Harness Host's global registry and can include local absolute paths for other bots, other channels, or non-IM projects. Restrict the bot's visibility to trusted users.
 - Session results also come from the global Harness Host. Session IDs and titles can belong to other bots, other channels, or non-IM projects, and may contain sensitive metadata. Enable these commands only when every user in the bot's visibility scope is trusted.
 - Any user who can run `/session` can continue the selected session and use later messages to write to it or invoke its available tools. Expose the bot and session list only to trusted users.

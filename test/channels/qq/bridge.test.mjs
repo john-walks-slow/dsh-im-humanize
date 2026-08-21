@@ -259,11 +259,20 @@ test('QQ executes /compact for the bound Session without prompting the model', a
   assert.equal(fixture.seen.has('compact-qq'), true);
 });
 
-test('QQ lists models without prompting and help advertises all four commands', async () => {
+test('QQ lists models and presets without prompting and advertises fast commands', async () => {
   const fixture = stateFixture();
   const sent = [];
+  const presetUpdates = [];
+  let agentPreset = null;
   let asks = 0;
   let creates = 0;
+  const agentPresetCatalog = {
+    defaultId: 'preset-001',
+    items: Array.from({ length: 70 }, (_, index) => ({
+      id: `preset-${String(index + 1).padStart(3, '0')}`,
+      label: `QQ Preset ${index + 1} ${'x'.repeat(64)}`,
+    })),
+  };
   const bridge = new QqHarnessBridge({
     bot: { sendText: async (_target, text) => sent.push(text) },
     ownerUserOpenid: 'owner-openid',
@@ -276,6 +285,12 @@ test('QQ lists models without prompting and help advertises all four commands', 
         }],
         failures: [],
       }),
+      agentPresetSettings: async () => ({ agentPreset, agentPresetCatalog }),
+      updateAgentPreset: async (value) => {
+        presetUpdates.push(value);
+        agentPreset = value;
+        return { agentPreset, agentPresetCatalog };
+      },
       createSession: async () => { creates += 1; return 'qq-session'; },
       ask: async () => { asks += 1; return 'unexpected model reply'; },
     },
@@ -288,12 +303,42 @@ test('QQ lists models without prompting and help advertises all four commands', 
   assert.equal(creates, 0);
   assert.equal(fixture.sessions.size, 0);
 
+  const presetReplyStart = sent.length;
+  await bridge.accept(message({ messageId: 'presets-qq', content: '/presetlist' }));
+  const presetReplies = sent.slice(presetReplyStart);
+  assert.ok(presetReplies.length > 1);
+  assert.match(presetReplies.join('\n'), /preset-070/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+  assert.equal(fixture.sessions.size, 0);
+
+  await bridge.accept(message({ messageId: 'preset-current-qq', content: '/preset' }));
+  assert.match(sent.at(-1), /跟随 Host 默认/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+
+  const selectReplyStart = sent.length;
+  await bridge.accept(message({ messageId: 'preset-select-qq', content: '/preset 2' }));
+  assert.deepEqual(presetUpdates, ['preset-002']);
+  assert.equal(sent.length, selectReplyStart + 1);
+  assert.match(sent.at(-1), /preset-002/);
+
+  const defaultReplyStart = sent.length;
+  await bridge.accept(message({ messageId: 'preset-default-qq', content: '/preset --default' }));
+  assert.deepEqual(presetUpdates, ['preset-002', null]);
+  assert.equal(sent.length, defaultReplyStart + 1);
+  assert.match(sent.at(-1), /跟随 Host 默认/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+  assert.equal(fixture.sessions.size, 0);
+
   await bridge.accept(message({ messageId: 'help-models-qq', content: '/help' }));
   const help = sent.at(-1);
-  for (const command of ['/models', '/model', '/stop', '/steer']) {
+  for (const command of ['/models', '/model', '/presetlist', '/preset', '/preset --default', '/stop', '/steer']) {
     assert.equal(help.includes(command), true, command);
   }
   assert.match(help, /\/model 2/);
+  assert.match(help, /\/preset id:<ID>/);
 });
 
 test('QQ remembers any authorized private inbound as a connection-test target', async () => {

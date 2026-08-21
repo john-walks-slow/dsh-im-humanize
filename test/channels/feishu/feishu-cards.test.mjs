@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   cardActionProbeCard,
   menuCard,
+  menuHelpText,
 } from '../../../src/channels/feishu/feishu-cards.mjs';
 
 function buttons(value, result = []) {
@@ -24,6 +25,14 @@ test('menu appends watchlist and keeps repair number-only', () => {
   ));
   assert.deepEqual(actions, ['sessions', 'workspaces', 'new', 'status', 'help', 'watchlist']);
   assert.equal(actions.includes('repair'), false);
+});
+
+test('menu help advertises Agent Preset commands', () => {
+  const help = menuHelpText();
+  assert.match(help, /\/presetlist/);
+  assert.match(help, /\/preset \[序号或完整ID\]/);
+  assert.match(help, /\/preset id:<ID>/);
+  assert.match(help, /\/preset --default/);
 });
 
 test('card-action probe carries only its action and opaque nonce', () => {

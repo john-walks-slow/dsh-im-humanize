@@ -185,8 +185,18 @@ test('all nine production channels use channel presets only as bot creation defa
     );
     assert.match(
       source,
-      /agentPresetCatalog:\s*\(\)\s*=>\s*listAgentPresetCatalog\(ctx\)/,
+      /const agentPresetCatalog\s*=\s*\(\)\s*=>\s*listAgentPresetCatalog\(ctx\)/,
       `${path} must read the Host preset catalog dynamically`,
+    );
+    assert.match(
+      source,
+      /createBotWorkspaceScope\([^;]*agentPresetCatalog[^;]*\)/,
+      `${path} must expose the same dynamic catalog to bot commands`,
+    );
+    assert.match(
+      source,
+      /createWorkspaceAwareController\([^;]*agentPresetCatalog,?[^;]*\)/,
+      `${path} must expose the same dynamic catalog to RPC updates`,
     );
   }
 

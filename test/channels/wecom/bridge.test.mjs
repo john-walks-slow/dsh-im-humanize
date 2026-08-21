@@ -153,12 +153,21 @@ test('Enterprise WeChat executes /compact for the bound Session without promptin
   assert.deepEqual(transport.active, []);
 });
 
-test('Enterprise WeChat lists models without prompting and help advertises all four commands', async () => {
+test('Enterprise WeChat lists models and presets without prompting and advertises fast commands', async () => {
   const store = state();
   store.sessionFor = () => null;
   const transport = testClient();
+  const presetUpdates = [];
+  let agentPreset = null;
   let asks = 0;
   let creates = 0;
+  const agentPresetCatalog = {
+    defaultId: 'preset-001',
+    items: Array.from({ length: 70 }, (_, index) => ({
+      id: `preset-${String(index + 1).padStart(3, '0')}`,
+      label: `WeCom Preset ${index + 1} ${'x'.repeat(64)}`,
+    })),
+  };
   const bridge = new WecomHarnessBridge({
     client: transport.client,
     generateStreamId: () => 'models-stream',
@@ -171,6 +180,12 @@ test('Enterprise WeChat lists models without prompting and help advertises all f
         }],
         failures: [],
       }),
+      agentPresetSettings: async () => ({ agentPreset, agentPresetCatalog }),
+      updateAgentPreset: async (value) => {
+        presetUpdates.push(value);
+        agentPreset = value;
+        return { agentPreset, agentPresetCatalog };
+      },
       createSession: async () => { creates += 1; return 'wecom-session'; },
       ask: async () => { asks += 1; return 'unexpected model reply'; },
     },
@@ -182,12 +197,44 @@ test('Enterprise WeChat lists models without prompting and help advertises all f
   assert.equal(asks, 0);
   assert.equal(creates, 0);
 
+  const presetReplyStart = transport.streamed.length;
+  await bridge.accept(frame({ msgid: 'presets-wecom', text: { content: '/presetlist' } }));
+  const presetReplies = transport.streamed
+    .slice(presetReplyStart)
+    .map((entry) => entry.content);
+  assert.ok(presetReplies.length > 1);
+  assert.match(presetReplies.join('\n'), /preset-070/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+
+  await bridge.accept(frame({ msgid: 'preset-current-wecom', text: { content: '/preset' } }));
+  assert.match(transport.streamed.at(-1).content, /跟随 Host 默认/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+
+  const selectReplyStart = transport.streamed.length;
+  await bridge.accept(frame({ msgid: 'preset-select-wecom', text: { content: '/preset 2' } }));
+  assert.deepEqual(presetUpdates, ['preset-002']);
+  assert.equal(transport.streamed.length, selectReplyStart + 1);
+  assert.match(transport.streamed.at(-1).content, /preset-002/);
+  assert.equal(transport.streamed.at(-1).finish, true);
+
+  const defaultReplyStart = transport.streamed.length;
+  await bridge.accept(frame({ msgid: 'preset-default-wecom', text: { content: '/preset --default' } }));
+  assert.deepEqual(presetUpdates, ['preset-002', null]);
+  assert.equal(transport.streamed.length, defaultReplyStart + 1);
+  assert.match(transport.streamed.at(-1).content, /跟随 Host 默认/);
+  assert.equal(transport.streamed.at(-1).finish, true);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+
   await bridge.accept(frame({ msgid: 'help-models-wecom', text: { content: '/help' } }));
   const help = transport.streamed.at(-1).content;
-  for (const command of ['/models', '/model', '/stop', '/steer']) {
+  for (const command of ['/models', '/model', '/presetlist', '/preset', '/preset --default', '/stop', '/steer']) {
     assert.equal(help.includes(command), true, command);
   }
   assert.match(help, /\/model 2/);
+  assert.match(help, /\/preset id:<ID>/);
 });
 
 test('Enterprise WeChat messages stream Harness progress and finalize once', async () => {
