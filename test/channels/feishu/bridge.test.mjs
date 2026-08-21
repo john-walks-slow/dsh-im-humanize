@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
+import { mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { FeishuHarnessBridge } from '../../../src/channels/feishu/bridge.mjs';
 import { DEFAULT_IMAGE_PROMPT } from '../../../src/channels/shared/image-prompt.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
@@ -1870,4 +1873,144 @@ test('bridge does not expose internal error details in a Feishu failure reply', 
   assert.match(sent[0], /处理失败，请稍后重试/);
   assert.doesNotMatch(sent[0], /secret-shaped-internal-detail|private\/path/);
   assert.equal(status.lastError, 'secret-shaped-internal-detail /private/path');
+});
+
+// ── Interactive cards: menus, session lists, workspace lists ───────────────
+
+function cardClient(onSend) {
+  let sequence = 0;
+  return {
+    im: { v1: { message: { create: async (request) => {
+      const outgoing = {
+        chatId: request.data.receive_id,
+        msgType: request.data.msg_type,
+        content: request.data.msg_type === 'interactive'
+          ? JSON.parse(request.data.content)
+          : request.data.content,
+      };
+      await onSend(outgoing);
+      sequence += 1;
+      return { code: 0, data: { message_id: `om_card_${sequence}` } };
+    } } } },
+  };
+}
+
+function cardActionEvent(messageId, action, operatorOpenId) {
+  return {
+    operator: { operator_id: { open_id: operatorOpenId } },
+    action: { value: { action } },
+    context: { open_message_id: messageId },
+  };
+}
+
+function useActionsFromCard(content) {
+  const values = [];
+  for (const element of content.body.elements) {
+    if (element.tag === 'button' && typeof element.value?.action === 'string' && element.value.action.startsWith('use:')) {
+      values.push(element.value.action.slice('use:'.length));
+    }
+  }
+  return values;
+}
+
+function sessionsHarness(count) {
+  const workspace = join(tmpdir(), 'dsh-im-card-test-work');
+  mkdirSync(workspace, { recursive: true });
+  const sessions = Array.from({ length: count }, (_, index) => ({
+    sessionId: `session-${String(index + 1).padStart(2, '0')}`,
+    title: `Session ${index + 1}`,
+  }));
+  return {
+    ensureRunning: async () => true,
+    currentWorkspace: () => workspace,
+    listWorkspaceSessions: async () => ({ workspace, sessions }),
+    listWorkspaces: async () => [workspace],
+    bindWorkspaceSession: async (_key, sessionId) => ({ sessionId, title: `Session ${sessionId}` }),
+    switchWorkspace: async (path) => path,
+  };
+}
+
+test('card buttons from an unallowed sender are ignored', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async ({ chatId, msgType, content }) => {
+      sent.push({ chatId, msgType, content });
+    }),
+    channel: {},
+    harness: sessionsHarness(3),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('menu-open', '/m', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.equal(sent.length, 1);
+  assert.equal(fixture.sessions.size, 0);
+
+  // A group member outside the allowlist clicks "new session" on the card.
+  await bridge.onCardAction(cardActionEvent('om_card_1', 'new', 'ou_evil'));
+  await bridge.waitForIdle();
+  assert.equal(fixture.sessions.size, 0, 'unallowed card operator must not act');
+});
+
+test('card buttons from an allowed sender work', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async ({ chatId, msgType, content }) => {
+      sent.push({ chatId, msgType, content });
+    }),
+    channel: {},
+    harness: sessionsHarness(3),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('menu-open-2', '/m', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.equal(sent.length, 1);
+
+  await bridge.onCardAction(cardActionEvent('om_card_1', 'new', 'ou_owner'));
+  await bridge.waitForIdle();
+  assert.equal(sent.length, 2, 'allowed operator click should send a reply');
+});
+
+function cards(messages) { return messages.filter((m) => m.msgType === 'interactive'); }
+
+test('session list paginates by page number across 25 sessions', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async ({ chatId, msgType, content }) => {
+      sent.push({ chatId, msgType, content });
+    }),
+    channel: {},
+    harness: sessionsHarness(25),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('sessions-open', '/sessionlist', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.equal(cards(sent).length, 1);
+  const page0 = cards(sent).at(-1).content;
+  assert.equal(useActionsFromCard(page0).length, 10);
+  assert.equal(useActionsFromCard(page0)[0], 'session-01');
+
+  // Button on page 0 asks for page 2 (zero-based page number).
+  await bridge.onCardAction(cardActionEvent('om_card_1', 'sessions:2', 'ou_owner'));
+  await bridge.waitForIdle();
+  const page2 = cards(sent).at(-1).content;
+  assert.equal(useActionsFromCard(page2).length, 5);
+  assert.equal(useActionsFromCard(page2)[0], 'session-21', 'page 2 must start at the 21st session (no double page scaling)');
+
+  await bridge.onCardAction(cardActionEvent('om_card_2', 'sessions:1', 'ou_owner'));
+  await bridge.waitForIdle();
+  const page1 = cards(sent).at(-1).content;
+  assert.equal(useActionsFromCard(page1).length, 10);
+  assert.equal(useActionsFromCard(page1)[0], 'session-11');
 });
