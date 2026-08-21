@@ -7,7 +7,7 @@ const EMPTY_STATE = Object.freeze({
   seenMessageIds: [],
   watches: {},
   chatTargets: {},
-  includeArchivedSessions: true,
+  includeArchivedSessions: false,
 });
 
 /** One conversation key may watch at most this many sessions. */
@@ -41,7 +41,7 @@ export class StateStore {
         chatTargets: parsed.chatTargets && typeof parsed.chatTargets === 'object' ? parsed.chatTargets : {},
         includeArchivedSessions: typeof parsed.includeArchivedSessions === 'boolean'
           ? parsed.includeArchivedSessions
-          : true,
+          : false,
       };
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
@@ -161,11 +161,11 @@ export class StateStore {
   // ── Session-list archived policy (per bot) ───────────────────────────────
 
   includesArchivedSessions() {
-    return this.#state.includeArchivedSessions !== false;
+    return this.#state.includeArchivedSessions === true;
   }
 
   async setIncludeArchivedSessions(include) {
-    this.#state.includeArchivedSessions = include !== false;
+    this.#state.includeArchivedSessions = include === true;
     await this.#persist();
   }
 

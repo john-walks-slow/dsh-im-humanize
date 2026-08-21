@@ -2544,7 +2544,7 @@ test('reconnect compensation replays missed turn/end and dedups duplicates', asy
   assert.match(JSON.stringify(cards[1]), /watched-session/);
 });
 
-test('/archived off hides archived sessions from the list and watch index', async () => {
+test('archived sessions are hidden by default; /archived on reveals them', async () => {
   const { state } = await watchStoreFixture();
   const work = join(tmpdir(), 'dsh-im-archived-test-work');
   mkdirSync(work, { recursive: true });
@@ -2571,8 +2571,7 @@ test('/archived off hides archived sessions from the list and watch index', asyn
   });
   bridge._sent = sent;
 
-  await bridge.accept(event('archived-off', '/archived off', { senderOpenId: 'ou_owner' }));
-  await bridge.waitForIdle();
+  // Default: hidden. The explicit toggle re-enables inclusion for the card check.
   assert.equal(state.includesArchivedSessions(), false);
 
   await bridge.accept(event('sessions-arch', '/sessionlist', { senderOpenId: 'ou_owner' }));
@@ -2585,4 +2584,11 @@ test('/archived off hides archived sessions from the list and watch index', asyn
   await bridge.waitForIdle();
   assert.ok(state.watchEntry('p2p:ou_owner', 'live-session'));
   assert.equal(state.watchEntry('p2p:ou_owner', 'old-session'), null);
+
+  await bridge.accept(event('archived-on', '/archived on', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  await bridge.accept(event('sessions-arch-2', '/sessionlist', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  const useOn = useActionsFromCard(cards.at(-1));
+  assert.deepEqual(useOn, ['live-session', 'old-session'], '/archived on restores archived sessions');
 });
