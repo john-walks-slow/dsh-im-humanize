@@ -17,12 +17,17 @@ function launcherDomain(domain) {
  * never fall back to the create-only flow. This catches regressions such as a
  * literal `{{client_id}}` before the broken URL reaches the browser.
  */
-export function assertCallbackRepairUrl(value, expectedAppId, domain = 'feishu') {
+export function assertTargetedAppUpdateUrl(
+  value,
+  expectedAppId,
+  domain = 'feishu',
+  operationLabel = 'Feishu app update',
+) {
   let url;
   try {
     url = new URL(value);
   } catch {
-    throw new Error('Feishu callback repair returned an invalid verification URL');
+    throw new Error(`${operationLabel} returned an invalid verification URL`);
   }
   const supportedDomain = domain === 'feishu' || domain === 'lark';
   const clientIds = url.searchParams.getAll('clientID');
@@ -49,9 +54,18 @@ export function assertCallbackRepairUrl(value, expectedAppId, domain = 'feishu')
     || addons.length !== 1
     || !addons[0]?.trim()
     || hasPlaceholder) {
-    throw new Error('Feishu callback repair returned an unsafe verification URL');
+    throw new Error(`${operationLabel} returned an unsafe verification URL`);
   }
   return url.toString();
+}
+
+export function assertCallbackRepairUrl(value, expectedAppId, domain = 'feishu') {
+  return assertTargetedAppUpdateUrl(
+    value,
+    expectedAppId,
+    domain,
+    'Feishu callback repair',
+  );
 }
 
 /**

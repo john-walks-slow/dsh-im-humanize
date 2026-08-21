@@ -403,6 +403,78 @@ test('callback repair begins for exactly one bot and returns only a safe officia
   await fx.dispose();
 });
 
+test('group-message permission begins for one existing bot and returns a safe official QR projection', async () => {
+  const calls = [];
+  const permission = status({
+    schemaVersion: 2,
+    phase: 'registering',
+    configured: true,
+    registration: {
+      state: 'qr_ready',
+      attempt: 'reg_group_permission',
+      operation: 'group_message_permission',
+      botId: 'bot_target',
+      qrCodeUrl: 'https://open.feishu.cn/page/launcher?tp=sdk&clientID=cli_target&addons=encoded&user_code=opaque',
+      expiresAt: Date.now() + 60_000,
+    },
+    bots: [{
+      botId: 'bot_target',
+      connected: true,
+      configured: true,
+      groupResponseMode: 'mention',
+      groupMessagePermissionGranted: false,
+      bot: { name: '目标机器人', appIdMasked: 'cli_tar••••rget', domain: 'feishu' },
+      connection: { ready: true, feishuLongConnectionState: 'connected', harnessReachable: true },
+    }],
+  });
+  const controller = {
+    status: async () => permission,
+    registrationStatus: async () => permission,
+    startRegistration: async () => status(),
+    startGroupMessagePermission: async (botId) => { calls.push(botId); return permission; },
+    cancelRegistration: async () => permission,
+    disconnect: async () => status(),
+  };
+  const fx = await rpcFixture(controller);
+  const result = await fx.registration.handler(
+    FEISHU_ENDPOINTS.beginGroupMessagePermission,
+    { botId: 'bot_target' },
+    signal(),
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, ['bot_target']);
+  assert.equal(result.value.operation, 'group_message_permission');
+  assert.equal(result.value.botId, 'bot_target');
+  assert.equal(
+    result.value.verificationUrl,
+    'https://open.feishu.cn/page/launcher?tp=sdk&clientID=cli_target&addons=encoded&user_code=opaque',
+  );
+  assert.match(result.value.qrCodeDataUrl, /^data:image\/png;base64,/);
+  assert.doesNotMatch(JSON.stringify(result), /client_secret|appSecret/);
+
+  const restored = await fx.registration.handler(FEISHU_ENDPOINTS.status, {}, signal());
+  assert.equal(restored.value.provisioning.operation, 'group_message_permission');
+  assert.equal(restored.value.provisioning.botId, 'bot_target');
+  assert.equal(restored.value.bots[0].groupMessagePermissionGranted, false);
+
+  for (const payload of [
+    {},
+    { botId: '../target' },
+    { botId: 'bot_target', appSecret: 'must-not-leak' },
+  ]) {
+    const invalid = await fx.registration.handler(
+      FEISHU_ENDPOINTS.beginGroupMessagePermission,
+      payload,
+      signal(),
+    );
+    assert.equal(invalid.ok, false);
+    assert.equal(invalid.error.code, 'bad-request');
+    assert.doesNotMatch(JSON.stringify(invalid), /must-not-leak|\.\.\/target/);
+  }
+  await fx.dispose();
+});
+
 test('status preserves a submitted callback repair attempt after its QR URL is discarded', async () => {
   const secret = 'must-never-cross-the-rpc-boundary';
   const saving = status({

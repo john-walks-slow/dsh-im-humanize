@@ -191,6 +191,7 @@ test('QR registration separates events from card callbacks', async () => {
 
 test('group response mode defaults to mention and updates the live runtime without reconnecting', async () => {
   const existing = bot('bot_response_mode', 'response_mode');
+  existing.groupMessagePermissionGranted = true;
   const fx = fixture({
     bots: [existing],
     secrets: { [existing.secretRef]: 'stable-secret' },
@@ -198,6 +199,7 @@ test('group response mode defaults to mention and updates the live runtime witho
   await fx.controller.initialize();
 
   assert.equal(fx.controller.status().bots[0].groupResponseMode, 'mention');
+  assert.equal(fx.controller.status().bots[0].groupMessagePermissionGranted, true);
   const runtime = fx.runtimes.get(existing.id)[0];
   const updated = await fx.controller.updateGroupResponseMode(existing.id, 'all');
 
@@ -209,6 +211,96 @@ test('group response mode defaults to mention and updates the live runtime witho
     fx.controller.updateGroupResponseMode(existing.id, 'sometimes'),
     /Invalid Feishu group response mode/,
   );
+  await fx.controller.close();
+});
+
+test('all-message mode requires authorization before direct updates', async () => {
+  const existing = bot('bot_response_permission_required', 'response_permission_required');
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+  });
+  await fx.controller.initialize();
+
+  await assert.rejects(
+    fx.controller.updateGroupResponseMode(existing.id, 'all'),
+    (error) => error?.code === 'group_message_permission_required',
+  );
+  assert.equal(fx.configStore.getBot(existing.id).groupResponseMode, undefined);
+  assert.equal(fx.controller.status().bots[0].groupResponseMode, 'mention');
+  assert.equal(fx.controller.status().bots[0].groupMessagePermissionGranted, false);
+  await fx.controller.close();
+});
+
+test('group-message authorization grants only its scope, enables all mode, and restarts one bot', async () => {
+  const existing = bot('bot_group_permission', 'group_permission');
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+    verifyApp: async () => ({
+      name: existing.botName,
+      openId: existing.botOpenId,
+      activated: existing.activated,
+    }),
+  });
+  await fx.controller.initialize();
+  const oldRuntime = fx.runtimes.get(existing.id)[0];
+
+  const started = fx.controller.startGroupMessagePermission(existing.id);
+  const duplicate = fx.controller.startGroupMessagePermission(existing.id);
+  const attemptId = started.registration.attempt;
+  assert.equal(duplicate.registration.attempt, attemptId);
+  assert.equal(started.registration.operation, 'group_message_permission');
+  assert.equal(started.registration.botId, existing.id);
+
+  await waitFor(() => fx.registrationRuns.length === 1);
+  const run = fx.registrationRuns.shift();
+  assert.equal(run.options.appId, existing.appId);
+  assert.equal(Object.hasOwn(run.options, 'createOnly'), false);
+  assert.deepEqual(run.options.addons, {
+    preset: false,
+    scopes: { tenant: ['im:message.group_msg'] },
+  });
+  run.options.onQRCodeReady({
+    url: callbackRepairQrUrl(existing.appId),
+    expireIn: 60,
+  });
+  run.resolve({
+    client_id: existing.appId,
+    client_secret: 'stable-secret',
+    user_info: { open_id: existing.ownerOpenIds[0], tenant_brand: existing.domain },
+  });
+
+  await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'succeeded');
+  const saved = fx.configStore.getBot(existing.id);
+  assert.equal(saved.groupMessagePermissionGranted, true);
+  assert.equal(saved.groupResponseMode, 'all');
+  assert.equal(oldRuntime.stops, 1);
+  assert.equal(fx.runtimes.get(existing.id).length, 2);
+  assert.equal(fx.runtimes.get(existing.id)[1].config.groupResponseMode, 'all');
+  const status = fx.controller.registrationStatus(attemptId);
+  assert.equal(status.bots[0].groupMessagePermissionGranted, true);
+  assert.equal(status.bots[0].groupResponseMode, 'all');
+  await fx.controller.close();
+});
+
+test('cancelling group-message authorization before confirmation preserves mention mode', async () => {
+  const existing = bot('bot_group_permission_cancel', 'group_permission_cancel');
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+  });
+  await fx.controller.initialize();
+
+  const started = fx.controller.startGroupMessagePermission(existing.id);
+  const attemptId = started.registration.attempt;
+  await waitFor(() => fx.registrationRuns.length === 1);
+  const cancelled = await fx.controller.cancelRegistration(attemptId);
+  assert.equal(cancelled.registration.state, 'cancelled');
+  const saved = fx.configStore.getBot(existing.id);
+  assert.equal(saved.groupMessagePermissionGranted, undefined);
+  assert.equal(saved.groupResponseMode, undefined);
+  assert.equal(fx.runtimes.get(existing.id).length, 1);
   await fx.controller.close();
 });
 

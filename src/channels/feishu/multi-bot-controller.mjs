@@ -5,6 +5,10 @@ import {
   CALLBACK_REPAIR_OPERATION,
   CallbackRepairManager,
 } from './repair-manager.mjs';
+import {
+  GROUP_MESSAGE_PERMISSION_OPERATION,
+  GroupMessagePermissionManager,
+} from './group-message-permission-manager.mjs';
 import { REQUIRED_TENANT_SCOPES } from './plugin-controller.mjs';
 import {
   isFeishuGroupResponseMode,
@@ -15,6 +19,10 @@ const ACTIVE_REGISTRATION_STATES = new Set([
   'starting', 'qr_ready', 'polling', 'slow_down', 'domain_switched',
 ]);
 const MUTABLE_REGISTRATION_STATES = new Set([...ACTIVE_REGISTRATION_STATES, 'saving']);
+const TARGETED_APP_UPDATE_OPERATIONS = new Set([
+  CALLBACK_REPAIR_OPERATION,
+  GROUP_MESSAGE_PERMISSION_OPERATION,
+]);
 const ALL_VISIBLE_SENDERS = '*';
 const DEFAULT_CALLBACK_PROBE_TIMEOUT_MS = 120_000;
 const MAX_CALLBACK_PROBE_TIMEOUT_MS = 600_000;
@@ -81,6 +89,7 @@ function configuredBotFingerprint(config) {
     botOpenId: config.botOpenId,
     activated: config.activated,
     groupResponseMode: normalizeFeishuGroupResponseMode(config.groupResponseMode),
+    groupMessagePermissionGranted: config.groupMessagePermissionGranted === true,
     deletionPending: config.deletionPending === true,
     connectedAt: config.connectedAt ?? null,
     createdAt: config.createdAt ?? null,
@@ -108,7 +117,7 @@ export class MultiBotDshFeishuController {
   #runtimes = new Map();
   #botErrors = new Map();
   #registrations = new Map();
-  #activeRepairs = new Map();
+  #activeAppUpdates = new Map();
   #botOwnership = new Map();
   #latestRegistrationId = null;
   #configTransition = Promise.resolve();
@@ -239,12 +248,15 @@ export class MultiBotDshFeishuController {
     const target = this.#requireBot(botId);
     if (target.deletionPending) throw new Error('Cannot repair a Feishu bot pending deletion');
 
-    const activeId = this.#activeRepairs.get(botId);
+    const activeId = this.#activeAppUpdates.get(botId);
     const active = activeId ? this.#registrations.get(activeId) : null;
     if (active && MUTABLE_REGISTRATION_STATES.has(active.manager.status().state)) {
+      if (active.operation !== CALLBACK_REPAIR_OPERATION) {
+        throw new Error('Another Feishu app update is already active for this bot');
+      }
       return this.registrationStatus(active.id);
     }
-    this.#activeRepairs.delete(botId);
+    this.#activeAppUpdates.delete(botId);
 
     const id = this.#createRegistrationId();
     if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id) || this.#registrations.has(id)) {
@@ -283,7 +295,66 @@ export class MultiBotDshFeishuController {
       },
     });
     this.#registrations.set(id, record);
-    this.#activeRepairs.set(botId, id);
+    this.#activeAppUpdates.set(botId, id);
+    this.#latestRegistrationId = id;
+    this.#trimRegistrations();
+    record.manager.start();
+    this.#touch();
+    return this.registrationStatus(id);
+  }
+
+  startGroupMessagePermission(botId) {
+    this.#assertOpen();
+    const target = this.#requireBot(botId);
+    if (target.deletionPending) {
+      throw new Error('Cannot update permissions for a Feishu bot pending deletion');
+    }
+
+    const activeId = this.#activeAppUpdates.get(botId);
+    const active = activeId ? this.#registrations.get(activeId) : null;
+    if (active && MUTABLE_REGISTRATION_STATES.has(active.manager.status().state)) {
+      if (active.operation !== GROUP_MESSAGE_PERMISSION_OPERATION) {
+        throw new Error('Another Feishu app update is already active for this bot');
+      }
+      return this.registrationStatus(active.id);
+    }
+    this.#activeAppUpdates.delete(botId);
+
+    const id = this.#createRegistrationId();
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id) || this.#registrations.has(id)) {
+      throw new Error('Registration id generator returned an invalid or duplicate id');
+    }
+    const record = {
+      id,
+      operation: GROUP_MESSAGE_PERMISSION_OPERATION,
+      manager: null,
+      botId,
+      createdNew: false,
+      cancelled: false,
+      remoteCommitted: false,
+      processing: null,
+      publicError: null,
+      stage: 'authorizing',
+      target: structuredClone(target),
+      targetFingerprint: configuredBotFingerprint(target),
+      initiator: { actorOpenId: null, chatId: null },
+    };
+    record.manager = new GroupMessagePermissionManager({
+      registerApp: this.#registerApp,
+      appId: target.appId,
+      domain: target.domain,
+      onCredentials: (result) => {
+        record.remoteCommitted = true;
+        const processing = this.#acceptGroupMessagePermission(record, result);
+        const tracked = processing.finally(() => {
+          if (record.processing === tracked) record.processing = null;
+        });
+        record.processing = tracked;
+        return tracked;
+      },
+    });
+    this.#registrations.set(id, record);
+    this.#activeAppUpdates.set(botId, id);
     this.#latestRegistrationId = id;
     this.#trimRegistrations();
     record.manager.start();
@@ -308,7 +379,7 @@ export class MultiBotDshFeishuController {
     // Once registerApp has returned, the platform-side update has committed.
     // A repair must finish converging the returned credential and callback
     // probe; cancelling here cannot roll that remote mutation back.
-    if (record.operation === CALLBACK_REPAIR_OPERATION && state === 'saving') {
+    if (TARGETED_APP_UPDATE_OPERATIONS.has(record.operation) && state === 'saving') {
       return this.registrationStatus(attemptId);
     }
     if (!MUTABLE_REGISTRATION_STATES.has(state)) {
@@ -485,6 +556,11 @@ export class MultiBotDshFeishuController {
     }
     return this.#serializeConfig(() => this.#withBotTransition(botId, async () => {
       const config = this.#requireBot(botId);
+      if (groupResponseMode === 'all' && config.groupMessagePermissionGranted !== true) {
+        const error = new Error('Authorize im:message.group_msg before enabling all group messages');
+        error.code = 'group_message_permission_required';
+        throw error;
+      }
       const saved = await this.#configStore.saveBot({ ...config, groupResponseMode });
       this.#runtimes.get(botId)?.setGroupResponseMode?.(saved.groupResponseMode);
       this.#touch();
@@ -516,14 +592,14 @@ export class MultiBotDshFeishuController {
   async close() {
     if (this.#closed) return;
     this.#closed = true;
-    const repairProcessing = [];
+    const appUpdateProcessing = [];
     for (const record of this.#registrations.values()) {
       const state = record.manager.status().state;
-      if (record.operation === CALLBACK_REPAIR_OPERATION && state === 'saving') {
+      if (TARGETED_APP_UPDATE_OPERATIONS.has(record.operation) && state === 'saving') {
         // Stop projecting an in-flight repair, but do not request its local
         // credential rollback after the remote update has committed.
         record.manager.cancel();
-        if (record.processing) repairProcessing.push(record.processing);
+        if (record.processing) appUpdateProcessing.push(record.processing);
       } else if (MUTABLE_REGISTRATION_STATES.has(state)) {
         record.cancelled = true;
         record.manager.cancel();
@@ -532,7 +608,7 @@ export class MultiBotDshFeishuController {
     await this.#configTransition;
     await Promise.allSettled([...this.#botTransitions.values()]);
     await Promise.allSettled([...this.#runtimes.keys()].map((id) => this.#stopRuntime(id)));
-    await Promise.allSettled(repairProcessing);
+    await Promise.allSettled(appUpdateProcessing);
     // A committed repair can be between SDK completion and its serialized
     // credential/runtime transition when close begins. Waiting for the repair
     // can therefore create a replacement runtime after the first drain. Drain
@@ -554,6 +630,7 @@ export class MultiBotDshFeishuController {
         connected,
         configured: true,
         groupResponseMode: normalizeFeishuGroupResponseMode(config.groupResponseMode),
+        groupMessagePermissionGranted: config.groupMessagePermissionGranted === true,
         bot: publicBot(config),
         connection,
         error,
@@ -603,6 +680,158 @@ export class MultiBotDshFeishuController {
         ? { error: { ...record.publicError } }
         : {}),
     };
+  }
+
+  async #acceptGroupMessagePermission(record, result) {
+    const appId = result.client_id;
+    const appSecret = result.client_secret;
+    const ownerOpenId = optionalNonEmptyString(result.user_info?.open_id);
+    const tenantBrand = result.user_info?.tenant_brand;
+    const target = record.target;
+
+    if (record.cancelled) {
+      throw this.#callbackRepairError(
+        record,
+        'abort',
+        'Group message permission update was cancelled before local activation.',
+      );
+    }
+    if (appId !== target.appId) {
+      throw this.#callbackRepairError(
+        record,
+        'repair_app_mismatch',
+        'Feishu returned credentials for a different app.',
+      );
+    }
+    if (!ownerOpenId) {
+      throw this.#callbackRepairError(
+        record,
+        'repair_owner_missing',
+        'Feishu returned no permission operator identity.',
+      );
+    }
+    if (tenantBrand !== undefined && tenantBrand !== target.domain) {
+      throw this.#callbackRepairError(
+        record,
+        'repair_domain_mismatch',
+        'Feishu returned credentials for a different account domain.',
+      );
+    }
+    if (!target.ownerOpenIds.includes(ALL_VISIBLE_SENDERS)
+      && !target.ownerOpenIds.includes(ownerOpenId)) {
+      throw this.#callbackRepairError(
+        record,
+        'repair_owner_mismatch',
+        'The Feishu permission operator is not an owner of this configured bot.',
+      );
+    }
+
+    record.stage = 'verifying_identity';
+    let verified;
+    try {
+      verified = await this.#verifyApp({ appId, appSecret, domain: target.domain });
+    } catch (error) {
+      throw this.#callbackRepairError(
+        record,
+        'repair_credentials_invalid',
+        'Feishu could not verify the updated app credentials.',
+        error,
+      );
+    }
+    if (target.botOpenId && verified?.openId !== target.botOpenId) {
+      throw this.#callbackRepairError(
+        record,
+        'repair_bot_mismatch',
+        'The updated Feishu app belongs to a different bot identity.',
+      );
+    }
+
+    await this.#serializeConfig(() => this.#withBotTransition(record.botId, async () => {
+      const current = this.#configStore.getBot(record.botId);
+      if (!current
+        || current.deletionPending
+        || configuredBotFingerprint(current) !== record.targetFingerprint) {
+        throw this.#callbackRepairError(
+          record,
+          'repair_target_changed',
+          'The Feishu bot changed while its permission update was in progress.',
+        );
+      }
+
+      let previous;
+      try {
+        previous = await this.#credentials.resolve(current.secretRef);
+      } catch (error) {
+        throw this.#callbackRepairError(
+          record,
+          'credential_update_failed',
+          'Unable to read the current Feishu credential.',
+          error,
+        );
+      }
+      if (previous?.value !== appSecret) {
+        record.stage = 'persisting_secret';
+        try {
+          await this.#credentials.set(current.secretRef, appSecret);
+        } catch (writeError) {
+          const observed = await this.#credentials.resolve(current.secretRef).catch(() => null);
+          if (observed?.value !== appSecret) {
+            throw this.#callbackRepairError(
+              record,
+              'credential_update_failed',
+              'Unable to store the updated Feishu credential.',
+              writeError,
+            );
+          }
+        }
+        const persisted = await this.#credentials.resolve(current.secretRef).catch(() => null);
+        if (persisted?.value !== appSecret) {
+          throw this.#callbackRepairError(
+            record,
+            'credential_state_unknown',
+            'The updated Feishu credential could not be confirmed after writing.',
+          );
+        }
+      }
+
+      record.stage = 'enabling_all_messages';
+      let saved;
+      try {
+        saved = await this.#configStore.saveBot({
+          ...current,
+          groupMessagePermissionGranted: true,
+          groupResponseMode: 'all',
+        });
+      } catch (error) {
+        throw this.#callbackRepairError(
+          record,
+          'group_message_permission_save_failed',
+          'The permission was accepted, but all-message mode could not be saved.',
+          error,
+        );
+      }
+
+      record.stage = 'restarting';
+      try {
+        await this.#startRuntime(saved, appSecret);
+      } catch (error) {
+        this.#botErrors.set(record.botId, {
+          code: 'connection_failed',
+          message: '群消息权限已开通，但机器人长连接未就绪，请点击重试。',
+        });
+        this.#touch();
+        throw this.#callbackRepairError(
+          record,
+          'group_message_permission_connection_failed',
+          'The permission was accepted, but the Feishu runtime could not restart.',
+          error,
+        );
+      }
+      this.#botErrors.delete(record.botId);
+      record.stage = 'verified';
+      record.publicError = null;
+      this.#touch();
+    }));
   }
 
   async #acceptCallbackRepair(record, result) {

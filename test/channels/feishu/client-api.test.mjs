@@ -16,6 +16,7 @@ import {
 
 test('multi-bot endpoints are bot-scoped and keep legacy operations separate', () => {
   assert.equal(FEISHU_ENDPOINTS.beginCallbackRepair, 'bot.callback-repair.begin');
+  assert.equal(FEISHU_ENDPOINTS.beginGroupMessagePermission, 'bot.group-message-permission.begin');
   assert.equal(FEISHU_ENDPOINTS.reconnectBot, 'bot.reconnect');
   assert.equal(FEISHU_ENDPOINTS.disconnectBot, 'bot.disconnect');
   assert.equal(FEISHU_ENDPOINTS.deleteBot, 'bot.delete');
@@ -35,6 +36,7 @@ test('client normalizes multiple independent bots and derives authoritative tota
         connected: true,
         configured: true,
         groupResponseMode: 'all',
+        groupMessagePermissionGranted: true,
         bot: {
           name: '销售助手',
           appIdMasked: 'cli_aaaa••••1111',
@@ -61,7 +63,9 @@ test('client normalizes multiple independent bots and derives authoritative tota
   assert.deepEqual(snapshot.totals, { configured: 2, connected: 1 });
   assert.equal(snapshot.bots[0].state, 'connected');
   assert.equal(snapshot.bots[0].groupResponseMode, 'all');
+  assert.equal(snapshot.bots[0].groupMessagePermissionGranted, true);
   assert.equal(snapshot.bots[1].groupResponseMode, 'mention');
+  assert.equal(snapshot.bots[1].groupMessagePermissionGranted, false);
   assert.equal(snapshot.bots[1].state, 'connecting');
   assert.equal(snapshot.bots[1].bot.domain, 'lark');
   assert.equal(snapshot.bots[1].error.message, '连接失败');
@@ -168,6 +172,31 @@ test('client restores a submitted callback repair without requiring an expired Q
   assert.equal(provisioning.submitted, true);
   assert.equal(provisioning.verificationUrl, undefined);
   assert.equal(provisioning.qrCodeDataUrl, undefined);
+});
+
+test('client preserves group-message permission identity across QR and poll projections', () => {
+  const provisioning = normalizeProvisioning({
+    attemptId: 'reg_group_permission',
+    operation: 'group_message_permission',
+    botId: 'bot_target',
+    verificationUrl: 'https://open.feishu.cn/page/launcher?tp=sdk&clientID=cli_target&addons=x',
+    qrCodeDataUrl: 'data:image/png;base64,AAAA',
+  });
+  assert.equal(provisioning.operation, 'group_message_permission');
+  assert.equal(provisioning.botId, 'bot_target');
+
+  const poll = normalizePollResult({
+    status: 'connecting',
+    operation: 'group_message_permission',
+    botId: 'bot_target',
+  });
+  assert.equal(poll.operation, 'group_message_permission');
+  assert.equal(poll.botId, 'bot_target');
+  assert.throws(() => normalizeProvisioning({
+    attemptId: 'reg_broken_permission',
+    operation: 'group_message_permission',
+    verificationUrl: 'https://open.feishu.cn/page/launcher?tp=sdk&clientID=cli_target&addons=x',
+  }), /botId/);
 });
 
 test('client unwraps RpcResult and redacts credential-shaped error text', () => {
