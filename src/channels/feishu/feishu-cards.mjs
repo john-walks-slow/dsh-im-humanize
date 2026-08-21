@@ -153,3 +153,32 @@ export function menuHelpText() {
     '/workspace 绝对路径  切换工作区',
   ].join('\n');
 }
+
+/** The watch list for one conversation (unwatch buttons + reply fallback). */
+export function watchListCard(entries) {
+  const elements = entries.length === 0
+    ? [{ tag: 'div', text: markdown('当前没有关注的会话。\n`/watch <ID|序号>` 关注后，任务完成会自动推送。') }]
+    : [
+        { tag: 'div', text: markdown('任务完成会自动推送，回复数字或点按钮取消关注：') },
+        ...entries.map((entry, index) => button(
+          `${index + 1}. ${safeTitle(entry.title)}`,
+          `unwatch:${entry.sessionId}`,
+        )),
+      ];
+  return cardWith('👁 关注列表', elements);
+}
+
+/**
+ * The completion push card. `title` is the session title, `reason` the
+ * turn-end kind (completed / stopped / aborted).
+ */
+export function completionCard(sessionId, title, reason) {
+  const reasonText = reason === 'stopped' ? '已停止' : reason === 'aborted' ? '已中止' : '已完成';
+  return cardWith('✅ 任务完成', [
+    { tag: 'div', text: markdown(`**${safeTitle(title)}**\n\`${sessionId}\``) },
+    { tag: 'div', text: markdown(`**状态**：${reasonText}`) },
+    button('打开会话列表', 'sessions'),
+    button('工作区', 'workspaces'),
+    { tag: 'div', text: markdown('绑定该会话后可继续追问，输入文字即可。') },
+  ]);
+}

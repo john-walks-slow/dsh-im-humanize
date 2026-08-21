@@ -2404,3 +2404,142 @@ test('repair monitor reports expiry without claiming that the callback was fixed
     .find((text) => text.includes('授权链接已过期'));
   assert.doesNotMatch(terminal, /修复完成/);
 });
+
+// ── Watches: read-only tracking, persistence, compensation, dedup ─────────
+
+import { StateStore } from '../../../src/channels/feishu/state-store.mjs';
+
+function watchHarness({ sessionsByWorkspace = { 'C:/work': [] }, current = 'C:/work', history = [] } = {}) {
+  const listeners = [];
+  return {
+    ensureRunning: async () => true,
+    currentWorkspace: () => current,
+    listWorkspaces: async () => Object.keys(sessionsByWorkspace),
+    listWorkspaceSessions: async (workspace) => ({ workspace, sessions: sessionsByWorkspace[workspace] ?? [] }),
+    bindWorkspaceSession: async (_key, sessionId) => ({ sessionId, title: `Title ${sessionId}` }),
+    switchWorkspace: async (path) => path,
+    rpc: async (method, params) => (method === 'session.history' ? { events: history } : null),
+    watchHarnessEvents: ({ onSessionEvent, onReconnect }) => {
+      listeners.push({ onSessionEvent, onReconnect });
+      return Promise.resolve();
+    },
+    _listeners: listeners,
+  };
+}
+
+async function watchStoreFixture(seedSessions = []) {
+  const store = new StateStore(join(tmpdir(), `dsh-im-watch-test-${Math.random().toString(36).slice(2)}.json`));
+  await store.load();
+  for (const [key, sessionId] of seedSessions) await store.setSession(key, sessionId);
+  return { store, state: store };
+}
+
+test('/watch resolves read-only: no binding, no workspace switch', async () => {
+  const { state } = await watchStoreFixture([['p2p:ou_owner', 'bound-session']]);
+  let bindCalls = 0;
+  let switchCalls = 0;
+  const harness = watchHarness({
+    sessionsByWorkspace: { 'C:/work': [{ sessionId: 'target-session', title: 'Target' }] },
+  });
+  harness.bindWorkspaceSession = async () => { bindCalls += 1; throw new Error('must not bind'); };
+  harness.switchWorkspace = async () => { switchCalls += 1; throw new Error('must not switch'); };
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('watch-1', '/watch 1', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.match(sent.at(-1), /已关注会话「Target」/);
+  assert.equal(bindCalls, 0, 'watch must not bind the conversation');
+  assert.equal(switchCalls, 0, 'watch must not switch workspaces');
+  assert.equal(state.sessionFor('p2p:ou_owner'), 'bound-session', 'existing binding unchanged');
+  const entry = state.watchEntry('p2p:ou_owner', 'target-session');
+  assert.ok(entry, 'watch entry persisted');
+  assert.equal(entry.chatId, 'oc_chat');
+});
+
+test('/watch finds a session in another workspace without switching', async () => {
+  const { state } = await watchStoreFixture();
+  const harness = watchHarness({
+    current: 'C:/work',
+    sessionsByWorkspace: {
+      'C:/work': [],
+      'D:/other': [{ sessionId: 'other-session', title: 'Other Session' }],
+    },
+  });
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('watch-x', '/watch other-session', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.match(sent.at(-1), /已关注会话「Other Session」/);
+  assert.equal(state.sessionFor('p2p:ou_owner'), null, 'cross-workspace watch must not bind');
+  assert.ok(state.watchEntry('p2p:ou_owner', 'other-session'));
+});
+
+test('persisted watches resume the event watcher at runtime start', async () => {
+  const { state } = await watchStoreFixture();
+  await state.setWatch('p2p:ou_owner', { sessionId: 'kept-session', title: 'Kept', chatId: 'oc_chat', lastSeq: 3 });
+  const harness = watchHarness();
+
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async () => {}),
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(harness._listeners.length, 1, 'watcher must restart from persisted state');
+  assert.ok(bridge);
+});
+
+test('reconnect compensation replays missed turn/end and dedups duplicates', async () => {
+  const { state } = await watchStoreFixture();
+  await state.setWatch('p2p:ou_owner', { sessionId: 'watched-session', title: 'Watched', chatId: 'oc_chat', lastSeq: null });
+  const harness = watchHarness({
+    sessionsByWorkspace: { 'C:/work': [{ sessionId: 'watched-session', title: 'Watched' }] },
+    history: [
+      { type: 'turn/end', seq: 10, data: { turn: 't1', reason: { kind: 'completed' } } },
+      { type: 'turn/end', seq: 11, data: { turn: 't2', reason: { kind: 'completed' } } },
+    ],
+  });
+  const cards = [];
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async ({ msgType, content }) => {
+      if (msgType === 'interactive') cards.push(content);
+    }),
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(harness._listeners.length, 1);
+
+  // Live event: t1 arrives before any replay.
+  harness._listeners[0].onSessionEvent({ sessionId: 'watched-session', event: { type: 'turn/end', seq: 10, data: { turn: 't1', reason: { kind: 'completed' } } } });
+  await bridge.waitForIdle();
+  assert.equal(cards.length, 1, 'one completion for the live event');
+
+  // Reconnect: history replays t1 (dedup) and t2 (new).
+  await harness._listeners[0].onReconnect();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(cards.length, 2, 'exactly one new completion from compensation (t1 deduped)');
+  assert.match(JSON.stringify(cards[1]), /watched-session/);
+});
