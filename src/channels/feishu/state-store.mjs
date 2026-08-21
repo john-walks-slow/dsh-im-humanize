@@ -1,7 +1,14 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-const EMPTY_STATE = Object.freeze({ version: 1, sessions: {}, seenMessageIds: [], watches: {}, chatTargets: {} });
+const EMPTY_STATE = Object.freeze({
+  version: 1,
+  sessions: {},
+  seenMessageIds: [],
+  watches: {},
+  chatTargets: {},
+  includeArchivedSessions: true,
+});
 
 /** One conversation key may watch at most this many sessions. */
 export const MAX_WATCHES_PER_KEY = 20;
@@ -32,6 +39,9 @@ export class StateStore {
         seenMessageIds: Array.isArray(parsed.seenMessageIds) ? parsed.seenMessageIds.slice(-1000) : [],
         watches: parsed.watches && typeof parsed.watches === 'object' ? parsed.watches : {},
         chatTargets: parsed.chatTargets && typeof parsed.chatTargets === 'object' ? parsed.chatTargets : {},
+        includeArchivedSessions: typeof parsed.includeArchivedSessions === 'boolean'
+          ? parsed.includeArchivedSessions
+          : true,
       };
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
@@ -145,6 +155,17 @@ export class StateStore {
   async setChatTarget(key, chatId) {
     if (this.#state.chatTargets[key] === chatId) return;
     this.#state.chatTargets[key] = chatId;
+    await this.#persist();
+  }
+
+  // ── Session-list archived policy (per bot) ───────────────────────────────
+
+  includesArchivedSessions() {
+    return this.#state.includeArchivedSessions !== false;
+  }
+
+  async setIncludeArchivedSessions(include) {
+    this.#state.includeArchivedSessions = include !== false;
     await this.#persist();
   }
 

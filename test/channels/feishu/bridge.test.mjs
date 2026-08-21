@@ -2543,3 +2543,46 @@ test('reconnect compensation replays missed turn/end and dedups duplicates', asy
   assert.equal(cards.length, 2, 'exactly one new completion from compensation (t1 deduped)');
   assert.match(JSON.stringify(cards[1]), /watched-session/);
 });
+
+test('/archived off hides archived sessions from the list and watch index', async () => {
+  const { state } = await watchStoreFixture();
+  const work = join(tmpdir(), 'dsh-im-archived-test-work');
+  mkdirSync(work, { recursive: true });
+  const harness = watchHarness({
+    current: work,
+    sessionsByWorkspace: {
+      [work]: [
+        { sessionId: 'live-session', title: 'Live', archived: false },
+        { sessionId: 'old-session', title: 'Old', archived: true },
+      ],
+    },
+  });
+  const sent = [];
+  const cards = [];
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async ({ msgType, content }) => {
+      if (msgType === 'interactive') cards.push(content);
+    }),
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+  bridge._sent = sent;
+
+  await bridge.accept(event('archived-off', '/archived off', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.equal(state.includesArchivedSessions(), false);
+
+  await bridge.accept(event('sessions-arch', '/sessionlist', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  const use = useActionsFromCard(cards.at(-1));
+  assert.deepEqual(use, ['live-session'], 'archived session hidden');
+
+  // The numeric watch index must resolve against the filtered list too.
+  await bridge.accept(event('watch-arch', '/watch 1', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.ok(state.watchEntry('p2p:ou_owner', 'live-session'));
+  assert.equal(state.watchEntry('p2p:ou_owner', 'old-session'), null);
+});

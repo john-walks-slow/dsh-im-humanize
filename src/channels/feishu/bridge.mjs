@@ -92,8 +92,11 @@ const HELP_TEXT = [
   '/watch [Session ID 或序号]  关注会话，任务完成自动推送',
   '/unwatch [Session ID 或序号]  取消关注',
   '/watchlist  查看关注列表',
+  '/archived on|off  会话列表是否包含归档会话',
   '/help  显示本帮助',
 ].join('\n');
+
+const ARCHIVED_COMMAND = /^\/archived(?:\s+(on|off))?$/i;
 
 /** Safe user-facing text for bind/workspace failures (no raw messages). */
 function safeErrorText(error) {
@@ -642,6 +645,22 @@ export class FeishuHarnessBridge {
       await this.#showWatchList(key, event.message.chat_id);
       return;
     }
+    if (ARCHIVED_COMMAND.test(commandText)) {
+      const match = ARCHIVED_COMMAND.exec(commandText);
+      const value = match[1]?.toLowerCase();
+      if (value !== 'on' && value !== 'off') {
+        await this.#send(event.message.chat_id, '用法：/archived on（包含归档会话）或 /archived off（隐藏归档会话）');
+        return;
+      }
+      if (typeof this.#state?.setIncludeArchivedSessions === 'function') {
+        await this.#state.setIncludeArchivedSessions(value === 'on');
+      }
+      await this.#send(
+        event.message.chat_id,
+        value === 'on' ? '已开启：会话列表包含归档会话。' : '已关闭：会话列表隐藏归档会话。',
+      );
+      return;
+    }
     if (NUMBER_REPLY.test(commandText)) {
       const menu = this.#takeMenu(key);
       if (menu) {
@@ -1139,6 +1158,14 @@ export class FeishuHarnessBridge {
     }
   }
 
+  /** The sessions visible under the bot's archived policy. */
+  #visibleSessions(sessions) {
+    if (this.#state?.includesArchivedSessions?.() === false) {
+      return sessions.filter((session) => session.archived !== true);
+    }
+    return sessions;
+  }
+
   async #showSessions({ chatId, key }, selector, page = 0) {
     try {
       const resolved = await resolveSessionListWorkspace(selector ?? '', this.#harness);
@@ -1147,7 +1174,7 @@ export class FeishuHarnessBridge {
         return;
       }
       const listed = await this.#harness.listWorkspaceSessions(resolved.workspace);
-      const sessions = Array.isArray(listed?.sessions) ? listed.sessions : [];
+      const sessions = this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : []);
       const workspace = listed?.workspace ?? resolved.workspace;
       if (sessions.length === 0) {
         await this.#send(chatId, `工作区：${workspace}\n该工作区暂无会话。`);
@@ -1270,7 +1297,7 @@ export class FeishuHarnessBridge {
     };
     if (numeric !== null) {
       if (!currentPath) return { error: '当前机器人没有可用的工作区，无法按序号解析会话。' };
-      const sessions = await listSessions(currentPath);
+      const sessions = this.#visibleSessions(await listSessions(currentPath));
       const session = sessions[numeric - 1];
       if (!session?.sessionId) {
         return { error: `当前工作区只有 ${sessions.length} 个会话。` };
