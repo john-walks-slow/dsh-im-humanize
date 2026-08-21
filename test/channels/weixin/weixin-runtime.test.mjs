@@ -308,6 +308,30 @@ test('runtime refuses to report ready when notifyStart rejects the stored token'
   assert.equal(runtime.status.weixinConnectionState, 'failed');
 });
 
+test('runtime identifies a local Harness health failure without exposing its detail', async () => {
+  const runtime = new WeixinRuntime({
+    api: {
+      notifyStart: async () => assert.fail('notifyStart must not run while Harness is unavailable'),
+      notifyStop: async () => {},
+      sendText: async () => {},
+      getUpdates: async () => ({ ret: 0, msgs: [] }),
+    },
+    config: { botId: 'wx_harness', baseUrl: 'https://ilinkai.weixin.qq.com/', ownerUserId: 'owner' },
+    token: 'bot-token',
+    harness: { ensureRunning: async () => { throw new Error('private loopback transport detail'); } },
+    state: {},
+  });
+
+  await assert.rejects(runtime.start(), (error) => {
+    assert.equal(error.code, 'harness-unreachable');
+    assert.doesNotMatch(error.message, /private loopback transport detail/);
+    assert.match(error.cause?.message ?? '', /private loopback transport detail/);
+    return true;
+  });
+  assert.equal(runtime.status.ready, false);
+  assert.equal(runtime.status.weixinConnectionState, 'failed');
+});
+
 test('runtime retries a transient notifyStart failure before reporting the account offline', async () => {
   let startCalls = 0;
   const runtime = new WeixinRuntime({

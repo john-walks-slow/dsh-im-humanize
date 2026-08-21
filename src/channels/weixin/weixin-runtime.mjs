@@ -25,6 +25,13 @@ function retryableStartError(error) {
     && (error.status === 408 || error.status === 425 || error.status === 429 || error.status >= 500);
 }
 
+function runtimeStartError(code, cause) {
+  const error = new Error(`Weixin runtime failed during ${code}`, { cause });
+  error.name = 'WeixinRuntimeStartError';
+  error.code = code;
+  return error;
+}
+
 function delay(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -117,7 +124,11 @@ export class WeixinRuntime {
     this.#status.weixinConnectionState = 'connecting';
     this.#status.lastError = null;
     try {
-      await this.#harness.ensureRunning();
+      try {
+        await this.#harness.ensureRunning();
+      } catch (error) {
+        throw runtimeStartError('harness-unreachable', error);
+      }
       this.#status.harnessReachable = true;
       await this.#notifyStart();
       this.#abortController = new AbortController();

@@ -47,7 +47,7 @@ function configFixture() {
   };
 }
 
-function runtimeFactory({ failStart = false } = {}) {
+function runtimeFactory({ failStart = false, startError } = {}) {
   const runtimes = [];
   const connectionTests = [];
   const createRuntime = async ({ config, token }) => {
@@ -64,6 +64,7 @@ function runtimeFactory({ failStart = false } = {}) {
         };
       },
       async start() {
+        if (startError) throw startError;
         if (failStart) throw new Error('runtime start failed with host-only detail');
         ready = true;
       },
@@ -169,7 +170,7 @@ test('verification-code state pauses polling and resumes with the submitted digi
   await controller.close();
 });
 
-test('activation failure rolls credentials and non-secret config back', async () => {
+test('runtime activation failure is classified and rolls credentials and config back', async () => {
   const credentials = credentialsFixture();
   const configs = configFixture();
   const runtimes = runtimeFactory({ failStart: true });
@@ -195,10 +196,213 @@ test('activation failure rolls credentials and non-secret config back', async ()
     (value) => value.status === 'failed',
   );
 
-  assert.equal(failed.error.code, 'activation-failed');
+  assert.equal(failed.error.code, 'connection-start-failed');
+  assert.match(failed.error.message, /消息连接初始化失败/);
   assert.equal(credentials.values.size, 0);
   assert.equal(configs.accounts.size, 0);
   assert.doesNotMatch(JSON.stringify(failed), /must-be-rolled-back|host-only detail/);
+  await controller.close();
+});
+
+test('credential write failure is classified and rolls back a post-commit error', async () => {
+  const credentials = credentialsFixture();
+  const configs = configFixture();
+  credentials.provider.set = async (ref, value) => {
+    credentials.values.set(ref, value);
+    throw new Error('credential backend failed after commit with private detail');
+  };
+  const controller = new WeixinController({
+    api: {
+      beginLogin: async () => ({ qrcode: 'qr-secret', qrcodeUrl: 'https://liteapp.weixin.qq.com/q/test' }),
+      pollLogin: async () => ({
+        status: 'confirmed',
+        bot_token: 'must-be-rolled-back',
+        ilink_bot_id: 'credential-failure@im.bot',
+        ilink_user_id: 'owner',
+        baseurl: 'https://ilinkai.weixin.qq.com',
+      }),
+    },
+    credentials: credentials.provider,
+    configStore: configs.store,
+    createRuntime: runtimeFactory().createRuntime,
+    logger: { error() {}, warn() {} },
+  });
+
+  const begun = await controller.startProvisioning();
+  const failed = await waitFor(
+    () => controller.registrationStatus(begun.attemptId),
+    (value) => value.status === 'failed',
+  );
+
+  assert.equal(failed.error.code, 'credential-save-failed');
+  assert.match(failed.error.message, /DSH 凭据存储/);
+  assert.equal(credentials.values.size, 0);
+  assert.equal(configs.accounts.size, 0);
+  assert.doesNotMatch(JSON.stringify(failed), /private detail|must-be-rolled-back/);
+  await controller.close();
+});
+
+test('credential read failure stops activation before any durable write', async () => {
+  const credentials = credentialsFixture();
+  const configs = configFixture();
+  credentials.provider.resolve = async () => {
+    throw new Error('credential read host-only detail');
+  };
+  const controller = new WeixinController({
+    api: {
+      beginLogin: async () => ({ qrcode: 'qr-secret', qrcodeUrl: 'https://liteapp.weixin.qq.com/q/test' }),
+      pollLogin: async () => ({
+        status: 'confirmed',
+        bot_token: 'must-never-be-written',
+        ilink_bot_id: 'credential-read-failure@im.bot',
+        ilink_user_id: 'owner',
+        baseurl: 'https://ilinkai.weixin.qq.com',
+      }),
+    },
+    credentials: credentials.provider,
+    configStore: configs.store,
+    createRuntime: runtimeFactory().createRuntime,
+    logger: { error() {}, warn() {} },
+  });
+
+  const begun = await controller.startProvisioning();
+  const failed = await waitFor(
+    () => controller.registrationStatus(begun.attemptId),
+    (value) => value.status === 'failed',
+  );
+
+  assert.equal(failed.error.code, 'credential-read-failed');
+  assert.equal(credentials.calls.length, 0);
+  assert.equal(credentials.values.size, 0);
+  assert.doesNotMatch(JSON.stringify(failed), /host-only detail|must-never-be-written/);
+  await controller.close();
+});
+
+test('account config write and runtime preparation failures have distinct safe codes', async () => {
+  for (const scenario of [
+    {
+      expectedCode: 'account-config-save-failed',
+      prepare: ({ configs }) => {
+        configs.store.save = async (account) => {
+          configs.accounts.set(account.botId, structuredClone(account));
+          throw new Error('config path host-only detail');
+        };
+      },
+      createRuntime: runtimeFactory().createRuntime,
+    },
+    {
+      expectedCode: 'runtime-prepare-failed',
+      prepare: () => {},
+      createRuntime: async () => { throw new Error('workspace path host-only detail'); },
+    },
+  ]) {
+    const credentials = credentialsFixture();
+    const configs = configFixture();
+    scenario.prepare({ credentials, configs });
+    const controller = new WeixinController({
+      api: {
+        beginLogin: async () => ({ qrcode: 'qr-secret', qrcodeUrl: 'https://liteapp.weixin.qq.com/q/test' }),
+        pollLogin: async () => ({
+          status: 'confirmed',
+          bot_token: 'must-be-rolled-back',
+          ilink_bot_id: `${scenario.expectedCode}@im.bot`,
+          ilink_user_id: 'owner',
+          baseurl: 'https://ilinkai.weixin.qq.com',
+        }),
+      },
+      credentials: credentials.provider,
+      configStore: configs.store,
+      createRuntime: scenario.createRuntime,
+      logger: { error() {}, warn() {} },
+    });
+
+    const begun = await controller.startProvisioning();
+    const failed = await waitFor(
+      () => controller.registrationStatus(begun.attemptId),
+      (value) => value.status === 'failed',
+    );
+
+    assert.equal(failed.error.code, scenario.expectedCode);
+    assert.equal(credentials.values.size, 0);
+    assert.equal(configs.accounts.size, 0);
+    assert.doesNotMatch(JSON.stringify(failed), /host-only detail|must-be-rolled-back/);
+    await controller.close();
+  }
+});
+
+test('known runtime activation codes cross the provisioning boundary unchanged', async () => {
+  const credentials = credentialsFixture();
+  const configs = configFixture();
+  const runtimes = runtimeFactory({
+    startError: Object.assign(new Error('loopback transport host-only detail'), {
+      code: 'harness-unreachable',
+    }),
+  });
+  const controller = new WeixinController({
+    api: {
+      beginLogin: async () => ({ qrcode: 'qr-secret', qrcodeUrl: 'https://liteapp.weixin.qq.com/q/test' }),
+      pollLogin: async () => ({
+        status: 'confirmed',
+        bot_token: 'must-be-rolled-back',
+        ilink_bot_id: 'harness-failure@im.bot',
+        ilink_user_id: 'owner',
+        baseurl: 'https://ilinkai.weixin.qq.com',
+      }),
+    },
+    credentials: credentials.provider,
+    configStore: configs.store,
+    createRuntime: runtimes.createRuntime,
+    logger: { error() {}, warn() {} },
+  });
+
+  const begun = await controller.startProvisioning();
+  const failed = await waitFor(
+    () => controller.registrationStatus(begun.attemptId),
+    (value) => value.status === 'failed',
+  );
+
+  assert.equal(failed.error.code, 'harness-unreachable');
+  assert.match(failed.error.message, /无法连接本机 Harness/);
+  assert.doesNotMatch(JSON.stringify(failed), /host-only detail|must-be-rolled-back/);
+  await controller.close();
+});
+
+test('an unclassified activation error uses the explicit unknown fallback code', async () => {
+  const credentials = credentialsFixture();
+  const configs = configFixture();
+  configs.store.getByAccountId = () => {
+    throw new Error('unexpected host-only activation detail');
+  };
+  const controller = new WeixinController({
+    api: {
+      beginLogin: async () => ({ qrcode: 'qr-secret', qrcodeUrl: 'https://liteapp.weixin.qq.com/q/test' }),
+      pollLogin: async () => ({
+        status: 'confirmed',
+        bot_token: 'must-never-cross-the-browser-boundary',
+        ilink_bot_id: 'unknown-failure@im.bot',
+        ilink_user_id: 'owner',
+        baseurl: 'https://ilinkai.weixin.qq.com',
+      }),
+    },
+    credentials: credentials.provider,
+    configStore: configs.store,
+    createRuntime: runtimeFactory().createRuntime,
+    logger: { error() {}, warn() {} },
+  });
+
+  const begun = await controller.startProvisioning();
+  const failed = await waitFor(
+    () => controller.registrationStatus(begun.attemptId),
+    (value) => value.status === 'failed',
+  );
+
+  assert.equal(failed.error.code, 'activation-unknown-failed');
+  assert.notEqual(failed.error.code, 'activation-failed');
+  assert.match(failed.error.message, /未知错误/);
+  assert.doesNotMatch(
+    JSON.stringify(failed),
+    /unexpected host-only activation detail|must-never-cross-the-browser-boundary/,
+  );
   await controller.close();
 });
 

@@ -20,6 +20,14 @@ const ACTIVE_ATTEMPT_STATES = new Set([
 ]);
 const TERMINAL_ATTEMPT_STATES = new Set(['connected', 'expired', 'failed', 'cancelled']);
 const QR_TTL_MS = 5 * 60_000;
+const ACTIVATION_ERROR_MESSAGES = Object.freeze({
+  'credential-read-failed': '微信已授权，但无法读取现有登录凭据。请检查 DSH 凭据存储。',
+  'credential-save-failed': '微信已授权，但登录凭据无法写入 DSH 凭据存储。请检查凭据存储是否可写。',
+  'account-config-save-failed': '微信已授权，但账号配置无法写入本机。请检查 DSH_HOME 目录权限。',
+  'runtime-prepare-failed': '微信已授权，但无法初始化账号状态或工作区。请检查 DSH_HOME 和工作区目录。',
+  'harness-unreachable': '微信已授权，但插件无法连接本机 Harness。请确认 dsh web 已正常启动。',
+  'connection-start-failed': '微信已授权，但消息连接初始化失败。请查看 dsh web 日志后重试。',
+});
 
 function cleanString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -52,6 +60,26 @@ function publicAttempt(record) {
 
 function safeAccountError(code, message) {
   return Object.freeze({ code, message });
+}
+
+function activationStageError(code, cause) {
+  const error = new Error(`Weixin activation failed during ${code}`, { cause });
+  error.name = 'WeixinActivationStageError';
+  error.code = code;
+  return error;
+}
+
+function publicProvisioningError(error) {
+  if (error instanceof WeixinApiError) return safeAccountError(error.code, error.message);
+  const message = ACTIVATION_ERROR_MESSAGES[error?.code];
+  return message
+    ? safeAccountError(error.code, message)
+    : safeAccountError('activation-unknown-failed', '微信已授权，但激活过程中发生未知错误。请查看 dsh web 日志。');
+}
+
+function preserveActivationError(error, fallbackCode) {
+  if (error instanceof WeixinApiError || ACTIVATION_ERROR_MESSAGES[error?.code]) return error;
+  return activationStageError(fallbackCode, error);
 }
 
 export class WeixinController {
@@ -439,12 +467,7 @@ export class WeixinController {
         record.error = safeAccountError('cancelled', '扫码绑定已取消。');
       } else {
         record.state = 'failed';
-        record.error = safeAccountError(
-          error instanceof WeixinApiError ? error.code : 'activation-failed',
-          error instanceof WeixinApiError
-            ? error.message
-            : '微信已授权，但无法保存凭据或启动消息连接。',
-        );
+        record.error = publicProvisioningError(error);
         this.#logger.error?.('[dsh-weixin] provisioning failed:', error);
       }
     } finally {
@@ -469,13 +492,26 @@ export class WeixinController {
       createdAt: previousConfig?.createdAt ?? new Date().toISOString(),
       connectedAt: new Date().toISOString(),
     };
-    const previousToken = await this.#credentials.resolve(identity.tokenRef).catch(() => undefined);
+    let previousToken;
+    try {
+      previousToken = await this.#credentials.resolve(identity.tokenRef);
+    } catch (error) {
+      throw activationStageError('credential-read-failed', error);
+    }
 
     return this.#withBotTransition(identity.botId, async () => {
-      await this.#credentials.set(identity.tokenRef, token);
       try {
+        try {
+          await this.#credentials.set(identity.tokenRef, token);
+        } catch (error) {
+          throw activationStageError('credential-save-failed', error);
+        }
         this.#assertAttemptActive(record);
-        await this.#configStore.save(config);
+        try {
+          await this.#configStore.save(config);
+        } catch (error) {
+          throw activationStageError('account-config-save-failed', error);
+        }
         this.#assertAttemptActive(record);
         await this.#startRuntime(config, token);
         this.#assertAttemptActive(record);
@@ -504,16 +540,24 @@ export class WeixinController {
 
   async #startRuntime(config, token) {
     await this.#stopRuntime(config.botId);
-    const runtime = await this.#createRuntime({ botId: config.botId, config, token });
+    let runtime;
+    try {
+      runtime = await this.#createRuntime({ botId: config.botId, config, token });
+    } catch (error) {
+      throw preserveActivationError(error, 'runtime-prepare-failed');
+    }
     if (!runtime || typeof runtime.start !== 'function' || typeof runtime.stop !== 'function') {
-      throw new TypeError('createRuntime returned an invalid Weixin runtime');
+      throw activationStageError(
+        'runtime-prepare-failed',
+        new TypeError('createRuntime returned an invalid Weixin runtime'),
+      );
     }
     try {
       await runtime.start();
       this.#runtimes.set(config.botId, runtime);
     } catch (error) {
       await runtime.stop().catch(() => undefined);
-      throw error;
+      throw preserveActivationError(error, 'connection-start-failed');
     }
   }
 
