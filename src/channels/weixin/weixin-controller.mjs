@@ -62,6 +62,20 @@ function safeAccountError(code, message) {
   return Object.freeze({ code, message });
 }
 
+function publicMessageError(value) {
+  if (!value || typeof value !== 'object'
+    || typeof value.code !== 'string' || !value.code
+    || typeof value.reason !== 'string' || !value.reason
+    || typeof value.message !== 'string' || !value.message
+    || !Number.isFinite(value.at)) return null;
+  return {
+    code: value.code.slice(0, 64),
+    reason: value.reason.slice(0, 128),
+    message: value.message.slice(0, 500),
+    at: value.at,
+  };
+}
+
 function activationStageError(code, cause) {
   const error = new Error(`Weixin activation failed during ${code}`, { cause });
   error.name = 'WeixinActivationStageError';
@@ -351,6 +365,7 @@ export class WeixinController {
           messagesReceived: runtimeStatus?.messagesReceived ?? 0,
           messagesReplied: runtimeStatus?.messagesReplied ?? 0,
         },
+        lastMessageError: publicMessageError(runtimeStatus?.lastMessageError),
         error: error ? structuredClone(error) : null,
       };
     });

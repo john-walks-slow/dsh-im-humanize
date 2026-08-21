@@ -6,6 +6,8 @@ import {
   ImagePromptError,
   fetchImageBuffer,
   hasInboundPrompt,
+  imagePromptDiagnostic,
+  imagePromptUserMessage,
   promptContentForMessage,
 } from '../src/channels/shared/image-prompt.mjs';
 import { HarnessClient } from '../src/channels/shared/harness-client.mjs';
@@ -98,6 +100,49 @@ test('unsupported image bytes receive a channel-safe error', async () => {
       && error.code === 'unsupported-image-type'
       && /JPEG/.test(error.userMessage),
   );
+});
+
+test('Harness attachment failures map only allowlisted reasons to safe channel messages', () => {
+  const modelError = Object.assign(new Error('private provider detail'), {
+    code: 'attachment-error',
+    details: { reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES', privatePath: '/secret/model' },
+  });
+  assert.deepEqual(imagePromptDiagnostic(modelError), {
+    code: 'attachment-error',
+    reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
+    userMessage: '当前模型不支持图片，请用 /models 查看可用模型，再用 /model <序号> 切换后重发。',
+  });
+  assert.doesNotMatch(imagePromptUserMessage(modelError), /private|secret/);
+
+  for (const reason of [
+    'IMAGE_TOO_LARGE',
+    'IMAGE_TOO_MANY_PIXELS',
+    'INVALID_IMAGE',
+    'INVALID_IMAGE_BASE64',
+    'IMAGE_TYPE_MISMATCH',
+    'TOO_MANY_IMAGES',
+    'IMAGES_TOO_LARGE',
+  ]) {
+    assert.equal(typeof imagePromptUserMessage({
+      code: 'attachment-error', details: { reason },
+    }), 'string', reason);
+  }
+});
+
+test('unknown Harness failures remain generic and cannot access inherited map properties', () => {
+  for (const reason of ['FUTURE_PRIVATE_REASON', 'toString']) {
+    const error = {
+      code: 'attachment-error',
+      details: { reason },
+      message: 'provider token and /private/path',
+    };
+    assert.equal(imagePromptDiagnostic(error), null);
+    assert.equal(imagePromptUserMessage(error), null);
+  }
+  assert.equal(imagePromptUserMessage({
+    code: 'agent-busy',
+    details: { reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES' },
+  }), null);
 });
 
 test('bounded HTTPS downloads enforce response size before buffering', async () => {

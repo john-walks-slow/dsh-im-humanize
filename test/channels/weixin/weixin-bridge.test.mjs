@@ -188,6 +188,53 @@ test('Weixin returns a specific retry message when encrypted image loading fails
   assert.equal(fixture.seen.has('weixin-image-error'), true);
 });
 
+test('Weixin explains model image rejection and records only safe structured diagnostics', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-image');
+  const sent = [];
+  const status = createWeixinBridgeStatus();
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      inboundImages: () => [{ name: 'image', data: PNG_BYTES }],
+      sendText: async (request) => sent.push(request),
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        throw Object.assign(new Error('Model detail at /private/path with provider-token'), {
+          code: 'attachment-error',
+          details: {
+            reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
+            providerDetail: 'must-not-cross-status-boundary',
+          },
+        });
+      },
+    },
+    state: fixture.state,
+    status,
+    logger: { error() {} },
+  });
+
+  await bridge.accept(message('weixin-model-image-error', '', {
+    item_list: [{ type: 2, image_item: { media: {} } }],
+  }));
+
+  assert.match(sent.at(-1).text, /当前模型不支持图片/);
+  assert.match(sent.at(-1).text, /\/models/);
+  assert.equal(fixture.seen.has('weixin-model-image-error'), true);
+  assert.deepEqual(status.lastMessageError, {
+    code: 'attachment-error',
+    reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
+    message: sent.at(-1).text,
+    at: status.lastMessageError.at,
+  });
+  assert.equal(Number.isFinite(status.lastMessageError.at), true);
+  assert.doesNotMatch(JSON.stringify(status.lastMessageError), /private|provider-token|providerDetail/);
+});
+
 test('Weixin executes /compact for the bound Session without prompting the model', async () => {
   const fixture = stateFixture();
   fixture.sessions.set('p2p:owner-user', 'session-compact');
@@ -1088,6 +1135,7 @@ test('bridge commands are local and internal failures return a generic message',
   const fixture = stateFixture();
   fixture.sessions.set('p2p:owner-user', 'old-session');
   const sent = [];
+  const status = createWeixinBridgeStatus();
   const bridge = new WeixinHarnessBridge({
     api: { sendText: async (request) => sent.push(request.text) },
     baseUrl: 'https://ilinkai.weixin.qq.com/',
@@ -1099,6 +1147,7 @@ test('bridge commands are local and internal failures return a generic message',
       ask: async () => { throw new Error('private path /secret and token-shaped detail'); },
     },
     state: fixture.state,
+    status,
     logger: { error() {} },
   });
 
@@ -1107,4 +1156,11 @@ test('bridge commands are local and internal failures return a generic message',
   await bridge.accept(message('failure', '触发失败'));
   assert.match(sent.at(-1), /消息处理失败/);
   assert.doesNotMatch(sent.at(-1), /private path|secret|token-shaped/);
+  assert.deepEqual(status.lastMessageError, {
+    code: 'message-processing-failed',
+    reason: 'UNKNOWN',
+    message: '消息处理失败，请稍后重试。',
+    at: status.lastMessageError.at,
+  });
+  assert.doesNotMatch(JSON.stringify(status.lastMessageError), /private path|secret|token-shaped/);
 });
