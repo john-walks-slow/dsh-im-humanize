@@ -1,10 +1,25 @@
 import { createEditableMessageStream, splitMessageText } from '../shared/editable-message-stream.mjs';
-import { TelegramApi } from './telegram-api.mjs';
+import { COMMANDS_MENU_BUTTON, TelegramApi } from './telegram-api.mjs';
 import { createTelegramBridgeStatus, TelegramHarnessBridge } from './telegram-bridge.mjs';
 import {
   TELEGRAM_ACCESS_MODES,
   normalizeTelegramAccessPolicy,
 } from './config-store.mjs';
+
+export const TELEGRAM_COMMAND_MENU = Object.freeze([
+  { command: 'new', description: '开启一个全新会话' },
+  { command: 'compact', description: '压缩当前会话的较早上下文' },
+  { command: 'workspace', description: '切换工作区' },
+  { command: 'workspacelist', description: '列出工作区绝对路径' },
+  { command: 'sessionlist', description: '列出会话 ID 和标题' },
+  { command: 'session', description: '将当前聊天绑定到指定会话' },
+  { command: 'models', description: '按序号列出所有可用模型' },
+  { command: 'model', description: '查看或切换当前会话模型' },
+  { command: 'stop', description: '停止当前任务' },
+  { command: 'steer', description: '纠偏当前任务' },
+  { command: 'status', description: '检查连接状态' },
+  { command: 'help', description: '显示帮助' },
+]);
 
 function escaped(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -289,6 +304,15 @@ export class TelegramRuntime {
         const error = new Error('该 Telegram 机器人已配置 Webhook，请先在原服务中移除 Webhook 后重试。');
         error.code = 'webhook-configured';
         throw error;
+      }
+      try {
+        await api.setMyCommands({ commands: TELEGRAM_COMMAND_MENU, signal: controller.signal });
+        await api.setChatMenuButton({ menuButton: COMMANDS_MENU_BUTTON, signal: controller.signal });
+      } catch (error) {
+        this.#logger.warn?.(
+          `[dsh-im:telegram] bot ${this.#config.botId} command menu setup failed:`,
+          error,
+        );
       }
       const client = new TelegramBotClient({ api, signal: controller.signal });
       this.#bridge = new TelegramHarnessBridge({
