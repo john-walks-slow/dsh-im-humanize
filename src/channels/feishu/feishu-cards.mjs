@@ -65,6 +65,7 @@ export function menuCard() {
     // have card.action.trigger yet, so rendering it as a callback button would
     // send the user straight back to Feishu's broken callback setup popup.
     { tag: 'div', text: markdown('**6 · 修复卡片按钮**（请直接回复数字 **6**）') },
+    button('7 · 关注列表', 'watchlist'),
   ]);
 }
 
@@ -152,9 +153,11 @@ export function menuHelpText() {
     '4 · /status  连接状态',
     '5 · /help  本帮助',
     '6 · /repair  修复卡片按钮（请回复数字 6）',
+    '7 · /watchlist  关注列表',
     '',
     '直接发送文字/图片即继续当前会话。',
     '/session ID 或序号  绑定已有会话',
+    '/watch ID 或序号  关注会话（完成后推送）',
     '/compact  压缩上下文',
     '/workspace 绝对路径  切换工作区',
   ].join('\n');

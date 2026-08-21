@@ -1066,6 +1066,10 @@ export class FeishuHarnessBridge {
       await this.#showWorkspaces({ chatId, key });
       return;
     }
+    if (action === 'watchlist') {
+      await this.#showWatchList(key, chatId);
+      return;
+    }
     if (action === 'new') {
       await this.#state.clearSession(key);
       await this.#send(chatId, '已开启全新 Harness 会话。');
@@ -1118,7 +1122,7 @@ export class FeishuHarnessBridge {
 
   async #handleMenuPick(menu, number, { chatId, key, event }) {
     if (menu.kind === 'menu') {
-      const action = ['sessions', 'workspaces', 'new', 'status', 'help', 'repair'][number - 1];
+      const action = ['sessions', 'workspaces', 'new', 'status', 'help', 'repair', 'watchlist'][number - 1];
       if (!action) {
         await this.#send(chatId, '菜单没有这个编号，回复 /m 重新打开。');
         return;
