@@ -16,6 +16,10 @@ export function validAgentPresetPayload(payload) {
 }
 
 export function publicAgentPresetError(error) {
-  if (!['agent-preset-invalid', 'workspace-bot-not-found'].includes(error?.code)) return null;
+  if (![
+    'agent-preset-invalid',
+    'agent-preset-unavailable',
+    'workspace-bot-not-found',
+  ].includes(error?.code)) return null;
   return { code: error.code, message: error.message };
 }

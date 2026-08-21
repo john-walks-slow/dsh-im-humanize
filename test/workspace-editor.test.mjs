@@ -694,6 +694,37 @@ test('AgentPresetEditor lists Host presets and keeps the catalog label for the c
   assert.deepEqual(optionValues(select), ['', 'coding', 'default']);
   assert.equal(textOf(select.children[0]), '跟随 Host 默认');
   assert.equal(textOf(select.children[1]), 'Coding（coding）');
+  assert.equal(
+    textOf(renderer.root.findByProps({ className: 'dim-presetHelp' })),
+    '只影响新建会话；若当前聊天已有会话，先发送 /new，再发送普通消息生效。',
+  );
+  renderer.unmount();
+});
+
+test('AgentPresetEditor marks a removed current preset and still allows clearing it', async () => {
+  const saved = [];
+  const renderer = create(React.createElement(
+    AgentPresetCatalogContext.Provider,
+    { value: PRESET_CATALOG },
+    React.createElement(AgentPresetEditor, {
+      agentPreset: 'removed-preset',
+      onSave(value) { saved.push(value); },
+    }),
+  ));
+  const select = renderer.root.findByProps({ className: 'dim-presetSelect' });
+  assert.equal(select.props.value, 'removed-preset');
+  assert.deepEqual(optionValues(select), ['', 'coding', 'default', 'removed-preset']);
+  assert.equal(textOf(select.children[3]), 'removed-preset（已不可用）');
+  assert.equal(
+    textOf(renderer.root.findByProps({ role: 'status' })),
+    '当前 Agent Preset 已不可用，请选择其他 Preset 或跟随 Host 默认。',
+  );
+
+  await act(async () => {
+    select.props.onChange({ target: { value: '' } });
+    await flushMicrotasks();
+  });
+  assert.deepEqual(saved, [null]);
   renderer.unmount();
 });
 

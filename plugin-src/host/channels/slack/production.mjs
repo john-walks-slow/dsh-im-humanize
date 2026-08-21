@@ -38,7 +38,9 @@ export async function createProductionController(ctx, config = {}, internals = {
     ?? await new WorkspaceStore(paths.workspaces, { defaultWorkspace }).load();
   const configuredBots = configStore.list();
   await workspaces.reconcile(configuredBots.map((bot) => bot.botId));
-  await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.botId)));
+  await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.botId, {
+    defaultAgentPreset: config.agentPreset,
+  })));
   const observedConfigStore = typeof configStore.remove === 'function'
     ? observeBotWorkspaceRemovals(configStore, { workspaces })
     : configStore;
@@ -60,7 +62,6 @@ export async function createProductionController(ctx, config = {}, internals = {
   const harness = new ResolvedHarness({
     baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
     workspace: defaultWorkspace,
-    ...(config.agentPreset == null ? {} : { agentPreset: config.agentPreset }),
     autostart: false,
     dshBin: config.dshBin ?? 'dsh',
     ...(commandExecutor ? { commandExecutor } : {}),
@@ -74,7 +75,7 @@ export async function createProductionController(ctx, config = {}, internals = {
     ...(internals.inspectCredentials ? { inspectCredentials: internals.inspectCredentials } : {}),
     createRuntime: async ({ botId, config: botConfig, botToken, appToken }) => {
       const state = await stateFor(botId);
-      await workspaces.ensure(botId);
+      await workspaces.ensure(botId, { defaultAgentPreset: config.agentPreset });
       const workspaceScope = createBotWorkspaceScope(harness, { botId, workspaces, state });
       return new ResolvedRuntime({
         config: botConfig,
@@ -109,7 +110,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   const controller = createWorkspaceAwareController(coreController, {
     workspaces,
     stateFor,
-    agentPresetCatalog: await listAgentPresetCatalog(ctx),
+    agentPresetCatalog: () => listAgentPresetCatalog(ctx),
   });
   const supervisor = createSupervisor({
     channel: 'slack',

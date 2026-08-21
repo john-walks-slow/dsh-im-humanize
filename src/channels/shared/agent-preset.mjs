@@ -30,6 +30,7 @@ function catalogItem(value) {
     return id ? { id, label: id } : null;
   }
   if (!value || typeof value !== 'object') return null;
+  if (value.broken !== undefined) return null;
   const id = normalizeAgentPresetId(value.id);
   if (!id) return null;
   const label = typeof value.name === 'string' && value.name.trim()
@@ -59,16 +60,15 @@ export function normalizeAgentPresetCatalog(value) {
 }
 
 export async function listAgentPresetCatalog(ctx) {
-  const service = typeof ctx?.get === 'function' ? ctx.get('agentPresets') : ctx?.agentPresets;
-  if (!service || typeof service.list !== 'function') return { defaultId: '', items: [] };
-  let listed = [];
   try {
-    listed = await service.list();
+    const service = typeof ctx?.get === 'function' ? ctx.get('agentPresets') : ctx?.agentPresets;
+    if (!service || typeof service.list !== 'function') return { defaultId: '', items: [] };
+    const listed = await service.list();
+    return normalizeAgentPresetCatalog({
+      defaultId: typeof service.defaultId === 'string' ? service.defaultId : '',
+      items: Array.isArray(listed) ? listed : [],
+    });
   } catch {
     return { defaultId: '', items: [] };
   }
-  return normalizeAgentPresetCatalog({
-    defaultId: typeof service.defaultId === 'string' ? service.defaultId : '',
-    items: Array.isArray(listed) ? listed : [],
-  });
 }

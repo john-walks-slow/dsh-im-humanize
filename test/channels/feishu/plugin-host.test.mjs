@@ -110,6 +110,94 @@ test('Host exposes configured offline as a redacted capability fact', async () =
   assert.equal('credentials' in result.value, false);
 });
 
+test('Host exposes only browser-safe Agent Preset fields in status and update responses', async () => {
+  let selectedPreset = 'marketing-jeep';
+  const calls = [];
+  const current = () => status({
+    schemaVersion: 2,
+    revision: 3,
+    configured: true,
+    agentPresetCatalog: {
+      defaultId: 'standard',
+      root: 'private-preset-root',
+      failures: [{ message: 'private-catalog-failure' }],
+      items: [
+        {
+          id: 'standard',
+          name: 'Standard',
+          path: 'private-standard-path',
+          trust: 'private-trust-level',
+        },
+        {
+          id: 'marketing-jeep',
+          label: '营销吉普',
+          error: { message: 'private-preset-error' },
+        },
+        {
+          id: 'broken-preset',
+          label: 'Broken',
+          broken: { message: 'private-broken-reason' },
+        },
+        { id: 'INVALID', label: 'invalid-item-must-be-filtered' },
+        { id: 'standard', label: 'duplicate-item-must-be-filtered' },
+      ],
+    },
+    bots: [{
+      botId: 'bot_safe',
+      phase: 'connected',
+      connected: true,
+      configured: true,
+      agentPreset: selectedPreset,
+      bot: { name: '安全机器人', domain: 'feishu' },
+      connection: {
+        ready: true,
+        feishuLongConnectionState: 'connected',
+        harnessReachable: true,
+      },
+    }],
+  });
+  const controller = {
+    status: async () => current(),
+    startRegistration: async () => current(),
+    cancelRegistration: async () => current(),
+    disconnect: async () => status(),
+    updateAgentPreset: async (botId, agentPreset) => {
+      calls.push({ botId, agentPreset });
+      selectedPreset = agentPreset;
+      return current();
+    },
+  };
+  const fx = await rpcFixture(controller);
+
+  const listed = await fx.registration.handler(FEISHU_ENDPOINTS.status, {}, signal());
+  assert.equal(listed.ok, true);
+  assert.equal(listed.value.bots[0].agentPreset, 'marketing-jeep');
+  assert.deepEqual(listed.value.agentPresetCatalog, {
+    defaultId: 'standard',
+    items: [
+      { id: 'standard', label: 'Standard' },
+      { id: 'marketing-jeep', label: '营销吉普' },
+    ],
+  });
+  assert.doesNotMatch(
+    JSON.stringify(listed),
+    /private-preset-root|private-catalog-failure|private-standard-path|private-trust-level|private-preset-error|private-broken-reason|invalid-item|duplicate-item/,
+  );
+
+  const cleared = await fx.registration.handler(
+    FEISHU_ENDPOINTS.setAgentPreset,
+    { botId: 'bot_safe', agentPreset: null },
+    signal(),
+  );
+  assert.equal(cleared.ok, true);
+  assert.deepEqual(calls, [{ botId: 'bot_safe', agentPreset: null }]);
+  assert.equal(cleared.value.bots[0].agentPreset, null);
+  assert.deepEqual(cleared.value.agentPresetCatalog, listed.value.agentPresetCatalog);
+  assert.doesNotMatch(JSON.stringify(cleared), /private-|invalid-item|duplicate-item/);
+
+  await fx.dispose();
+});
+
 test('RPC dispatch matches every endpoint in client/api.js', async () => {
   const calls = [];
   let current = status({
@@ -1068,7 +1156,7 @@ test('a corrupt legacy state file cannot prevent a healthy v2 bot from starting'
   });
 
   await production.ready;
-  const statusValue = production.controller.status();
+  const statusValue = await production.controller.status();
   assert.equal(statusValue.bots.find((entry) => entry.botId === 'bot_legacy').phase, 'error');
   assert.equal(statusValue.bots.find((entry) => entry.botId === 'bot_healthy').connected, true);
   assert.equal(statusValue.totals.connected, 1);

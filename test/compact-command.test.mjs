@@ -171,14 +171,22 @@ test('all nine production channels receive the Host command executor', async () 
   }
 });
 
-test('all nine production channels defer an omitted agent preset to the Harness Host', async () => {
+test('all nine production channels use channel presets only as bot creation defaults', async () => {
   for (const path of PRODUCTION_FILES) {
     const source = await readFile(new URL(`../${path}`, import.meta.url), 'utf8');
-    assert.doesNotMatch(source, /agentPreset:\s*config\.agentPreset\s*\?\?\s*['"]standard['"]/, path);
+    assert.doesNotMatch(source, /\bagentPreset:\s*config\.agentPreset/, path);
+    const creationDefaults = source.match(
+      /workspaces\.ensure\([^;]*\{\s*defaultAgentPreset:\s*config\.agentPreset,?\s*\}\)/g,
+    ) ?? [];
+    assert.equal(
+      creationDefaults.length,
+      2,
+      `${path} must initialize both restored and newly connected bots`,
+    );
     assert.match(
       source,
-      /\.\.\.\(config\.agentPreset == null \? \{\} : \{ agentPreset: config\.agentPreset \}\)/,
-      path,
+      /agentPresetCatalog:\s*\(\)\s*=>\s*listAgentPresetCatalog\(ctx\)/,
+      `${path} must read the Host preset catalog dynamically`,
     );
   }
 

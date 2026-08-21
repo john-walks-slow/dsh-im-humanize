@@ -9,7 +9,10 @@ import {
 } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
-import { validateAgentPresetId } from './agent-preset.mjs';
+import {
+  normalizeAgentPresetCatalog,
+  validateAgentPresetId,
+} from './agent-preset.mjs';
 import { CONNECTION_TEST_STATE_IDENTITY } from './connection-test.mjs';
 import { WORKSPACE_SESSION_STALE } from './workspace-session.mjs';
 
@@ -171,18 +174,24 @@ export class BotWorkspaceStore {
     }
   }
 
-  async ensure(botId, { workspace = this.#defaultWorkspace } = {}) {
+  async ensure(botId, { workspace = this.#defaultWorkspace, defaultAgentPreset } = {}) {
     const id = botIdOf(botId);
     const initialWorkspace = resolve(workspace);
     return this.#enqueue(id, async () => {
       if (!this.#workspaces[id]) {
+        const agentPreset = validateAgentPresetId(defaultAgentPreset);
+        const hadAgentPreset = Object.hasOwn(this.#agentPresets, id);
+        const previousAgentPreset = this.#agentPresets[id];
         this.#workspaces[id] = initialWorkspace;
+        if (agentPreset) this.#agentPresets[id] = agentPreset;
         this.#generations.set(id, this.#freshGeneration());
         this.#incarnations.set(id, this.#freshIncarnation());
         try {
           await this.#persist();
         } catch (error) {
           delete this.#workspaces[id];
+          if (hadAgentPreset) this.#agentPresets[id] = previousAgentPreset;
+          else delete this.#agentPresets[id];
           this.#generations.delete(id);
           this.#incarnations.delete(id);
           throw error;
@@ -518,14 +527,25 @@ export class BotWorkspaceStore {
   }
 }
 
+function resolveAgentPresetCatalog(catalog) {
+  if (!catalog) return null;
+  const value = typeof catalog === 'function' ? catalog() : catalog;
+  return value && typeof value.then === 'function'
+    ? value.then(normalizeAgentPresetCatalog)
+    : normalizeAgentPresetCatalog(value);
+}
+
 function decorateResult(workspaces, result, catalog) {
   const decorate = (value) => {
     const decorated = workspaces.decorateStatus(value);
     if (!catalog || !decorated || typeof decorated !== 'object') return decorated;
-    const agentPresetCatalog = typeof catalog === 'function' ? catalog() : catalog;
-    return agentPresetCatalog
-      ? { ...decorated, agentPresetCatalog }
-      : decorated;
+    const attachCatalog = (agentPresetCatalog) => (
+      agentPresetCatalog ? { ...decorated, agentPresetCatalog } : decorated
+    );
+    const agentPresetCatalog = resolveAgentPresetCatalog(catalog);
+    return agentPresetCatalog && typeof agentPresetCatalog.then === 'function'
+      ? agentPresetCatalog.then(attachCatalog)
+      : attachCatalog(agentPresetCatalog);
   };
   return result && typeof result.then === 'function'
     ? result.then(decorate)
@@ -879,6 +899,7 @@ export function createWorkspaceAwareController(controller, { workspaces, stateFo
   };
   const updateAgentPreset = (botId, agentPreset) => {
     const incarnation = workspaces.incarnationFor(botId);
+    const normalizedAgentPreset = validateAgentPresetId(agentPreset);
     return withBotTransition(botId, async () => {
       const snapshot = await controller.status();
       if (!snapshot?.bots?.some((bot) => bot?.botId === botId)) {
@@ -886,8 +907,21 @@ export function createWorkspaceAwareController(controller, { workspaces, stateFo
         error.code = 'workspace-bot-not-found';
         throw error;
       }
-      await workspaces.setAgentPreset(botId, agentPreset, { incarnation });
-      return decorate(await controller.status());
+      const catalog = normalizedAgentPreset && agentPresetCatalog
+        ? await resolveAgentPresetCatalog(agentPresetCatalog)
+        : null;
+      if (normalizedAgentPreset && agentPresetCatalog
+        && !catalog?.items.some((item) => item.id === normalizedAgentPreset)) {
+        const error = new Error('Agent Preset 不存在或不可用。');
+        error.code = 'agent-preset-unavailable';
+        throw error;
+      }
+      await workspaces.setAgentPreset(botId, normalizedAgentPreset, { incarnation });
+      return decorateResult(
+        workspaces,
+        await controller.status(),
+        catalog ?? agentPresetCatalog,
+      );
     });
   };
   const deleteWithWorkspace = (botId, invokeDelete) => withBotTransition(botId, async () => {

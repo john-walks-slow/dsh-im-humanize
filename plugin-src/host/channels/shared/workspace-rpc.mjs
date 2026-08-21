@@ -21,6 +21,7 @@ export function publicWorkspaceError(error) {
     'workspace-not-directory',
     'workspace-bot-not-found',
     'agent-preset-invalid',
+    'agent-preset-unavailable',
   ].includes(error?.code)) return null;
   return { code: error.code, message: error.message };
 }

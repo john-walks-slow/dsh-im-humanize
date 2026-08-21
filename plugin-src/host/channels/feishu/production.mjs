@@ -78,7 +78,9 @@ export async function createProductionController(ctx, config = {}, internals = {
   if (canListConfiguredBots) {
     await workspaces.reconcile(configuredBots.map((bot) => bot.id));
   }
-  await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.id)));
+  await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.id, {
+    defaultAgentPreset: config.agentPreset,
+  })));
   const observedConfigStore = typeof configStore.removeBot === 'function'
     ? observeBotWorkspaceRemovals(configStore, {
         workspaces,
@@ -116,7 +118,6 @@ export async function createProductionController(ctx, config = {}, internals = {
   const harness = new Harness({
     baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
     workspace: defaultWorkspace,
-    ...(config.agentPreset == null ? {} : { agentPreset: config.agentPreset }),
     // This plugin is already hosted by a running DSH process. Starting a
     // second DSH would create a competing server and lifecycle.
     autostart: false,
@@ -134,7 +135,7 @@ export async function createProductionController(ctx, config = {}, internals = {
     createRuntime: async ({ botId, config: botConfig, appSecret, repair }) => {
       const state = await stateFor(botConfig);
       const id = botId ?? botConfig.id ?? botConfig.appId;
-      await workspaces.ensure(id);
+      await workspaces.ensure(id, { defaultAgentPreset: config.agentPreset });
       const workspaceScope = createBotWorkspaceScope(harness, { botId: id, workspaces, state });
       return new Runtime({
         lark,
@@ -167,7 +168,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   const controller = createWorkspaceAwareController(coreController, {
     workspaces,
     stateFor: stateForBotId,
-    agentPresetCatalog: await listAgentPresetCatalog(ctx),
+    agentPresetCatalog: () => listAgentPresetCatalog(ctx),
   });
 
   const supervisor = createSupervisor({

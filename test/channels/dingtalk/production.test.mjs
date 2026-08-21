@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -87,6 +87,14 @@ test('production assembly keeps secrets in credentials and creates per-bot runti
     createConnectionSupervisor: () => supervisor,
   });
 
-  assert.equal(seen.harnessOptions.agentPreset, 'router-standard');
+  assert.equal(Object.hasOwn(seen.harnessOptions, 'agentPreset'), false);
+  await seen.controllerOptions.createRuntime({
+    botId: 'dt_new',
+    config: { botId: 'dt_new', clientId: 'dingnew' },
+    clientSecret: 'host-only-secret',
+  });
+  const stored = JSON.parse(await readFile(join(directory, 'workspaces.json'), 'utf8'));
+  assert.equal(stored.agentPresets.dt_new, 'router-standard');
+  assert.equal(Object.hasOwn(stored.agentPresets, 'dt_abc'), false);
   await productionWithPreset.close();
 });

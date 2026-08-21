@@ -129,7 +129,7 @@ export class ConnectionSupervisor {
       await this.#controller.initialize();
       if (this.#closed) return;
 
-      const status = this.#controller.status();
+      const status = await this.#controller.status();
       this.#resolveReady?.(status);
       this.#resolveReady = null;
       const current = totals(status);

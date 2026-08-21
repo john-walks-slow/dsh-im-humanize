@@ -96,3 +96,33 @@ test('supervisor retries an offline bot and leaves the recovered connection on t
 
   await supervisor.close();
 });
+
+test('supervisor awaits an asynchronous controller status before resolving readiness', async () => {
+  const timers = scheduler();
+  let resolveStatus;
+  let readyResolved = false;
+  const pendingStatus = new Promise((resolve) => { resolveStatus = resolve; });
+  const supervisor = new ConnectionSupervisor({
+    controller: {
+      async initialize() {},
+      status() { return pendingStatus; },
+    },
+    harness: { async ensureRunning() {} },
+    logger: { warn() {} },
+    healthyIntervalMs: 103,
+    setTimeoutImpl: timers.setTimeoutImpl,
+    clearTimeoutImpl: timers.clearTimeoutImpl,
+  }).start();
+  void supervisor.ready.then(() => { readyResolved = true; });
+
+  await timers.runNext();
+  assert.equal(readyResolved, false);
+  assert.equal(timers.pending.length, 0);
+
+  resolveStatus({ totals: { configured: 1, connected: 1 } });
+  assert.equal((await supervisor.ready).totals.connected, 1);
+  await flush();
+  assert.equal(timers.pending[0].delay, 103);
+
+  await supervisor.close();
+});

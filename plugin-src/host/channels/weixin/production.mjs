@@ -61,7 +61,9 @@ export async function createProductionController(ctx, config = {}, internals = {
     ?? await new WorkspaceStore(paths.workspaces, { defaultWorkspace }).load();
   const configuredBots = configStore.list();
   await workspaces.reconcile(configuredBots.map((bot) => bot.botId));
-  await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.botId)));
+  await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.botId, {
+    defaultAgentPreset: config.agentPreset,
+  })));
   const observedConfigStore = typeof configStore.remove === 'function'
     ? observeBotWorkspaceRemovals(configStore, { workspaces })
     : configStore;
@@ -84,7 +86,6 @@ export async function createProductionController(ctx, config = {}, internals = {
   const harness = new Harness({
     baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
     workspace: defaultWorkspace,
-    ...(config.agentPreset == null ? {} : { agentPreset: config.agentPreset }),
     autostart: false,
     dshBin: config.dshBin ?? 'dsh',
     ...(commandExecutor ? { commandExecutor } : {}),
@@ -98,7 +99,7 @@ export async function createProductionController(ctx, config = {}, internals = {
     logger,
     createRuntime: async ({ botId, config: accountConfig, token }) => {
       const state = await stateFor(botId);
-      await workspaces.ensure(botId);
+      await workspaces.ensure(botId, { defaultAgentPreset: config.agentPreset });
       const workspaceScope = createBotWorkspaceScope(harness, { botId, workspaces, state });
       return new Runtime({
         api,
@@ -133,7 +134,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   const controller = createWorkspaceAwareController(coreController, {
     workspaces,
     stateFor,
-    agentPresetCatalog: await listAgentPresetCatalog(ctx),
+    agentPresetCatalog: () => listAgentPresetCatalog(ctx),
   });
   const supervisor = createSupervisor({
     controller,

@@ -1,4 +1,8 @@
 import QRCode from 'qrcode';
+import {
+  normalizeAgentPresetCatalog,
+  normalizeAgentPresetId,
+} from '../../../../src/channels/shared/agent-preset.mjs';
 import { publicConnectionTestResult } from '../../../../src/channels/shared/connection-test.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
@@ -254,6 +258,7 @@ function publicBotEntry(entry) {
     state: connectionState(source, registration, connected),
     connected,
     configured: source.configured === true,
+    agentPreset: normalizeAgentPresetId(source.agentPreset),
     bot: publicBot(source.bot),
     health: publicHealth(source, connected),
   };
@@ -295,6 +300,7 @@ export async function toPublicFeishuStatus(status, { encodeQr = qrCodeDataUrl } 
     bot: publicBot(source.bot),
     health: publicHealth(source, connected),
     bots,
+    agentPresetCatalog: normalizeAgentPresetCatalog(source.agentPresetCatalog),
     totals: {
       configured: bots.length || (source.configured === true ? 1 : 0),
       connected: bots.length ? bots.filter((bot) => bot.connected).length : (connected ? 1 : 0),

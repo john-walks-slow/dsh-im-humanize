@@ -57,9 +57,8 @@ export function AgentPresetEditor({ agentPreset = '', disabled = false, onSave }
     seen.add(item.id);
     items.push(item);
   }
-  if (current && !seen.has(current)) {
-    items.push({ id: current, label: current });
-  }
+  const currentUnavailable = Boolean(current && !seen.has(current));
+  if (currentUnavailable) items.push({ id: current, label: current, unavailable: true });
 
   const inheritLabel = '跟随 Host 默认';
 
@@ -92,10 +91,20 @@ export function AgentPresetEditor({ agentPreset = '', disabled = false, onSave }
       ...items.map((item) => h(
         'option',
         { key: item.id, value: item.id },
-        item.label && item.label !== item.id ? `${item.label}（${item.id}）` : item.id,
+        item.unavailable
+          ? [item.id, '（已不可用）']
+          : item.label && item.label !== item.id ? `${item.label}（${item.id}）` : item.id,
       )),
     ),
-    h('small', { className: 'dim-presetHelp' }, '只影响之后新建的会话。'),
-    error ? h('p', { className: 'dim-presetError', role: 'alert' }, error) : null,
+    h(
+      'small',
+      { className: 'dim-presetHelp' },
+      '只影响新建会话；若当前聊天已有会话，先发送 /new，再发送普通消息生效。',
+    ),
+    error || currentUnavailable ? h(
+      'p',
+      { className: 'dim-presetError', role: error ? 'alert' : 'status' },
+      error ?? '当前 Agent Preset 已不可用，请选择其他 Preset 或跟随 Host 默认。',
+    ) : null,
   );
 }

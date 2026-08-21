@@ -12,6 +12,7 @@ import {
   observeBotWorkspaceRemovals,
   validateWorkspacePath,
 } from '../src/channels/shared/bot-workspace-store.mjs';
+import { listAgentPresetCatalog } from '../src/channels/shared/agent-preset.mjs';
 import {
   connectionTestTarget,
   rememberConnectionTestTarget,
@@ -125,8 +126,9 @@ test('workspace writes roll back updates while committed removals stay retired i
   const blockedParent = join(root, 'blocked-parent');
   await writeFile(blockedParent, 'not a directory');
   const broken = new BotWorkspaceStore(join(blockedParent, 'workspaces.json'), { defaultWorkspace });
-  await assert.rejects(broken.ensure('bot_new'));
+  await assert.rejects(broken.ensure('bot_new', { defaultAgentPreset: 'router-standard' }));
   assert.equal(broken.workspaceFor('bot_new'), defaultWorkspace);
+  assert.equal(broken.agentPresetFor('bot_new'), null);
 });
 
 test('workspace validation rejects relative, missing, and file paths', async (t) => {
@@ -1322,6 +1324,81 @@ test('BotWorkspaceStore persists per-bot agent presets without changing workspac
   assert.equal(reloaded.agentPresetFor('bot_one'), 'standard-claude');
 });
 
+test('BotWorkspaceStore applies a channel preset only when a bot is first created', async (t) => {
+  const { path, defaultWorkspace } = await fixture(t);
+  const store = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+
+  await store.ensure('bot_seeded', { defaultAgentPreset: 'marketing-jeep' });
+  await store.ensure('bot_existing');
+  await store.ensure('bot_existing', { defaultAgentPreset: 'router-standard' });
+  assert.equal(store.agentPresetFor('bot_seeded'), 'marketing-jeep');
+  assert.equal(store.agentPresetFor('bot_existing'), null);
+
+  await store.setAgentPreset('bot_seeded', null);
+  await store.ensure('bot_seeded', { defaultAgentPreset: 'router-standard' });
+  assert.equal(store.agentPresetFor('bot_seeded'), null);
+
+  await store.ensure('bot_existing', { defaultAgentPreset: 'Not Valid' });
+  await assert.rejects(
+    store.ensure('bot_invalid', { defaultAgentPreset: 'Not Valid' }),
+    { code: 'agent-preset-invalid' },
+  );
+  assert.equal(store.has('bot_invalid'), false);
+
+  await store.remove('bot_seeded');
+  await store.ensure('bot_seeded', { defaultAgentPreset: 'router-standard' });
+  assert.equal(store.agentPresetFor('bot_seeded'), 'router-standard');
+});
+
+test('Agent Preset catalog filters broken entries and exposes public fields only', async () => {
+  const catalog = await listAgentPresetCatalog({
+    get(name) {
+      assert.equal(name, 'agentPresets');
+      return {
+        defaultId: 'standard',
+        async list() {
+          return [
+            { id: 'standard', name: 'Standard', path: '/secret/standard', trust: 'trusted' },
+            { id: 'broken-one', name: 'Broken', broken: 'missing file', path: '/secret/broken' },
+            { id: 'marketing-jeep', label: 'Marketing' },
+            { id: 'marketing-jeep', label: 'Duplicate' },
+            { id: 'Not Valid', label: 'Invalid' },
+          ];
+        },
+      };
+    },
+  });
+
+  assert.deepEqual(catalog, {
+    defaultId: 'standard',
+    items: [
+      { id: 'standard', label: 'Standard' },
+      { id: 'marketing-jeep', label: 'Marketing' },
+    ],
+  });
+});
+
+test('Agent Preset catalog lookup failures fail soft', async () => {
+  const empty = { defaultId: '', items: [] };
+  assert.deepEqual(await listAgentPresetCatalog({
+    get() {
+      throw new Error('service was unloaded');
+    },
+  }), empty);
+
+  const service = {
+    async list() {
+      return [{ id: 'standard', name: 'Standard' }];
+    },
+  };
+  Object.defineProperty(service, 'defaultId', {
+    get() {
+      throw new Error('service was replaced');
+    },
+  });
+  assert.deepEqual(await listAgentPresetCatalog({ agentPresets: service }), empty);
+});
+
 test('BotWorkspaceStore rejects invalid agent preset ids and missing bots', async (t) => {
   const { path, defaultWorkspace } = await fixture(t);
   const store = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
@@ -1419,4 +1496,63 @@ test('workspace RPC can set a bot agent preset without switching workspace', asy
   });
   assert.equal(invalid.ok, false);
   assert.equal(invalid.error.code, 'bad-request');
+});
+
+test('workspace RPC refreshes the Agent Preset catalog and rejects unavailable choices', async (t) => {
+  const { path, defaultWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await workspaces.ensure('bot_one');
+  let catalog = {
+    defaultId: 'standard',
+    items: [{ id: 'standard', label: 'Standard' }],
+  };
+  const base = {
+    status() { return { bots: [{ botId: 'bot_one', connected: true }] }; },
+    bindCredentials() { return this.status(); },
+    reconnectBot() { return this.status(); },
+    deleteBot() { return { bots: [] }; },
+  };
+  const controller = createWorkspaceAwareController(base, {
+    workspaces,
+    stateFor: async () => ({ async clearSessions() {} }),
+    agentPresetCatalog: async () => catalog,
+  });
+  const handler = createTokenBotRpcHandler(controller, { channel: 'Telegram' });
+
+  const initial = await handler(TOKEN_BOT_ENDPOINTS.status, {});
+  assert.deepEqual(initial.value.agentPresetCatalog, catalog);
+
+  catalog = {
+    defaultId: 'marketing-jeep',
+    items: [
+      { id: 'standard', label: 'Broken Standard', broken: 'missing entrypoint' },
+      { id: 'marketing-jeep', label: 'Marketing' },
+    ],
+  };
+  const refreshed = await handler(TOKEN_BOT_ENDPOINTS.status, {});
+  assert.deepEqual(refreshed.value.agentPresetCatalog, {
+    defaultId: 'marketing-jeep',
+    items: [{ id: 'marketing-jeep', label: 'Marketing' }],
+  });
+
+  const unavailable = await handler(TOKEN_BOT_ENDPOINTS.setAgentPreset, {
+    botId: 'bot_one', agentPreset: 'standard',
+  });
+  assert.equal(unavailable.ok, false);
+  assert.equal(unavailable.error.code, 'agent-preset-unavailable');
+  assert.equal(workspaces.agentPresetFor('bot_one'), null);
+
+  const selected = await handler(TOKEN_BOT_ENDPOINTS.setAgentPreset, {
+    botId: 'bot_one', agentPreset: 'marketing-jeep',
+  });
+  assert.equal(selected.ok, true);
+  assert.equal(selected.value.bots[0].agentPreset, 'marketing-jeep');
+
+  catalog = { defaultId: '', items: [] };
+  const cleared = await handler(TOKEN_BOT_ENDPOINTS.setAgentPreset, {
+    botId: 'bot_one', agentPreset: null,
+  });
+  assert.equal(cleared.ok, true);
+  assert.equal(cleared.value.bots[0].agentPreset, null);
+  assert.deepEqual(cleared.value.agentPresetCatalog, catalog);
 });
