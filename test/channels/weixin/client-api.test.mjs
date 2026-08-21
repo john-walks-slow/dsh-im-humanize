@@ -6,6 +6,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import TestRenderer from 'react-test-renderer';
 
+import { en, setImTranslator } from '../../../plugin-src/client/i18n.js';
 import { normalizeSnapshot } from '../../../plugin-src/client/channels/weixin/api.js';
 import {
   AccountCard,
@@ -57,6 +58,13 @@ test('Weixin client keeps only the public connection-test result', () => {
       state: 'connected',
       configured: true,
       bot: { name: '微信机器人', accountIdMasked: 'account••••1234' },
+      lastMessageError: {
+        code: 'attachment-error',
+        reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
+        message: '当前模型不支持图片。',
+        at: 123,
+        providerDetail: 'must-not-cross-client-normalization',
+      },
     }],
   });
 
@@ -64,6 +72,42 @@ test('Weixin client keeps only the public connection-test result', () => {
     sent: false,
     code: 'test-target-unavailable',
   });
+  assert.deepEqual(snapshot.bots[0].lastMessageError, {
+    code: 'attachment-error',
+    reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
+    message: '当前模型不支持图片。',
+    at: 123,
+  });
+  assert.doesNotMatch(JSON.stringify(snapshot), /must-not-cross-client-normalization/);
+});
+
+test('Weixin account card shows the latest safe message-processing error', () => {
+  const props = {
+    account: {
+      ...account('wx_image', '微信机器人'),
+      lastMessageError: {
+        code: 'attachment-error',
+        reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
+        message: '当前模型不支持图片，请用 /models 查看可用模型，再用 /model <序号> 切换后重发。',
+        at: Date.now(),
+      },
+    },
+    onReconnect() {}, onRequestRemove() {}, onConfirmRemove() {}, onCancelRemove() {},
+  };
+  const markup = renderToStaticMarkup(React.createElement(AccountCard, props));
+
+  assert.match(markup, /最近一条消息处理失败/);
+  assert.match(markup, /当前模型不支持图片/);
+
+  setImTranslator((key) => en[key] ?? key);
+  try {
+    const english = renderToStaticMarkup(React.createElement(AccountCard, props));
+    assert.match(english, /Latest message failed/);
+    assert.match(english, /current model does not support images/i);
+    assert.doesNotMatch(english, /[\p{Script=Han}]/u);
+  } finally {
+    setImTranslator(null);
+  }
 });
 
 test('Weixin card feedback stays visible without hiding connection errors', () => {

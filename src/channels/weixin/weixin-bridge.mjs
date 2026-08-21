@@ -23,12 +23,14 @@ import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 import {
   hasInboundImages,
+  imagePromptDiagnostic,
   imagePromptUserMessage,
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
 import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
+const GENERIC_PROCESSING_ERROR = '消息处理失败，请稍后重试。';
 
 const HELP_TEXT = [
   '微信已连接 DeepSeek Harness。',
@@ -69,6 +71,16 @@ function canClaimInteractionReply(message, pending) {
     && nonEmptyString(extractWeixinText(message));
 }
 
+function safeMessageError(error, userMessage = GENERIC_PROCESSING_ERROR) {
+  const diagnostic = imagePromptDiagnostic(error);
+  return {
+    code: diagnostic?.code ?? 'message-processing-failed',
+    reason: diagnostic?.reason ?? 'UNKNOWN',
+    message: diagnostic?.userMessage ?? userMessage,
+    at: Date.now(),
+  };
+}
+
 export function createWeixinBridgeStatus() {
   return {
     messagesReceived: 0,
@@ -78,6 +90,7 @@ export function createWeixinBridgeStatus() {
     lastReplyAt: null,
     lastRejectedAt: null,
     lastError: null,
+    lastMessageError: null,
   };
 }
 
@@ -168,8 +181,9 @@ export class WeixinHarnessBridge {
       ).catch((error) => {
         if (error?.code === 'turn-stopped' || this.#signal?.aborted) return;
         this.#status.lastError = error?.message ?? String(error);
+        this.#status.lastMessageError = safeMessageError(error);
         this.#logger.error?.('[dsh-weixin] failed to process a command:', error);
-        return this.#send(sender, '消息处理失败，请稍后重试。', contextToken, runId)
+        return this.#send(sender, GENERIC_PROCESSING_ERROR, contextToken, runId)
           .catch(() => undefined);
       }).finally(() => {
         this.#acceptedMessageIds.delete(messageId);
@@ -289,6 +303,7 @@ export class WeixinHarnessBridge {
       if (reply) await this.#send(sender, reply, contextToken, runId);
     }
     this.#status.lastError = null;
+    this.#status.lastMessageError = null;
   }
 
   async #process(message, key, { alreadyRecorded = false } = {}) {
@@ -401,6 +416,7 @@ export class WeixinHarnessBridge {
       this.#status.messagesReplied += 1;
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
+      this.#status.lastMessageError = null;
     } catch (error) {
       if (error?.code === 'turn-stopped') {
         await this.#state.markSeen(messageId);
@@ -408,11 +424,13 @@ export class WeixinHarnessBridge {
       }
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);
+      const userMessage = imagePromptUserMessage(error) ?? GENERIC_PROCESSING_ERROR;
+      this.#status.lastMessageError = safeMessageError(error, userMessage);
       this.#logger.error?.('[dsh-weixin] failed to process an inbound message:', error);
       try {
         await this.#send(
           sender,
-          imagePromptUserMessage(error) ?? '消息处理失败，请稍后重试。',
+          userMessage,
           contextToken,
           runId,
         );
@@ -526,6 +544,7 @@ export class WeixinHarnessBridge {
       });
       this.#clearPendingInteraction(key, pending.interactionId);
       this.#status.lastError = null;
+      this.#status.lastMessageError = null;
     } catch (error) {
       if (this.#signal?.aborted) return;
       if (error?.code === 'interaction-not-pending') {
@@ -719,13 +738,14 @@ export class WeixinHarnessBridge {
   async #handleInteractionFailure(message, messageId, error) {
     if (this.#signal?.aborted) return;
     this.#status.lastError = error?.message ?? String(error);
+    this.#status.lastMessageError = safeMessageError(error);
     this.#logger.error?.('[dsh-weixin] failed to process an interaction reply:', error);
     if (!this.#state.hasSeen(messageId)) {
       await this.#state.markSeen(messageId).catch(() => undefined);
     }
     await this.#send(
       nonEmptyString(message?.from_user_id),
-      '消息处理失败，请稍后重试。',
+      GENERIC_PROCESSING_ERROR,
       nonEmptyString(message?.context_token) ?? undefined,
       nonEmptyString(message?.run_id) ?? undefined,
     ).catch(() => undefined);

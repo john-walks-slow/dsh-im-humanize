@@ -48,6 +48,15 @@ function normalizeTestMessage(value) {
   return { sent: false, code };
 }
 
+function normalizeMessageError(value) {
+  if (!isRecord(value)) return null;
+  const code = string(value.code).slice(0, 64);
+  const reason = string(value.reason).slice(0, 128);
+  const message = string(value.message).slice(0, 500);
+  const at = timestamp(value.at);
+  return code && reason && message && at !== null ? { code, reason, message, at } : null;
+}
+
 export function unwrapRpcResult(result) {
   if (!isRecord(result) || typeof result.ok !== 'boolean') {
     throw new Error('微信服务返回了无法识别的响应');
@@ -132,6 +141,7 @@ function normalizeBot(value) {
       messagesReceived: Math.max(0, Number(value.stats?.messagesReceived) || 0),
       messagesReplied: Math.max(0, Number(value.stats?.messagesReplied) || 0),
     },
+    lastMessageError: normalizeMessageError(value.lastMessageError),
     error: isRecord(value.error)
       ? {
           code: string(value.error.code, 'WEIXIN_ACCOUNT_ERROR'),

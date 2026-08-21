@@ -241,6 +241,10 @@ export function AccountCard({
       }),
       h('div', { className: 'dxw-accountFooter dim-cardFooter' },
         summary ? h('div', { className: 'dxw-summary dim-cardSummary' }, summary) : null,
+        account.lastMessageError ? h('div', {
+          className: 'dxw-summary dim-cardSummary',
+          role: 'status',
+        }, `最近一条消息处理失败：${account.lastMessageError.message}`) : null,
         feedback ? h('div', {
           className: 'dxw-summary dim-cardSummary',
           role: 'status',

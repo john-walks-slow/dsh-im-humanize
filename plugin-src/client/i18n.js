@@ -455,6 +455,20 @@ const EN = Object.freeze({
   '微信绑定没有完成': 'WeChat setup did not complete',
   '微信连接正常': 'WeChat connection is healthy',
   '微信连接未就绪': 'WeChat connection is not ready',
+  '当前模型不支持图片，请用 /models 查看可用模型，再用 /model <序号> 切换后重发。': 'The current model does not support images. Use /models to list models, then /model <number> to switch and resend.',
+  '图片超过宿主允许的大小，请压缩后重试。': 'The image exceeds the Host size limit. Compress it and try again.',
+  '图片分辨率过高，请压缩后重试。': 'The image resolution is too high. Compress it and try again.',
+  '图片内容无效或格式不受支持，请重新发送。': 'The image is invalid or unsupported. Send it again.',
+  '未能读取图片内容，请重新发送。': 'The image could not be read. Send it again.',
+  '图片格式与实际内容不一致，请重新发送。': 'The declared image format does not match its content. Send it again.',
+  '一次发送的图片数量超过宿主限制，请减少后重试。': 'The message exceeds the Host image-count limit. Remove some images and try again.',
+  '图片总大小超过宿主限制，请减少图片或压缩后重试。': 'The images exceed the Host total-size limit. Remove or compress some images and try again.',
+  '图片下载地址发生了重定向，暂时无法读取。': 'The image download redirected and cannot be read.',
+  '图片超过 5 MB，请压缩后重试。': 'The image exceeds 5 MB. Compress it and try again.',
+  '一次发送的图片总大小过大，请减少图片数量或压缩后重试。': 'The images are too large in total. Remove or compress some images and try again.',
+  '图片下载失败，请重新发送后再试。': 'The image download failed. Send it again.',
+  '暂不支持该图片格式，请发送 JPEG、PNG、WebP 或 GIF 图片。': 'This image format is unsupported. Send a JPEG, PNG, WebP, or GIF image.',
+  '消息处理失败，请稍后重试。': 'Message processing failed. Try again later.',
   '微信服务没有返回有效的账号列表': 'WeChat did not return a valid account list',
   '尚未绑定微信': 'No WeChat account connected yet',
   '用于把微信机器人绑定到 DeepSeek Harness 的一次性二维码': 'One-time QR code for connecting a WeChat bot to DeepSeek Harness',
@@ -528,6 +542,12 @@ function translateDynamic(text) {
   }
   match = /^二维码剩余 (.+)$/.exec(text);
   if (match) return `QR code expires in ${match[1]}`;
+  match = /^最近一条消息处理失败：(.+)$/.exec(text);
+  if (match) return `Latest message failed: ${localizeText(match[1])}`;
+  match = /^图片下载失败（HTTP (.+)），请重新发送后再试。$/.exec(text);
+  if (match) return `The image download failed (HTTP ${match[1]}). Send it again.`;
+  match = /^一次最多只能处理 (\d+) 张图片。$/.exec(text);
+  if (match) return `A message can contain at most ${match[1]} images.`;
   match = /^状态刷新失败：(.+)$/.exec(text);
   if (match) return `Status refresh failed: ${match[1]}`;
   match = /^状态自动刷新失败：(.+)$/.exec(text);

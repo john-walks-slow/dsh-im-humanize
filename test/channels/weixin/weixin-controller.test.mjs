@@ -47,7 +47,7 @@ function configFixture() {
   };
 }
 
-function runtimeFactory({ failStart = false, startError } = {}) {
+function runtimeFactory({ failStart = false, startError, lastMessageError = null } = {}) {
   const runtimes = [];
   const connectionTests = [];
   const createRuntime = async ({ config, token }) => {
@@ -61,6 +61,7 @@ function runtimeFactory({ failStart = false, startError } = {}) {
           weixinConnectionState: ready ? 'connected' : 'idle',
           harnessReachable: ready,
           lastCheckedAt: ready ? 100 : null,
+          lastMessageError,
         };
       },
       async start() {
@@ -80,7 +81,15 @@ function runtimeFactory({ failStart = false, startError } = {}) {
 test('confirmed QR login stores bot_token only in credentials and starts a redacted account', async () => {
   const credentials = credentialsFixture();
   const configs = configFixture();
-  const runtimes = runtimeFactory();
+  const runtimes = runtimeFactory({
+    lastMessageError: {
+      code: 'attachment-error',
+      reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
+      message: '当前模型不支持图片。',
+      at: 123,
+      providerDetail: 'must-not-cross-controller-boundary',
+    },
+  });
   const controller = new WeixinController({
     api: {
       beginLogin: async ({ localTokens }) => {
@@ -116,6 +125,13 @@ test('confirmed QR login stores bot_token only in credentials and starts a redac
   const publicJson = JSON.stringify(controller.status());
   assert.doesNotMatch(publicJson, /private-bot-token|owner-user|account@im\.bot|tokenRef/);
   assert.equal(controller.status().totals.connected, 1);
+  assert.deepEqual(controller.status().bots[0].lastMessageError, {
+    code: 'attachment-error',
+    reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
+    message: '当前模型不支持图片。',
+    at: 123,
+  });
+  assert.doesNotMatch(publicJson, /must-not-cross-controller-boundary/);
 
   await controller.sendConnectionTest(completed.botId);
   assert.equal(runtimes.connectionTests[0].botId, completed.botId);
