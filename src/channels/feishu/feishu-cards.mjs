@@ -211,7 +211,15 @@ export function watchListCard(entries) {
  * turn-end kind (completed / stopped / aborted).
  */
 export function completionCard(sessionId, title, reason) {
-  const reasonText = reason === 'stopped' ? '已停止' : reason === 'aborted' ? '已中止' : '已完成';
+  const reasonText = reason === 'completed'
+    ? '已完成'
+    : reason === 'stopped'
+      ? '已停止'
+      : reason === 'aborted'
+        ? '已中止'
+        : reason === 'cancelled'
+          ? '已取消'
+          : '已结束';
   return cardWith('✅ 任务完成', [
     { tag: 'div', text: markdown(`**${safeTitle(title)}**\n\`${sessionId}\``) },
     { tag: 'div', text: markdown(`**状态**：${reasonText}`) },

@@ -118,6 +118,13 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function orderedHistoryEvents(history) {
+  return (Array.isArray(history?.events) ? history.events : [])
+    .map((entry) => entry?.event ?? entry)
+    .filter((entry) => entry && typeof entry === 'object' && Number.isFinite(entry.seq))
+    .sort((left, right) => left.seq - right.seq);
+}
+
 function senderOpenId(event) {
   return nonEmptyString(event?.sender?.sender_id?.open_id)
     ?? nonEmptyString(event?.sender?.sender_id?.user_id);
@@ -254,11 +261,10 @@ export class FeishuHarnessBridge {
   #cardKeys = new Map();
   /** The global event-mux watcher (one per bridge). */
   #eventWatcher = null;
-  #eventWatchSignal = null;
-  /** Turn dedup: `sessionId:turnId` already processed. */
-  #handledTurns = new Set();
-  /** Session titles for completion cards (short in-memory cache). */
-  #sessionTitleCache = new Map();
+  /** Serializes live completions and reconnect compensation. */
+  #eventTail = Promise.resolve();
+  /** Earliest completion that still needs delivery for each watch. */
+  #failedWatchSeqs = new Map();
 
   constructor({
     client,
@@ -314,9 +320,8 @@ export class FeishuHarnessBridge {
     this.#approvals = new HarnessApprovalQueue({ label: 'Feishu', logger });
     this.#signal = signal;
     ensureStatus(this.#status);
-    // Persisted watches (and bound-session push targets) must resume at
-    // runtime start, not on the first message. Guarded: harnesses without
-    // the mux watcher (tests, older hosts) simply skip this.
+    // Persisted watches must resume at runtime start, not on the first
+    // message. Older hosts without the mux watcher simply skip this.
     if (typeof this.#harness?.watchHarnessEvents === 'function') {
       queueMicrotask(() => this.#ensureEventWatcher());
     }
@@ -544,6 +549,7 @@ export class FeishuHarnessBridge {
       )),
       ...this.#interactionTasks,
       ...this.#commandTasks,
+      this.#eventTail,
     ]);
   }
 
@@ -592,8 +598,6 @@ export class FeishuHarnessBridge {
     const text = message.content;
     const hasImages = hasInboundImages(message);
     const commandText = event.message.message_type === 'text' && !hasImages ? text : null;
-    // Keep the persistent delivery target fresh for bound-session pushes.
-    this.#rememberChatTarget(key, event.message.chat_id);
     if (!text && !hasImages) {
       await this.#send(event.message.chat_id, '目前支持文字和图片消息。');
       return;
@@ -1279,24 +1283,35 @@ export class FeishuHarnessBridge {
   #ensureEventWatcher() {
     if (this.#eventWatcher) return;
     if (typeof this.#harness?.watchHarnessEvents !== 'function') return;
-    this.#eventWatchSignal = new AbortController();
+    if (this.#signal?.aborted) return;
+    const signal = this.#signal ?? new AbortController().signal;
     try {
       this.#eventWatcher = this.#harness.watchHarnessEvents({
-        signal: this.#eventWatchSignal.signal,
+        signal,
         onSessionEvent: (payload) => this.#onHarnessEvent(payload),
-        onReconnect: () => void this.#compensateMissedEvents(),
+        onReconnect: () => {
+          void this.#queueEventTask(() => this.#compensateMissedEvents());
+        },
       });
-      this.#eventWatcher?.catch?.(() => undefined);
+      Promise.resolve(this.#eventWatcher).catch((error) => {
+        if (!signal.aborted) {
+          this.#logger.warn?.('[dsh-feishu] event watcher stopped:', error.message);
+        }
+      });
     } catch (error) {
       this.#eventWatcher = null;
       this.#logger.warn?.('[dsh-feishu] event watcher failed to start:', error.message);
     }
   }
 
-  /** Persist the chat delivery target for a conversation (bound pushes). */
-  #rememberChatTarget(key, chatId) {
-    if (typeof this.#state?.setChatTarget !== 'function' || !chatId) return;
-    this.#state.setChatTarget(key, chatId).catch(() => undefined);
+  #queueEventTask(task) {
+    const next = this.#eventTail.then(task, task).catch((error) => {
+      if (!this.#signal?.aborted) {
+        this.#logger.warn?.('[dsh-feishu] completion event failed:', error.message);
+      }
+    });
+    this.#eventTail = next;
+    return next;
   }
 
   /**
@@ -1337,6 +1352,17 @@ export class FeishuHarnessBridge {
     return { error: '没有找到这个会话，请用 /sessionlist 查看可用会话。' };
   }
 
+  async #latestSessionSeq(sessionId) {
+    if (typeof this.#harness?.rpc !== 'function') return null;
+    const history = await this.#harness.rpc(
+      'session.history',
+      { sessionId, maxMessages: 20 },
+      30_000,
+      { signal: this.#signal },
+    );
+    return orderedHistoryEvents(history).at(-1)?.seq ?? -1;
+  }
+
   async #runWatch(key, chatId, target) {
     this.#ensureEventWatcher();
     if (typeof this.#state?.setWatch !== 'function') {
@@ -1355,18 +1381,23 @@ export class FeishuHarnessBridge {
       return;
     }
     const existing = this.#state.watchEntries?.(key) ?? [];
-    if (!existing.some((entry) => entry.sessionId === resolved.sessionId) && existing.length >= MAX_WATCHES_PER_KEY) {
+    const existingEntry = existing.find((entry) => entry.sessionId === resolved.sessionId);
+    if (!existingEntry && existing.length >= MAX_WATCHES_PER_KEY) {
       await this.#send(chatId, `每个聊天最多关注 ${MAX_WATCHES_PER_KEY} 个会话。`);
       return;
     }
     try {
+      const lastSeq = typeof existingEntry?.lastSeq === 'number'
+        ? existingEntry.lastSeq
+        : await this.#latestSessionSeq(resolved.sessionId);
       await this.#state.setWatch(key, {
         sessionId: resolved.sessionId,
         title: resolved.title,
         chatId,
-        lastSeq: null,
+        lastSeq,
       });
       await this.#send(chatId, `已关注会话「${String(resolved.title).replace(/\s+/gu, ' ')}」，任务完成会推送结果。`);
+      await this.#queueEventTask(() => this.#compensateSession(resolved.sessionId));
     } catch (error) {
       await this.#send(chatId, `关注失败：${safeErrorText(error)}`);
     }
@@ -1384,6 +1415,7 @@ export class FeishuHarnessBridge {
     }
     try {
       await this.#state.removeWatch(key, entry.sessionId);
+      this.#failedWatchSeqs.delete(`${key}\0${entry.sessionId}`);
       await this.#send(chatId, `已取消关注「${String(entry.title ?? '').replace(/\s+/gu, ' ')}」。`);
     } catch (error) {
       await this.#send(chatId, `取消失败：${safeErrorText(error)}`);
@@ -1396,111 +1428,103 @@ export class FeishuHarnessBridge {
     await this.#sendCard(chatId, watchListCard(entries), { key });
   }
 
-  /**
-   * A global mux session event. Completion pushes fire on turn/end, with
-   * dedup on `sessionId:turnId` and a seq watermark persisted per watch so
-   * reconnect compensation can replay only what was missed.
-   */
+  /** Queue live turn completions behind any reconnect compensation. */
   #onHarnessEvent({ sessionId, event }) {
-    if (!sessionId || !event || typeof event !== 'object' || event.type !== 'turn/end') return;
-    const turnId = nonEmptyString(event.data?.turn)
-      ?? nonEmptyString(event.data?.turnId)
-      ?? String(event.seq ?? '');
-    const dedupKey = `${sessionId}:${turnId}`;
-    if (this.#handledTurns.has(dedupKey)) return;
-    this.#handledTurns.add(dedupKey);
-    if (this.#handledTurns.size > 2000) {
-      const oldest = this.#handledTurns.values().next().value;
-      if (oldest !== undefined) this.#handledTurns.delete(oldest);
-    }
-    if (typeof event.seq === 'number' && typeof this.#state?.setWatch === 'function') {
-      for (const key of (this.#state.keysWatching?.(sessionId) ?? [])) {
-        const entry = this.#state.watchEntry?.(key, sessionId);
-        if (entry && (typeof entry.lastSeq !== 'number' || entry.lastSeq < event.seq)) {
-          this.#state.setWatch(key, { ...entry, lastSeq: event.seq }).catch(() => undefined);
-        }
-      }
-    }
-    void this.#sendCompletion(sessionId, event);
+    if (this.#signal?.aborted
+      || !sessionId
+      || !event
+      || typeof event !== 'object'
+      || event.type !== 'turn/end'
+      || !Number.isFinite(event.seq)) return;
+    void this.#queueEventTask(async () => {
+      const hasFailedDelivery = (this.#state.keysWatching?.(sessionId) ?? [])
+        .some((key) => this.#failedWatchSeqs.has(`${key}\0${sessionId}`));
+      if (hasFailedDelivery) await this.#compensateSession(sessionId);
+      await this.#deliverCompletion(sessionId, event);
+    });
   }
 
-  async #sendCompletion(sessionId, event) {
+  async #deliverCompletion(sessionId, event) {
+    if (this.#signal?.aborted || typeof this.#state?.keysWatching !== 'function') return;
     const reason = event?.data?.reason?.kind ?? event?.data?.reason ?? null;
-    const targets = new Set();
-    if (typeof this.#state?.keysWatching === 'function') {
-      for (const key of this.#state.keysWatching(sessionId)) {
-        const entry = this.#state.watchEntry?.(key, sessionId);
-        if (entry?.chatId) targets.add(entry.chatId);
+    for (const key of this.#state.keysWatching(sessionId)) {
+      if (this.#signal?.aborted) return;
+      const entry = this.#state.watchEntry?.(key, sessionId);
+      const deliveryKey = `${key}\0${sessionId}`;
+      let failedSeq = this.#failedWatchSeqs.get(deliveryKey);
+      if (typeof failedSeq === 'number'
+        && typeof entry?.lastSeq === 'number'
+        && entry.lastSeq >= failedSeq) {
+        this.#failedWatchSeqs.delete(deliveryKey);
+        failedSeq = undefined;
       }
-    }
-    if (typeof this.#state?.sessionKeysFor === 'function') {
-      for (const key of this.#state.sessionKeysFor(sessionId)) {
-        const chatId = typeof this.#state?.chatTargetFor === 'function'
-          ? this.#state.chatTargetFor(key)
-          : null;
-        if (chatId) targets.add(chatId);
-      }
-    }
-    if (targets.size === 0) return;
-    const title = await this.#sessionTitleFor(sessionId);
-    for (const chatId of targets) {
+      if (!entry?.chatId
+        || (typeof entry.lastSeq === 'number' && entry.lastSeq >= event.seq)
+        || (typeof failedSeq === 'number' && event.seq > failedSeq)) continue;
       try {
-        await this.#sendCard(chatId, completionCard(sessionId, title, reason));
+        await this.#sendCard(
+          entry.chatId,
+          completionCard(sessionId, entry.title, reason),
+          { key },
+        );
+        const current = this.#state.watchEntry?.(key, sessionId);
+        if (!current
+          || current.chatId !== entry.chatId
+          || (typeof current.lastSeq === 'number' && current.lastSeq >= event.seq)) continue;
+        await this.#state.setWatch(key, { ...current, lastSeq: event.seq });
+        if (failedSeq === event.seq) this.#failedWatchSeqs.delete(deliveryKey);
       } catch (error) {
+        this.#failedWatchSeqs.set(
+          deliveryKey,
+          typeof failedSeq === 'number' ? Math.min(failedSeq, event.seq) : event.seq,
+        );
         this.#logger.warn?.('[dsh-feishu] completion push failed:', error.message);
       }
     }
   }
 
-  async #sessionTitleFor(sessionId) {
-    if (this.#sessionTitleCache.has(sessionId)) return this.#sessionTitleCache.get(sessionId);
-    let title = '暂无标题';
+  async #compensateSession(sessionId) {
+    if (this.#signal?.aborted || typeof this.#harness?.rpc !== 'function') return;
     try {
-      const currentPath = typeof this.#harness?.currentWorkspace === 'function'
-        ? this.#harness.currentWorkspace()
-        : null;
-      if (currentPath && typeof this.#harness?.listWorkspaceSessions === 'function') {
-        const listed = await this.#harness.listWorkspaceSessions(currentPath);
-        const session = (listed?.sessions ?? []).find((candidate) => candidate.sessionId === sessionId);
-        if (session) title = String(session.title ?? '').replace(/\s+/gu, ' ').trim() || '暂无标题';
+      const history = await this.#harness.rpc(
+        'session.history',
+        { sessionId, maxMessages: 20 },
+        30_000,
+        { signal: this.#signal },
+      );
+      const events = orderedHistoryEvents(history);
+      const latestSeq = events.at(-1)?.seq ?? -1;
+      const keys = typeof this.#state?.keysWatching === 'function'
+        ? this.#state.keysWatching(sessionId)
+        : [];
+
+      // Watches created by older versions have no baseline. Establish one
+      // without replaying completions that predate the watch.
+      for (const key of keys) {
+        const entry = this.#state.watchEntry?.(key, sessionId);
+        if (entry && typeof entry.lastSeq !== 'number') {
+          await this.#state.setWatch(key, { ...entry, lastSeq: latestSeq });
+        }
       }
-    } catch {
-      // Best-effort title; the card falls back to the id.
+
+      for (const event of events) {
+        if (event.type === 'turn/end') await this.#deliverCompletion(sessionId, event);
+      }
+    } catch (error) {
+      if (!this.#signal?.aborted) {
+        this.#logger.warn?.(`[dsh-feishu] watch compensation failed for ${sessionId}:`, error.message);
+      }
     }
-    this.#sessionTitleCache.set(sessionId, title);
-    return title;
   }
 
-  /**
-   * Replay turn/end events missed while the mux was disconnected. Reads
-   * each watched session's recent history and feeds unseen events through
-   * the normal handler, whose `sessionId:turnId` dedup makes the replay
-   * overlap-safe against live frames.
-   */
+  /** Replay recent turn completions missed while the mux was disconnected. */
   async #compensateMissedEvents() {
-    if (typeof this.#harness?.rpc !== 'function') return;
     const sessionIds = typeof this.#state?.watchedSessionIds === 'function'
       ? this.#state.watchedSessionIds()
       : [];
     for (const sessionId of sessionIds) {
-      try {
-        const history = await this.#harness.rpc('session.history', { sessionId, maxMessages: 20 });
-        const events = history?.events ?? [];
-        for (const event of events) {
-          if (event?.type !== 'turn/end' || typeof event.seq !== 'number') continue;
-          const keys = typeof this.#state?.keysWatching === 'function'
-            ? this.#state.keysWatching(sessionId)
-            : [];
-          const allSeen = keys.length > 0 && keys.every((key) => {
-            const entry = this.#state.watchEntry?.(key, sessionId);
-            return entry && typeof entry.lastSeq === 'number' && entry.lastSeq >= event.seq;
-          });
-          if (allSeen) continue;
-          this.#onHarnessEvent({ sessionId, event });
-        }
-      } catch (error) {
-        this.#logger.warn?.(`[dsh-feishu] watch compensation failed for ${sessionId}:`, error.message);
-      }
+      if (this.#signal?.aborted) return;
+      await this.#compensateSession(sessionId);
     }
   }
 

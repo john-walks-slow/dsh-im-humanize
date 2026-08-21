@@ -6,7 +6,6 @@ const EMPTY_STATE = Object.freeze({
   sessions: {},
   seenMessageIds: [],
   watches: {},
-  chatTargets: {},
   includeArchivedSessions: false,
 });
 
@@ -38,7 +37,6 @@ export class StateStore {
         sessions: parsed.sessions && typeof parsed.sessions === 'object' ? parsed.sessions : {},
         seenMessageIds: Array.isArray(parsed.seenMessageIds) ? parsed.seenMessageIds.slice(-1000) : [],
         watches: parsed.watches && typeof parsed.watches === 'object' ? parsed.watches : {},
-        chatTargets: parsed.chatTargets && typeof parsed.chatTargets === 'object' ? parsed.chatTargets : {},
         includeArchivedSessions: typeof parsed.includeArchivedSessions === 'boolean'
           ? parsed.includeArchivedSessions
           : false,
@@ -138,27 +136,7 @@ export class StateStore {
     return [...ids];
   }
 
-  /** Conversation keys whose bound session is the given id. */
-  sessionKeysFor(sessionId) {
-    return Object.entries(this.#state.sessions)
-      .filter(([, bound]) => bound === sessionId)
-      .map(([key]) => key);
-  }
-
-  // ── Persistent chat delivery targets for bound sessions ─────────────────
-
-  chatTargetFor(key) {
-    const target = this.#state.chatTargets[key];
-    return typeof target === 'string' && target.length > 0 ? target : null;
-  }
-
-  async setChatTarget(key, chatId) {
-    if (this.#state.chatTargets[key] === chatId) return;
-    this.#state.chatTargets[key] = chatId;
-    await this.#persist();
-  }
-
-  // ── Session-list archived policy (per bot) ───────────────────────────────
+  // ── Session-list archived policy (per bot) ───────────────────
 
   includesArchivedSessions() {
     return this.#state.includeArchivedSessions === true;

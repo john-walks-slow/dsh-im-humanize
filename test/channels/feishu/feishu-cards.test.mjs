@@ -16,13 +16,13 @@ function buttons(value, result = []) {
   return result;
 }
 
-test('menu exposes repair as number-only text instead of a callback button', () => {
+test('menu appends watchlist and keeps repair number-only', () => {
   const card = JSON.parse(menuCard());
   assert.match(JSON.stringify(card), /6 · 修复卡片按钮/);
   const actions = buttons(card).flatMap((button) => (
     button.behaviors?.map((behavior) => behavior?.value?.action) ?? []
   ));
-  assert.deepEqual(actions, ['sessions', 'workspaces', 'new', 'status', 'help']);
+  assert.deepEqual(actions, ['sessions', 'workspaces', 'new', 'status', 'help', 'watchlist']);
   assert.equal(actions.includes('repair'), false);
 });
 

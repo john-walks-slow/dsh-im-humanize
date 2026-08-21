@@ -1231,75 +1231,115 @@ export class HarnessClient {
    * provided) fires after every (re)connection so callers can compensate
    * for events missed while offline.
    */
-  watchHarnessEvents({ signal, onSessionEvent, onReconnect }) {
+  async watchHarnessEvents({ signal, onSessionEvent, onReconnect } = {}) {
     if (typeof onSessionEvent !== 'function') {
-      return Promise.reject(new TypeError('watchHarnessEvents requires onSessionEvent'));
+      throw new TypeError('watchHarnessEvents requires onSessionEvent');
+    }
+    if (!signal || typeof signal.addEventListener !== 'function') {
+      throw new TypeError('watchHarnessEvents requires an AbortSignal');
+    }
+    if (onReconnect !== undefined && typeof onReconnect !== 'function') {
+      throw new TypeError('onReconnect must be a function');
     }
     const url = new URL('/api/events.mux', this.#baseUrl);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    let stopped = false;
-    const connect = () => {
-      if (stopped || signal.aborted) return Promise.resolve();
-      return new Promise((resolve) => {
-        const socket = this.#createWebSocket(url.toString());
-        const settle = () => {
-          socket.removeEventListener('open', handleOpen);
-          socket.removeEventListener('message', handleMessage);
-          socket.removeEventListener('close', handleClose);
-          socket.removeEventListener('error', handleError);
-          signal.removeEventListener('abort', handleAbort);
-          resolve();
-        };
-        const handleOpen = () => {
-          try {
-            onReconnect?.();
-          } catch (error) {
-            console.warn(`[${this.#logPrefix}] mux reconnect hook failed:`, error.message);
-          }
-        };
-        const handleMessage = (event) => {
-          try {
-            if (typeof event.data !== 'string') return;
-            const envelope = JSON.parse(event.data);
-            const payload = envelope?.payload;
-            if (envelope?.type !== 'server-request' || !payload || typeof payload !== 'object') return;
-            if (payload.type !== 'session/event') return;
-            if (typeof payload.sessionId !== 'string' || !payload.event || typeof payload.event !== 'object') return;
-            onSessionEvent({ sessionId: payload.sessionId, event: payload.event });
-          } catch (error) {
-            console.warn(`[${this.#logPrefix}] ignored a malformed global mux frame:`, error.message);
-          }
-        };
-        const handleClose = () => {
-          settle();
-          if (!stopped && !signal.aborted) {
-            setTimeout(() => { void connect(); }, 2000);
-          }
-        };
-        const handleError = () => {
-          try {
-            socket.close();
-          } catch {
-            // The close event drives reconnection; nothing to do here.
-          }
-        };
-        const handleAbort = () => {
-          stopped = true;
-          try {
-            socket.close();
-          } catch {
-            // Already closed.
-          }
-        };
-        socket.addEventListener('open', handleOpen);
-        socket.addEventListener('message', handleMessage);
-        socket.addEventListener('close', handleClose, { once: true });
-        socket.addEventListener('error', handleError, { once: true });
-        signal.addEventListener('abort', handleAbort, { once: true });
-        if (signal.aborted) handleAbort();
-      });
-    };
-    return connect();
+    while (!signal.aborted) {
+      try {
+        await this.#watchHarnessEventSocket(url.toString(), {
+          signal,
+          onSessionEvent,
+          onReconnect,
+        });
+      } catch (error) {
+        if (signal.aborted) return;
+        console.warn(`[${this.#logPrefix}] Harness event mux disconnected:`, error.message);
+      }
+      if (signal.aborted) return;
+      try {
+        await sleep(this.#interactionReconnectDelayMs, signal);
+      } catch {
+        if (signal.aborted) return;
+        throw new Error('Harness event mux reconnect wait failed');
+      }
+    }
+  }
+
+  #watchHarnessEventSocket(url, { signal, onSessionEvent, onReconnect }) {
+    return new Promise((resolve, reject) => {
+      let socket;
+      try {
+        socket = this.#createWebSocket(url);
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      let opened = false;
+      let finished = false;
+      const close = () => {
+        try {
+          socket.close();
+        } catch {
+          // Already closed.
+        }
+      };
+      const finish = (error) => {
+        if (finished) return;
+        finished = true;
+        socket.removeEventListener('open', handleOpen);
+        socket.removeEventListener('message', handleMessage);
+        socket.removeEventListener('close', handleClose);
+        socket.removeEventListener('error', handleError);
+        signal.removeEventListener('abort', handleAbort);
+        if (error) reject(error);
+        else resolve();
+      };
+      const handleOpen = () => {
+        opened = true;
+        try {
+          onReconnect?.();
+        } catch (error) {
+          console.warn(`[${this.#logPrefix}] mux reconnect hook failed:`, error.message);
+        }
+      };
+      const handleMessage = (event) => {
+        try {
+          if (typeof event.data !== 'string') return;
+          const envelope = JSON.parse(event.data);
+          const payload = envelope?.payload;
+          if (envelope?.type !== 'server-request'
+            || !payload
+            || typeof payload !== 'object'
+            || envelope.method !== payload.type
+            || payload.type !== 'session/event'
+            || typeof payload.sessionId !== 'string'
+            || !payload.event
+            || typeof payload.event !== 'object') return;
+          onSessionEvent({ sessionId: payload.sessionId, event: payload.event });
+        } catch (error) {
+          console.warn(`[${this.#logPrefix}] ignored a malformed global mux frame:`, error.message);
+        }
+      };
+      const handleClose = () => finish(opened ? null : new Error(
+        'Harness event mux WebSocket closed before opening',
+      ));
+      const handleError = () => {
+        finish(new Error(opened
+          ? 'Harness event mux WebSocket failed'
+          : 'Harness event mux WebSocket failed before opening'));
+        close();
+      };
+      const handleAbort = () => {
+        close();
+        finish();
+      };
+
+      socket.addEventListener('open', handleOpen);
+      socket.addEventListener('message', handleMessage);
+      socket.addEventListener('close', handleClose, { once: true });
+      socket.addEventListener('error', handleError, { once: true });
+      signal.addEventListener('abort', handleAbort, { once: true });
+      if (signal.aborted) handleAbort();
+    });
   }
 
   stopManagedProcess() {

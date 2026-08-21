@@ -159,6 +159,84 @@ test('interaction watcher uses the real Harness wire protocol and leaves approva
   assert.equal(socket.readyState, 3);
 });
 
+test('global event watcher reconnects without resolving until abort', async () => {
+  const sockets = [];
+  const socketUrls = [];
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080/base',
+    workspace: '/tmp/dsh-feishu-workspace',
+    interactionReconnectDelayMs: 0,
+    createWebSocket: (url) => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      socketUrls.push(url);
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  const controller = new AbortController();
+  const events = [];
+  let reconnects = 0;
+  let settled = false;
+  const watching = client.watchHarnessEvents({
+    signal: controller.signal,
+    onReconnect: () => { reconnects += 1; },
+    onSessionEvent: (payload) => events.push(payload),
+  });
+  watching.finally(() => { settled = true; });
+
+  await eventually(() => reconnects === 1);
+  sockets[0].frame({
+    type: 'server-request',
+    rpcId: 'event-one',
+    method: 'session/event',
+    payload: {
+      type: 'session/event',
+      sessionId: 'session-one',
+      event: { type: 'turn/end', seq: 1 },
+    },
+  });
+  sockets[0].frame({
+    type: 'server-request',
+    rpcId: 'invalid-method',
+    method: 'different/method',
+    payload: {
+      type: 'session/event',
+      sessionId: 'ignored',
+      event: { type: 'turn/end', seq: 2 },
+    },
+  });
+  await eventually(() => events.length === 1);
+
+  sockets[0].close();
+  await eventually(() => reconnects === 2);
+  assert.equal(settled, false, 'a dropped socket must not complete the watcher');
+  sockets[1].frame({
+    type: 'server-request',
+    rpcId: 'event-two',
+    method: 'session/event',
+    payload: {
+      type: 'session/event',
+      sessionId: 'session-two',
+      event: { type: 'turn/end', seq: 3 },
+    },
+  });
+  await eventually(() => events.length === 2);
+
+  assert.deepEqual(socketUrls, [
+    'ws://127.0.0.1:3080/api/events.mux',
+    'ws://127.0.0.1:3080/api/events.mux',
+  ]);
+  assert.deepEqual(events.map(({ sessionId, event }) => [sessionId, event.seq]), [
+    ['session-one', 1],
+    ['session-two', 3],
+  ]);
+  controller.abort();
+  await watching;
+  assert.equal(sockets[1].readyState, 3);
+  assert.equal(settled, true);
+});
+
 test('HarnessClient lists only absolute workspace paths', async () => {
   const client = new HarnessClient({
     baseUrl: 'http://127.0.0.1:3080',
