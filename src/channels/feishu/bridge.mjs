@@ -27,11 +27,26 @@ import {
   isModelCommand,
   runModelCommand,
 } from '../shared/model-command.mjs';
-import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
+import { runWorkspaceCommand, resolveSessionListWorkspace, workspacePathSnapshot } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
+import {
+  MENU_PAGE_SIZE,
+  menuCard,
+  menuHelpText,
+  sessionListCard,
+  workspaceListCard,
+} from './feishu-cards.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
 const RESOLVED_REPLY_TTL_MS = 30 * 60_000;
+
+const MENU_COMMAND = /^\/m(?:enu)?$/i;
+const SESSION_LIST_PREFIX = /^\/sessionlist(?:\s|$)/i;
+const WORKSPACE_LIST_COMMAND = /^\/workspacelist$/i;
+const NUMBER_REPLY = /^\d{1,2}$/;
+/** A displayed menu stays number-tappable for this long. */
+const MENU_TTL_MS = 10 * 60_000;
+const MAX_TRACKED_MENUS = 50;
 
 const HELP_TEXT = [
   '北汇星河 AIOS 已连接 DeepSeek Harness。',
@@ -49,8 +64,25 @@ const HELP_TEXT = [
   '/stop  停止当前任务',
   '/steer 补充指令  纠偏当前任务',
   '/status  检查连接状态',
+  '/m（或 /menu）  打开交互卡片菜单',
   '/help  显示本帮助',
 ].join('\n');
+
+/** Safe user-facing text for bind/workspace failures (no raw messages). */
+function safeErrorText(error) {
+  switch (error?.code) {
+    case 'workspace-not-absolute':
+      return '工作区必须是绝对路径。';
+    case 'workspace-not-found':
+      return '工作区路径不存在。';
+    case 'workspace-not-directory':
+      return '工作区路径必须指向一个目录。';
+    case 'workspace-bot-not-found':
+      return '机器人正在移除或已重新接入，无法操作原会话的工作区。';
+    default:
+      return '操作失败，请稍后重试。';
+  }
+}
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -97,6 +129,10 @@ export class FeishuHarnessBridge {
   #replyTimeoutMs;
   #logger;
   #signal;
+  /** Number-tappable menus: conversation key → menu state. */
+  #menus = new Map();
+  /** Interactive-card message id → { key, chatId } for button callbacks. */
+  #cardKeys = new Map();
 
   constructor({
     client,
@@ -404,6 +440,11 @@ export class FeishuHarnessBridge {
       await this.#send(event.message.chat_id, HELP_TEXT);
       return;
     }
+    if (MENU_COMMAND.test(commandText)) {
+      this.#rememberMenu(key, { kind: 'menu', chatId: event.message.chat_id });
+      await this.#sendCard(event.message.chat_id, menuCard(), { key });
+      return;
+    }
     if (commandText === '/new') {
       await this.#state.clearSession(key);
       await this.#send(event.message.chat_id, '已开启全新 Harness 会话。');
@@ -413,6 +454,22 @@ export class FeishuHarnessBridge {
       await this.#harness.ensureRunning({ signal: this.#signal });
       await this.#send(event.message.chat_id, '飞书机器人与 DeepSeek Harness 连接正常。');
       return;
+    }
+    if (SESSION_LIST_PREFIX.test(commandText)) {
+      const selector = commandText.slice('/sessionlist'.length).trim() || null;
+      await this.#showSessions({ chatId: event.message.chat_id, key }, selector, 0);
+      return;
+    }
+    if (WORKSPACE_LIST_COMMAND.test(commandText)) {
+      await this.#showWorkspaces({ chatId: event.message.chat_id, key });
+      return;
+    }
+    if (NUMBER_REPLY.test(commandText)) {
+      const menu = this.#takeMenu(key);
+      if (menu) {
+        await this.#handleMenuPick(menu, Number(commandText), { chatId: event.message.chat_id, key });
+        return;
+      }
     }
     const workspaceCommand = commandText === null
       ? null
@@ -447,6 +504,191 @@ export class FeishuHarnessBridge {
       await this.#cancelPendingInteraction(key);
       await this.#approvals.closeRoute(key);
     }
+  }
+
+  // ── Interactive cards: menus and session/workspace lists ────────────────
+
+  /**
+   * Card button callback (card.action.trigger). The operator must be an
+   * allowed sender: group members outside the allowlist must never drive
+   * session binding, workspace switches or other card actions.
+   */
+  onCardAction(event) {
+    const operatorOpenId = nonEmptyString(event?.operator?.operator_id?.open_id)
+      ?? nonEmptyString(event?.operator?.operator_id?.user_id);
+    if (operatorOpenId === null || !this.#allowedSenderOpenIds.has(operatorOpenId)) {
+      this.#logger.warn?.('[dsh-feishu] ignoring card action from an unallowed sender');
+      return Promise.resolve();
+    }
+    const action = typeof event?.action?.value?.action === 'string'
+      ? event.action.value.action
+      : null;
+    if (!action) return Promise.resolve();
+    const messageId = nonEmptyString(event?.context?.open_message_id);
+    const entry = messageId ? this.#cardKeys.get(messageId) : null;
+    if (!entry) return Promise.resolve();
+    // The promise is returned so tests (and future callers) can await the
+    // action; the runtime dispatcher ignores it.
+    return this.#handleCardAction(action, entry).catch((error) => {
+      this.#logger.warn?.('[dsh-feishu] card action failed:', error.message);
+    });
+  }
+
+  async #handleCardAction(action, { chatId, key }) {
+    if (action === 'sessions' || /^sessions:\d+$/.test(action)) {
+      const page = action === 'sessions' ? 0 : Number(action.slice('sessions:'.length));
+      await this.#showSessions({ chatId, key }, null, page);
+      return;
+    }
+    if (action === 'workspaces') {
+      await this.#showWorkspaces({ chatId, key });
+      return;
+    }
+    if (action === 'new') {
+      await this.#state.clearSession(key);
+      await this.#send(chatId, '已开启全新 Harness 会话。');
+      return;
+    }
+    if (action === 'status') {
+      await this.#harness.ensureRunning({ signal: this.#signal });
+      await this.#send(chatId, '飞书机器人与 DeepSeek Harness 连接正常。');
+      return;
+    }
+    if (action === 'help') {
+      await this.#send(chatId, menuHelpText());
+      return;
+    }
+    if (action.startsWith('use:')) {
+      await this.#bindSession(key, chatId, action.slice('use:'.length));
+      return;
+    }
+    if (action.startsWith('workspace:')) {
+      await this.#switchWorkspace(key, chatId, action.slice('workspace:'.length));
+    }
+  }
+
+  #rememberMenu(key, menu) {
+    if (this.#menus.size >= MAX_TRACKED_MENUS) {
+      const oldest = this.#menus.keys().next().value;
+      if (oldest !== undefined) this.#menus.delete(oldest);
+    }
+    this.#menus.delete(key);
+    this.#menus.set(key, { ...menu, expiresAt: Date.now() + MENU_TTL_MS });
+  }
+
+  #takeMenu(key) {
+    const menu = this.#menus.get(key);
+    if (!menu) return null;
+    if (menu.expiresAt < Date.now()) {
+      this.#menus.delete(key);
+      return null;
+    }
+    return menu;
+  }
+
+  async #handleMenuPick(menu, number, { chatId, key }) {
+    if (menu.kind === 'menu') {
+      const action = ['sessions', 'workspaces', 'new', 'status', 'help'][number - 1];
+      if (!action) {
+        await this.#send(chatId, '菜单没有这个编号，回复 /m 重新打开。');
+        return;
+      }
+      await this.#handleCardAction(action, { chatId, key });
+      return;
+    }
+    if (menu.kind === 'sessions') {
+      const session = menu.sessions[number - 1];
+      if (!session?.sessionId) {
+        await this.#send(chatId, `本页只有 ${menu.sessions.length} 个会话，回复 /sessionlist 重新查看。`);
+        return;
+      }
+      await this.#handleCardAction(`use:${session.sessionId}`, { chatId, key });
+      return;
+    }
+    if (menu.kind === 'workspaces') {
+      const workspace = menu.paths[number - 1];
+      if (!workspace) {
+        await this.#send(chatId, `只有 ${menu.paths.length} 个工作区，回复 /workspacelist 重新查看。`);
+        return;
+      }
+      await this.#handleCardAction(`workspace:${workspace}`, { chatId, key });
+    }
+  }
+
+  async #showSessions({ chatId, key }, selector, page = 0) {
+    try {
+      const resolved = await resolveSessionListWorkspace(selector ?? '', this.#harness);
+      if (resolved.error) {
+        await this.#send(chatId, resolved.error);
+        return;
+      }
+      const listed = await this.#harness.listWorkspaceSessions(resolved.workspace);
+      const sessions = Array.isArray(listed?.sessions) ? listed.sessions : [];
+      const workspace = listed?.workspace ?? resolved.workspace;
+      if (sessions.length === 0) {
+        await this.#send(chatId, `工作区：${workspace}\n该工作区暂无会话。`);
+        return;
+      }
+      const pageCount = Math.ceil(sessions.length / MENU_PAGE_SIZE);
+      const safePage = Number.isSafeInteger(page) && page > 0 ? Math.min(page, pageCount - 1) : 0;
+      this.#rememberMenu(key, {
+        kind: 'sessions',
+        sessions: sessions.slice(safePage * MENU_PAGE_SIZE, (safePage + 1) * MENU_PAGE_SIZE),
+      });
+      await this.#sendCard(chatId, sessionListCard(workspace, sessions, safePage, sessions.length), { key });
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] session list failed:', error.message);
+      await this.#send(chatId, '暂时无法获取会话列表，请稍后重试。');
+    }
+  }
+
+  async #showWorkspaces({ chatId, key }) {
+    try {
+      const { current, paths } = await workspacePathSnapshot(this.#harness);
+      this.#rememberMenu(key, { kind: 'workspaces', paths });
+      await this.#sendCard(chatId, workspaceListCard(paths, current), { key });
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] workspace list failed:', error.message);
+      await this.#send(chatId, '暂时无法获取工作区列表，请稍后重试。');
+    }
+  }
+
+  async #bindSession(key, chatId, sessionId) {
+    try {
+      const bound = await this.#harness.bindWorkspaceSession(key, sessionId);
+      const title = String(bound?.title ?? '').replace(/\s+/gu, ' ').trim() || '暂无标题';
+      await this.#send(chatId, `已绑定会话「${title}」\nID：${bound?.sessionId ?? sessionId}`);
+    } catch (error) {
+      await this.#send(chatId, `绑定失败：${safeErrorText(error)}`);
+    }
+  }
+
+  async #switchWorkspace(key, chatId, workspace) {
+    try {
+      const current = await this.#harness.switchWorkspace(workspace);
+      await this.#send(chatId, `工作区已切换为：${current}`);
+    } catch (error) {
+      await this.#send(chatId, `切换失败：${safeErrorText(error)}`);
+    }
+  }
+
+  async #sendCard(chatId, cardJson, options = {}) {
+    const response = await this.#client.im.v1.message.create({
+      params: { receive_id_type: 'chat_id' },
+      data: { receive_id: chatId, msg_type: 'interactive', content: cardJson },
+    });
+    if (response?.code && response.code !== 0) {
+      throw new Error(`Feishu card send failed: ${response.msg || response.code}`);
+    }
+    const messageId = nonEmptyString(response?.data?.message_id);
+    if (options.key && messageId) {
+      this.#cardKeys.set(messageId, { key: options.key, chatId });
+      if (this.#cardKeys.size > 200) {
+        const oldest = this.#cardKeys.keys().next().value;
+        if (oldest !== undefined) this.#cardKeys.delete(oldest);
+      }
+    }
+    return messageId;
   }
 
   #interactionAskOptions(event, key) {
