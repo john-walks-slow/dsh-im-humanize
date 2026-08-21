@@ -1071,6 +1071,10 @@ export class FeishuHarnessBridge {
     }
     if (action.startsWith('unwatch:')) {
       await this.#runUnwatch(key, chatId, action.slice('unwatch:'.length));
+      return;
+    }
+    if (action.startsWith('watch:')) {
+      await this.#runWatch(key, chatId, action.slice('watch:'.length));
     }
   }
 

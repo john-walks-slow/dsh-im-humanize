@@ -101,8 +101,11 @@ export function cardActionProbeCard(nonce) {
 }
 
 /**
- * One page of the workspace's sessions. Each row is a bind button; the
- * number label equals the reply-number for the same action (fallback).
+ * One page of the workspace's sessions. Each session renders as a bind
+ * button plus a watch button (schema 2.0: buttons are top-level body
+ * elements, so the pair is two adjacent buttons); the number label equals
+ * the reply-number for the bind action (fallback). Archived sessions are
+ * marked in the label.
  */
 export function sessionListCard(workspace, sessions, page, total) {
   const start = page * MENU_PAGE_SIZE;
@@ -110,10 +113,13 @@ export function sessionListCard(workspace, sessions, page, total) {
   const pageCount = Math.max(1, Math.ceil(total / MENU_PAGE_SIZE));
   const elements = [
     { tag: 'div', text: markdown(`**工作区**：\`${workspace}\`\n共 **${total}** 个会话${total > MENU_PAGE_SIZE ? `（第 ${page + 1}/${pageCount} 页）` : ''}`) },
-    ...slice.map((session, offset) => button(
-      `${offset + 1}. ${safeTitle(session.title)}`,
-      `use:${session.sessionId}`,
-    )),
+    ...slice.flatMap((session, offset) => {
+      const label = `${offset + 1}. ${safeTitle(session.title)}${session.archived === true ? '（已归档）' : ''}`;
+      return [
+        button(label, `use:${session.sessionId}`),
+        button('👁 关注', `watch:${session.sessionId}`),
+      ];
+    }),
   ];
   if (page > 0) elements.push(button('◀ 上一页', `sessions:${page - 1}`));
   if (page + 1 < pageCount) elements.push(button('下一页 ▶', `sessions:${page + 1}`));
