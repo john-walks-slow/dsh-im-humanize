@@ -2045,7 +2045,9 @@ test('session list paginates by page number across 25 sessions', async () => {
   const firstButton = firstLayout?.columns?.[0]?.elements?.[0];
   assert.equal(firstButton?.tag, 'button');
   assert.equal(Object.hasOwn(firstButton, 'value'), false, 'V2 buttons must not use the legacy value field');
-  assert.equal(callbackAction(firstButton), 'use:session-01');
+  assert.equal(callbackAction(firstButton), 'watch:session-01', 'the watch toggle leads each row');
+  const sessionButton = firstLayout?.columns?.[1]?.elements?.[0];
+  assert.equal(callbackAction(sessionButton), 'use:session-01');
   assert.equal(useActionsFromCard(page0).length, 10);
   assert.equal(useActionsFromCard(page0)[0], 'session-01');
 
@@ -2081,7 +2083,8 @@ test('number replies on a later session page use page-local labels', async () =>
   await bridge.waitForIdle();
 
   const page2Buttons = buttonsFromCard(cards(sent).at(-1).content);
-  assert.match(page2Buttons[0].text.content, /^1\. Session 21$/);
+  const sessionButtons = page2Buttons.filter((candidate) => (callbackAction(candidate) ?? '').startsWith('use:'));
+  assert.match(sessionButtons[0].text.content, /^1\. Session 21$/);
 
   await bridge.accept(event('sessions-number-pick', '1', { senderOpenId: 'ou_owner' }));
   await bridge.waitForIdle();
@@ -2127,7 +2130,8 @@ test('session pagination preserves an explicitly selected workspace', async () =
   await bridge.onCardAction(cardActionEvent('om_card_1', 'sessions:1', 'ou_owner'));
   await bridge.waitForIdle();
   assert.equal(useActionsFromCard(cards(sent).at(-1).content)[0], 'selected-11');
-  assert.match(JSON.stringify(cards(sent).at(-1).content), new RegExp(workspaceB.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  const header = cards(sent).at(-1).content.body.elements[0].text.content;
+  assert.match(header, new RegExp(workspaceB.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
 
 const REPAIR_APP_ID = 'cli_repair_test';

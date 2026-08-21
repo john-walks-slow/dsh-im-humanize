@@ -1048,7 +1048,15 @@ export class FeishuHarnessBridge {
     if (!action) return Promise.resolve();
     const messageId = nonEmptyString(event?.context?.open_message_id);
     const entry = messageId ? this.#cardKeys.get(messageId) : null;
-    if (!entry) return Promise.resolve();
+    if (!entry) {
+      // The card predates this process (the in-memory mapping resets on
+      // restart) or never came from us: nudge instead of staying silent.
+      const chatId = nonEmptyString(event?.context?.open_chat_id);
+      if (chatId) {
+        this.#send(chatId, '这个菜单已过期，请回复 /m 重新打开。').catch(() => undefined);
+      }
+      return Promise.resolve();
+    }
     // The promise is returned so tests (and future callers) can await the
     // action; the runtime dispatcher ignores it.
     return this.#handleCardAction(action, entry).catch((error) => {
@@ -1140,6 +1148,7 @@ export class FeishuHarnessBridge {
         await this.#send(chatId, `本页只有 ${menu.sessions.length} 个会话，回复 /sessionlist 重新查看。`);
         return;
       }
+      // The number label sits on the session (bind) button of the row.
       await this.#handleCardAction(`use:${session.sessionId}`, { chatId, key });
       return;
     }
@@ -1186,16 +1195,24 @@ export class FeishuHarnessBridge {
       }
       const pageCount = Math.ceil(sessions.length / MENU_PAGE_SIZE);
       const safePage = Number.isSafeInteger(page) && page > 0 ? Math.min(page, pageCount - 1) : 0;
+      const watchedSet = new Set(
+        (this.#state.watchEntries?.(key) ?? []).map((entry) => entry.sessionId),
+      );
+      const pageSlice = sessions.slice(safePage * MENU_PAGE_SIZE, (safePage + 1) * MENU_PAGE_SIZE);
       this.#rememberMenu(key, {
         kind: 'sessions',
-        sessions: sessions.slice(safePage * MENU_PAGE_SIZE, (safePage + 1) * MENU_PAGE_SIZE),
+        sessions: pageSlice.map((session) => ({ ...session, watched: watchedSet.has(session.sessionId) })),
       });
-      await this.#sendCard(chatId, sessionListCard(workspace, sessions, safePage, sessions.length), {
-        key,
-        // Keep the canonical selector result for later page callbacks. The
-        // list response's workspace is display data and is not authoritative.
-        sessionWorkspace: resolved.workspace,
-      });
+      await this.#sendCard(
+        chatId,
+        sessionListCard(workspace, sessions, safePage, sessions.length, watchedSet),
+        {
+          key,
+          // Keep the canonical selector result for later page callbacks. The
+          // list response's workspace is display data and is not authoritative.
+          sessionWorkspace: resolved.workspace,
+        },
+      );
     } catch (error) {
       this.#logger.warn?.('[dsh-feishu] session list failed:', error.message);
       await this.#send(chatId, '暂时无法获取会话列表，请稍后重试。');

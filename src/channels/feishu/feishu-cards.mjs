@@ -4,10 +4,14 @@
  * `im.message.create` API expects as `content` for `msg_type: interactive`
  * (card schema 2.0; callback buttons live inside a column_set/column layout).
  *
- * Buttons carry a small `{ action }` callback behavior that
- * `card.action.trigger` events echo back (when the app subscribes that
- * callback); every button also carries a numeric label so the number-reply
- * fallback stays usable without button callbacks.
+ * The session list lays each row out as a `column_set` (fixed-width ⭐
+ * watch-toggle column + weighted session-button column), which is how V2
+ * expresses a row of buttons.
+ *
+ * Buttons carry a small `{ action }` value object that `card.action.trigger`
+ * events echo back (when the app subscribes that event); every numbered
+ * button also has a numeric label so the number-reply fallback stays usable
+ * without button callbacks.
  */
 
 export const MENU_PAGE_SIZE = 10;
@@ -36,6 +40,17 @@ function button(content, actionValue) {
         behaviors: [{ type: 'callback', value: { action: actionValue } }],
       }],
     }],
+  };
+}
+
+/** The raw button element (without the full-width column_set wrapper). */
+function buttonElement(content, actionValue) {
+  return {
+    tag: 'button',
+    text: plainText(content),
+    type: 'default',
+    width: 'fill',
+    behaviors: [{ type: 'callback', value: { action: actionValue } }],
   };
 }
 
@@ -102,29 +117,43 @@ export function cardActionProbeCard(nonce) {
 }
 
 /**
- * One page of the workspace's sessions. Each session renders as a bind
- * button plus a watch button (schema 2.0: buttons are top-level body
- * elements, so the pair is two adjacent buttons); the number label equals
- * the reply-number for the bind action (fallback). Archived sessions are
- * marked in the label.
+ * One page of the workspace's sessions. Each row is a `column_set` pair:
+ * the fixed-width ⭐ watch toggle (`⭐关注` / `⭐取关` for already-watched
+ * sessions) followed by the session button that carries the page-local
+ * number label (reply-number fallback = bind). Archived sessions are marked
+ * in the label. `watchedSessionIds` is a Set-like of ids this conversation
+ * already watches.
  */
-export function sessionListCard(workspace, sessions, page, total) {
+export function sessionListCard(workspace, sessions, page, total, watchedSessionIds = new Set()) {
   const start = page * MENU_PAGE_SIZE;
   const slice = sessions.slice(start, start + MENU_PAGE_SIZE);
   const pageCount = Math.max(1, Math.ceil(total / MENU_PAGE_SIZE));
+  const watched = (id) => typeof watchedSessionIds?.has === 'function' && watchedSessionIds.has(id);
+  /** One row: fixed 90px watch toggle + the session button filling the rest. */
+  const row = (watchButton, sessionButton) => ({
+    tag: 'column_set',
+    flex_mode: 'none',
+    horizontal_spacing: 'default',
+    columns: [
+      { tag: 'column', width: '90px', vertical_align: 'center', elements: [watchButton] },
+      { tag: 'column', width: 'weighted', weight: 1, vertical_align: 'center', elements: [sessionButton] },
+    ],
+  });
   const elements = [
     { tag: 'div', text: markdown(`**工作区**：\`${workspace}\`\n共 **${total}** 个会话${total > MENU_PAGE_SIZE ? `（第 ${page + 1}/${pageCount} 页）` : ''}`) },
-    ...slice.flatMap((session, offset) => {
+    ...slice.map((session, offset) => {
+      // Page-local numbering: number replies resolve against this page.
       const label = `${offset + 1}. ${safeTitle(session.title)}${session.archived === true ? '（已归档）' : ''}`;
-      return [
-        button(label, `use:${session.sessionId}`),
-        button('👁 关注', `watch:${session.sessionId}`),
-      ];
+      const watching = watched(session.sessionId);
+      return row(
+        buttonElement(watching ? '⭐取关' : '⭐关注', watching ? `unwatch:${session.sessionId}` : `watch:${session.sessionId}`),
+        buttonElement(label, `use:${session.sessionId}`),
+      );
     }),
   ];
   if (page > 0) elements.push(button('◀ 上一页', `sessions:${page - 1}`));
   if (page + 1 < pageCount) elements.push(button('下一页 ▶', `sessions:${page + 1}`));
-  elements.push({ tag: 'div', text: markdown('回复数字（1~N）同样可以绑定本页会话。') });
+  elements.push({ tag: 'div', text: markdown('回复数字（1~N）绑定本页会话。') });
   return cardWith('📂 会话列表', elements);
 }
 
