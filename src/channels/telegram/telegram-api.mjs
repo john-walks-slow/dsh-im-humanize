@@ -16,6 +16,18 @@ export function validTelegramToken(value) {
   return typeof value === 'string' && /^\d{5,20}:[A-Za-z0-9_-]{20,}$/.test(value.trim());
 }
 
+const TELEGRAM_COMMAND_NAME = /^[a-z0-9_]{1,32}$/;
+
+function validBotCommand(value) {
+  return Boolean(value)
+    && typeof value === 'object' && !Array.isArray(value)
+    && typeof value.command === 'string' && TELEGRAM_COMMAND_NAME.test(value.command)
+    && typeof value.description === 'string' && value.description.length >= 1
+    && value.description.length <= 256;
+}
+
+export const COMMANDS_MENU_BUTTON = Object.freeze({ type: 'commands' });
+
 export class TelegramApi {
   #token;
   #fetch;
@@ -111,6 +123,25 @@ export class TelegramApi {
       action: 'typing',
       ...(messageThreadId ? { message_thread_id: messageThreadId } : {}),
     }, { signal });
+  }
+
+  async setMyCommands({ commands, scope, languageCode, signal } = {}) {
+    if (!Array.isArray(commands) || commands.length === 0
+      || commands.some((command) => !validBotCommand(command))) {
+      throw new TypeError('Telegram bot commands are invalid');
+    }
+    return this.#call('setMyCommands', {
+      commands,
+      ...(scope ? { scope } : {}),
+      ...(cleanString(languageCode) ? { language_code: cleanString(languageCode) } : {}),
+    }, { signal });
+  }
+
+  async setChatMenuButton({ menuButton = COMMANDS_MENU_BUTTON, signal } = {}) {
+    if (!menuButton || typeof menuButton !== 'object' || Array.isArray(menuButton)) {
+      throw new TypeError('Telegram menu button is invalid');
+    }
+    return this.#call('setChatMenuButton', { menu_button: menuButton }, { signal });
   }
 
   async #call(method, payload, { signal, timeoutMs = 15_000 } = {}) {

@@ -13,12 +13,14 @@ import {
 import { TelegramController } from '../../../src/channels/telegram/telegram-controller.mjs';
 import {
   TelegramApi,
+  COMMANDS_MENU_BUTTON,
   inspectTelegramToken,
   validTelegramToken,
 } from '../../../src/channels/telegram/telegram-api.mjs';
 import { TelegramHarnessBridge } from '../../../src/channels/telegram/telegram-bridge.mjs';
 import {
   TelegramRuntime,
+  TELEGRAM_COMMAND_MENU,
   normalizeTelegramUpdate,
   telegramInboundAllowed,
 } from '../../../src/channels/telegram/telegram-runtime.mjs';
@@ -152,6 +154,43 @@ test('Telegram API resolves and downloads files without exposing arbitrary paths
     assert.doesNotMatch(error.message, new RegExp(TOKEN.replaceAll(':', '\\:')));
     return true;
   });
+});
+
+test('Telegram API registers the command menu and commands-type menu button', async () => {
+  const calls = [];
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, body: JSON.parse(options.body) });
+      return jsonResponse({ ok: true, result: true });
+    },
+  });
+  await api.setMyCommands({ commands: TELEGRAM_COMMAND_MENU });
+  await api.setChatMenuButton();
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].url.pathname, /setMyCommands$/);
+  assert.deepEqual(calls[0].body, { commands: TELEGRAM_COMMAND_MENU });
+  assert.match(calls[1].url.pathname, /setChatMenuButton$/);
+  assert.deepEqual(calls[1].body, { menu_button: COMMANDS_MENU_BUTTON });
+
+  const scopeCall = await api.setMyCommands({
+    commands: [{ command: 'help', description: '帮助' }],
+    scope: { type: 'chat', chat_id: 88 },
+    languageCode: 'zh',
+  });
+  assert.equal(scopeCall, true);
+  assert.deepEqual(calls[2].body.commands, [{ command: 'help', description: '帮助' }]);
+  assert.deepEqual(calls[2].body.scope, { type: 'chat', chat_id: 88 });
+  assert.equal(calls[2].body.language_code, 'zh');
+
+  await assert.rejects(() => api.setMyCommands({ commands: [] }), /commands are invalid/);
+  await assert.rejects(() => api.setMyCommands({
+    commands: [{ command: 'Bad-Name', description: '非法命令名' }],
+  }), /commands are invalid/);
+  await assert.rejects(() => api.setMyCommands({
+    commands: [{ command: 'help' }],
+  }), /commands are invalid/);
+  await assert.rejects(() => api.setChatMenuButton({ menuButton: 'commands' }), /menu button is invalid/);
 });
 
 test('Telegram config and controller store only a credential reference in bot data', async (t) => {
@@ -749,8 +788,16 @@ test('Telegram runtime validates webhook state and starts a cancellable long pol
   const fakeApi = {
     getMe: async () => ({ id: 123456789, is_bot: true }),
     getWebhookInfo: async () => ({ url: '' }),
+    setMyCommands: async ({ commands }) => {
+      calls.push({ method: 'setMyCommands', commands });
+      return true;
+    },
+    setChatMenuButton: async ({ menuButton }) => {
+      calls.push({ method: 'setChatMenuButton', menuButton });
+      return true;
+    },
     getUpdates: async ({ offset, timeout, signal }) => {
-      calls.push({ offset, timeout });
+      calls.push({ method: 'getUpdates', offset, timeout });
       if (timeout === 0) return [];
       return new Promise((resolve, reject) => signal.addEventListener('abort', () => {
         reject(new DOMException('Aborted', 'AbortError'));
@@ -773,8 +820,58 @@ test('Telegram runtime validates webhook state and starts a cancellable long pol
   assert.equal(runtime.status.connectionState, 'connected');
   await runtime.stop();
   assert.equal(runtime.status.ready, false);
-  assert.deepEqual(calls[0], { offset: -1, timeout: 0 });
+  assert.deepEqual(calls[0], { method: 'setMyCommands', commands: TELEGRAM_COMMAND_MENU });
+  assert.deepEqual(calls[1], { method: 'setChatMenuButton', menuButton: COMMANDS_MENU_BUTTON });
+  assert.deepEqual(calls[2], { method: 'getUpdates', offset: -1, timeout: 0 });
   await rm(directory, { recursive: true, force: true });
+});
+
+test('Telegram runtime still starts when the command menu setup fails', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-im-telegram-menu-failure-'));
+  const state = await new TelegramStateStore(join(directory, 'state.json')).load();
+  const warnings = [];
+  let delivered = false;
+  const fakeApi = {
+    getMe: async () => ({ id: 123456789, is_bot: true }),
+    getWebhookInfo: async () => ({ url: '' }),
+    setMyCommands: async () => {
+      throw new Error('telegram-502 Bad Gateway');
+    },
+    setChatMenuButton: async () => {
+      throw new Error('telegram-502 Bad Gateway');
+    },
+    getUpdates: async ({ timeout, signal }) => {
+      if (timeout === 0) return [];
+      if (!delivered) {
+        delivered = true;
+        return [];
+      }
+      return new Promise((resolve, reject) => signal.addEventListener('abort', () => {
+        reject(new DOMException('Aborted', 'AbortError'));
+      }, { once: true }));
+    },
+  };
+  const runtime = new TelegramRuntime({
+    config: {
+      botId: 'telegram_menu_failure',
+      platformId: '123456789',
+      username: 'HarnessBot',
+    },
+    token: TOKEN,
+    harness: { ensureRunning: async () => true },
+    state,
+    createApi: () => fakeApi,
+    logger: { warn: (message) => warnings.push(message), error() {} },
+  });
+  try {
+    await runtime.start();
+    assert.equal(runtime.status.ready, true);
+    assert.equal(runtime.status.connectionState, 'connected');
+    assert.match(warnings.at(-1), /command menu setup failed/);
+  } finally {
+    await runtime.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('Telegram runtime enforces the selected bot private allowlist', async () => {
