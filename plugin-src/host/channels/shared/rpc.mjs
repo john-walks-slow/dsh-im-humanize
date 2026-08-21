@@ -5,6 +5,10 @@ import {
   SET_WORKSPACE_ENDPOINT,
   validWorkspacePayload,
 } from './workspace-rpc.mjs';
+import {
+  SET_AGENT_PRESET_ENDPOINT,
+  validAgentPresetPayload,
+} from './agent-preset-rpc.mjs';
 
 export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   status: 'connection.status',
@@ -12,6 +16,7 @@ export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
   setWorkspace: SET_WORKSPACE_ENDPOINT,
+  setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
 });
 
 const ENDPOINTS = Object.freeze(Object.values(TOKEN_BOT_ENDPOINTS));
@@ -56,6 +61,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === TOKEN_BOT_ENDPOINTS.setWorkspace) {
     return validWorkspacePayload(payload)
       ? null : '请输入工作区绝对路径。';
+  }
+  if (endpoint === TOKEN_BOT_ENDPOINTS.setAgentPreset) {
+    return validAgentPresetPayload(payload)
+      ? null : '请选择 Agent Preset。';
   }
   return 'Unknown bot endpoint.';
 }
@@ -132,6 +141,9 @@ export function createTokenBotRpcHandler(controller, { channel }) {
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.setWorkspace) {
         if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
         value = await controller.updateWorkspace(payload.botId, payload.workspace);
+      } else if (endpoint === TOKEN_BOT_ENDPOINTS.setAgentPreset) {
+        if (typeof controller.updateAgentPreset !== 'function') throw new Error('Agent preset update is unavailable');
+        value = await controller.updateAgentPreset(payload.botId, payload.agentPreset);
       } else {
         value = await controller.deleteBot(payload.botId);
       }

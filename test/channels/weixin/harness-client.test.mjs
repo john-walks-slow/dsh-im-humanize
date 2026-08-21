@@ -73,6 +73,28 @@ test('HarnessClient lets the Host resolve an omitted agent preset and forwards a
   assert.deepEqual(await createPayload({ agentPreset: null }), { workspaceId: 'workspace-one' });
 });
 
+test('HarnessClient forwards a per-session agent preset override', async () => {
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/default-workspace',
+    agentPreset: 'router-standard',
+  });
+  let payload;
+  client.ensureRunning = async () => true;
+  client.workspaceId = async () => 'workspace-one';
+  client.rpc = async (method, value) => {
+    assert.equal(method, 'session.create');
+    payload = value;
+    return { sessionId: 'session-one' };
+  };
+
+  assert.equal(await client.createSession({ agentPreset: 'marketing-jeep' }), 'session-one');
+  assert.deepEqual(payload, {
+    workspaceId: 'workspace-one',
+    agentPreset: 'marketing-jeep',
+  });
+});
+
 test('HarnessClient lists only absolute workspace paths', async () => {
   const client = new HarnessClient({
     baseUrl: 'http://127.0.0.1:3080',

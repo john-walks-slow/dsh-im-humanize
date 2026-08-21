@@ -1,3 +1,5 @@
+import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
+
 export const WHATSAPP_RPC_CHANNEL = '/whatsapp';
 
 export const WHATSAPP_ENDPOINTS = Object.freeze({
@@ -8,6 +10,7 @@ export const WHATSAPP_ENDPOINTS = Object.freeze({
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
   setWorkspace: 'bot.workspace.set',
+  setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
 });
 
 const PROVISION_STATES = new Set(['starting', 'pending', 'connecting', 'connected', 'failed', 'cancelled']);
@@ -82,6 +85,7 @@ function normalizeBot(value) {
     connected,
     state: connected ? 'connected' : state,
     workspace: text(value.workspace, '', 4_096),
+    agentPreset: normalizeAgentPresetId(value.agentPreset),
     bot: {
       name: text(value.bot?.name, 'WhatsApp机器人', 100),
       idMasked: text(value.bot?.idMasked, 'WhatsApp账号', 140),
@@ -109,6 +113,7 @@ export function normalizeSnapshot(value) {
     bots,
     totals: { configured: bots.length, connected: bots.filter((bot) => bot.connected).length },
     provisioning: source.provisioning ? normalizeProvisioning(source.provisioning) : null,
+    agentPresetCatalog: normalizeAgentPresetCatalog(source.agentPresetCatalog),
   };
 }
 

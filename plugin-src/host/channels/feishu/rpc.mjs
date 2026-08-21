@@ -2,6 +2,7 @@ import QRCode from 'qrcode';
 import { publicConnectionTestResult } from '../../../../src/channels/shared/connection-test.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
+import { validAgentPresetPayload } from '../shared/agent-preset-rpc.mjs';
 import {
   FEISHU_ENDPOINTS,
   FEISHU_RPC_CHANNEL,
@@ -378,6 +379,10 @@ function validPayload(endpoint, payload) {
     return validWorkspacePayload(payload)
       ? null : '请输入工作区绝对路径。';
   }
+  if (endpoint === FEISHU_ENDPOINTS.setAgentPreset) {
+    return validAgentPresetPayload(payload)
+      ? null : '请选择 Agent Preset。';
+  }
   return 'Unknown Feishu endpoint.';
 }
 
@@ -604,6 +609,12 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
         if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
         value = await toPublicFeishuStatus(
           await controller.updateWorkspace(payload.botId, payload.workspace),
+          { encodeQr: cachedEncodeQr },
+        );
+      } else if (endpoint === FEISHU_ENDPOINTS.setAgentPreset) {
+        if (typeof controller.updateAgentPreset !== 'function') throw new Error('Agent preset update is unavailable');
+        value = await toPublicFeishuStatus(
+          await controller.updateAgentPreset(payload.botId, payload.agentPreset),
           { encodeQr: cachedEncodeQr },
         );
       } else {

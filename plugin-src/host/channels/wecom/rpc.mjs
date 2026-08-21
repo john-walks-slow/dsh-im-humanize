@@ -1,6 +1,7 @@
 import QRCode from 'qrcode';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, SET_WORKSPACE_ENDPOINT, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
+import { SET_AGENT_PRESET_ENDPOINT, validAgentPresetPayload } from '../shared/agent-preset-rpc.mjs';
 import {
   connectionTestTargetUnavailable,
   publicConnectionTestResult,
@@ -16,6 +17,7 @@ export const WECOM_ENDPOINTS = Object.freeze({
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
   setWorkspace: SET_WORKSPACE_ENDPOINT,
+  setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
 });
 export const WECOM_RPC_ENDPOINTS = Object.freeze(Object.values(WECOM_ENDPOINTS));
 
@@ -69,6 +71,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === WECOM_ENDPOINTS.setWorkspace) {
     return validWorkspacePayload(payload)
       ? null : '请输入工作区绝对路径。';
+  }
+  if (endpoint === WECOM_ENDPOINTS.setAgentPreset) {
+    return validAgentPresetPayload(payload)
+      ? null : '请选择 Agent Preset。';
   }
   return 'Unknown Enterprise WeChat endpoint.';
 }
@@ -164,6 +170,12 @@ export function createWecomRpcHandler(controller, { encodeQr = qrDataUrl } = {})
         if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
         value = await publicStatus(
           await controller.updateWorkspace(payload.botId, payload.workspace),
+          cachedEncode,
+        );
+      } else if (endpoint === WECOM_ENDPOINTS.setAgentPreset) {
+        if (typeof controller.updateAgentPreset !== 'function') throw new Error('Agent preset update is unavailable');
+        value = await publicStatus(
+          await controller.updateAgentPreset(payload.botId, payload.agentPreset),
           cachedEncode,
         );
       } else {

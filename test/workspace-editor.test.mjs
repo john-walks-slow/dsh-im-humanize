@@ -4,6 +4,10 @@ import * as React from 'react';
 import TestRenderer from 'react-test-renderer';
 
 import {
+  AgentPresetCatalogContext,
+  AgentPresetEditor,
+} from '../plugin-src/client/agent-preset.js';
+import {
   WorkspaceDirectoryPickerContext,
   WorkspaceEditor,
 } from '../plugin-src/client/workspace-editor.js';
@@ -661,5 +665,111 @@ test('an older reconnect snapshot cannot resurrect a bot deleted by a newer muta
   staleReconnect.resolve({ ok: true, value: initialSnapshot });
   await act(async () => { await flushMicrotasks(); });
   assert.equal(renderer.root.findAllByProps({ 'data-bot-id': 'discord_first' }).length, 0);
+  await act(async () => { renderer.unmount(); });
+});
+
+const PRESET_CATALOG = {
+  defaultId: 'default',
+  items: [
+    { id: 'coding', label: 'Coding' },
+    { id: 'default', label: 'Default' },
+  ],
+};
+
+function optionValues(select) {
+  return select.children.map((option) => option.props.value);
+}
+
+test('AgentPresetEditor lists Host presets and keeps the catalog label for the current id', () => {
+  const renderer = create(React.createElement(
+    AgentPresetCatalogContext.Provider,
+    { value: PRESET_CATALOG },
+    React.createElement(AgentPresetEditor, {
+      agentPreset: 'coding',
+      onSave() {},
+    }),
+  ));
+  const select = renderer.root.findByProps({ className: 'dim-presetSelect' });
+  assert.equal(select.props.value, 'coding');
+  assert.deepEqual(optionValues(select), ['', 'coding', 'default']);
+  assert.equal(textOf(select.children[0]), '跟随 Host 默认');
+  assert.equal(textOf(select.children[1]), 'Coding（coding）');
+  renderer.unmount();
+});
+
+test('AgentPresetEditor saves a selected preset and can follow the Host default', async () => {
+  const saved = [];
+  function Harness() {
+    const [agentPreset, setAgentPreset] = React.useState('');
+    return React.createElement(AgentPresetEditor, {
+      agentPreset,
+      onSave(value) {
+        saved.push(value);
+        setAgentPreset(value ?? '');
+      },
+    });
+  }
+  const renderer = create(React.createElement(
+    AgentPresetCatalogContext.Provider,
+    { value: PRESET_CATALOG },
+    React.createElement(Harness),
+  ));
+  const select = renderer.root.findByProps({ className: 'dim-presetSelect' });
+  await act(async () => {
+    select.props.onChange({ target: { value: 'coding' } });
+    await flushMicrotasks();
+  });
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-presetSelect' })
+      .props.onChange({ target: { value: '' } });
+    await flushMicrotasks();
+  });
+  assert.deepEqual(saved, ['coding', null]);
+  renderer.unmount();
+});
+
+test('Discord settings save an Agent Preset through bot.preset.set', async (t) => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { setInterval() { return 1; }, clearInterval() {} };
+  t.after(() => {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  });
+  const snapshot = {
+    ...discordSnapshot('/workspace/current'),
+    agentPresetCatalog: PRESET_CATALOG,
+  };
+  const calls = [];
+  const rpcCall = async (endpoint, payload) => {
+    calls.push({ endpoint, payload });
+    if (endpoint === 'connection.status') return { ok: true, value: snapshot };
+    if (endpoint === 'bot.preset.set') {
+      return {
+        ok: true,
+        value: {
+          ...snapshot,
+          bots: [{ ...snapshot.bots[0], agentPreset: payload.agentPreset }],
+        },
+      };
+    }
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(DiscordSettingsTab, { rpcCall }));
+    await flushMicrotasks();
+  });
+  const card = renderer.root.findByProps({ 'data-bot-id': 'discord_test' });
+  await act(async () => {
+    card.findByProps({ className: 'dim-presetSelect' })
+      .props.onChange({ target: { value: 'coding' } });
+    await flushMicrotasks();
+  });
+
+  assert.deepEqual(calls.find((call) => call.endpoint === 'bot.preset.set')?.payload, {
+    botId: 'discord_test',
+    agentPreset: 'coding',
+  });
   await act(async () => { renderer.unmount(); });
 });

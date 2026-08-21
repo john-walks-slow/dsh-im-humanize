@@ -237,6 +237,7 @@ test('Feishu bot cards place the application identifier under the bot name', asy
   assert.doesNotMatch(markup, /custom-bot-avatar/);
   assert.equal((markup.match(/class="bxf-metric dim-botMetric"/g) ?? []).length, 2);
   assert.match(markup, />消息通道<[^]*>最近检查</);
+  assert.match(markup, /class="dim-presetSelect"/);
   assert.doesNotMatch(markup, />应用标识<|>飞书机器人</);
   assert.match(styles, /\.bxf-statusGrid \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
 });
@@ -445,6 +446,7 @@ test('bot cards reuse the same channel brand logos as the channel rail', () => {
   assert.match(accountMarkup, /class="dxw-avatar dim-botAvatar"[^]*data-im-channel-logo="weixin"/);
   assert.match(accountMarkup, /class="dxw-health dim-botHealth"/);
   assert.match(accountMarkup, /class="dxw-accountFooter dim-cardFooter"/);
+  assert.match(accountMarkup, /class="dim-presetSelect"/);
   assert.doesNotMatch(accountMarkup, /dim-cardSummary|微信消息长轮询运行正常/);
   assert.equal((accountMarkup.match(/dim-cardAction(?: |")/g) ?? []).length, 2);
   assert.equal((accountMarkup.match(/class="dxw-metric dim-botMetric"/g) ?? []).length, 2);
@@ -532,6 +534,13 @@ test('bot cards keep the full workspace path on its own single line', async () =
   assert.match(styles, /\.dim-panel \.dim-workspacePath \{[^}]*grid-column: 1 \/ -1;[^}]*grid-row: 2;[^}]*overflow-x: auto;[^}]*white-space: nowrap;/);
   assert.doesNotMatch(styles, /\.dim-panel \.dim-workspacePath \{[^}]*text-overflow: ellipsis;/);
   assert.match(styles, /\.dim-panel \.dim-workspaceEdit \{[^}]*grid-column: 2;[^}]*grid-row: 1;[^}]*white-space: nowrap;/);
+});
+
+test('bot cards keep the Agent Preset selector below the workspace path', async () => {
+  const styles = await readFile(STYLES_URL, 'utf8');
+
+  assert.match(styles, /\.dim-panel \.dim-preset \{[^}]*grid-template-columns: minmax\(0, 1fr\) max-content;[^}]*margin-top: 6px;[^}]*padding: 6px 10px;/);
+  assert.match(styles, /\.dim-panel \.dim-presetSelect \{[^}]*grid-column: 1 \/ -1;[^}]*grid-row: 2;/);
 });
 
 test('the bundled DingTalk channel has no local sender approval workflow', async () => {

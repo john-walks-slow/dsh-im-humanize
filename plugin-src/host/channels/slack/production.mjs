@@ -12,6 +12,7 @@ import {
   createWorkspaceAwareController,
   observeBotWorkspaceRemovals,
 } from '../../../../src/channels/shared/bot-workspace-store.mjs';
+import { listAgentPresetCatalog } from '../../../../src/channels/shared/agent-preset.mjs';
 import { createTokenConnectionSupervisor } from '../shared/connection-supervisor.mjs';
 import { harnessOrigin, pluginPaths } from '../shared/production.mjs';
 import { createHarnessCommandExecutor } from '../../harness-command-executor.mjs';
@@ -105,7 +106,11 @@ export async function createProductionController(ctx, config = {}, internals = {
       }
     },
   });
-  const controller = createWorkspaceAwareController(coreController, { workspaces, stateFor });
+  const controller = createWorkspaceAwareController(coreController, {
+    workspaces,
+    stateFor,
+    agentPresetCatalog: await listAgentPresetCatalog(ctx),
+  });
   const supervisor = createSupervisor({
     channel: 'slack',
     controller,

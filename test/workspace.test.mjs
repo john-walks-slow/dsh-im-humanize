@@ -1286,3 +1286,137 @@ test('workspace RPC validates payloads and returns the updated public status', a
   assert.equal(missing.error.code, 'workspace-not-found');
   assert.match(missing.error.message, /不存在/);
 });
+
+test('BotWorkspaceStore persists per-bot agent presets without changing workspaces', async (t) => {
+  const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const store = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await Promise.all([store.ensure('bot_one'), store.ensure('bot_two')]);
+
+  assert.equal(store.agentPresetFor('bot_one'), null);
+  await store.setAgentPreset('bot_one', 'marketing-jeep');
+  assert.equal(store.agentPresetFor('bot_one'), 'marketing-jeep');
+  assert.equal(store.agentPresetFor('bot_two'), null);
+  assert.equal(store.workspaceFor('bot_one'), defaultWorkspace);
+
+  await store.setWorkspace('bot_one', alternateWorkspace);
+  assert.equal(store.agentPresetFor('bot_one'), 'marketing-jeep');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), {
+    version: 1,
+    workspaces: { bot_one: alternateWorkspace, bot_two: defaultWorkspace },
+    agentPresets: { bot_one: 'marketing-jeep' },
+  });
+
+  await store.setAgentPreset('bot_one', null);
+  assert.equal(store.agentPresetFor('bot_one'), null);
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), {
+    version: 1,
+    workspaces: { bot_one: alternateWorkspace, bot_two: defaultWorkspace },
+  });
+
+  await writeFile(path, `${JSON.stringify({
+    version: 1,
+    workspaces: { bot_one: defaultWorkspace },
+    agentPresets: { bot_one: 'standard-claude' },
+  }, null, 2)}\n`);
+  const reloaded = await new BotWorkspaceStore(path, { defaultWorkspace: tmpdir() }).load();
+  assert.equal(reloaded.agentPresetFor('bot_one'), 'standard-claude');
+});
+
+test('BotWorkspaceStore rejects invalid agent preset ids and missing bots', async (t) => {
+  const { path, defaultWorkspace } = await fixture(t);
+  const store = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await store.ensure('bot_one');
+
+  await assert.rejects(store.setAgentPreset('bot_one', 'Standard'), { code: 'agent-preset-invalid' });
+  await assert.rejects(store.setAgentPreset('bot_missing', 'standard'), { code: 'workspace-bot-not-found' });
+  assert.equal(store.agentPresetFor('bot_one'), null);
+});
+
+test('changing a bot agent preset does not clear sessions', async (t) => {
+  const { path, defaultWorkspace } = await fixture(t);
+  const store = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await store.ensure('bot_one');
+  let clears = 0;
+  const generation = store.generationFor('bot_one');
+  await store.setAgentPreset('bot_one', 'marketing-jeep', {
+    clearSessions: async () => { clears += 1; },
+  });
+  assert.equal(clears, 0);
+  assert.equal(store.generationFor('bot_one'), generation);
+});
+
+test('bot-scoped Harness creates sessions with the selected agent preset', async (t) => {
+  const { path, defaultWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await Promise.all([workspaces.ensure('bot_one'), workspaces.ensure('bot_two')]);
+  await workspaces.setAgentPreset('bot_one', 'marketing-jeep');
+  const calls = [];
+  const harness = {
+    async createSession(options) { calls.push(options); return `session-${calls.length}`; },
+    async ensureRunning() { return true; },
+  };
+  const state = { async clearSessions() {} };
+  const one = createBotScopedHarness(harness, { botId: 'bot_one', workspaces, state });
+  const two = createBotScopedHarness(harness, { botId: 'bot_two', workspaces, state });
+
+  await one.createSession();
+  await two.createSession();
+
+  assert.equal(calls[0].workspace, defaultWorkspace);
+  assert.equal(calls[0].agentPreset, 'marketing-jeep');
+  assert.equal(calls[1].workspace, defaultWorkspace);
+  assert.equal(Object.hasOwn(calls[1], 'agentPreset'), false);
+});
+
+test('workspace RPC can set a bot agent preset without switching workspace', async (t) => {
+  const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await workspaces.ensure('bot_one');
+  await workspaces.setWorkspace('bot_one', alternateWorkspace);
+  const catalog = {
+    defaultId: 'standard',
+    items: [
+      { id: 'standard', label: 'Standard' },
+      { id: 'marketing-jeep', label: '营销吉普' },
+    ],
+  };
+  const base = {
+    status() { return { bots: [{ botId: 'bot_one', connected: true }] }; },
+    bindCredentials() { return this.status(); },
+    reconnectBot() { return this.status(); },
+    deleteBot() { return { bots: [] }; },
+  };
+  const controller = createWorkspaceAwareController(base, {
+    workspaces,
+    stateFor: async () => ({ async clearSessions() {} }),
+    agentPresetCatalog: catalog,
+  });
+  const handler = createTokenBotRpcHandler(controller, { channel: 'Telegram' });
+  const generation = workspaces.generationFor('bot_one');
+
+  const listed = await handler(TOKEN_BOT_ENDPOINTS.status, {});
+  assert.equal(listed.ok, true);
+  assert.deepEqual(listed.value.agentPresetCatalog, catalog);
+  assert.equal(listed.value.bots[0].agentPreset, null);
+  assert.equal(listed.value.bots[0].workspace, alternateWorkspace);
+
+  const success = await handler(TOKEN_BOT_ENDPOINTS.setAgentPreset, {
+    botId: 'bot_one', agentPreset: 'marketing-jeep',
+  });
+  assert.equal(success.ok, true);
+  assert.equal(success.value.bots[0].agentPreset, 'marketing-jeep');
+  assert.equal(success.value.bots[0].workspace, alternateWorkspace);
+  assert.equal(workspaces.generationFor('bot_one'), generation);
+
+  const cleared = await handler(TOKEN_BOT_ENDPOINTS.setAgentPreset, {
+    botId: 'bot_one', agentPreset: null,
+  });
+  assert.equal(cleared.ok, true);
+  assert.equal(cleared.value.bots[0].agentPreset, null);
+
+  const invalid = await handler(TOKEN_BOT_ENDPOINTS.setAgentPreset, {
+    botId: 'bot_one', agentPreset: 'Not Valid',
+  });
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.error.code, 'bad-request');
+});
