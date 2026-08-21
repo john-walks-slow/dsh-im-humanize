@@ -19,6 +19,7 @@ test('multi-bot endpoints are bot-scoped and keep legacy operations separate', (
   assert.equal(FEISHU_ENDPOINTS.reconnectBot, 'bot.reconnect');
   assert.equal(FEISHU_ENDPOINTS.disconnectBot, 'bot.disconnect');
   assert.equal(FEISHU_ENDPOINTS.deleteBot, 'bot.delete');
+  assert.equal(FEISHU_ENDPOINTS.setGroupResponseMode, 'bot.group-response-mode.set');
   assert.equal(FEISHU_ENDPOINTS.testConnection, 'connection.test');
 });
 
@@ -33,6 +34,7 @@ test('client normalizes multiple independent bots and derives authoritative tota
         state: 'connected',
         connected: true,
         configured: true,
+        groupResponseMode: 'all',
         bot: {
           name: '销售助手',
           appIdMasked: 'cli_aaaa••••1111',
@@ -58,6 +60,8 @@ test('client normalizes multiple independent bots and derives authoritative tota
   assert.equal(snapshot.revision, 9);
   assert.deepEqual(snapshot.totals, { configured: 2, connected: 1 });
   assert.equal(snapshot.bots[0].state, 'connected');
+  assert.equal(snapshot.bots[0].groupResponseMode, 'all');
+  assert.equal(snapshot.bots[1].groupResponseMode, 'mention');
   assert.equal(snapshot.bots[1].state, 'connecting');
   assert.equal(snapshot.bots[1].bot.domain, 'lark');
   assert.equal(snapshot.bots[1].error.message, '连接失败');

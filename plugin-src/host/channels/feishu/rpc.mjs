@@ -8,6 +8,10 @@ import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
 import { validAgentPresetPayload } from '../shared/agent-preset-rpc.mjs';
 import {
+  isFeishuGroupResponseMode,
+  normalizeFeishuGroupResponseMode,
+} from '../../../../src/channels/feishu/group-response-mode.mjs';
+import {
   FEISHU_ENDPOINTS,
   FEISHU_RPC_CHANNEL,
 } from '../../../client/channels/feishu/api.js';
@@ -259,6 +263,7 @@ function publicBotEntry(entry) {
     connected,
     configured: source.configured === true,
     agentPreset: normalizeAgentPresetId(source.agentPreset),
+    groupResponseMode: normalizeFeishuGroupResponseMode(source.groupResponseMode),
     bot: publicBot(source.bot),
     health: publicHealth(source, connected),
   };
@@ -388,6 +393,13 @@ function validPayload(endpoint, payload) {
   if (endpoint === FEISHU_ENDPOINTS.setAgentPreset) {
     return validAgentPresetPayload(payload)
       ? null : '请选择 Agent Preset。';
+  }
+  if (endpoint === FEISHU_ENDPOINTS.setGroupResponseMode) {
+    return hasOnlyKeys(payload, new Set(['botId', 'groupResponseMode']))
+      && safeOpaqueId(payload.botId)
+      && isFeishuGroupResponseMode(payload.groupResponseMode)
+      ? null
+      : '请选择群聊响应方式。';
   }
   return 'Unknown Feishu endpoint.';
 }
@@ -621,6 +633,14 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
         if (typeof controller.updateAgentPreset !== 'function') throw new Error('Agent preset update is unavailable');
         value = await toPublicFeishuStatus(
           await controller.updateAgentPreset(payload.botId, payload.agentPreset),
+          { encodeQr: cachedEncodeQr },
+        );
+      } else if (endpoint === FEISHU_ENDPOINTS.setGroupResponseMode) {
+        if (typeof controller.updateGroupResponseMode !== 'function') {
+          throw new Error('Group response mode update is unavailable');
+        }
+        value = await toPublicFeishuStatus(
+          await controller.updateGroupResponseMode(payload.botId, payload.groupResponseMode),
           { encodeQr: cachedEncodeQr },
         );
       } else {

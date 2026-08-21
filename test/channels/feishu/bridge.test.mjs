@@ -306,6 +306,51 @@ test('bridge maps a Feishu conversation to a persistent Harness session and repl
   assert.equal(status.messagesRejected, 1);
 });
 
+test('mention response mode ignores unaddressed groups and only accepts this bot mention', async () => {
+  const fixture = stateFixture([['group:oc_group_mentions', 'session-group-mentions']]);
+  const asked = [];
+  const status = bridgeStatus();
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async () => undefined),
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, text) => {
+        asked.push(text);
+        return '收到';
+      },
+    },
+    state: fixture.state,
+    status,
+    allowedSenderOpenIds: new Set(['ou_user']),
+    botOpenId: 'ou_bot',
+    groupResponseMode: 'mention',
+  });
+
+  await bridge.accept(event('group-unaddressed', '普通群消息', {
+    chat_type: 'group', chat_id: 'oc_group_mentions',
+  }));
+  await bridge.accept(event('group-mentions-someone-else', '@_other 你好', {
+    chat_type: 'group', chat_id: 'oc_group_mentions',
+    mentions: [{ key: '@_other', id: { open_id: 'ou_other' } }],
+  }));
+  assert.deepEqual(asked, []);
+  assert.equal(status.messagesReceived, 0);
+
+  await bridge.accept(event('group-mentions-bot', '@_bot 你好', {
+    chat_type: 'group', chat_id: 'oc_group_mentions',
+    mentions: [{ key: '@_bot', id: { open_id: 'ou_bot' } }],
+  }));
+  assert.deepEqual(asked, ['你好']);
+  assert.equal(status.messagesReceived, 1);
+
+  bridge.setGroupResponseMode('all');
+  await bridge.accept(event('group-all-mode', '无需提及', {
+    chat_type: 'group', chat_id: 'oc_group_mentions',
+  }));
+  assert.deepEqual(asked, ['你好', '无需提及']);
+});
+
 test('bridge downloads an inbound Feishu image once and submits structured Harness content', async () => {
   const fixture = stateFixture([['p2p:ou_user', 'session-image']]);
   const downloaded = [];

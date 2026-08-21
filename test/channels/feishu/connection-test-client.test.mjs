@@ -51,6 +51,44 @@ test('Feishu connection check requests and displays test-message feedback', asyn
   assert.match(markup, /role="status"[^>]*>测试消息已发送/);
   assert.match(markup, /修复卡片按钮/);
   assert.match(markup, /aria-label="修复飞书测试机器人的卡片按钮"/);
+  assert.match(markup, /<select[^>]*aria-label="群聊响应方式"/);
+  assert.match(markup, /仅在 @机器人时响应（推荐）/);
+  assert.match(markup, /响应所有群消息（需飞书敏感权限）/);
+});
+
+test('Feishu bot card saves group response mode from a dropdown', async () => {
+  const saved = [];
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(BotCard, {
+      connection: {
+        botId: 'bot-mode-test',
+        state: 'connected',
+        connected: true,
+        groupResponseMode: 'mention',
+        bot: { name: '响应模式机器人', appIdMasked: 'cli_mode••••test' },
+        health: { summary: '长连接运行正常', lastCheckedAt: Date.now() },
+      },
+      onGroupResponseModeSave: async (value) => saved.push(value),
+      onReconnect() {},
+      onRequestRemove() {},
+      onConfirmRemove() {},
+      onCancelRemove() {},
+    }));
+  });
+  const select = renderer.root.findByProps({ 'aria-label': '群聊响应方式' });
+  assert.equal(select.type, 'select');
+  assert.equal(select.props.value, 'mention');
+  assert.deepEqual(select.findAllByType('option').map((option) => option.props.value), [
+    'mention', 'all',
+  ]);
+
+  await act(async () => {
+    select.props.onChange({ target: { value: 'all' } });
+    await flushMicrotasks();
+  });
+  assert.deepEqual(saved, ['all']);
+  await act(async () => renderer.unmount());
 });
 
 test('Feishu callback repair keeps a Host-submitted attempt when a stale QR cancel races saving', async (t) => {

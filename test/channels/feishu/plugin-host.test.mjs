@@ -198,6 +198,57 @@ test('Host exposes only browser-safe Agent Preset fields in status and update re
   await fx.dispose();
 });
 
+test('Host validates and updates the Feishu group response mode', async () => {
+  let mode = 'mention';
+  const current = () => status({
+    schemaVersion: 2,
+    revision: 4,
+    configured: true,
+    bots: [{
+      botId: 'bot_mode',
+      phase: 'connected',
+      connected: true,
+      configured: true,
+      groupResponseMode: mode,
+      bot: { name: '模式机器人', domain: 'feishu' },
+      connection: {
+        ready: true,
+        feishuLongConnectionState: 'connected',
+        harnessReachable: true,
+      },
+    }],
+  });
+  const controller = {
+    status: async () => current(),
+    startRegistration: async () => current(),
+    cancelRegistration: async () => current(),
+    disconnect: async () => status(),
+    updateGroupResponseMode: async (botId, value) => {
+      assert.equal(botId, 'bot_mode');
+      mode = value;
+      return current();
+    },
+  };
+  const fx = await rpcFixture(controller);
+
+  const updated = await fx.registration.handler(
+    FEISHU_ENDPOINTS.setGroupResponseMode,
+    { botId: 'bot_mode', groupResponseMode: 'all' },
+    signal(),
+  );
+  assert.equal(updated.ok, true);
+  assert.equal(updated.value.bots[0].groupResponseMode, 'all');
+
+  const invalid = await fx.registration.handler(
+    FEISHU_ENDPOINTS.setGroupResponseMode,
+    { botId: 'bot_mode', groupResponseMode: 'sometimes' },
+    signal(),
+  );
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.error.code, 'bad-request');
+  await fx.dispose();
+});
+
 test('RPC dispatch matches every endpoint in client/api.js', async () => {
   const calls = [];
   let current = status({

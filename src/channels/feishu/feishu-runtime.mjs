@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { FeishuHarnessBridge } from './bridge.mjs';
 import { cardActionProbeCard } from './feishu-cards.mjs';
 import { VerifiedFeishuChannel } from './feishu-channel.mjs';
+import { normalizeFeishuGroupResponseMode } from './group-response-mode.mjs';
 import {
   connectionTestTargetUnavailable,
   sendRememberedConnectionTest,
@@ -87,6 +88,8 @@ export class FeishuRuntime {
   #appId;
   #appSecret;
   #domain;
+  #botOpenId;
+  #groupResponseMode;
   #ownerOpenIds;
   #harness;
   #state;
@@ -109,6 +112,8 @@ export class FeishuRuntime {
     appId,
     appSecret,
     domain = 'feishu',
+    botOpenId,
+    groupResponseMode,
     ownerOpenId,
     ownerOpenIds,
     harness,
@@ -138,6 +143,8 @@ export class FeishuRuntime {
     this.#appId = appId;
     this.#appSecret = appSecret;
     this.#domain = domain;
+    this.#botOpenId = nonEmptyString(botOpenId);
+    this.#groupResponseMode = normalizeFeishuGroupResponseMode(groupResponseMode);
     this.#ownerOpenIds = normalizedOwners;
     this.#harness = harness;
     this.#state = state;
@@ -151,6 +158,11 @@ export class FeishuRuntime {
 
   get status() {
     return structuredClone(this.#status);
+  }
+
+  setGroupResponseMode(value) {
+    this.#groupResponseMode = normalizeFeishuGroupResponseMode(value);
+    this.#bridge?.setGroupResponseMode(this.#groupResponseMode);
   }
 
   async start() {
@@ -202,6 +214,8 @@ export class FeishuRuntime {
         allowedSenderOpenIds: new Set(this.#ownerOpenIds),
         botId: this.#botId,
         appId: this.#appId,
+        botOpenId: this.#botOpenId,
+        groupResponseMode: this.#groupResponseMode,
         repair: this.#repair,
         repairOwnerOpenIds: new Set(this.#ownerOpenIds.filter((value) => value !== '*')),
         replyTimeoutMs: this.#replyTimeoutMs,

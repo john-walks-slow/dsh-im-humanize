@@ -22,6 +22,7 @@ export const FEISHU_ENDPOINTS = Object.freeze({
   deleteBot: "bot.delete",
   setWorkspace: "bot.workspace.set",
   setAgentPreset: "bot.preset.set",
+  setGroupResponseMode: "bot.group-response-mode.set",
   // Kept for rolling upgrades. The multi-bot UI never calls these endpoints.
   testConnection: "connection.test",
   disconnect: "connection.disconnect",
@@ -68,6 +69,10 @@ function optionalTimestamp(value) {
     return Number.isNaN(parsed) ? undefined : parsed;
   }
   return undefined;
+}
+
+export function normalizeGroupResponseMode(value) {
+  return value === "all" ? "all" : "mention";
 }
 
 function clamp(value, min, max, fallback) {
@@ -186,6 +191,7 @@ export function normalizeBotConnection(value, fallbackBotId) {
     configured: value.configured !== false,
     workspace: optionalString(value.workspace)?.slice(0, 4_096) ?? "",
     agentPreset: normalizeAgentPresetId(value.agentPreset),
+    groupResponseMode: normalizeGroupResponseMode(value.groupResponseMode),
     bot: normalizeBot(value.bot),
     health: normalizeHealth(value.health, connected),
     error: normalizeError(value.error),

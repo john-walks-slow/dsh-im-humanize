@@ -108,6 +108,7 @@ function fixture({
         stops: 0,
         sentTests: [],
         probes: [],
+        responseModes: [],
         repair,
         get status() { return structuredClone(status); },
         async start() {
@@ -125,6 +126,10 @@ function fixture({
         async sendConnectionTest(text) {
           runtime.sentTests.push(text);
           return { sent: true };
+        },
+        setGroupResponseMode(mode) {
+          runtime.responseModes.push(mode);
+          runtime.config.groupResponseMode = mode;
         },
         async beginCardActionProbe(options) {
           runtime.probes.push(structuredClone(options));
@@ -181,6 +186,29 @@ test('QR registration separates events from card callbacks', async () => {
     user_info: { open_id: 'ou_callbacks', tenant_brand: 'feishu' },
   });
   await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'succeeded');
+  await fx.controller.close();
+});
+
+test('group response mode defaults to mention and updates the live runtime without reconnecting', async () => {
+  const existing = bot('bot_response_mode', 'response_mode');
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+  });
+  await fx.controller.initialize();
+
+  assert.equal(fx.controller.status().bots[0].groupResponseMode, 'mention');
+  const runtime = fx.runtimes.get(existing.id)[0];
+  const updated = await fx.controller.updateGroupResponseMode(existing.id, 'all');
+
+  assert.equal(updated.bots[0].groupResponseMode, 'all');
+  assert.equal(fx.configStore.getBot(existing.id).groupResponseMode, 'all');
+  assert.deepEqual(runtime.responseModes, ['all']);
+  assert.equal(fx.runtimes.get(existing.id).length, 1);
+  await assert.rejects(
+    fx.controller.updateGroupResponseMode(existing.id, 'sometimes'),
+    /Invalid Feishu group response mode/,
+  );
   await fx.controller.close();
 });
 

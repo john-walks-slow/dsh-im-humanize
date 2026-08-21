@@ -9,6 +9,7 @@ import {
   FEISHU_RPC_CHANNEL,
   formatRemaining,
   normalizeBotsSnapshot,
+  normalizeGroupResponseMode,
   normalizePollResult,
   normalizeProvisioning,
   presentError,
@@ -413,6 +414,50 @@ function RemoveConfirmation({ bot, busy, onConfirm, onCancel }) {
   );
 }
 
+function GroupResponseModeEditor({ value, disabled = false, onSave }) {
+  const current = normalizeGroupResponseMode(value);
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState(null);
+
+  const change = async (event) => {
+    const next = normalizeGroupResponseMode(event.target.value);
+    if (next === current || saving || disabled) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave?.(next);
+    } catch (cause) {
+      setError(cause?.message ?? "群聊响应方式修改失败，请重试。");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return h("div", { className: "bxf-responseMode dim-responseMode" },
+    h("div", { className: "bxf-responseModeHeader dim-responseModeHeader" },
+      h("span", null, "群聊响应方式"),
+      saving ? h("span", { className: "bxf-responseModeStatus dim-responseModeStatus" }, "保存中…") : null),
+    h("select", {
+      className: "bxf-responseModeSelect dim-responseModeSelect",
+      value: current,
+      disabled: disabled || saving,
+      "aria-label": "群聊响应方式",
+      onChange: (event) => { void change(event); },
+    },
+      h("option", { value: "mention" }, "仅在 @机器人时响应（推荐）"),
+      h("option", { value: "all" }, "响应所有群消息（需飞书敏感权限）"),
+    ),
+    h("small", { className: "bxf-responseModeHelp dim-responseModeHelp" },
+      current === "mention"
+        ? "私聊始终响应；群聊仅处理明确 @当前机器人的消息。"
+        : "需在飞书为该机器人开通“获取群组中所有消息”权限（im:message.group_msg）；开通后，机器人会处理群聊中的所有可见消息。"),
+    error ? h("p", {
+      className: "bxf-responseModeError dim-responseModeError",
+      role: "alert",
+    }, error) : null,
+  );
+}
+
 export function BotCard({
   connection,
   busy,
@@ -424,6 +469,7 @@ export function BotCard({
   onRepairCallback,
   onWorkspaceSave,
   onAgentPresetSave,
+  onGroupResponseModeSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -478,6 +524,11 @@ export function BotCard({
         agentPreset: connection.agentPreset,
         disabled: Boolean(busy),
         onSave: onAgentPresetSave,
+      }),
+      h(GroupResponseModeEditor, {
+        value: connection.groupResponseMode,
+        disabled: Boolean(busy),
+        onSave: onGroupResponseModeSave,
       }),
       h("div", { className: "bxf-connectedFooter dim-cardFooter" },
         summary ? h("div", { className: "bxf-healthSummary dim-cardSummary", "data-error": actionError || connection.error ? "true" : undefined },
@@ -536,6 +587,7 @@ function BotList(props) {
           onRepairCallback: () => props.onRepairCallback(bot),
           onWorkspaceSave: (workspace) => props.onWorkspaceSave(bot, workspace),
           onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(bot, agentPreset),
+          onGroupResponseModeSave: (groupResponseMode) => props.onGroupResponseModeSave(bot, groupResponseMode),
           onRequestRemove: () => props.onRequestRemove(bot),
           onConfirmRemove: () => props.onConfirmRemove(bot),
           onCancelRemove: props.onCancelRemove,
@@ -1101,6 +1153,26 @@ export function FeishuSettingsTab({ rpcCall }) {
     }
   }, [invoke, loadStatus, mergeSnapshot, setBotBusy, setBotError, workspaceFence]);
 
+  const saveGroupResponseMode = React.useCallback(async (connection, groupResponseMode) => {
+    const { botId } = connection;
+    const snapshotVersion = workspaceFence.beginMutation();
+    setBotBusy(botId, "group-response-mode");
+    setBotError(botId, null);
+    try {
+      const snapshot = normalizeBotsSnapshot(await invoke(
+        FEISHU_ENDPOINTS.setGroupResponseMode,
+        { botId, groupResponseMode },
+      ));
+      if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
+        mergeSnapshot(snapshot);
+      }
+    } finally {
+      const shouldRefresh = workspaceFence.endMutation();
+      if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
+      if (mountedRef.current) setBotBusy(botId, null);
+    }
+  }, [invoke, loadStatus, mergeSnapshot, setBotBusy, setBotError, workspaceFence]);
+
   const requestRemove = React.useCallback((connection) => {
     setRemoveTargetId(connection.botId);
   }, []);
@@ -1254,6 +1326,7 @@ export function FeishuSettingsTab({ rpcCall }) {
                   onRepairCallback: repairCallback,
                   onWorkspaceSave: saveWorkspace,
                   onAgentPresetSave: saveAgentPreset,
+                  onGroupResponseModeSave: saveGroupResponseMode,
                   onRequestRemove: requestRemove,
                   onConfirmRemove: (bot) => void confirmRemove(bot),
                   onCancelRemove: cancelRemove,

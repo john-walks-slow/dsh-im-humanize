@@ -40,6 +40,10 @@ import {
   workspaceListCard,
 } from './feishu-cards.mjs';
 import { MAX_WATCHES_PER_KEY } from './state-store.mjs';
+import {
+  FEISHU_GROUP_RESPONSE_MODES,
+  normalizeFeishuGroupResponseMode,
+} from './group-response-mode.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
 const RESOLVED_REPLY_TTL_MS = 30 * 60_000;
@@ -249,6 +253,8 @@ export class FeishuHarnessBridge {
   #signal;
   #botId;
   #appId;
+  #botOpenId;
+  #groupResponseMode;
   #repair;
   #repairOwnerOpenIds;
   #repairAttempt = null;
@@ -275,6 +281,8 @@ export class FeishuHarnessBridge {
     allowedSenderOpenIds = new Set(),
     botId,
     appId,
+    botOpenId,
+    groupResponseMode = FEISHU_GROUP_RESPONSE_MODES.ALL,
     repair,
     repairOwnerOpenIds,
     repairPollIntervalMs = REPAIR_POLL_INTERVAL_MS,
@@ -308,6 +316,8 @@ export class FeishuHarnessBridge {
     this.#allowedSenderOpenIds = allowedSenderOpenIds;
     this.#botId = nonEmptyString(botId);
     this.#appId = nonEmptyString(appId);
+    this.#botOpenId = nonEmptyString(botOpenId);
+    this.#groupResponseMode = normalizeFeishuGroupResponseMode(groupResponseMode);
     this.#repair = repair ?? null;
     const repairOwners = repairOwnerOpenIds ?? allowedSenderOpenIds;
     this.#repairOwnerOpenIds = new Set(
@@ -327,6 +337,18 @@ export class FeishuHarnessBridge {
     }
   }
 
+  setGroupResponseMode(value) {
+    this.#groupResponseMode = normalizeFeishuGroupResponseMode(value);
+  }
+
+  #isAddressed(event) {
+    if (event?.message?.chat_type === 'p2p') return true;
+    const mentions = Array.isArray(event?.message?.mentions) ? event.message.mentions : [];
+    if (!this.#botOpenId) return mentions.length > 0;
+    return mentions.some((mention) => mention?.id?.open_id === this.#botOpenId
+      || mention?.open_id === this.#botOpenId);
+  }
+
   accept(event) {
     if (this.#signal?.aborted) return Promise.resolve();
     const messageId = nonEmptyString(event?.message?.message_id);
@@ -335,6 +357,12 @@ export class FeishuHarnessBridge {
       this.#status.messagesRejected += 1;
       this.#status.lastRejectedAt = new Date().toISOString();
       this.#logger.warn?.('[dsh-feishu] ignored a message from a sender outside the allowlist');
+      return Promise.resolve();
+    }
+    const addressed = this.#isAddressed(event);
+    if (event?.message?.chat_type !== 'p2p'
+      && this.#groupResponseMode === FEISHU_GROUP_RESPONSE_MODES.MENTION
+      && !addressed) {
       return Promise.resolve();
     }
     if (this.#state.hasSeen(messageId) || this.#acceptedMessageIds.has(messageId)) {
@@ -362,8 +390,6 @@ export class FeishuHarnessBridge {
     const commandRunner = isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText) ? runModelCommand : null);
-    const addressed = event?.message?.chat_type === 'p2p'
-      || (Array.isArray(event?.message?.mentions) && event.message.mentions.length > 0);
     if (commandRunner && addressed) {
       const processing = this.#processFastCommand(
         event,
@@ -407,8 +433,7 @@ export class FeishuHarnessBridge {
       actor: senderOpenId(event),
       messageId,
       text: extractText(event) ?? '',
-      addressed: event?.message?.chat_type === 'p2p'
-        || (Array.isArray(event?.message?.mentions) && event.message.mentions.length > 0),
+      addressed,
       hasPendingQuestion: Boolean(pending),
       questionCompletion: pending?.submitting || pending?.claimedReplyMessageId
         ? pending.queue

@@ -6,6 +6,10 @@ import {
   CallbackRepairManager,
 } from './repair-manager.mjs';
 import { REQUIRED_TENANT_SCOPES } from './plugin-controller.mjs';
+import {
+  isFeishuGroupResponseMode,
+  normalizeFeishuGroupResponseMode,
+} from './group-response-mode.mjs';
 
 const ACTIVE_REGISTRATION_STATES = new Set([
   'starting', 'qr_ready', 'polling', 'slow_down', 'domain_switched',
@@ -76,6 +80,7 @@ function configuredBotFingerprint(config) {
     botName: config.botName,
     botOpenId: config.botOpenId,
     activated: config.activated,
+    groupResponseMode: normalizeFeishuGroupResponseMode(config.groupResponseMode),
     deletionPending: config.deletionPending === true,
     connectedAt: config.connectedAt ?? null,
     createdAt: config.createdAt ?? null,
@@ -473,6 +478,20 @@ export class MultiBotDshFeishuController {
     });
   }
 
+  async updateGroupResponseMode(botId, groupResponseMode) {
+    this.#assertOpen();
+    if (!isFeishuGroupResponseMode(groupResponseMode)) {
+      throw new TypeError('Invalid Feishu group response mode');
+    }
+    return this.#serializeConfig(() => this.#withBotTransition(botId, async () => {
+      const config = this.#requireBot(botId);
+      const saved = await this.#configStore.saveBot({ ...config, groupResponseMode });
+      this.#runtimes.get(botId)?.setGroupResponseMode?.(saved.groupResponseMode);
+      this.#touch();
+      return this.status(botId);
+    }));
+  }
+
   async deleteBot(botId) {
     this.#assertOpen();
     return this.#serializeConfig(() => this.#withBotTransition(botId, async () => {
@@ -534,6 +553,7 @@ export class MultiBotDshFeishuController {
         phase: botPhase({ connected, error, connection }),
         connected,
         configured: true,
+        groupResponseMode: normalizeFeishuGroupResponseMode(config.groupResponseMode),
         bot: publicBot(config),
         connection,
         error,
