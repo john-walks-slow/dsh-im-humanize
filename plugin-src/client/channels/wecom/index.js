@@ -191,15 +191,16 @@ export function AccountCard({
         onSave: onAgentPresetSave,
       }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
-        summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
-        feedback ? h('div', {
-          className: 'ddt-summary dim-cardSummary',
-          role: 'status',
-          'aria-live': 'polite',
-        }, feedback) : null,
-        h('div', { className: 'ddt-actions dim-cardActions' },
-          h(Button, { className: 'dim-cardAction', onClick: onReconnect, disabled: Boolean(busy) }, busy === 'reconnect' ? '检查中…' : account.connected ? '检查连接' : '重试连接'),
-          h(Button, { className: 'dim-cardAction', kind: 'danger', onClick: onRequestRemove, disabled: Boolean(busy) }, '移除接入')))),
+        h('div', { className: 'dim-cardFooterLayout' },
+          h('div', { className: 'ddt-actions dim-cardActions' },
+            h(Button, { className: 'dim-cardAction', onClick: onReconnect, disabled: Boolean(busy) }, busy === 'reconnect' ? '检查中…' : account.connected ? '检查连接' : '重试连接'),
+            h(Button, { className: 'dim-cardAction', kind: 'danger', onClick: onRequestRemove, disabled: Boolean(busy) }, '移除接入')),
+          summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
+          feedback ? h('div', {
+            className: 'ddt-summary dim-cardFeedback',
+            role: 'status',
+            'aria-live': 'polite',
+          }, feedback) : null))),
     removing ? h(RemoveConfirmation, {
       account, busy: busy === 'delete', onConfirm: onConfirmRemove, onCancel: onCancelRemove,
     }) : null);

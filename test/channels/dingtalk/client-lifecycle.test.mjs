@@ -235,7 +235,11 @@ test('connection-check failure stays on the matching card with locale-safe wordi
   assert.match(nodeText(targetCard), /现有连接错误/);
   assert.equal(
     targetCard.findAll((node) => node.props.className?.includes('dim-cardSummary')).length,
-    2,
+    1,
+  );
+  assert.equal(
+    targetCard.findAll((node) => node.props.className?.includes('dim-cardFeedback')).length,
+    1,
   );
   assert.doesNotMatch(nodeText(targetCard), /provider-specific failure/);
   const announcement = [...clock.frames.entries()].at(-1);

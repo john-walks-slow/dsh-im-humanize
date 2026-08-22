@@ -493,7 +493,7 @@ test('DingTalk bot cards omit the redundant received and replied metric', () => 
   assert.doesNotMatch(markup, /收到 \/ 回复/);
 });
 
-test('all channel card action buttons stay on one row', async () => {
+test('all IM channel cards place one-row actions above full-width feedback', async () => {
   const [imStyles, feishuStyles, weixinStyles, dingtalkStyles] = await Promise.all([
     readFile(STYLES_URL, 'utf8'),
     readFile(FEISHU_STYLES_URL, 'utf8'),
@@ -505,11 +505,53 @@ test('all channel card action buttons stay on one row', async () => {
   assert.match(weixinStyles, /\.dxw-accountFooter \.dxw-actions \{[^}]*flex-wrap: nowrap;/);
   assert.match(dingtalkStyles, /\.ddt-accountFooter \.ddt-actions \{[^}]*flex-wrap: nowrap;/);
   assert.match(imStyles, /\.dim-panel \.dim-cardFooter \{[^}]*gap: 12px;[^}]*padding-top: 6px;[^}]*border-top: 1px solid/);
+  assert.match(imStyles, /\.dim-panel \.dim-cardFooterLayout \{[^}]*width: 100%;[^}]*flex-direction: column;[^}]*align-items: stretch;/);
+  assert.match(imStyles, /\.dim-panel \.dim-cardFooterLayout > \.dim-cardActions \{[^}]*align-self: flex-end;/);
+  assert.match(imStyles, /\.dim-panel \.dim-cardFeedback \{[^}]*width: 100%;[^}]*overflow-wrap: anywhere;[^}]*white-space: normal;/);
   assert.match(imStyles, /\.dim-panel \.dim-cardActions \.dim-cardAction \{[^}]*min-height: 32px;[^}]*border-radius: 8px;[^}]*font-size: 13px;/);
   assert.match(imStyles, /\.dim-panel \.dim-cardActions \.dim-cardAction\[data-kind="danger"\] \{[^}]*#d54941/);
-  assert.doesNotMatch(feishuStyles, /\.bxf-connectedFooter \{[^}]*flex-direction: column/);
-  assert.doesNotMatch(weixinStyles, /\.dxw-accountFooter \{[^}]*flex-direction: column/);
-  assert.doesNotMatch(dingtalkStyles, /\.ddt-accountFooter \{[^}]*flex-direction: column/);
+
+  const account = {
+    botId: 'footer-layout-bot',
+    connected: true,
+    configured: true,
+    state: 'connected',
+    groupResponseMode: 'mention',
+    bot: {
+      name: '布局测试机器人',
+      username: 'layout_bot',
+      appIdMasked: 'cli_test••••1234',
+      accountIdMasked: 'wx_test••••1234',
+      clientIdMasked: 'ding_test••••1234',
+      idMasked: 'bot_test••••1234',
+    },
+    health: { summary: '连接运行正常', lastCheckedAt: Date.now() },
+    error: null,
+  };
+  const callbacks = {
+    onReconnect() {},
+    onRequestRemove() {},
+    onConfirmRemove() {},
+    onCancelRemove() {},
+  };
+  const notice = '测试消息已发送，请到对应机器人会话中确认。';
+  const cards = [
+    ['飞书', FeishuBotCard, { connection: account, testNotice: notice }],
+    ['微信', WeixinAccountCard, { account, feedback: notice }],
+    ['钉钉', DingtalkAccountCard, { account, feedback: notice }],
+    ['企业微信', WecomAccountCard, { account, feedback: notice }],
+    ['QQ', QqAccountCard, { account, feedback: notice }],
+    ['Slack', SlackAccountCard, { account, testNotice: notice }],
+    ['Telegram', TelegramAccountCard, { account, testNotice: notice }],
+    ['Discord', DiscordAccountCard, { account, testNotice: notice }],
+    ['WhatsApp', WhatsappAccountCard, { account, testNotice: notice }],
+  ];
+
+  for (const [channel, Card, props] of cards) {
+    const markup = renderToStaticMarkup(React.createElement(Card, { ...callbacks, ...props }));
+    assert.match(markup, /class="dim-cardFooterLayout"><div class="[^"]*dim-cardActions[^"]*">[^]*?<\/div><div class="[^"]*dim-cardFeedback[^"]*" role="status"/, channel);
+    assert.ok(markup.indexOf('dim-cardActions') < markup.indexOf('dim-cardFeedback'), channel);
+  }
 });
 
 test('all channel bot cards use the DingTalk card treatment', async () => {

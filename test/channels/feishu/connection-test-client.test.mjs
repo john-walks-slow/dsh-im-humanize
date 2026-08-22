@@ -34,7 +34,7 @@ test('Feishu connection check requests and displays test-message feedback', asyn
   assert.match(source, /机器人尚未收到可用于测试的私聊消息/);
   assert.doesNotMatch(source, /请先私聊机器人发送 \/status/);
 
-  const markup = renderToStaticMarkup(React.createElement(BotCard, {
+  const cardProps = {
     connection: {
       botId: 'bot-feishu-test',
       state: 'connected',
@@ -47,8 +47,21 @@ test('Feishu connection check requests and displays test-message feedback', asyn
     onRequestRemove() {},
     onConfirmRemove() {},
     onCancelRemove() {},
-  }));
+  };
+  const markup = renderToStaticMarkup(React.createElement(BotCard, cardProps));
   assert.match(markup, /role="status"[^>]*>测试消息已发送/);
+  assert.match(markup, /class="dim-cardFooterLayout"[^]*class="bxf-actions bxf-botActions dim-cardActions"[^]*class="bxf-healthSummary dim-cardFeedback"/);
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(BotCard, cardProps));
+  });
+  const footerChildren = renderer.root.findByProps({ className: 'dim-cardFooterLayout' }).children;
+  assert.match(footerChildren[0].props.className, /\bbxf-botActions\b/);
+  assert.equal(footerChildren[1].props.role, 'status');
+  assert.match(footerChildren[1].props.className, /\bdim-cardFeedback\b/);
+  await act(async () => renderer.unmount());
+
   assert.match(markup, /修复卡片按钮/);
   assert.match(markup, /aria-label="修复飞书测试机器人的卡片按钮"/);
   assert.match(markup, /<select[^>]*aria-label="群聊响应方式"/);

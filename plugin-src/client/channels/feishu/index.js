@@ -629,30 +629,31 @@ export function BotCard({
           }, provisionContent)
         : null,
       h("div", { className: "bxf-connectedFooter dim-cardFooter" },
-        summary ? h("div", { className: "bxf-healthSummary dim-cardSummary", "data-error": actionError || connection.error ? "true" : undefined },
-          summary) : null,
-        testNotice ? h("div", {
-          className: "bxf-healthSummary dim-cardSummary",
-          role: "status",
-        }, testNotice) : null,
-        h("div", { className: "bxf-actions bxf-botActions dim-cardActions" },
-          h(Button, {
-            className: "dim-cardAction", onClick: onReconnect,
-            disabled: Boolean(busy), "aria-busy": busy === "reconnect" ? "true" : undefined,
-            "aria-label": `${connected ? "检查连接" : "重试连接"}${bot.name}`,
-          }, busy === "reconnect" ? (connected ? "检查中…" : "正在连接…") : connected ? "检查连接" : "重试连接"),
-          h(Button, {
-            className: "bxf-repairButton dim-cardAction",
-            onClick: onRepairCallback,
-            disabled: Boolean(busy) || repairDisabled,
-            "aria-busy": busy === "callback-repair" ? "true" : undefined,
-            "aria-label": `修复${bot.name}的卡片按钮`,
-          }, busy === "callback-repair" ? "等待扫码…" : "修复卡片按钮"),
-          h(Button, {
-            className: "dim-cardAction", kind: "danger", onClick: onRequestRemove,
-            disabled: Boolean(busy), ref: removeButtonRef,
-            "aria-label": `从 DeepSeek Harness 移除${bot.name}`,
-          }, "移除接入")),
+        h("div", { className: "dim-cardFooterLayout" },
+          h("div", { className: "bxf-actions bxf-botActions dim-cardActions" },
+            h(Button, {
+              className: "dim-cardAction", onClick: onReconnect,
+              disabled: Boolean(busy), "aria-busy": busy === "reconnect" ? "true" : undefined,
+              "aria-label": `${connected ? "检查连接" : "重试连接"}${bot.name}`,
+            }, busy === "reconnect" ? (connected ? "检查中…" : "正在连接…") : connected ? "检查连接" : "重试连接"),
+            h(Button, {
+              className: "bxf-repairButton dim-cardAction",
+              onClick: onRepairCallback,
+              disabled: Boolean(busy) || repairDisabled,
+              "aria-busy": busy === "callback-repair" ? "true" : undefined,
+              "aria-label": `修复${bot.name}的卡片按钮`,
+            }, busy === "callback-repair" ? "等待扫码…" : "修复卡片按钮"),
+            h(Button, {
+              className: "dim-cardAction", kind: "danger", onClick: onRequestRemove,
+              disabled: Boolean(busy), ref: removeButtonRef,
+              "aria-label": `从 DeepSeek Harness 移除${bot.name}`,
+            }, "移除接入")),
+          summary ? h("div", { className: "bxf-healthSummary dim-cardSummary", "data-error": actionError || connection.error ? "true" : undefined },
+            summary) : null,
+          testNotice ? h("div", {
+            className: "bxf-healthSummary dim-cardFeedback",
+            role: "status",
+          }, testNotice) : null),
       ),
     ),
     removing
