@@ -680,7 +680,7 @@ function optionValues(select) {
   return select.children.map((option) => option.props.value);
 }
 
-test('AgentPresetEditor lists Host presets and keeps the catalog label for the current id', () => {
+test('AgentPresetEditor lists Host presets and moves its session guidance into accessible help', () => {
   const renderer = create(React.createElement(
     AgentPresetCatalogContext.Provider,
     { value: PRESET_CATALOG },
@@ -694,10 +694,18 @@ test('AgentPresetEditor lists Host presets and keeps the catalog label for the c
   assert.deepEqual(optionValues(select), ['', 'coding', 'default']);
   assert.equal(textOf(select.children[0]), '跟随 Host 默认');
   assert.equal(textOf(select.children[1]), 'Coding（coding）');
+  const helpButton = renderer.root.findByProps({
+    'aria-label': '查看 Agent Preset 说明',
+  });
+  const tooltip = renderer.root.findByProps({ role: 'tooltip' });
+  assert.equal(helpButton.props.type, 'button');
+  assert.ok(tooltip.props.id);
+  assert.equal(helpButton.props['aria-describedby'], tooltip.props.id);
   assert.equal(
-    textOf(renderer.root.findByProps({ className: 'dim-presetHelp' })),
+    textOf(tooltip),
     '只影响新建会话；若当前聊天已有会话，先发送 /new，再发送普通消息生效。',
   );
+  assert.equal(renderer.root.findAllByType('small').length, 0);
   renderer.unmount();
 });
 

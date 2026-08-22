@@ -136,6 +136,7 @@ const EN = Object.freeze({
   '工作区路径必须指向一个目录。': 'The workspace path must point to a directory.',
   '找不到要修改的机器人。': 'The bot could not be found.',
   'Agent Preset': 'Agent Preset',
+  '查看 Agent Preset 说明': 'View Agent Preset help',
   '跟随 Host 默认': 'Follow the Host default',
   '（已不可用）': ' (unavailable)',
   '只影响新建会话；若当前聊天已有会话，先发送 /new，再发送普通消息生效。': 'This affects only new sessions. If the current chat already has a session, send /new, then send a regular message to apply it.',

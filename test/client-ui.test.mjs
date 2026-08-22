@@ -578,11 +578,18 @@ test('bot cards keep the full workspace path on its own single line', async () =
   assert.match(styles, /\.dim-panel \.dim-workspaceEdit \{[^}]*grid-column: 2;[^}]*grid-row: 1;[^}]*white-space: nowrap;/);
 });
 
-test('bot cards keep the Agent Preset selector below the workspace path', async () => {
+test('bot cards keep Agent Preset guidance in a keyboard-accessible help tooltip', async () => {
   const styles = await readFile(STYLES_URL, 'utf8');
 
   assert.match(styles, /\.dim-panel \.dim-preset \{[^}]*grid-template-columns: minmax\(0, 1fr\) max-content;[^}]*margin-top: 6px;[^}]*padding: 6px 10px;/);
+  assert.match(styles, /\.dim-panel \.dim-presetHeader \{[^}]*position: relative;[^}]*grid-column: 1 \/ -1;[^}]*display: flex;[^}]*justify-content: space-between;/);
+  assert.match(styles, /\.dim-panel \.dim-presetTitle \{[^}]*display: inline-flex;[^}]*gap: 5px;[^}]*white-space: nowrap;/);
+  assert.match(styles, /\.dim-panel \.dim-presetHelpButton:focus-visible \{[^}]*box-shadow:/);
+  assert.match(styles, /\.dim-panel \.dim-presetTooltip \{[^}]*position: absolute;[^}]*width: min\(320px, 100%\);[^}]*white-space: normal;[^}]*opacity: 0;[^}]*visibility: hidden;[^}]*pointer-events: none;/);
+  assert.match(styles, /\.dim-panel \.dim-presetHelp:hover \.dim-presetTooltip, \.dim-panel \.dim-presetHelp:focus-within \.dim-presetTooltip \{[^}]*opacity: 1;[^}]*visibility: visible;/);
   assert.match(styles, /\.dim-panel \.dim-presetSelect \{[^}]*grid-column: 1 \/ -1;[^}]*grid-row: 2;/);
+  assert.match(styles, /\.dim-panel \.dim-presetError \{[^}]*grid-column: 1 \/ -1;[^}]*grid-row: 3;/);
+  assert.doesNotMatch(styles, /\.dim-panel \.dim-presetHelp \{[^}]*grid-row: 3;/);
 });
 
 test('the bundled DingTalk channel has no local sender approval workflow', async () => {
