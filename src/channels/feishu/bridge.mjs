@@ -42,6 +42,7 @@ import {
   customSteerCard,
   helpCard,
   menuCard,
+  menuHelpText,
   modelCard,
   presetCard,
   sessionListCard,
@@ -90,6 +91,13 @@ const REPAIR_URL_HOSTS = new Set([
 const ARCHIVED_COMMAND = /^\/archived(?:\s+(on|off))?$/i;
 /** Matches fast card commands that should not be queued behind a running task. */
 const CARD_COMMAND = /^\/(?:m(?:enu)?|help|new|status|compact|sessionlist(?:\s|$)|workspacelist|watchlist|archived(?:\s+(on|off))?)$/i;
+
+/** Canonical workspace/session help advertised by every bridge family. */
+const WORKSPACE_HELP_LINES = [
+  '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
+  '/workspacelist  列出工作区绝对路径',
+  '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
+];
 
 /** Safe user-facing text for bind/workspace failures (no raw messages). */
 function safeErrorText(error) {
@@ -640,7 +648,11 @@ export class FeishuHarnessBridge {
       await this.#handleRepairCommand(event, commandText);
       return;
     }
-    if (commandText === '/help' || MENU_COMMAND.test(commandText)) {
+    if (commandText === '/help') {
+      await this.#send(event.message.chat_id, menuHelpText());
+      return;
+    }
+    if (MENU_COMMAND.test(commandText)) {
       await this.#sendMenuCard(key, event.message.chat_id);
       return;
     }
@@ -651,7 +663,7 @@ export class FeishuHarnessBridge {
       return;
     }
     if (commandText === '/status') {
-      await this.#showStatusCard(key, event.message.chat_id);
+      await this.#showStatusText(key, event.message.chat_id);
       return;
     }
     if (commandText === '/compact') {
@@ -659,7 +671,6 @@ export class FeishuHarnessBridge {
       if (compactCommand) {
         await this.#send(event.message.chat_id, compactCommand.message);
       }
-      await this.#sendMenuCard(key, event.message.chat_id);
       return;
     }
     if (SESSION_LIST_PREFIX.test(commandText)) {
@@ -1211,8 +1222,8 @@ export class FeishuHarnessBridge {
       return;
     }
     if (action === 'archive_toggle' || action === 'archive:on' || action === 'archive:off') {
-      const next = action === 'archive:on' ? true : action === 'archive:off' ? false : !this.#state.includesArchivedSessions();
-      await this.#state.setIncludeArchivedSessions(next);
+      const next = action === 'archive:on' ? true : action === 'archive:off' ? false : !(this.#state?.includesArchivedSessions?.() ?? false);
+      await this.#state?.setIncludeArchivedSessions?.(next);
       await this.#send(chatId, next ? '已开启：会话列表包含归档会话。' : '已关闭：会话列表隐藏归档会话。');
       await this.#sendMenuCard(key, chatId);
       return;
@@ -1325,8 +1336,8 @@ export class FeishuHarnessBridge {
   async #handleMenuPick(menu, number, { chatId, key, event }) {
     if (menu.kind === 'menu') {
       // Number fallback for the total menu:
-      // 1=续写 2=新会话 3=会话列表 4=关注任务 5=状态 6=更多设置 7=帮助 8=修复
-      const actions = ['use:current', 'new', 'sessions', 'watchlist', 'status', 'settings', 'help', 'repair'];
+      // 1=续写 2=新会话 3=会话列表 4=关注任务 5=状态 6=修复 7=更多设置 8=帮助
+      const actions = ['use:current', 'new', 'sessions', 'watchlist', 'status', 'repair', 'settings', 'help'];
       const action = actions[number - 1];
       if (!action) {
         await this.#send(chatId, '菜单没有这个编号，回复 /m 重新打开。');
@@ -1522,7 +1533,7 @@ export class FeishuHarnessBridge {
       currentSessionTitle = sessions[0].title ?? sessions[0].id;
     }
     const watchCount = Array.isArray(this.#state.watchEntries?.(key)) ? this.#state.watchEntries(key).length : 0;
-    const archiveVisible = this.#state.includesArchivedSessions();
+    const archiveVisible = this.#state?.includesArchivedSessions?.() ?? false;
     this.#rememberMenu(key, { kind: 'menu', chatId });
     await this.#sendCard(
       chatId,
@@ -1576,7 +1587,7 @@ export class FeishuHarnessBridge {
    * in-place dropdowns; any fetch failure degrades that section to a button.
    */
   async #showSettingsCard(key, chatId) {
-    const archiveVisible = this.#state.includesArchivedSessions();
+    const archiveVisible = this.#state?.includesArchivedSessions?.() ?? false;
     let presetCatalog = null;
     let modelCatalog = null;
     let workspaces = [];
@@ -1653,6 +1664,28 @@ export class FeishuHarnessBridge {
   /**
    * Gather system status and show the status card.
    */
+  async #showStatusText(key, chatId) {
+    try {
+      await this.#harness.ensureRunning({ signal: this.#signal });
+      const lines = ['连接正常'];
+      const ws = typeof this.#harness.currentWorkspace === 'function'
+        ? this.#harness.currentWorkspace()
+        : null;
+      if (ws) lines.push(`工作区：${ws}`);
+      const settings = typeof this.#harness.agentPresetSettings === 'function'
+        ? await this.#harness.agentPresetSettings({ signal: this.#signal }).catch(() => null)
+        : null;
+      if (settings) {
+        const item = settings.agentPresetCatalog?.items?.find((i) => i.id === settings.agentPreset);
+        lines.push(`预设：${item ? `${item.label}（${item.id}）` : (settings.agentPreset || '跟随默认')}`);
+      }
+      await this.#send(chatId, lines.join('\n'));
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] status text failed:', error.message);
+      await this.#send(chatId, '暂时无法获取系统状态，请稍后重试。');
+    }
+  }
+
   async #showStatusCard(key, chatId) {
     try {
       await this.#harness.ensureRunning({ signal: this.#signal });
@@ -1707,7 +1740,7 @@ export class FeishuHarnessBridge {
    * Show the help card with all command descriptions.
    */
   async #showHelpCard(chatId) {
-    await this.#sendCard(chatId, helpCard(), {});
+    await this.#sendCard(chatId, helpCard(WORKSPACE_HELP_LINES), {});
   }
 
   /**

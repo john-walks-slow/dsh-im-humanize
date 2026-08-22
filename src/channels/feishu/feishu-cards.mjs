@@ -120,8 +120,8 @@ function backButton() {
  *   - sessions: {id,title}[]        (最近会话,供会话下拉切换)
  *   - watchCount: number            (关注任务数)
  *   - archiveVisible: boolean       (归档显隐开关当前值)
- * Number fallback: 1=续写 2=新会话 3=会话列表 4=关注任务 5=模型 6=预设
- * 7=状态 8=帮助 9=修复.
+ * Number fallback: 1=续写 2=新会话 3=会话列表 4=关注任务 5=状态
+ * 6=修复 7=更多设置 8=帮助.
  */
 export function menuCard(ctx) {
   const {
@@ -216,13 +216,12 @@ export function menuCard(ctx) {
 
   // ── 底部操作（低频配置收敛到「更多设置」）──────────────────
   elements.push(buttonPair('⚙ 更多设置', 'settings', '📖 帮助', 'help'));
-  elements.push(button('🔧 修复卡片', 'repair'));
 
   // 命令与数字兜底说明（飞书 schema 2.0 不支持 collapse，用平铺文本）
   elements.push({ tag: 'div', text: markdown(
     '**数字兜底**\n'
     + '**1**续写 · **2**新会话 · **3**会话列表 · **4**关注 · **5**状态\n'
-    + '**6**更多设置 · **7**帮助 · **8**修复',
+    + '**6 · 修复卡片按钮** · **7**更多设置 · **8**帮助',
   ) });
   elements.push({ tag: 'div', text: markdown(
     '**任务控制**（需先绑定会话）\n'
@@ -481,9 +480,50 @@ export function statusCard(info) {
 // ── Help card ─────────────────────────────────────────────────────────────
 
 /**
+ * Plain-text command reference advertised when no interactive card is
+ * available (e.g. non-interactive clients), so every command stays
+ * discoverable without card callbacks.
+ */
+export function menuHelpText() {
+  return [
+    '🤖 助手菜单（回复数字即可，无需记命令）',
+    '',
+    '📋 会话',
+    '/sessionlist / session N  查看/绑定当前工作区会话',
+    '/session ID  绑定已有会话',
+    '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
+    '/workspacelist  列出工作区绝对路径',
+    '/new  开启全新会话',
+    '',
+    '📊 状态 / 压缩 / 关注',
+    '/status  连接状态',
+    '/compact  压缩当前会话上下文',
+    '/watch ID  关注会话（完成后推送）',
+    '/watchlist  关注列表',
+    '/archived on/off  会话列表显示/隐藏归档',
+    '',
+    '🤖 预设 / 模型',
+    '/presetlist  列出可用 Agent Preset',
+    '/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset',
+    '纯数字 ID：/preset id:<ID>',
+    '/preset --default  跟随 Host 默认',
+    '/models  列出模型',
+    '/model 2  按序号切换模型',
+    '',
+    '🎮 任务控制',
+    '/stop  停止当前任务',
+    '/steer 指令  给 Agent 补充指令',
+    '/repair  修复卡片按钮回调',
+  ].join('\n');
+}
+
+/**
  * Help card with all available commands and their descriptions.
  */
-export function helpCard() {
+export function helpCard(extraTextLines = []) {
+  const extraText = Array.isArray(extraTextLines) && extraTextLines.length > 0
+    ? ('\n' + extraTextLines.join('\n'))
+    : '';
   const elements = [
     { tag: 'div', text: markdown('**回复数字或点击按钮使用功能**\n\n' +
       '📋 会话列表 — 查看/绑定已有会话\n' +
@@ -498,13 +538,15 @@ export function helpCard() {
     { tag: 'div', text: markdown('**文本命令**\n\n' +
       '`/session ID` — 绑定已有会话\n' +
       '`/workspace 路径` — 切换工作区\n' +
+      '`/workspacelist` — 列出工作区绝对路径\n' +
+      '`/sessionlist [工作区序号或绝对路径]` — 列出会话 ID 和标题\n' +
       '`/watch ID` — 关注会话（完成后推送）\n' +
       '`/stop` — 停止当前任务\n' +
       '`/steer 指令` — 给 Agent 补充指令\n' +
       '`/archived on/off` — 会话列表显示/隐藏归档\n' +
       '`/compact` — 压缩上下文\n' +
       '`/presetlist` — 列出预设\n' +
-      '`/models` — 列出模型') },
+      '`/models` — 列出模型' + extraText) },
     { tag: 'hr' },
     backButton(),
   ];
