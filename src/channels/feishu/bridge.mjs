@@ -1147,7 +1147,7 @@ export class FeishuHarnessBridge {
         });
       }
       if (source === 'form') {
-        const text = nonEmptyString(event?.action?.formValue?.steer_text);
+        const text = nonEmptyString(event?.action?.form_value?.steer_text);
         if (text) {
           return this.#sendSteer(entry, text).catch((error) => {
             this.#logger.warn?.('[dsh-feishu] steer (form) failed:', error.message);
@@ -1271,7 +1271,7 @@ export class FeishuHarnessBridge {
       return;
     }
     if (action === 'help') {
-      await this.#showHelpCard(chatId);
+      await this.#showHelpCard(key, chatId);
       return;
     }
     if (action === 'back_to_menu') {
@@ -1739,8 +1739,8 @@ export class FeishuHarnessBridge {
   /**
    * Show the help card with all command descriptions.
    */
-  async #showHelpCard(chatId) {
-    await this.#sendCard(chatId, helpCard(WORKSPACE_HELP_LINES), {});
+  async #showHelpCard(key, chatId) {
+    await this.#sendCard(chatId, helpCard(WORKSPACE_HELP_LINES), { key });
   }
 
   /**
@@ -1839,45 +1839,23 @@ export class FeishuHarnessBridge {
 
   /**
    * Handle model selection from the model dropdown.
+   *
+   * Reuses `runModelCommand` (the same path as the `/model <id>` text
+   * command) so model IDs containing `/` (e.g.
+   * `openrouter/anthropic/claude-sonnet-4`) keep working, and all the
+   * catalog validation, busy checks, pending-interaction checks and the
+   * session binding lock stay in one place.
    */
   async #handleModelSelect(key, chatId, modelId) {
     try {
-      const parts = modelId.split('/');
-      if (parts.length !== 2) {
-        await this.#send(chatId, `模型 ID 格式无效：${modelId}`);
-        return;
-      }
-      const [provider, model] = parts;
-      const sessionId = this.#state?.sessionFor?.(key);
-
-      if (typeof sessionId === 'string' && sessionId) {
-        // Select model on the bound session
-        const session = this.#harness.workspaceSession(sessionId);
-        if (!session?.selectModel) {
-          await this.#send(chatId, '当前会话不支持切换模型。');
-          return;
-        }
-        await session.selectModel({ provider, model }, { signal: this.#signal });
-      } else {
-        // No session yet; select default model for future sessions
-        if (typeof this.#harness?.createSession !== 'function') {
-          throw new TypeError('Harness cannot create a session');
-        }
-        const newSessionId = await this.#harness.createSession({ signal: this.#signal });
-        if (typeof newSessionId !== 'string' || !newSessionId) {
-          await this.#send(chatId, '无法创建新会话来选择模型。');
-          return;
-        }
-        const session = this.#harness.workspaceSession(newSessionId);
-        if (!session?.selectModel) {
-          await this.#send(chatId, '新会话不支持切换模型。');
-          return;
-        }
-        await session.selectModel({ provider, model }, { signal: this.#signal });
-        await this.#state.setSession(key, newSessionId);
-      }
-
-      await this.#send(chatId, `模型已切换为：${modelId}`);
+      const result = await runModelCommand(
+        `/model ${modelId}`, this.#harness, this.#state, key, {
+          signal: this.#signal,
+          control: { owner: this, key },
+        },
+      );
+      const message = result?.message || '模型切换失败，请稍后重试。';
+      await this.#send(chatId, message);
       await this.#showSettingsCard(key, chatId);
     } catch (error) {
       this.#logger.warn?.('[dsh-feishu] model select failed:', error.message);

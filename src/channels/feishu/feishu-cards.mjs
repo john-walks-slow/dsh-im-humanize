@@ -150,15 +150,16 @@ export function menuCard(ctx) {
   // 会话下拉：列出最近会话，选择即切换（当前绑定会话带 ✓）
   const sessionOptions = (Array.isArray(sessions) ? sessions : []).slice(0, 20);
   if (sessionOptions.length > 0) {
+    const sessionPickOptions = sessionOptions.map((s) => ({
+      text: { tag: 'plain_text', content: `${s.id === currentSessionId ? '✓ ' : ''}${safeTitle(s.title)}` },
+      value: s.id,
+    }));
     elements.push({
       tag: 'select_static',
       name: 'session_pick',
       placeholder: { tag: 'plain_text', content: '切换/续写会话' },
-      initial_index: initialIndex(sessionOptions, currentSessionId),
-      options: sessionOptions.map((s) => ({
-        text: { tag: 'plain_text', content: `${s.id === currentSessionId ? '✓ ' : ''}${safeTitle(s.title)}` },
-        value: s.id,
-      })),
+      initial_index: initialIndex(sessionPickOptions, currentSessionId),
+      options: sessionPickOptions,
       behaviors: [{ type: 'callback', value: { action: 'session_pick' } }],
     });
     elements.push(buttonPair('🆕 新会话', 'new', '📋 全部会话', 'sessions'));
@@ -427,8 +428,8 @@ export function modelCard(catalog) {
     for (const group of groups) {
       for (const model of group.models) {
         allOptions.push({
-          id: `${group.id}/${model.id}`,
-          name: `${group.name} - ${model.name}`,
+          value: `${group.id}/${model.id}`,
+          text: { tag: 'plain_text', content: `${group.name} - ${model.name}` },
         });
       }
     }
@@ -441,8 +442,8 @@ export function modelCard(catalog) {
         placeholder: { tag: 'plain_text', content: '选择模型' },
         initial_index: currentId === null ? 0 : initialIndex(allOptions, currentId),
         options: allOptions.map((opt) => ({
-          text: { tag: 'plain_text', content: `${opt.name}${opt.id === currentId ? ' ✓' : ''}` },
-          value: opt.id,
+          text: { tag: 'plain_text', content: `${opt.text.content}${opt.value === currentId ? ' ✓' : ''}` },
+          value: opt.value,
         })),
         behaviors: [{ type: 'callback', value: { action: 'model_pick' } }],
       },
@@ -782,16 +783,23 @@ export function customSteerCard() {
     { tag: 'div', text: markdown('输入补充指令后点「提交」，发送给当前运行的任务。') },
     { tag: 'hr' },
     {
-      tag: 'input',
-      name: 'steer_text',
-      placeholder: { tag: 'plain_text', content: '输入你的补充指令' },
-    },
-    {
-      tag: 'button',
-      text: { tag: 'plain_text', content: '提交' },
-      type: 'primary',
-      width: 'fill',
-      behaviors: [{ type: 'callback', value: { action: 'steer', source: 'form' } }],
+      tag: 'form',
+      name: 'steer_form',
+      elements: [
+        {
+          tag: 'input',
+          name: 'steer_text',
+          placeholder: { tag: 'plain_text', content: '输入你的补充指令' },
+        },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '提交' },
+          type: 'primary',
+          width: 'fill',
+          form_action_type: 'submit',
+          behaviors: [{ type: 'callback', value: { action: 'steer', source: 'form' } }],
+        },
+      ],
     },
     { tag: 'hr' },
     button('🔙 返回菜单', 'back_to_menu'),

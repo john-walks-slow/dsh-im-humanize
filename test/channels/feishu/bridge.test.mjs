@@ -2868,3 +2868,177 @@ test('archived sessions are hidden by default; /archived on reveals them', async
   const useOn = useActionsFromCard(cards.at(-1));
   assert.deepEqual(useOn, ['live-session', 'old-session'], '/archived on restores archived sessions');
 });
+
+// ── stop / steer while a task is running (menu card interactions) ──────────
+
+function activeTurnHarness({ stopped = true, steered = true } = {}) {
+  const calls = { stop: [], steer: [], sessions: [] };
+  return {
+    calls,
+    harness: {
+      ensureRunning: async () => true,
+      workspaceSession: (id) => {
+        calls.sessions.push(id);
+        return {
+          async stopActiveTurn(control, options) {
+            calls.stop.push({ control, options });
+            return stopped;
+          },
+          async steerActiveTurn(text, control, options) {
+            calls.steer.push({ text, control, options });
+            return steered;
+          },
+        };
+      },
+    },
+  };
+}
+
+function steerDropdownEvent(messageId, option, operatorOpenId) {
+  return {
+    operator: { open_id: operatorOpenId },
+    action: { value: { action: 'steer_pick' }, option },
+    context: { open_message_id: messageId },
+  };
+}
+
+test('menu stop button stops the bound active turn without touching the model', async () => {
+  const fixture = stateFixture([['p2p:ou_owner', 'session-active']]);
+  const sent = [];
+  const { calls, harness } = activeTurnHarness();
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async (outgoing) => sent.push(outgoing)),
+    channel: {},
+    harness,
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('menu-stop-open', '/m', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.equal(sent.length, 1);
+
+  await bridge.onCardAction(cardActionEvent('om_card_1', 'stop', 'ou_owner'));
+  await bridge.waitForIdle();
+
+  assert.equal(calls.sessions.some((id) => id === 'session-active'), true);
+  assert.equal(calls.stop.length, 1);
+  assert.equal(calls.stop[0].control.key, 'p2p:ou_owner');
+  assert.match(JSON.parse(sent.at(-1).content).text, /已请求停止当前任务/);
+});
+
+test('menu steer dropdown sends a quick instruction to the active turn', async () => {
+  const fixture = stateFixture([['p2p:ou_owner', 'session-active']]);
+  const sent = [];
+  const { calls, harness } = activeTurnHarness();
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async (outgoing) => sent.push(outgoing)),
+    channel: {},
+    harness,
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('menu-steer-open', '/m', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  assert.equal(sent.length, 1);
+
+  await bridge.onCardAction(steerDropdownEvent('om_card_1', '继续', 'ou_owner'));
+  await bridge.waitForIdle();
+
+  assert.equal(calls.steer.length, 1);
+  assert.equal(calls.steer[0].text, '继续');
+  assert.equal(calls.steer[0].control.key, 'p2p:ou_owner');
+  assert.match(JSON.parse(sent.at(-1).content).text, /已提交补充指令/);
+});
+
+test('menu steer custom option opens the form card without steering', async () => {
+  const fixture = stateFixture([['p2p:ou_owner', 'session-active']]);
+  const sent = [];
+  const { calls, harness } = activeTurnHarness();
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async (outgoing) => sent.push(outgoing)),
+    channel: {},
+    harness,
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('menu-steer-custom-open', '/m', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  await bridge.onCardAction(steerDropdownEvent('om_card_1', 'custom', 'ou_owner'));
+  await bridge.waitForIdle();
+
+  assert.equal(calls.steer.length, 0, 'custom option must not steer yet');
+  const customCard = sent.at(-1);
+  assert.equal(customCard.msgType, 'interactive');
+  const form = customCard.content.body.elements.find((el) => el.tag === 'form');
+  assert.ok(form, 'custom steer card must contain a form');
+  const submit = form.elements.find((el) => el.tag === 'button');
+  assert.equal(submit?.form_action_type, 'submit');
+});
+
+test('custom steer form submission reads form_value and steers the active turn', async () => {
+  const fixture = stateFixture([['p2p:ou_owner', 'session-active']]);
+  const sent = [];
+  const { calls, harness } = activeTurnHarness();
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async (outgoing) => sent.push(outgoing)),
+    channel: {},
+    harness,
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('steer-form-open', '/m', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  // 主菜单 steer 下拉选「更多/自定义」→ 发送 custom 表单卡（第二次 create → om_card_2）
+  await bridge.onCardAction(steerDropdownEvent('om_card_1', 'custom', 'ou_owner'));
+  await bridge.waitForIdle();
+  assert.equal(sent.at(-1).msgType, 'interactive');
+
+  await bridge.onCardAction({
+    operator: { open_id: 'ou_owner' },
+    action: {
+      value: { action: 'steer', source: 'form' },
+      form_value: { steer_text: '更简洁些' },
+    },
+    context: { open_message_id: 'om_card_2' },
+  });
+  await bridge.waitForIdle();
+
+  assert.equal(calls.steer.length, 1);
+  assert.equal(calls.steer[0].text, '更简洁些');
+  assert.equal(calls.steer[0].control.key, 'p2p:ou_owner');
+  assert.match(JSON.parse(sent.at(-1).content).text, /已提交补充指令/);
+});
+
+test('menu stop and steer reply friendly when no session is bound', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const { calls, harness } = activeTurnHarness();
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async (outgoing) => sent.push(outgoing)),
+    channel: {},
+    harness,
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('menu-nosession-open', '/m', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  await bridge.onCardAction(cardActionEvent('om_card_1', 'stop', 'ou_owner'));
+  await bridge.waitForIdle();
+  assert.equal(calls.stop.length, 0);
+  assert.match(JSON.parse(sent.at(-1).content).text, /没有正在运行/);
+
+  await bridge.onCardAction(steerDropdownEvent('om_card_1', '继续', 'ou_owner'));
+  await bridge.waitForIdle();
+  assert.equal(calls.steer.length, 0);
+  assert.match(JSON.parse(sent.at(-1).content).text, /普通消息/);
+});
