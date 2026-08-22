@@ -349,6 +349,8 @@ test('account config write and runtime preparation failures have distinct safe c
 test('known runtime activation codes cross the provisioning boundary unchanged', async () => {
   for (const scenario of [
     ['harness-auth-required', /需要身份认证/],
+    ['harness-proxy-auth-required', /NO_PROXY/],
+    ['harness-loopback-forbidden', /回环地址/],
     ['harness-host-untrusted', /Host 信任检查/],
     ['harness-request-forbidden', /代理或网关配置/],
     ['harness-api-not-found', /找不到 Harness 健康检查接口/],

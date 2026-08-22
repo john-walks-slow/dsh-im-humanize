@@ -10,6 +10,8 @@ const HARNESS_HEALTH_ERROR_CODES = new Set([
   'harness-connect-failed',
   'harness-timeout',
   'harness-auth-required',
+  'harness-proxy-auth-required',
+  'harness-loopback-forbidden',
   'harness-host-untrusted',
   'harness-request-forbidden',
   'harness-api-not-found',

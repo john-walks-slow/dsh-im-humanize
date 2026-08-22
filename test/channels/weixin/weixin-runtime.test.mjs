@@ -338,6 +338,8 @@ test('runtime preserves classified Harness health codes without exposing their c
     'harness-connect-failed',
     'harness-timeout',
     'harness-auth-required',
+    'harness-proxy-auth-required',
+    'harness-loopback-forbidden',
     'harness-host-untrusted',
     'harness-request-forbidden',
     'harness-api-not-found',
