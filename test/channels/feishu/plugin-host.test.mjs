@@ -1126,6 +1126,11 @@ test('DSH credential adapter stores refs off the browser plane and clears them',
 
 test('production assembly needs only ctx credentials and the active DSH webServer', async () => {
   const constructed = {};
+  const httpInstance = { request: async () => ({}) };
+  const wsAgent = {
+    addRequest() {},
+    destroy() { constructed.wsAgentDestroyed = true; },
+  };
   class FakeConfigStore {
     constructor(path) { constructed.configPath = path; }
     async load() { return this; }
@@ -1160,13 +1165,22 @@ test('production assembly needs only ctx credentials and the active DSH webServe
     dshHome: '/tmp/dsh-feishu-host-test',
     workspace: '/tmp/dsh-feishu-workspace',
   }, {
-    lark: { registerApp: async () => ({}) },
+    lark: { registerApp: async () => ({}), defaultHttpInstance: httpInstance },
     Controller: FakeController,
     ConfigStore: FakeConfigStore,
     StateStore: FakeStateStore,
     HarnessClient: FakeHarness,
     FeishuRuntime: FakeRuntime,
-    verifyFeishuApp: async () => ({}),
+    verifyFeishuApp: async (options) => {
+      constructed.verifyOptions = options;
+      return {};
+    },
+    proxyEnv: { HTTPS_PROXY: 'http://proxy.test:8080' },
+    createProxyAgent: (proxyUrl) => {
+      constructed.wsAgentCreated = (constructed.wsAgentCreated ?? 0) + 1;
+      constructed.wsProxyUrl = proxyUrl;
+      return wsAgent;
+    },
   });
 
   assert.equal(constructed.initialized, undefined);
@@ -1174,6 +1188,10 @@ test('production assembly needs only ctx credentials and the active DSH webServe
   assert.equal(constructed.initialized, true);
   assert.equal(constructed.harnessReadyChecks, 1);
   assert.equal(constructed.controller.credentials, credentials);
+  await constructed.controller.verifyApp({ appId: 'cli_verify', appSecret: 'verify-secret' });
+  assert.equal(constructed.verifyOptions.httpInstance, httpInstance);
+  assert.equal(constructed.wsAgentCreated, 1);
+  assert.equal(constructed.wsProxyUrl, 'http://proxy.test:8080');
   assert.equal(String(constructed.harness.baseUrl), 'http://127.0.0.1:43123/');
   assert.equal(constructed.harness.autostart, false);
   assert.match(constructed.configPath, /integrations\/dsh-feishu\/config\.json$/);
@@ -1188,6 +1206,7 @@ test('production assembly needs only ctx credentials and the active DSH webServe
   });
   assert.match(constructed.statePath, /integrations\/dsh-feishu\/state\.json$/);
   assert.equal(constructed.runtime.appSecret, 'host-only');
+  assert.equal(constructed.runtime.wsAgent, wsAgent);
   const repair = { start() {}, status() {}, cancel() {} };
   await constructed.controller.createRuntime({
     botId: 'bot_alpha',
@@ -1222,6 +1241,7 @@ test('production assembly needs only ctx credentials and the active DSH webServe
   await production.close();
   assert.equal(constructed.closed, true);
   assert.equal(constructed.harnessStopped, true);
+  assert.equal(constructed.wsAgentDestroyed, true);
 });
 
 test('a corrupt legacy state file cannot prevent a healthy v2 bot from starting', async () => {
@@ -1276,6 +1296,7 @@ test('a corrupt legacy state file cannot prevent a healthy v2 bot from starting'
     HarnessClient: FakeHarness,
     FeishuRuntime: FakeRuntime,
     verifyFeishuApp: async () => ({}),
+    proxyEnv: {},
   });
 
   await production.ready;

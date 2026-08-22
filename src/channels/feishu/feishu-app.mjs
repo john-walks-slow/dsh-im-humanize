@@ -3,15 +3,12 @@ function endpointFor(domain, path) {
   return new URL(path, origin);
 }
 
-async function jsonResponse(response, operation) {
-  let body;
-  try {
-    body = await response.json();
-  } catch {
+function jsonResponse(body, operation) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new Error(`${operation} returned a non-JSON response`);
   }
-  if (!response.ok || body?.code !== 0) {
-    throw new Error(`${operation} failed: ${body?.msg || `HTTP ${response.status}`}`);
+  if (body.code !== 0) {
+    throw new Error(`${operation} failed: ${body.msg || `code ${body.code}`}`);
   }
   return body;
 }
@@ -21,26 +18,32 @@ export async function verifyFeishuApp({
   appId,
   appSecret,
   domain = 'feishu',
-  fetchImpl = fetch,
+  httpInstance,
   timeoutMs = 15000,
 }) {
   if (!appId || !appSecret) throw new Error('Feishu credentials are incomplete');
-  const tokenResponse = await fetchImpl(endpointFor(domain, '/open-apis/auth/v3/tenant_access_token/internal'), {
+  if (!httpInstance || typeof httpInstance.request !== 'function') {
+    throw new TypeError('Feishu verification requires an HTTP instance');
+  }
+  const tokenBody = jsonResponse(await httpInstance.request({
     method: 'POST',
+    url: endpointFor(domain, '/open-apis/auth/v3/tenant_access_token/internal').href,
     headers: { 'content-type': 'application/json; charset=utf-8' },
-    body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
+    data: { app_id: appId, app_secret: appSecret },
     signal: AbortSignal.timeout(timeoutMs),
-  });
-  const tokenBody = await jsonResponse(tokenResponse, 'Feishu authentication');
+    timeout: timeoutMs,
+  }), 'Feishu authentication');
   if (!tokenBody.tenant_access_token) {
     throw new Error('Feishu authentication returned no tenant access token');
   }
 
-  const botResponse = await fetchImpl(endpointFor(domain, '/open-apis/bot/v3/info/'), {
+  const botBody = jsonResponse(await httpInstance.request({
+    method: 'GET',
+    url: endpointFor(domain, '/open-apis/bot/v3/info/').href,
     headers: { authorization: `Bearer ${tokenBody.tenant_access_token}` },
     signal: AbortSignal.timeout(timeoutMs),
-  });
-  const botBody = await jsonResponse(botResponse, 'Feishu bot verification');
+    timeout: timeoutMs,
+  }), 'Feishu bot verification');
   const bot = botBody.bot ?? {};
   return Object.freeze({
     appId,

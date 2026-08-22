@@ -89,6 +89,8 @@ A GitHub-source installation fetches and builds a Git dependency directly. With 
 
 After installation, follow the built-in instructions on each channel page to scan a QR code or enter credentials. Secrets and Tokens are sent only to the local Harness Host and stored through its protected credential provider; status responses and bot lists never return them.
 
+If this machine must use a forward proxy to reach Feishu, set `HTTPS_PROXY` to a full HTTP proxy URL before starting `dsh web` (for example, `http://proxy:8080`; lowercase `https_proxy` is also supported, with `HTTP_PROXY` accepted as a fallback), then restart the Host after changing it. Feishu registration and credential verification reuse the SDK's proxy-aware HTTP client, while the message WebSocket explicitly uses that proxy; the WebSocket path does not currently read `ALL_PROXY` or `NO_PROXY`.
+
 | Default behavior | Description |
 | --- | --- |
 | Bot workspace | Each bot stores its workspace independently. New bots start with the Host's current working directory, which can later be changed from the bot card. |

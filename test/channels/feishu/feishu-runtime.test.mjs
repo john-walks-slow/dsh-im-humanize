@@ -84,10 +84,12 @@ function fakeLark() {
 test('FeishuRuntime becomes chat-ready only after Harness and Feishu are connected', async () => {
   let harnessChecks = 0;
   let harnessSignal;
+  const wsAgent = { addRequest() {} };
   const runtime = new FeishuRuntime({
     lark: fakeLark(),
     appId: 'cli_test',
     appSecret: 'secret',
+    wsAgent,
     ownerOpenIds: ['*', 'ou_owner'],
     harness: {
       async ensureRunning(options) {
@@ -107,6 +109,8 @@ test('FeishuRuntime becomes chat-ready only after Harness and Feishu are connect
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(settled, false);
   assert.equal(runtime.status.feishuLongConnectionState, 'connecting');
+  assert.equal(FakeWSClient.instances[0].options.agent, wsAgent);
+  assert.equal('agent' in FakeClient.instances[0].options, false);
   FakeWSClient.instances[0].becomeReady();
   const status = await starting;
   assert.equal(harnessChecks, 1);

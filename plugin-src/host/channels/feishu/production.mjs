@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { unlink } from 'node:fs/promises';
 import * as Lark from '@larksuiteoapi/node-sdk';
+import HttpsProxyAgent from 'https-proxy-agent';
 import { createConnectionSupervisor } from './connection-supervisor.mjs';
 import { createHarnessCommandExecutor } from '../../harness-command-executor.mjs';
 import { createHarnessSessionExecutors } from '../../harness-session-coordinator.mjs';
@@ -21,6 +22,22 @@ import {
   observeBotWorkspaceRemovals,
 } from '../../../../src/channels/shared/bot-workspace-store.mjs';
 import { listAgentPresetCatalog } from '../../../../src/channels/shared/agent-preset.mjs';
+
+function webSocketProxyUrl(env) {
+  for (const key of ['https_proxy', 'HTTPS_PROXY', 'http_proxy', 'HTTP_PROXY']) {
+    const value = env?.[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+export function createFeishuWebSocketAgent(
+  env,
+  createAgent = (url) => new HttpsProxyAgent(url),
+) {
+  const proxyUrl = webSocketProxyUrl(env);
+  return proxyUrl ? createAgent(proxyUrl) : undefined;
+}
 
 function harnessOrigin(webServer, configured) {
   if (configured !== undefined) return new URL(configured);
@@ -61,7 +78,11 @@ export async function createProductionController(ctx, config = {}, internals = {
   const SessionStateStore = internals.StateStore ?? StateStore;
   const Harness = internals.HarnessClient ?? HarnessClient;
   const Runtime = internals.FeishuRuntime ?? FeishuRuntime;
-  const verifyApp = internals.verifyFeishuApp ?? verifyFeishuApp;
+  const verify = internals.verifyFeishuApp ?? verifyFeishuApp;
+  const verifyApp = (options) => verify({
+    ...options,
+    httpInstance: lark.defaultHttpInstance,
+  });
   const createSupervisor = internals.createConnectionSupervisor ?? createConnectionSupervisor;
   const logger = typeof ctx.logger === 'function'
     ? ctx.logger('dsh-feishu')
@@ -127,6 +148,8 @@ export async function createProductionController(ctx, config = {}, internals = {
     ...(controlExecutor ? { controlExecutor } : {}),
     ...(sessionMaintenanceExecutor ? { sessionMaintenanceExecutor } : {}),
   });
+  const proxyEnv = internals.proxyEnv ?? process.env;
+  const wsAgent = createFeishuWebSocketAgent(proxyEnv, internals.createProxyAgent);
 
   const coreController = new Controller({
     registerApp: (options) => lark.registerApp(options),
@@ -153,6 +176,7 @@ export async function createProductionController(ctx, config = {}, internals = {
         harness: workspaceScope.harness,
         state: workspaceScope.state,
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
+        ...(wsAgent ? { wsAgent } : {}),
         logger: {
           error: (...args) => logger.error?.(`[${botId ?? botConfig.id}]`, ...args),
           warn: (...args) => logger.warn?.(`[${botId ?? botConfig.id}]`, ...args),
@@ -190,6 +214,7 @@ export async function createProductionController(ctx, config = {}, internals = {
       await supervisor.close();
       await controller.close();
       harness.stopManagedProcess();
+      wsAgent?.destroy?.();
     },
   };
 }

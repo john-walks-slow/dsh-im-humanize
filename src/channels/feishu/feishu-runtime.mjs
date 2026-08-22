@@ -96,6 +96,7 @@ export class FeishuRuntime {
   #replyTimeoutMs;
   #connectTimeoutMs;
   #requestTimeoutMs;
+  #wsAgent;
   #logger;
   #repair;
   #client = null;
@@ -122,6 +123,7 @@ export class FeishuRuntime {
     replyTimeoutMs = 600000,
     connectTimeoutMs = 15000,
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    wsAgent,
     logger = console,
   }) {
     if (!lark) throw new Error('FeishuRuntime requires the Feishu SDK');
@@ -152,6 +154,7 @@ export class FeishuRuntime {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#requestTimeoutMs = requestTimeoutMs;
+    this.#wsAgent = wsAgent;
     this.#logger = logger;
     this.#status = createBridgeStatus({ allowedSenderCount: normalizedOwners.length });
   }
@@ -266,6 +269,7 @@ export class FeishuRuntime {
 
       this.#wsClient = new this.#lark.WSClient({
         ...larkConfig,
+        ...(this.#wsAgent ? { agent: this.#wsAgent } : {}),
         loggerLevel: this.#lark.LoggerLevel.info,
         handshakeTimeoutMs: 15000,
         onReady: () => {
