@@ -347,41 +347,47 @@ test('account config write and runtime preparation failures have distinct safe c
 });
 
 test('known runtime activation codes cross the provisioning boundary unchanged', async () => {
-  const credentials = credentialsFixture();
-  const configs = configFixture();
-  const runtimes = runtimeFactory({
-    startError: Object.assign(new Error('loopback transport host-only detail'), {
-      code: 'harness-api-not-found',
-    }),
-  });
-  const controller = new WeixinController({
-    api: {
-      beginLogin: async () => ({ qrcode: 'qr-secret', qrcodeUrl: 'https://liteapp.weixin.qq.com/q/test' }),
-      pollLogin: async () => ({
-        status: 'confirmed',
-        bot_token: 'must-be-rolled-back',
-        ilink_bot_id: 'harness-failure@im.bot',
-        ilink_user_id: 'owner',
-        baseurl: 'https://ilinkai.weixin.qq.com',
-      }),
-    },
-    credentials: credentials.provider,
-    configStore: configs.store,
-    createRuntime: runtimes.createRuntime,
-    logger: { error() {}, warn() {} },
-  });
+  for (const scenario of [
+    ['harness-auth-required', /需要身份认证/],
+    ['harness-host-untrusted', /Host 信任检查/],
+    ['harness-request-forbidden', /代理或网关配置/],
+    ['harness-api-not-found', /找不到 Harness 健康检查接口/],
+  ]) {
+    const [code, publicMessage] = scenario;
+    const credentials = credentialsFixture();
+    const configs = configFixture();
+    const runtimes = runtimeFactory({
+      startError: Object.assign(new Error(`host-only detail for ${code}`), { code }),
+    });
+    const controller = new WeixinController({
+      api: {
+        beginLogin: async () => ({ qrcode: 'qr-secret', qrcodeUrl: 'https://liteapp.weixin.qq.com/q/test' }),
+        pollLogin: async () => ({
+          status: 'confirmed',
+          bot_token: 'must-be-rolled-back',
+          ilink_bot_id: `${code}@im.bot`,
+          ilink_user_id: 'owner',
+          baseurl: 'https://ilinkai.weixin.qq.com',
+        }),
+      },
+      credentials: credentials.provider,
+      configStore: configs.store,
+      createRuntime: runtimes.createRuntime,
+      logger: { error() {}, warn() {} },
+    });
 
-  const begun = await controller.startProvisioning();
-  const failed = await waitFor(
-    () => controller.registrationStatus(begun.attemptId),
-    (value) => value.status === 'failed',
-  );
+    const begun = await controller.startProvisioning();
+    const failed = await waitFor(
+      () => controller.registrationStatus(begun.attemptId),
+      (value) => value.status === 'failed',
+    );
 
-  assert.equal(failed.error.code, 'harness-api-not-found');
-  assert.notEqual(failed.error.code, 'harness-unreachable');
-  assert.match(failed.error.message, /找不到 Harness 健康检查接口/);
-  assert.doesNotMatch(JSON.stringify(failed), /host-only detail|must-be-rolled-back/);
-  await controller.close();
+    assert.equal(failed.error.code, code);
+    assert.notEqual(failed.error.code, 'harness-unreachable');
+    assert.match(failed.error.message, publicMessage);
+    assert.doesNotMatch(JSON.stringify(failed), /host-only detail|must-be-rolled-back/);
+    await controller.close();
+  }
 });
 
 test('an unclassified activation error uses the explicit unknown fallback code', async () => {

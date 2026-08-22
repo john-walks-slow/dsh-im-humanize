@@ -8,6 +8,55 @@ import { adoptRegisteredWorkspaceSession } from './harness-session-binding.mjs';
 // Harness origin prevents two channel-specific clients bound to one Session
 // from claiming or cancelling each other's interactions.
 const interactionRegistries = new Map();
+const MAX_ERROR_CLASSIFICATION_BYTES = 64;
+
+async function smallResponseText(response) {
+  const stream = response?.body;
+  if (!stream || typeof stream.getReader !== 'function') return null;
+
+  const reader = stream.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array)
+        || length + value.byteLength > MAX_ERROR_CLASSIFICATION_BYTES) return null;
+      chunks.push(value);
+      length += value.byteLength;
+    }
+  } catch {
+    return null;
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // The response body is diagnostic-only; cancellation failures do not
+      // replace the HTTP status that caused the transport error.
+    }
+  }
+
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+async function harnessHttpErrorCode(response) {
+  if (response.status === 401) return 'harness-auth-required';
+  if (response.status === 403) {
+    const body = await smallResponseText(response);
+    return body?.trim() === 'forbidden'
+      ? 'harness-host-untrusted'
+      : 'harness-request-forbidden';
+  }
+  if (response.status === 404) return 'harness-api-not-found';
+  return 'harness-http-failed';
+}
 
 function interactionRegistry(origin) {
   let registry = interactionRegistries.get(origin);
@@ -494,11 +543,7 @@ export class HarnessClient {
       );
     }
     if (!response.ok) {
-      const code = response.status === 401 || response.status === 403
-        ? 'harness-access-denied'
-        : response.status === 404
-          ? 'harness-api-not-found'
-          : 'harness-http-failed';
+      const code = await harnessHttpErrorCode(response);
       throw new HarnessTransportError(code, method, { status: response.status });
     }
     let body;

@@ -79,18 +79,20 @@ test('shared Harness health checks expose precise safe availability codes', asyn
     return true;
   });
 
-  for (const [status, expectedCode] of [
-    [401, 'harness-access-denied'],
-    [403, 'harness-access-denied'],
-    [404, 'harness-api-not-found'],
-    [500, 'harness-http-failed'],
+  for (const [status, responseBody, expectedCode] of [
+    [401, 'authentication required', 'harness-auth-required'],
+    [403, 'forbidden', 'harness-host-untrusted'],
+    [403, 'proxy policy rejected: private detail', 'harness-request-forbidden'],
+    [404, 'not found', 'harness-api-not-found'],
+    [500, 'service unavailable', 'harness-http-failed'],
   ]) {
     await assert.rejects(
-      clientWithFetch(async () => ({ ok: false, status })).health(),
+      clientWithFetch(async () => new Response(responseBody, { status })).health(),
       (error) => {
         assert.ok(error instanceof HarnessTransportError);
         assert.equal(error.code, expectedCode);
         assert.equal(error.status, status);
+        assert.doesNotMatch(error.message, /private detail/);
         return true;
       },
     );

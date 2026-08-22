@@ -9,7 +9,9 @@ const DEFAULT_START_RETRY_DELAYS_MS = Object.freeze([250, 1_000, 3_000]);
 const HARNESS_HEALTH_ERROR_CODES = new Set([
   'harness-connect-failed',
   'harness-timeout',
-  'harness-access-denied',
+  'harness-auth-required',
+  'harness-host-untrusted',
+  'harness-request-forbidden',
   'harness-api-not-found',
   'harness-http-failed',
   'harness-response-invalid',

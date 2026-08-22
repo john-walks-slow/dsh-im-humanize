@@ -337,7 +337,9 @@ test('runtime preserves classified Harness health codes without exposing their c
   for (const code of [
     'harness-connect-failed',
     'harness-timeout',
-    'harness-access-denied',
+    'harness-auth-required',
+    'harness-host-untrusted',
+    'harness-request-forbidden',
     'harness-api-not-found',
     'harness-http-failed',
     'harness-response-invalid',
