@@ -46,13 +46,23 @@ async function smallResponseText(response) {
   return new TextDecoder().decode(bytes);
 }
 
-async function harnessHttpErrorCode(response) {
+function isLoopbackHarnessHostname(hostname) {
+  if (hostname === 'localhost' || hostname === '[::1]') return true;
+  const parts = hostname.split('.');
+  return parts.length === 4
+    && parts[0] === '127'
+    && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+}
+
+async function harnessHttpErrorCode(response, hostname) {
   if (response.status === 401) return 'harness-auth-required';
+  if (response.status === 407) return 'harness-proxy-auth-required';
   if (response.status === 403) {
     const body = await smallResponseText(response);
-    return body?.trim() === 'forbidden'
-      ? 'harness-host-untrusted'
-      : 'harness-request-forbidden';
+    if (body?.trim() !== 'forbidden') return 'harness-request-forbidden';
+    return isLoopbackHarnessHostname(hostname)
+      ? 'harness-loopback-forbidden'
+      : 'harness-host-untrusted';
   }
   if (response.status === 404) return 'harness-api-not-found';
   return 'harness-http-failed';
@@ -543,7 +553,7 @@ export class HarnessClient {
       );
     }
     if (!response.ok) {
-      const code = await harnessHttpErrorCode(response);
+      const code = await harnessHttpErrorCode(response, this.#baseUrl.hostname);
       throw new HarnessTransportError(code, method, { status: response.status });
     }
     let body;

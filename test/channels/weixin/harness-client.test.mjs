@@ -50,8 +50,8 @@ test('all legacy channel clients now use the shared Harness RPC transport', asyn
 });
 
 test('shared Harness health checks expose precise safe availability codes', async () => {
-  const clientWithFetch = (fetchImpl) => new HarnessClient({
-    baseUrl: 'http://127.0.0.1:3080',
+  const clientWithFetch = (fetchImpl, baseUrl = 'http://127.0.0.1:3080') => new HarnessClient({
+    baseUrl,
     workspace: '/tmp/default-workspace',
     fetchImpl,
   });
@@ -79,15 +79,20 @@ test('shared Harness health checks expose precise safe availability codes', asyn
     return true;
   });
 
-  for (const [status, responseBody, expectedCode] of [
-    [401, 'authentication required', 'harness-auth-required'],
-    [403, 'forbidden', 'harness-host-untrusted'],
-    [403, 'proxy policy rejected: private detail', 'harness-request-forbidden'],
-    [404, 'not found', 'harness-api-not-found'],
-    [500, 'service unavailable', 'harness-http-failed'],
+  for (const [baseUrl, status, responseBody, expectedCode] of [
+    ['http://127.0.0.1:3080', 401, 'authentication required', 'harness-auth-required'],
+    ['http://127.0.0.1:3080', 407, 'proxy authentication required', 'harness-proxy-auth-required'],
+    ['http://127.0.0.1:3080', 403, 'forbidden', 'harness-loopback-forbidden'],
+    ['http://127.9.8.7:3080', 403, 'forbidden\n', 'harness-loopback-forbidden'],
+    ['http://localhost:3080', 403, 'forbidden', 'harness-loopback-forbidden'],
+    ['http://[::1]:3080', 403, 'forbidden', 'harness-loopback-forbidden'],
+    ['http://harness.internal:3080', 403, 'forbidden', 'harness-host-untrusted'],
+    ['http://127.0.0.1:3080', 403, 'proxy policy rejected: private detail', 'harness-request-forbidden'],
+    ['http://127.0.0.1:3080', 404, 'not found', 'harness-api-not-found'],
+    ['http://127.0.0.1:3080', 500, 'service unavailable', 'harness-http-failed'],
   ]) {
     await assert.rejects(
-      clientWithFetch(async () => new Response(responseBody, { status })).health(),
+      clientWithFetch(async () => new Response(responseBody, { status }), baseUrl).health(),
       (error) => {
         assert.ok(error instanceof HarnessTransportError);
         assert.equal(error.code, expectedCode);
