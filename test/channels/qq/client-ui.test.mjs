@@ -21,7 +21,7 @@ test('QQ settings uses the shared compact channel toolbar', () => {
   assert.doesNotMatch(markup, /凭据仅保存在本机|role="switch"|type="checkbox"/);
 });
 
-test('QQ bot cards match the shared two-metric card treatment', () => {
+test('QQ bot cards keep check time with status and omit repeated channel details', () => {
   const markup = renderToStaticMarkup(React.createElement(AccountCard, {
     account: {
       botId: 'qq_bot',
@@ -38,8 +38,8 @@ test('QQ bot cards match the shared two-metric card treatment', () => {
   }));
   assert.match(markup, /class="ddt-card dim-botCard"/);
   assert.match(markup, /data-im-channel-logo="qq"/);
-  assert.equal((markup.match(/class="ddt-metric dim-botMetric"/g) ?? []).length, 2);
-  assert.match(markup, />消息通道<[^]*>最近检查</);
+  assert.match(markup, /class="dim-botHealthGroup"[^]*class="dim-lastChecked"><span>最近检查<\/span>/);
+  assert.doesNotMatch(markup, /消息通道|dim-botMetric/);
   assert.match(markup, />检查连接<[^]*>移除接入</);
   assert.match(markup, /class="dim-presetSelect"/);
   assert.doesNotMatch(markup, /收到\s*\/\s*回复|dim-cardSummary|QQ WebSocket 长连接运行正常/);

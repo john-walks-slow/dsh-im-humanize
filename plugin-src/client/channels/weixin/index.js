@@ -22,6 +22,7 @@ import {
   EMPTY_AGENT_PRESET_CATALOG,
 } from '../../agent-preset.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
+import { BotStatusMeta, ChannelListHeading } from '../../channel-card-meta.js';
 import { installWeixinStyles } from './styles.js';
 
 export const name = 'weixin-settings';
@@ -221,14 +222,14 @@ export function AccountCard({
         h('div', { className: 'dxw-accountIdentity dim-botIdentity' },
           h('div', { className: 'dxw-avatar dim-botAvatar', 'aria-hidden': 'true' }, h(WeixinLogoGlyph, { size: 27 })),
           h('div', { className: 'dim-botName' }, h('h3', null, account.bot.name), h('p', null, account.bot.accountIdMasked))),
-        h('div', { className: 'dxw-health dim-botHealth' },
-          h('span', { className: 'dxw-dot dim-healthDot', 'data-tone': tone }),
-          h('span', null, account.connected ? '运行正常' : state === 'connecting' ? '正在连接' : '连接未就绪'))),
-      h('dl', { className: 'dxw-metrics dim-botMetrics' },
-        h('div', { className: 'dxw-metric dim-botMetric' }, h('dt', null, '消息通道'),
-          h('dd', null, account.connected ? 'iLink 长轮询' : '离线')),
-        h('div', { className: 'dxw-metric dim-botMetric' }, h('dt', null, '最近检查'),
-          h('dd', null, checkedTime(account.health.lastCheckedAt)))),
+        h(BotStatusMeta, {
+          className: 'dxw-health',
+          dotClassName: 'dxw-dot',
+          tone,
+          stateLabel: account.connected ? '运行正常' : state === 'connecting' ? '正在连接' : '连接未就绪',
+          lastCheckedAt: account.health.lastCheckedAt,
+          formatCheckedTime: checkedTime,
+        })),
       h(WorkspaceEditor, {
         workspace: account.workspace,
         disabled: Boolean(busy),
@@ -267,7 +268,11 @@ export function AccountCard({
 
 function AccountList(props) {
   return h('section', { className: 'dim-listSection' },
-    h('div', { className: 'dxw-listHeading dim-listHeading' }, h('h3', null, '已接入的微信账号')),
+    h(ChannelListHeading, {
+      className: 'dxw-listHeading',
+      title: '已接入的微信账号',
+      connectionLabel: 'iLink 长轮询',
+    }),
     h('ul', { className: 'dxw-list dim-botList' }, props.bots.map((account) => h('li', { key: account.botId },
       h(AccountCard, {
         account,

@@ -107,6 +107,7 @@ const EN = Object.freeze({
   '离线': 'Offline',
   '已断开': 'Disconnected',
   '消息通道': 'Message channel',
+  '查看消息通道说明': 'View message channel details',
   '最近检查': 'Last checked',
   '当前工作区': 'Current workspace',
   '选择目录': 'Choose folder',

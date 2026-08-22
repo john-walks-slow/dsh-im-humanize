@@ -40,7 +40,8 @@ test('Telegram account card matches the unified compact card layout', () => {
   }));
   assert.match(markup, /data-im-channel-logo="telegram"/);
   assert.match(markup, /@harness_bot/);
-  assert.match(markup, />Bot API 长轮询</);
+  assert.match(markup, /class="dim-botHealthGroup"[^]*class="dim-lastChecked"><span>最近检查<\/span>/);
+  assert.doesNotMatch(markup, /Bot API 长轮询|消息通道|dim-botMetric/);
   assert.match(markup, />检查连接</);
   assert.match(markup, />移除接入</);
   assert.match(markup, />访问设置</);

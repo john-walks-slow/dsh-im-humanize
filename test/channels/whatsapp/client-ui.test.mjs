@@ -66,12 +66,12 @@ test('WhatsApp account card uses the unified compact channel layout', () => {
     testNotice: '测试消息已发送，请到 WhatsApp 自聊会话中确认。',
   }));
   assert.match(markup, /data-im-channel-logo="whatsapp"/);
-  assert.match(markup, /WhatsApp Web/);
+  assert.match(markup, /class="dim-botHealthGroup"[^]*class="dim-lastChecked"><span>最近检查<\/span>/);
+  assert.doesNotMatch(markup, /WhatsApp Web|消息通道|dim-botMetric/);
   assert.match(markup, /检查连接/);
   assert.match(markup, /移除接入/);
   assert.match(markup, /class="dim-presetSelect"/);
   assert.match(markup, /role="status"[^>]*>测试消息已发送/);
-  assert.equal((markup.match(/class="ddt-metric dim-botMetric"/g) ?? []).length, 2);
 });
 
 test('WhatsApp connection check requests a test message from the existing reconnect endpoint', async () => {

@@ -52,7 +52,8 @@ test('Slack account card matches the unified compact layout', () => {
   }));
   assert.match(markup, /data-im-channel-logo="slack"/);
   assert.match(markup, /@deepseek-harness/);
-  assert.match(markup, />Socket Mode 长连接</);
+  assert.match(markup, /class="dim-botHealthGroup"[^]*class="dim-lastChecked"><span>最近检查<\/span>/);
+  assert.doesNotMatch(markup, /Socket Mode 长连接|消息通道|dim-botMetric/);
   assert.match(markup, />检查连接</);
   assert.match(markup, />移除接入</);
 });

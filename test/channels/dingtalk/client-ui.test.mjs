@@ -63,16 +63,9 @@ test('the QR card responds to its plugin panel width instead of the browser view
   assert.match(styles, /\.ddt-qrCopy \{ min-width: 0; overflow-wrap: anywhere; \}/);
 });
 
-test('bot metrics stay in one compact two-column row at narrow widths', async () => {
+test('bot cards do not reserve a row for repeated channel metrics', async () => {
   const styles = await readFile(STYLES_URL, 'utf8');
-  assert.match(
-    styles,
-    /\.ddt-metrics \{[^\n]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/,
-  );
-  assert.doesNotMatch(
-    styles,
-    /\.ddt-metrics \{ grid-template-columns: minmax\(0, 1fr\); \}/,
-  );
+  assert.doesNotMatch(styles, /\.ddt-metrics|\.ddt-metric/);
 });
 
 test('the narrow-panel toolbar keeps all three controls on one row', async () => {

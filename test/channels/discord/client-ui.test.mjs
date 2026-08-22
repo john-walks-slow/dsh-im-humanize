@@ -35,7 +35,8 @@ test('Discord account card matches the unified compact card layout', () => {
   }));
   assert.match(markup, /data-im-channel-logo="discord"/);
   assert.match(markup, /@HarnessBot/);
-  assert.match(markup, />Gateway 长连接</);
+  assert.match(markup, /class="dim-botHealthGroup"[^]*class="dim-lastChecked"><span>最近检查<\/span>/);
+  assert.doesNotMatch(markup, /Gateway 长连接|消息通道|dim-botMetric/);
   assert.match(markup, />检查连接</);
   assert.match(markup, />移除接入</);
   assert.doesNotMatch(markup, /dim-cardSummary/);
