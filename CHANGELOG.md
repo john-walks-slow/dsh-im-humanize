@@ -6,6 +6,18 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-08-24
+
+### Added / 新增
+
+- Harness 返回的图片现在会在九个内置 IM 渠道中优先使用原生图片消息呈现；渠道不支持或明确拒绝图片发送时自动回退为文件附件。
+  Images returned by Harness now prefer native image messages across all nine built-in IM channels, with automatic file-attachment fallback when a channel does not support or definitively rejects image delivery.
+
+### Changed / 变更
+
+- 统一结果文件与图片的发送、交付回执、失败提示和资源释放，并在发送结果不确定时避免补发文件造成重复消息。
+  Unified result-file and image sending, delivery receipts, failure notices, and resource cleanup, while avoiding duplicate file fallback when an image delivery result is uncertain.
+
 ## [1.4.0] - 2026-08-24
 
 ### Added / 新增
@@ -200,7 +212,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/xmanrui/dsh-im/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/xmanrui/dsh-im/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/xmanrui/dsh-im/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/xmanrui/dsh-im/compare/v1.1.0...v1.2.0

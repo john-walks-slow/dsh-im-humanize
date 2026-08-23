@@ -59,11 +59,11 @@ Other IM platforms can be added through the same channel-adapter structure.
 
 All nine built-in channels can send JPEG, PNG, and WebP images, plus GIFs sent as image files, with optional captions to Harness. Each image is limited to 5 MB, and images in one message are limited to 20 MB in total.
 
-### Result-file delivery
+### Result-file and image delivery
 
 All nine built-in channels can return any file readable by Harness as a native channel attachment. Existing files and files created by the current task can both be sent directly. The capability is available to every connected bot by default, with no switch or per-bot allowlist, while existing text, image, streaming, command, and Session behavior remains unchanged.
 
-After the model calls the file-return tool, the plugin hands the specified file to the channel's native attachment API. The plugin adds no rules for file origin, creation time, workspace boundary, extension, content, count, size, or lifetime; the file only needs to exist and be readable. A channel may still reject delivery according to its own permissions, quota, file capability, or account tier, and the plugin reports that provider result.
+After the model calls the file-return tool, the plugin hands the specified file to the channel's native API. Images prefer native image messages; if a channel does not support or definitively rejects image delivery, the plugin falls back to a file attachment, while an uncertain result never triggers a duplicate fallback. The plugin adds no rules for file origin, creation time, workspace boundary, extension, content, count, size, or lifetime; the file only needs to exist and be readable. A channel may still reject delivery according to its own permissions, quota, file capability, or account tier, and the plugin reports that provider result.
 
 | Channel | Platform requirements |
 | --- | --- |
