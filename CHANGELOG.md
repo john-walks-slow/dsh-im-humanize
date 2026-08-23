@@ -6,6 +6,20 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-24
+
+### Added / 新增
+
+- QQ 最终回答现在支持 Markdown；长回答会尽量按代码块和 GFM 表格边界切分，平台拒绝 Markdown 时自动回退为纯文本。
+  QQ final answers now support Markdown; long answers are split around code blocks and GFM tables where possible, with automatic plain-text fallback when QQ rejects Markdown.
+
+### Changed / 变更
+
+- QQ 私聊把进度和最终答案收束在一个回复气泡中，群聊只发送最终答案；工具失败会附在最终回答中，避免成功工具和状态消息刷屏。
+  QQ private chats keep progress and the final answer in one reply bubble, while group chats send only the final answer; tool failures are appended to the final response without spamming successful tool or status messages.
+- 长 QQ 回答使用唯一消息序号并避开被动回复额度，降低重复去重和超额发送失败。
+  Long QQ answers use unique message sequence numbers and avoid passive-reply quotas, reducing duplicate suppression and over-quota delivery failures.
+
 ## [1.3.0] - 2026-08-23
 
 ### Added / 新增
@@ -186,7 +200,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/xmanrui/dsh-im/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/xmanrui/dsh-im/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/xmanrui/dsh-im/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/xmanrui/dsh-im/compare/v1.0.2...v1.1.0
