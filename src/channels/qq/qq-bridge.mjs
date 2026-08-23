@@ -42,6 +42,7 @@ import {
   mergeDeliveryReceipts,
   providerMessageIdsFor,
 } from '../shared/semantic/delivery.mjs';
+import { sendMarkdownReply } from './markdown-reply.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
 const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
@@ -591,7 +592,6 @@ export class QqHarnessBridge {
     const text = promptMessage.content;
     const hasImages = hasInboundImages(promptMessage);
     const hasFiles = hasInboundFiles(promptMessage);
-    let stream = null;
     try {
       if (!text && !hasImages && !hasFiles) {
         await this.#bot.sendText(target, '目前支持文字、图片和文件消息。');
@@ -644,14 +644,16 @@ export class QqHarnessBridge {
       const content = hasImages
         ? await promptContentForMessage(promptMessage, { signal: this.#signal })
         : undefined;
-      let streamFinished = false;
-      if (message.kind === 'c2c' && target?.msgId && typeof this.#bot.openStream === 'function') {
+      // 过程流：把一次 Turn 的中间过程逐条推送给用户——
+      // 模型说明文本、每个 Tool call、失败的工具错误详情，最后是完整回答。
+      let pendingStepText = null;
+      const pushNotice = async (text) => {
         try {
-          stream = this.#bot.openStream({ target });
+          await this.#bot.sendText(target, text);
         } catch (error) {
-          this.#logger.warn?.('[dsh-im:qq] unable to start a QQ stream; using a text reply:', error);
+          this.#logger.warn?.('[dsh-im:qq] unable to send a turn progress notice:', error);
         }
-      }
+      };
       let answer;
       let artifacts = [];
       try {
@@ -666,14 +668,27 @@ export class QqHarnessBridge {
             timeoutMs: this.#replyTimeoutMs,
             signal: this.#signal,
             control: { owner: this, key },
-            onUpdate: stream ? async (update) => {
-              const progress = update.type === 'text'
-                ? update.text
-                : update.type === 'tool'
-                  ? `正在使用${update.name}…`
-                  : update.text;
-              if (progress) await stream.update(progress);
-            } : undefined,
+            onUpdate: async (update) => {
+              if (update.type === 'text') {
+                // 当前 step 的累积文本：暂存，等下一个工具或结束时一次性推送。
+                pendingStepText = update.text;
+                return;
+              }
+              if (update.type === 'tool') {
+                // 工具调用本身不推送：agent 任务工具调用频繁，逐条推送会刷屏；
+                // 它只作为边界把上一段说明文本定稿推送。失败时随错误详情带出工具名。
+                if (nonEmptyString(pendingStepText)) {
+                  await pushNotice(pendingStepText.trim());
+                }
+                pendingStepText = null;
+                return;
+              }
+              if (update.error) {
+                const label = nonEmptyString(update.toolName)
+                  ? `Tool call ${update.toolName}` : 'Tool call';
+                await pushNotice(`${label}\nError: ${update.error}`);
+              }
+            },
             onInteraction: (interaction) => this.#handleInteraction(interaction, {
               key,
               actor: sender,
@@ -691,33 +706,23 @@ export class QqHarnessBridge {
         ]);
       }
       this.#signal?.throwIfAborted();
-      const displayAnswer = answerTextForDelivery(answer, artifacts);
+      const answerText = answerTextForDelivery(answer, artifacts);
+      // 结束前仍有一段未推送的说明文本（且不是最终回答本身）时补发。
+      if (nonEmptyString(pendingStepText) && pendingStepText.trim() !== answerText.trim()) {
+        await pushNotice(pendingStepText.trim());
+      }
+      const displayAnswer = answerText;
       let textReceipt = null;
       let textSendError = null;
       try {
-        if (stream) {
-          try {
-            await stream.update(displayAnswer);
-            await stream.complete();
-            streamFinished = true;
-            textReceipt = createDeliveryReceipt({
-              deliveryId: messageId,
-              presentation: 'qq-text',
-              providerMessageIds: providerMessageIdsFor(stream),
-            });
-          } catch (error) {
-            stream.cancel?.();
-            this.#logger.warn?.('[dsh-im:qq] QQ stream finalization failed; using a text reply:', error);
-          }
-        }
-        if (!streamFinished) {
-          const sent = await this.#bot.sendText(target, displayAnswer);
-          textReceipt = createDeliveryReceipt({
-            deliveryId: messageId,
-            presentation: 'qq-text',
-            providerMessageIds: providerMessageIdsFor(sent),
-          });
-        }
+        const deliveries = await sendMarkdownReply(this.#bot, target, displayAnswer, {
+          logger: this.#logger,
+        });
+        textReceipt = createDeliveryReceipt({
+          deliveryId: messageId,
+          presentation: 'qq-text',
+          providerMessageIds: deliveries.flatMap((delivery) => providerMessageIdsFor(delivery)),
+        });
       } catch (error) {
         textSendError = error;
         this.#logger.warn?.('[dsh-im:qq] final text delivery failed; continuing with result files:', error);
@@ -736,22 +741,14 @@ export class QqHarnessBridge {
       return delivery.receipt;
     } catch (error) {
       if (error?.code === 'turn-stopped') {
-        if (stream) {
-          try {
-            await stream.cancel?.();
-          } catch (streamError) {
-            this.#logger.warn?.('[dsh-im:qq] unable to cancel a stopped QQ stream:', streamError);
-          }
-          try {
-            await this.#bot.sendText(target, '已停止。');
-          } catch (sendError) {
-            this.#logger.warn?.('[dsh-im:qq] unable to announce a stopped QQ turn:', sendError);
-          }
+        try {
+          await this.#bot.sendText(target, '已停止。');
+        } catch (sendError) {
+          this.#logger.warn?.('[dsh-im:qq] unable to announce a stopped QQ turn:', sendError);
         }
         await this.#state.markSeen(messageId);
         return;
       }
-      stream?.cancel?.();
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);
       this.#logger.error?.('[dsh-im:qq] failed to process an inbound message:', error);

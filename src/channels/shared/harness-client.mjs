@@ -255,6 +255,21 @@ function assistantMessageText(event) {
     .trim();
 }
 
+function nonEmptyText(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/** Flatten a tool/result error payload into a displayable one-line reason. */
+function toolResultErrorText(error) {
+  if (!error || typeof error !== 'object') return null;
+  const message = nonEmptyText(error.message);
+  if (message) return message;
+  const name = nonEmptyText(error.name);
+  const code = nonEmptyText(error.code);
+  if (name || code) return [name ?? 'Error', code].filter(Boolean).join(': ');
+  return null;
+}
+
 function consumeInteractionOwnership(ownership, entries) {
   const ordered = [...entries]
     .map((entry) => entry?.event ?? entry)
@@ -325,6 +340,8 @@ export class HarnessReplyTracker {
   #latestText = '';
   #finished = false;
   #reason = null;
+  #toolNames = new Map();
+  #lastToolName = null;
 
   constructor({ promptRpcId, afterSeq = -1 }) {
     this.#promptRpcId = promptRpcId;
@@ -352,7 +369,19 @@ export class HarnessReplyTracker {
   }
 
   consume(entries) {
-    let update = null;
+    const updates = [];
+    // 同一批轮询内的 text 帧只保留最新累积，其余事件逐帧透出，
+    // 让消费方能按顺序看到每个工具调用与结果。
+    const pushUpdate = (update) => {
+      if (update.type === 'text' && updates.length > 0) {
+        const last = updates[updates.length - 1];
+        if (last.type === 'text') {
+          updates[updates.length - 1] = update;
+          return;
+        }
+      }
+      updates.push(update);
+    };
     const ordered = [...entries]
       .map((entry) => entry?.event ?? entry)
       .filter(Boolean)
@@ -394,7 +423,7 @@ export class HarnessReplyTracker {
           .trim();
         if (text && text !== this.#latestText) {
           this.#latestText = text;
-          update = { type: 'text', text };
+          pushUpdate({ type: 'text', text });
         }
         continue;
       }
@@ -403,18 +432,34 @@ export class HarnessReplyTracker {
         const text = assistantMessageText(event);
         if (text && text !== this.#latestText) {
           this.#latestText = text;
-          update = { type: 'text', text };
+          pushUpdate({ type: 'text', text });
         }
         continue;
       }
 
       if (event.type === 'tool/call') {
-        update = { type: 'tool', name: event.data?.name ?? '工具' };
+        const name = nonEmptyText(event.data?.name) ?? '工具';
+        const callId = nonEmptyText(event.data?.callId)
+          ?? nonEmptyText(event.data?.subCallId);
+        if (callId) this.#toolNames.set(callId, name);
+        this.#lastToolName = name;
+        pushUpdate({ type: 'tool', name, ...(callId ? { callId } : {}) });
       } else if (event.type === 'tool/result') {
-        update = { type: 'status', text: '正在整理结果…' };
+        const callId = nonEmptyText(event.data?.message?.source?.callId)
+          ?? nonEmptyText(event.data?.callId)
+          ?? nonEmptyText(event.data?.subCallId);
+        const toolName = (callId ? this.#toolNames.get(callId) : null)
+          ?? this.#lastToolName;
+        const error = toolResultErrorText(event.data?.error);
+        pushUpdate({
+          type: 'status',
+          text: '正在整理结果…',
+          ...(toolName ? { toolName } : {}),
+          ...(error ? { error } : {}),
+        });
       }
     }
-    return update;
+    return updates;
   }
 }
 
@@ -1189,12 +1234,14 @@ export class HarnessClient {
             this.#consumeInteractionOwnerships(sessionId, history.events ?? []);
             if (!wasActive && ownership.active) ownership.reconnect?.();
           }
-          const update = tracker.consume(history.events ?? []);
-          if (update && onUpdate) {
-            try {
-              await onUpdate(update);
-            } catch (error) {
-              console.warn(`[${this.#logPrefix}] ignored a progress update failure:`, error.message);
+          const updates = tracker.consume(history.events ?? []);
+          if (onUpdate) {
+            for (const update of updates) {
+              try {
+                await onUpdate(update);
+              } catch (error) {
+                console.warn(`[${this.#logPrefix}] ignored a progress update failure:`, error.message);
+              }
             }
           }
           if (!tracker.finished) continue;

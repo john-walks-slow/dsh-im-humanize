@@ -554,18 +554,12 @@ test('QQ remembers any authorized private inbound as a connection-test target', 
   assert.equal(sent.length, 2);
 });
 
-test('QQ private messages stream Harness snapshots and finalize once', async () => {
-  const frames = [];
+test('QQ pushes the final answer without streaming intermediate text frames', async () => {
   const sent = [];
   const seen = new Set();
   const bridge = new QqHarnessBridge({
     bot: {
       sendText: async (_target, text) => sent.push(text),
-      openStream: () => ({
-        update: async (text) => frames.push(text),
-        complete: async () => frames.push('DONE'),
-        cancel() {},
-      }),
     },
     ownerUserOpenid: 'owner-openid',
     harness: {
@@ -573,7 +567,9 @@ test('QQ private messages stream Harness snapshots and finalize once', async () 
       createSession: async () => 'session-new',
       ensureRunning: async () => true,
       ask: async (_session, _text, { onUpdate }) => {
-        await onUpdate({ type: 'text', text: '回答中' });
+        // 正文流式帧不逐帧推送；最终回答与已暂存文本相同时不重复补发。
+        await onUpdate({ type: 'text', text: '最终回' });
+        await onUpdate({ type: 'text', text: '最终回答' });
         return '最终回答';
       },
     },
@@ -587,26 +583,164 @@ test('QQ private messages stream Harness snapshots and finalize once', async () 
   });
 
   await bridge.accept(message());
-  assert.deepEqual(frames, ['回答中', '最终回答', 'DONE']);
-  assert.deepEqual(sent, []);
+  assert.deepEqual(sent, ['最终回答']);
   assert.equal(seen.has('msg-1'), true);
   assert.equal(bridge.status.messagesReplied, 1);
 });
 
-test('QQ closes an opened progress stream and announces when the Harness turn is stopped', async () => {
-  const fixture = stateFixture([['c2c:owner-openid', 'session-stopped']]);
-  const frames = [];
+test('QQ pushes one notice per tool call and ignores status frames', async () => {
   const sent = [];
-  let cancellations = 0;
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => sent.push(text),
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_session, _text, { onUpdate }) => {
+        await onUpdate({ type: 'tool', name: 'bash' });
+        // 工具结束后 Harness 客户端会下发 status 帧“正在整理结果…”。
+        await onUpdate({ type: 'status', text: '正在整理结果…', toolName: 'bash' });
+        await onUpdate({ type: 'tool', name: 'read' });
+        await onUpdate({ type: 'status', text: '正在整理结果…', toolName: 'read' });
+        return '最终回答';
+      },
+    },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => {},
+      sessionFor: () => 'session-status',
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+  });
+
+  await bridge.accept(message({ messageId: 'msg-status-frame' }));
+  // 工具调用本身不推送，避免多工具任务刷屏。
+  assert.deepEqual(sent, ['最终回答']);
+});
+
+test('QQ pushes a failed tool error and any interim explanation text', async () => {
+  const sent = [];
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => sent.push(text),
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_session, _text, { onUpdate }) => {
+        await onUpdate({ type: 'text', text: '实体不存在，先创建再添加观察：' });
+        await onUpdate({ type: 'tool', name: 'add_observations' });
+        await onUpdate({
+          type: 'status',
+          text: '正在整理结果…',
+          toolName: 'add_observations',
+          error: 'Error calling add_observations. Status code: 404.',
+        });
+        await onUpdate({ type: 'text', text: '改用创建实体的方式：' });
+        await onUpdate({ type: 'tool', name: 'create_entities' });
+        await onUpdate({ type: 'status', text: '正在整理结果…', toolName: 'create_entities' });
+        return '已存入两套记忆。';
+      },
+    },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => {},
+      sessionFor: () => 'session-tool-error',
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+  });
+
+  await bridge.accept(message({ messageId: 'msg-tool-error' }));
+  assert.deepEqual(sent, [
+    '实体不存在，先创建再添加观察：',
+    'Tool call add_observations\nError: Error calling add_observations. Status code: 404.',
+    '改用创建实体的方式：',
+    '已存入两套记忆。',
+  ]);
+});
+
+test('QQ delivers final group answers as markdown messages', async () => {
+  const sentText = [];
+  const markdownCalls = [];
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => sentText.push(text),
+      send: async (options) => {
+        markdownCalls.push(options);
+        return { id: `md-${markdownCalls.length}` };
+      },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => '## 标题\n\n**加粗**与 `代码`',
+    },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => {},
+      sessionFor: () => 'session-group',
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+  });
+
+  await bridge.accept(message({
+    kind: 'group',
+    rawEventType: 'GROUP_AT_MESSAGE_CREATE',
+    groupOpenid: 'group-md',
+    messageId: 'msg-group-md',
+    content: '请回答',
+    replyTarget: { scope: 'group', targetId: 'group-md', msgId: 'msg-group-md' },
+  }));
+  assert.equal(markdownCalls.length, 1);
+  assert.equal(markdownCalls[0].msgType, 2);
+  assert.equal(markdownCalls[0].markdown.content, '## 标题\n\n**加粗**与 `代码`');
+  assert.equal(Number.isInteger(markdownCalls[0].extra.msg_seq), true);
+  assert.deepEqual(sentText, []);
+  assert.equal(bridge.status.messagesReplied, 1);
+});
+
+test('QQ falls back to plain text when the platform rejects markdown', async () => {
+  const sentText = [];
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => sentText.push(text),
+      send: async () => { throw new Error('markdown rejected'); },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => '**回答**内容',
+    },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => {},
+      sessionFor: () => 'session-fallback',
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+    logger: { warn() {}, error() {} },
+  });
+
+  await bridge.accept(message({
+    messageId: 'msg-md-fallback',
+    replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: 'msg-md-fallback' },
+  }));
+  assert.deepEqual(sentText, ['**回答**内容']);
+  assert.equal(bridge.status.messagesReplied, 1);
+  assert.equal(bridge.status.lastError, null);
+});
+
+test('QQ announces a stopped turn after any tool notices already pushed', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-stopped']]);
+  const sent = [];
   let loggedErrors = 0;
   const bridge = new QqHarnessBridge({
     bot: {
       sendText: async (_target, text) => sent.push(text),
-      openStream: () => ({
-        update: async (text) => frames.push(text),
-        complete: async () => frames.push('DONE'),
-        cancel: () => { cancellations += 1; },
-      }),
     },
     ownerUserOpenid: 'owner-openid',
     harness: {
@@ -624,25 +758,18 @@ test('QQ closes an opened progress stream and announces when the Harness turn is
 
   await bridge.accept(message({ messageId: 'qq-stopped-stream' }));
 
-  assert.deepEqual(frames, ['正在使用bash…']);
-  assert.equal(cancellations, 1);
   assert.deepEqual(sent, ['已停止。']);
   assert.equal(loggedErrors, 0);
   assert.equal(fixture.seen.has('qq-stopped-stream'), true);
 });
 
-test('QQ keeps a stopped turn terminal when stream cleanup and its notice both fail', async () => {
+test('QQ keeps a stopped turn terminal when its notice cannot be sent', async () => {
   const fixture = stateFixture([['c2c:owner-openid', 'session-stopped-fallback']]);
   let warnings = 0;
   let loggedErrors = 0;
   const bridge = new QqHarnessBridge({
     bot: {
       sendText: async () => { throw new Error('send unavailable'); },
-      openStream: () => ({
-        update: async () => {},
-        complete: async () => {},
-        cancel: () => { throw new Error('cancel unavailable'); },
-      }),
     },
     ownerUserOpenid: 'owner-openid',
     harness: {
@@ -662,7 +789,7 @@ test('QQ keeps a stopped turn terminal when stream cleanup and its notice both f
 
   await bridge.accept(message({ messageId: 'qq-stopped-stream-fallback' }));
 
-  assert.equal(warnings, 2);
+  assert.equal(warnings, 1);
   assert.equal(loggedErrors, 0);
   assert.equal(fixture.seen.has('qq-stopped-stream-fallback'), true);
 });
