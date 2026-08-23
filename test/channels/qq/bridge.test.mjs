@@ -458,6 +458,42 @@ test('QQ private messages stream Harness snapshots and finalize once', async () 
   assert.equal(bridge.status.messagesReplied, 1);
 });
 
+test('QQ progress stream keeps the last frame when a tool finishes', async () => {
+  const frames = [];
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async () => {},
+      openStream: () => ({
+        update: async (text) => frames.push(text),
+        complete: async () => frames.push('DONE'),
+        cancel() {},
+      }),
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_session, _text, { onUpdate }) => {
+        await onUpdate({ type: 'tool', name: 'bash' });
+        // 工具结束后 Harness 客户端会下发 status 帧“正在整理结果…”。
+        await onUpdate({ type: 'status', text: '正在整理结果…' });
+        await onUpdate({ type: 'tool', name: 'read' });
+        await onUpdate({ type: 'status', text: '正在整理结果…' });
+        return '最终回答';
+      },
+    },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => {},
+      sessionFor: () => 'session-status',
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+  });
+
+  await bridge.accept(message({ messageId: 'msg-status-frame' }));
+  assert.deepEqual(frames, ['正在使用bash…', '正在使用read…', '最终回答', 'DONE']);
+});
+
 test('QQ delivers final group answers as markdown messages', async () => {
   const sentText = [];
   const markdownCalls = [];

@@ -619,11 +619,13 @@ export class QqHarnessBridge {
             signal: this.#signal,
             control: { owner: this, key },
             onUpdate: stream ? async (update) => {
+              // status 帧（如工具结束后的“正在整理结果…”）不推送：
+              // 保持上一帧（工具名或已生成文本），避免中间过程反复闪提示。
               const progress = update.type === 'text'
                 ? update.text
                 : update.type === 'tool'
                   ? `正在使用${update.name}…`
-                  : update.text;
+                  : null;
               if (progress) await stream.update(progress);
             } : undefined,
             onInteraction: (interaction) => this.#handleInteraction(interaction, {
