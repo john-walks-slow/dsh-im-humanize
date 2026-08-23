@@ -1,9 +1,21 @@
-// QQ markdown 回复投递：长文按代码块/表格边界切分，以 msg_type=2 发送，
+// QQ markdown 回复投递：长文尽量按结构边界切分，以 msg_type=2 发送，
 // 平台拒绝 markdown 时逐条回退纯文本。
 
 const DEFAULT_CHUNK_LIMIT = 4_500;
 const CODE_FENCE_OPEN = /^```/;
 const GFM_TABLE_LINE = /^\|.+\|$/;
+const PASSIVE_REPLY_LIMIT = Object.freeze({ c2c: 4, group: 5 });
+const PARTIAL_REPLY_NOTICE = '回答较长，后续内容未能通过 QQ 完整发送，请回复“继续”。';
+
+function safeSliceIndex(value, limit) {
+  let index = Math.min(limit, value.length);
+  const before = value.charCodeAt(index - 1);
+  const after = value.charCodeAt(index);
+  if (before >= 0xD800 && before <= 0xDBFF && after >= 0xDC00 && after <= 0xDFFF) {
+    index -= 1;
+  }
+  return Math.max(1, index);
+}
 
 /**
  * 按换行边界切分 Markdown 文本：
@@ -44,8 +56,9 @@ export function chunkMarkdownText(text, limit = DEFAULT_CHUNK_LIMIT) {
     }
     let remaining = block;
     while (remaining.length > bound) {
-      chunks.push(remaining.slice(0, bound));
-      remaining = remaining.slice(bound);
+      const index = safeSliceIndex(remaining, bound);
+      chunks.push(remaining.slice(0, index));
+      remaining = remaining.slice(index);
     }
     current = remaining;
   };
@@ -65,8 +78,9 @@ export function chunkMarkdownText(text, limit = DEFAULT_CHUNK_LIMIT) {
         chunks.push(current);
         current = '';
       }
-      chunks.push(remaining.slice(0, bound));
-      remaining = remaining.slice(bound);
+      const index = safeSliceIndex(remaining, bound);
+      chunks.push(remaining.slice(0, index));
+      remaining = remaining.slice(index);
     }
     appendBlock(remaining);
   };
@@ -115,11 +129,32 @@ function nextMsgSeq() {
 export async function sendMarkdownReply(bot, target, text, { logger } = {}) {
   const chunks = chunkMarkdownText(text);
   const results = [];
-  for (const chunk of chunks) {
+  const passiveLimit = target?.msgId ? PASSIVE_REPLY_LIMIT[target.scope] : null;
+  const overflow = passiveLimit !== null && chunks.length > passiveLimit;
+  const passiveContentCount = overflow ? passiveLimit - 1 : chunks.length;
+  const proactiveTarget = target?.msgId
+    ? { scope: target.scope, targetId: target.targetId }
+    : target;
+  let partialNoticeSent = false;
+
+  const sendPartialNotice = async () => {
+    if (partialNoticeSent || !target?.msgId) return;
+    partialNoticeSent = true;
+    try {
+      results.push(await bot.sendText(target, PARTIAL_REPLY_NOTICE));
+    } catch (error) {
+      logger?.warn?.('[dsh-im:qq] unable to send partial reply notice:', error);
+    }
+  };
+
+  for (const [index, chunk] of chunks.entries()) {
+    const deliveryTarget = overflow && index >= passiveContentCount
+      ? proactiveTarget
+      : target;
     if (typeof bot?.send === 'function') {
       try {
         results.push(await bot.send({
-          target,
+          target: deliveryTarget,
           msgType: 2,
           markdown: { content: chunk },
           extra: { msg_seq: nextMsgSeq() },
@@ -129,7 +164,13 @@ export async function sendMarkdownReply(bot, target, text, { logger } = {}) {
         logger?.warn?.('[dsh-im:qq] markdown delivery failed; retrying as plain text:', error);
       }
     }
-    results.push(await bot.sendText(target, chunk));
+    try {
+      results.push(await bot.sendText(deliveryTarget, chunk));
+    } catch (error) {
+      if (results.length === 0) throw error;
+      await sendPartialNotice();
+      break;
+    }
   }
   return results;
 }

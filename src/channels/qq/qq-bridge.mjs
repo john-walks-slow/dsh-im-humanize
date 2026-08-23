@@ -592,6 +592,7 @@ export class QqHarnessBridge {
     const text = promptMessage.content;
     const hasImages = hasInboundImages(promptMessage);
     const hasFiles = hasInboundFiles(promptMessage);
+    let stream = null;
     try {
       if (!text && !hasImages && !hasFiles) {
         await this.#bot.sendText(target, '目前支持文字、图片和文件消息。');
@@ -644,16 +645,17 @@ export class QqHarnessBridge {
       const content = hasImages
         ? await promptContentForMessage(promptMessage, { signal: this.#signal })
         : undefined;
-      // 过程流：把一次 Turn 的中间过程逐条推送给用户——
-      // 模型说明文本、每个 Tool call、失败的工具错误详情，最后是完整回答。
-      let pendingStepText = null;
-      const pushNotice = async (text) => {
+      // QQ C2C keeps one stream bubble. Progress is collected but never submitted:
+      // some clients reject replacing an already visible stream frame, which would
+      // otherwise leave a stale progress bubble plus a separate fallback answer.
+      if (message.kind === 'c2c' && target?.msgId && typeof this.#bot.openStream === 'function') {
         try {
-          await this.#bot.sendText(target, text);
+          stream = this.#bot.openStream({ target });
         } catch (error) {
-          this.#logger.warn?.('[dsh-im:qq] unable to send a turn progress notice:', error);
+          this.#logger.warn?.('[dsh-im:qq] unable to start a QQ stream; using markdown fallback:', error);
         }
-      };
+      }
+      const toolErrors = [];
       let answer;
       let artifacts = [];
       try {
@@ -668,25 +670,13 @@ export class QqHarnessBridge {
             timeoutMs: this.#replyTimeoutMs,
             signal: this.#signal,
             control: { owner: this, key },
-            onUpdate: async (update) => {
-              if (update.type === 'text') {
-                // 当前 step 的累积文本：暂存，等下一个工具或结束时一次性推送。
-                pendingStepText = update.text;
-                return;
-              }
-              if (update.type === 'tool') {
-                // 工具调用本身不推送：agent 任务工具调用频繁，逐条推送会刷屏；
-                // 它只作为边界把上一段说明文本定稿推送。失败时随错误详情带出工具名。
-                if (nonEmptyString(pendingStepText)) {
-                  await pushNotice(pendingStepText.trim());
-                }
-                pendingStepText = null;
-                return;
-              }
+            progressMode: 'all',
+            onUpdate: (update) => {
               if (update.error) {
                 const label = nonEmptyString(update.toolName)
                   ? `Tool call ${update.toolName}` : 'Tool call';
-                await pushNotice(`${label}\nError: ${update.error}`);
+                const text = `${label}\nError: ${update.error}`;
+                toolErrors.push(text);
               }
             },
             onInteraction: (interaction) => this.#handleInteraction(interaction, {
@@ -707,22 +697,42 @@ export class QqHarnessBridge {
       }
       this.#signal?.throwIfAborted();
       const answerText = answerTextForDelivery(answer, artifacts);
-      // 结束前仍有一段未推送的说明文本（且不是最终回答本身）时补发。
-      if (nonEmptyString(pendingStepText) && pendingStepText.trim() !== answerText.trim()) {
-        await pushNotice(pendingStepText.trim());
-      }
-      const displayAnswer = answerText;
+      const displayAnswer = toolErrors.length > 0
+        ? `${answerText}\n\n---\n\n${toolErrors.join('\n\n')}`
+        : answerText;
       let textReceipt = null;
       let textSendError = null;
       try {
-        const deliveries = await sendMarkdownReply(this.#bot, target, displayAnswer, {
-          logger: this.#logger,
-        });
-        textReceipt = createDeliveryReceipt({
-          deliveryId: messageId,
-          presentation: 'qq-text',
-          providerMessageIds: deliveries.flatMap((delivery) => providerMessageIdsFor(delivery)),
-        });
+        let streamFinished = false;
+        if (stream) {
+          try {
+            await stream.update(displayAnswer);
+            streamFinished = true;
+            textReceipt = createDeliveryReceipt({
+              deliveryId: messageId,
+              presentation: 'qq-text',
+              providerMessageIds: providerMessageIdsFor(stream),
+            });
+            try {
+              await stream.complete();
+            } catch (error) {
+              this.#logger.warn?.('[dsh-im:qq] QQ stream completion failed after visible final content:', error);
+            }
+          } catch (error) {
+            stream.cancel?.();
+            this.#logger.warn?.('[dsh-im:qq] QQ stream update failed; using markdown fallback:', error);
+          }
+        }
+        if (!streamFinished) {
+          const deliveries = await sendMarkdownReply(this.#bot, target, displayAnswer, {
+            logger: this.#logger,
+          });
+          textReceipt = createDeliveryReceipt({
+            deliveryId: messageId,
+            presentation: 'qq-text',
+            providerMessageIds: deliveries.flatMap((delivery) => providerMessageIdsFor(delivery)),
+          });
+        }
       } catch (error) {
         textSendError = error;
         this.#logger.warn?.('[dsh-im:qq] final text delivery failed; continuing with result files:', error);
@@ -742,12 +752,22 @@ export class QqHarnessBridge {
     } catch (error) {
       if (error?.code === 'turn-stopped') {
         try {
+          stream?.cancel?.();
+        } catch (streamError) {
+          this.#logger.warn?.('[dsh-im:qq] unable to cancel a stopped QQ stream:', streamError);
+        }
+        try {
           await this.#bot.sendText(target, '已停止。');
         } catch (sendError) {
           this.#logger.warn?.('[dsh-im:qq] unable to announce a stopped QQ turn:', sendError);
         }
         await this.#state.markSeen(messageId);
         return;
+      }
+      try {
+        stream?.cancel?.();
+      } catch (streamError) {
+        this.#logger.warn?.('[dsh-im:qq] unable to cancel a failed QQ stream:', streamError);
       }
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);

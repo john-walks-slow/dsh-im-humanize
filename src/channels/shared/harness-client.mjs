@@ -368,7 +368,7 @@ export class HarnessReplyTracker {
     return this.#targetTurn;
   }
 
-  consume(entries) {
+  consumeAll(entries) {
     const updates = [];
     // 同一批轮询内的 text 帧只保留最新累积，其余事件逐帧透出，
     // 让消费方能按顺序看到每个工具调用与结果。
@@ -460,6 +460,10 @@ export class HarnessReplyTracker {
       }
     }
     return updates;
+  }
+
+  consume(entries) {
+    return this.consumeAll(entries).at(-1) ?? null;
   }
 }
 
@@ -1081,6 +1085,7 @@ export class HarnessClient {
     const timeoutMs = options.timeoutMs ?? 600_000;
     const signal = options.signal;
     const onUpdate = typeof options.onUpdate === 'function' ? options.onUpdate : null;
+    const progressMode = options.progressMode === 'all' ? 'all' : 'latest';
     const onArtifact = typeof options.onArtifact === 'function' ? options.onArtifact : null;
     const onInteraction = typeof options.onInteraction === 'function'
       ? options.onInteraction
@@ -1234,9 +1239,10 @@ export class HarnessClient {
             this.#consumeInteractionOwnerships(sessionId, history.events ?? []);
             if (!wasActive && ownership.active) ownership.reconnect?.();
           }
-          const updates = tracker.consume(history.events ?? []);
+          const updates = tracker.consumeAll(history.events ?? []);
           if (onUpdate) {
-            for (const update of updates) {
+            const visibleUpdates = progressMode === 'all' ? updates : updates.slice(-1);
+            for (const update of visibleUpdates) {
               try {
                 await onUpdate(update);
               } catch (error) {

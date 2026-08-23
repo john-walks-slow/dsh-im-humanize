@@ -65,6 +65,13 @@ test('chunkMarkdownText hard-splits an oversized single line', () => {
   assert.deepEqual(chunks, ['x'.repeat(100), 'x'.repeat(100), 'x'.repeat(50)]);
 });
 
+test('chunkMarkdownText does not split an emoji surrogate pair', () => {
+  const chunks = chunkMarkdownText(`1234😀5678`, 5);
+  assert.equal(chunks.join(''), '1234😀5678');
+  assert.equal(chunks.some((chunk) => chunk.includes('\uFFFD')), false);
+  for (const chunk of chunks) assert.ok(chunk.length <= 5);
+});
+
 test('sendMarkdownReply sends markdown with unique msg_seq per chunk', async () => {
   const calls = [];
   const results = await sendMarkdownReply({
@@ -145,6 +152,44 @@ test('sendMarkdownReply delivers long answers as multiple markdown chunks', asyn
   }
   assert.equal(results.length, markdownChunks.length);
   assert.equal(markdownChunks.join('\n'), text);
+});
+
+test('sendMarkdownReply moves overflow chunks off the passive group reply target', async () => {
+  const targets = [];
+  const groupTarget = { scope: 'group', targetId: 'group-1', msgId: 'group-msg' };
+  await sendMarkdownReply({
+    send: async ({ target: sentTarget }) => {
+      targets.push(sentTarget);
+      return { id: `id-${targets.length}` };
+    },
+    sendText: async () => { throw new Error('unexpected'); },
+  }, groupTarget, 'x'.repeat(4_500 * 6));
+
+  assert.equal(targets.length, 6);
+  assert.equal(targets.slice(0, 4).every((sentTarget) => sentTarget.msgId === 'group-msg'), true);
+  assert.deepEqual(targets.slice(4), [
+    { scope: 'group', targetId: 'group-1' },
+    { scope: 'group', targetId: 'group-1' },
+  ]);
+});
+
+test('sendMarkdownReply uses the reserved passive reply for a visible partial notice', async () => {
+  const groupTarget = { scope: 'group', targetId: 'group-1', msgId: 'group-msg' };
+  const notices = [];
+  const results = await sendMarkdownReply({
+    send: async ({ target: sentTarget }) => {
+      if (!sentTarget.msgId) throw new Error('proactive disabled');
+      return { id: 'passive' };
+    },
+    sendText: async (sentTarget, text) => {
+      if (!sentTarget.msgId) throw new Error('proactive disabled');
+      notices.push(text);
+      return { id: 'partial-notice' };
+    },
+  }, groupTarget, 'x'.repeat(4_500 * 6), { logger: { warn() {} } });
+
+  assert.equal(results.length, 5);
+  assert.deepEqual(notices, ['回答较长，后续内容未能通过 QQ 完整发送，请回复“继续”。']);
 });
 
 test('sendMarkdownReply returns no deliveries for empty text', async () => {

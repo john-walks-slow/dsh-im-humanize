@@ -554,20 +554,26 @@ test('QQ remembers any authorized private inbound as a connection-test target', 
   assert.equal(sent.length, 2);
 });
 
-test('QQ pushes the final answer without streaming intermediate text frames', async () => {
+test('QQ private messages produce one final stream bubble', async () => {
   const sent = [];
+  const frames = [];
   const seen = new Set();
   const bridge = new QqHarnessBridge({
     bot: {
       sendText: async (_target, text) => sent.push(text),
+      openStream: () => ({
+        update: async (text) => frames.push(text),
+        complete: async () => frames.push('DONE'),
+        cancel() {},
+      }),
     },
     ownerUserOpenid: 'owner-openid',
     harness: {
       sessionExists: async () => true,
       createSession: async () => 'session-new',
       ensureRunning: async () => true,
-      ask: async (_session, _text, { onUpdate }) => {
-        // 正文流式帧不逐帧推送；最终回答与已暂存文本相同时不重复补发。
+      ask: async (_session, _text, { onUpdate, progressMode }) => {
+        assert.equal(progressMode, 'all');
         await onUpdate({ type: 'text', text: '最终回' });
         await onUpdate({ type: 'text', text: '最终回答' });
         return '最终回答';
@@ -583,16 +589,52 @@ test('QQ pushes the final answer without streaming intermediate text frames', as
   });
 
   await bridge.accept(message());
-  assert.deepEqual(sent, ['最终回答']);
+  assert.deepEqual(frames, ['最终回答', 'DONE']);
+  assert.deepEqual(sent, []);
   assert.equal(seen.has('msg-1'), true);
   assert.equal(bridge.status.messagesReplied, 1);
 });
 
-test('QQ pushes one notice per tool call and ignores status frames', async () => {
+test('QQ does not duplicate a visible private answer when stream completion fails', async () => {
+  const frames = [];
   const sent = [];
   const bridge = new QqHarnessBridge({
     bot: {
       sendText: async (_target, text) => sent.push(text),
+      openStream: () => ({
+        update: async (text) => frames.push(text),
+        complete: async () => { throw new Error('already submitted'); },
+        cancel() {},
+      }),
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => '最终回答',
+    },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => {},
+      sessionFor: () => 'session-stream-complete-failure',
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+    logger: { warn() {}, error() {} },
+  });
+
+  await bridge.accept(message({ messageId: 'msg-stream-complete-failure' }));
+  assert.deepEqual(frames, ['最终回答']);
+  assert.deepEqual(sent, []);
+  assert.equal(bridge.status.messagesReplied, 1);
+});
+
+test('QQ group messages suppress every successful progress update', async () => {
+  const sent = [];
+  let streamCalls = 0;
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => sent.push(text),
+      openStream: () => { streamCalls += 1; throw new Error('group stream must not open'); },
     },
     ownerUserOpenid: 'owner-openid',
     harness: {
@@ -615,12 +657,18 @@ test('QQ pushes one notice per tool call and ignores status frames', async () =>
     },
   });
 
-  await bridge.accept(message({ messageId: 'msg-status-frame' }));
-  // 工具调用本身不推送，避免多工具任务刷屏。
+  await bridge.accept(message({
+    kind: 'group',
+    rawEventType: 'GROUP_AT_MESSAGE_CREATE',
+    groupOpenid: 'group-progress',
+    messageId: 'msg-status-frame',
+    replyTarget: { scope: 'group', targetId: 'group-progress', msgId: 'msg-status-frame' },
+  }));
   assert.deepEqual(sent, ['最终回答']);
+  assert.equal(streamCalls, 0);
 });
 
-test('QQ pushes a failed tool error and any interim explanation text', async () => {
+test('QQ group messages append tool failures to one final answer', async () => {
   const sent = [];
   const bridge = new QqHarnessBridge({
     bot: {
@@ -653,12 +701,15 @@ test('QQ pushes a failed tool error and any interim explanation text', async () 
     },
   });
 
-  await bridge.accept(message({ messageId: 'msg-tool-error' }));
+  await bridge.accept(message({
+    kind: 'group',
+    rawEventType: 'GROUP_AT_MESSAGE_CREATE',
+    groupOpenid: 'group-error',
+    messageId: 'msg-tool-error',
+    replyTarget: { scope: 'group', targetId: 'group-error', msgId: 'msg-tool-error' },
+  }));
   assert.deepEqual(sent, [
-    '实体不存在，先创建再添加观察：',
-    'Tool call add_observations\nError: Error calling add_observations. Status code: 404.',
-    '改用创建实体的方式：',
-    '已存入两套记忆。',
+    '已存入两套记忆。\n\n---\n\nTool call add_observations\nError: Error calling add_observations. Status code: 404.',
   ]);
 });
 
@@ -734,7 +785,7 @@ test('QQ falls back to plain text when the platform rejects markdown', async () 
   assert.equal(bridge.status.lastError, null);
 });
 
-test('QQ announces a stopped turn after any tool notices already pushed', async () => {
+test('QQ announces a stopped turn and closes its unused private stream', async () => {
   const fixture = stateFixture([['c2c:owner-openid', 'session-stopped']]);
   const sent = [];
   let loggedErrors = 0;
