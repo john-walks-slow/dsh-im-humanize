@@ -595,6 +595,16 @@ export class QqHarnessBridge {
       const content = hasImages
         ? await promptContentForMessage(promptMessage, { signal: this.#signal })
         : undefined;
+      // 过程流：把一次 Turn 的中间过程逐条推送给用户——
+      // 模型说明文本、每个 Tool call、失败的工具错误详情，最后是完整回答。
+      let pendingStepText = null;
+      const pushNotice = async (text) => {
+        try {
+          await this.#bot.sendText(target, text);
+        } catch (error) {
+          this.#logger.warn?.('[dsh-im:qq] unable to send a turn progress notice:', error);
+        }
+      };
       let answer;
       let artifacts = [];
       try {
@@ -609,14 +619,24 @@ export class QqHarnessBridge {
             timeoutMs: this.#replyTimeoutMs,
             signal: this.#signal,
             control: { owner: this, key },
-            // 中间过程逐条推送：每个工具调用发一条独立消息；text 帧（正文流）
-            // 不逐帧推送，最终答案一次性发送；status 帧忽略。
             onUpdate: async (update) => {
-              if (update.type !== 'tool' || !nonEmptyString(update.name)) return;
-              try {
-                await this.#bot.sendText(target, `正在使用${update.name}…`);
-              } catch (error) {
-                this.#logger.warn?.('[dsh-im:qq] unable to send a tool progress notice:', error);
+              if (update.type === 'text') {
+                // 当前 step 的累积文本：暂存，等下一个工具或结束时一次性推送。
+                pendingStepText = update.text;
+                return;
+              }
+              if (update.type === 'tool') {
+                if (nonEmptyString(pendingStepText)) {
+                  await pushNotice(pendingStepText.trim());
+                }
+                pendingStepText = null;
+                await pushNotice(`Tool call ${update.name}`);
+                return;
+              }
+              if (update.error) {
+                const label = nonEmptyString(update.toolName)
+                  ? `Tool call ${update.toolName}` : 'Tool call';
+                await pushNotice(`${label}\nError: ${update.error}`);
               }
             },
             onInteraction: (interaction) => this.#handleInteraction(interaction, {
@@ -635,7 +655,12 @@ export class QqHarnessBridge {
         ]);
       }
       this.#signal?.throwIfAborted();
-      const displayAnswer = answerTextForDelivery(answer, artifacts);
+      const answerText = answerTextForDelivery(answer, artifacts);
+      // 结束前仍有一段未推送的说明文本（且不是最终回答本身）时补发。
+      if (nonEmptyString(pendingStepText) && pendingStepText.trim() !== answerText.trim()) {
+        await pushNotice(pendingStepText.trim());
+      }
+      const displayAnswer = answerText;
       let textReceipt = null;
       let textSendError = null;
       try {

@@ -432,8 +432,9 @@ test('QQ pushes the final answer without streaming intermediate text frames', as
       createSession: async () => 'session-new',
       ensureRunning: async () => true,
       ask: async (_session, _text, { onUpdate }) => {
-        // 正文流式帧不逐帧推送，避免原地刷新闪烁。
-        await onUpdate({ type: 'text', text: '回答中' });
+        // 正文流式帧不逐帧推送；最终回答与已暂存文本相同时不重复补发。
+        await onUpdate({ type: 'text', text: '最终回' });
+        await onUpdate({ type: 'text', text: '最终回答' });
         return '最终回答';
       },
     },
@@ -464,9 +465,9 @@ test('QQ pushes one notice per tool call and ignores status frames', async () =>
       ask: async (_session, _text, { onUpdate }) => {
         await onUpdate({ type: 'tool', name: 'bash' });
         // 工具结束后 Harness 客户端会下发 status 帧“正在整理结果…”。
-        await onUpdate({ type: 'status', text: '正在整理结果…' });
+        await onUpdate({ type: 'status', text: '正在整理结果…', toolName: 'bash' });
         await onUpdate({ type: 'tool', name: 'read' });
-        await onUpdate({ type: 'status', text: '正在整理结果…' });
+        await onUpdate({ type: 'status', text: '正在整理结果…', toolName: 'read' });
         return '最终回答';
       },
     },
@@ -480,7 +481,49 @@ test('QQ pushes one notice per tool call and ignores status frames', async () =>
   });
 
   await bridge.accept(message({ messageId: 'msg-status-frame' }));
-  assert.deepEqual(sent, ['正在使用bash…', '正在使用read…', '最终回答']);
+  assert.deepEqual(sent, ['Tool call bash', 'Tool call read', '最终回答']);
+});
+
+test('QQ pushes a failed tool error and any interim explanation text', async () => {
+  const sent = [];
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => sent.push(text),
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_session, _text, { onUpdate }) => {
+        await onUpdate({ type: 'text', text: '实体不存在，先创建再添加观察：' });
+        await onUpdate({ type: 'tool', name: 'add_observations' });
+        await onUpdate({
+          type: 'status',
+          text: '正在整理结果…',
+          toolName: 'add_observations',
+          error: 'Error calling add_observations. Status code: 404.',
+        });
+        await onUpdate({ type: 'tool', name: 'create_entities' });
+        await onUpdate({ type: 'status', text: '正在整理结果…', toolName: 'create_entities' });
+        return '已存入两套记忆。';
+      },
+    },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => {},
+      sessionFor: () => 'session-tool-error',
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+  });
+
+  await bridge.accept(message({ messageId: 'msg-tool-error' }));
+  assert.deepEqual(sent, [
+    '实体不存在，先创建再添加观察：',
+    'Tool call add_observations',
+    'Tool call add_observations\nError: Error calling add_observations. Status code: 404.',
+    'Tool call create_entities',
+    '已存入两套记忆。',
+  ]);
 });
 
 test('QQ delivers final group answers as markdown messages', async () => {
@@ -579,7 +622,7 @@ test('QQ announces a stopped turn after any tool notices already pushed', async 
 
   await bridge.accept(message({ messageId: 'qq-stopped-stream' }));
 
-  assert.deepEqual(sent, ['正在使用bash…', '已停止。']);
+  assert.deepEqual(sent, ['Tool call bash', '已停止。']);
   assert.equal(loggedErrors, 0);
   assert.equal(fixture.seen.has('qq-stopped-stream'), true);
 });

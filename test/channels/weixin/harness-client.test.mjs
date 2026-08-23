@@ -513,7 +513,7 @@ test('reply tracker associates only the Harness turn created by the Weixin promp
       data: { turn: 9, step: 0, chunk: { type: 'text-delta', index: 0, text: '微信' } },
     } },
   ]);
-  assert.deepEqual(first, { type: 'text', text: '微信' });
+  assert.deepEqual(first, [{ type: 'text', text: '微信' }]);
   tracker.consume([
     { event: {
       seq: 6,
