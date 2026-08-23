@@ -68,7 +68,7 @@ export async function runControlCommand(text, harness, state, key, {
 
   const session = boundSession(harness, state, key);
   if (!session) {
-    return commandResult('当前聊天没有正在运行的任务，请直接发送普通消息。');
+    return commandResult('当前聊天没有绑定会话，无法补充指令。请先绑定会话。');
   }
   if (typeof session.steerActiveTurn !== 'function') {
     throw new TypeError('Harness session does not support steering active turns');
@@ -80,5 +80,5 @@ export async function runControlCommand(text, harness, state, key, {
   );
   return steered
     ? commandResult('已提交补充指令，Agent 会在下一步读取。')
-    : commandResult('当前聊天没有正在运行的任务，请直接发送普通消息。');
+    : commandResult('任务已结束，没有正在运行的任务，无法补充指令。请直接发送消息开始新任务。');
 }

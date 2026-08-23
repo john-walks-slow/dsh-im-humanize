@@ -109,19 +109,17 @@ function backButton() {
 /**
  * The hub menu card — a single entry point covering every command, organized
  * by operating flow:
- *   1. 情境 / 会话 (高频率) → 续写 · 新会话 · 会话列表
- *   2. 环境 / 能力(设置·即改即显) → 工作区下拉 · 模型 · 预设 · 归档
- *   3. 任务追踪 → 关注任务(watch 引擎入口) · 状态
- *   4. 系统 → 帮助 · 修复(数字 9)
+ *   1. 会话 · 工作区（高频率）→ 会话下拉 · 工作区下拉 · 新会话 · 全部会话
+ *   2. 任务控制 → 停止 · 压缩 · 补充指令下拉
+ *   3. 系统 → 状态 · 帮助 · 更多设置
  * `ctx` bundle:
  *   - workspaces: string[]          (工作区下拉选项)
  *   - currentWorkspace: string|null (当前工作区,下拉高亮)
  *   - currentSession: {id,title}|null (当前绑定会话,续写目标)
  *   - sessions: {id,title}[]        (最近会话,供会话下拉切换)
- *   - watchCount: number            (关注任务数)
  *   - archiveVisible: boolean       (归档显隐开关当前值)
- * Number fallback: 1=续写 2=新会话 3=会话列表 4=关注任务 5=状态
- * 6=修复 7=更多设置 8=帮助.
+ * Number fallback: 1=续写 2=新会话 3=会话列表 4=状态
+ * 5=修复 6=更多设置 7=帮助.
  */
 export function menuCard(ctx) {
   const {
@@ -129,7 +127,6 @@ export function menuCard(ctx) {
     currentWorkspace = null,
     currentSession = null,
     sessions = [],
-    watchCount = 0,
     archiveVisible = false,
   } = ctx || {};
 
@@ -145,47 +142,74 @@ export function menuCard(ctx) {
     { tag: 'hr' },
   ];
 
-  // ── 情境 / 会话（高频率）────────────────────────────────────
-  elements.push({ tag: 'div', text: markdown('**情境 · 会话**') });
-  // 会话下拉：列出最近会话，选择即切换（当前绑定会话带 ✓）
+  // ── 会话 · 工作区（高频率，左右并排）────────────────────────
   const sessionOptions = (Array.isArray(sessions) ? sessions : []).slice(0, 20);
-  if (sessionOptions.length > 0) {
+  const hasSessions = sessionOptions.length > 0;
+  const hasWorkspaces = Array.isArray(workspaces) && workspaces.length > 0;
+
+  // 构建会话下拉（始终显示，无会话时显示占位）
+  let sessionDropdown = null;
+  if (hasSessions) {
     const sessionPickOptions = sessionOptions.map((s) => ({
       text: { tag: 'plain_text', content: `${s.id === currentSessionId ? '✓ ' : ''}${safeTitle(s.title)}` },
       value: s.id,
     }));
-    elements.push({
+    sessionDropdown = {
       tag: 'select_static',
       name: 'session_pick',
-      placeholder: { tag: 'plain_text', content: '切换/续写会话' },
+      placeholder: { tag: 'plain_text', content: '切换会话' },
       initial_index: initialIndex(sessionPickOptions, currentSessionId),
       options: sessionPickOptions,
       behaviors: [{ type: 'callback', value: { action: 'session_pick' } }],
-    });
-    elements.push(buttonPair('🆕 新会话', 'new', '📋 全部会话', 'sessions'));
+    };
   } else {
-    elements.push(buttonPair('🆕 新会话', 'new', '📋 会话列表', 'sessions'));
+    sessionDropdown = {
+      tag: 'select_static',
+      name: 'session_pick',
+      placeholder: { tag: 'plain_text', content: '无可用会话' },
+      initial_index: 0,
+      options: [],
+      disabled: true,
+    };
   }
-  elements.push({ tag: 'hr' });
 
-  // ── 工作区（环境上下文）────────────────────────────────────
-  elements.push({ tag: 'div', text: markdown('**工作区**') });
-  if (Array.isArray(workspaces) && workspaces.length > 0) {
-    // 飞书 schema 2.0 的 select_static option 不支持 selected 字段，
-    // 默认展示用 initial_index；文本 ✓ 前缀仅作额外视觉高亮。
+  // 构建工作区下拉
+  let workspaceDropdown = null;
+  if (hasWorkspaces) {
     const wsOptions = workspaces.slice(0, 20).map((path) => ({
       text: { tag: 'plain_text', content: `${path === currentWorkspace ? '✓ ' : ''}${path}` },
       value: path,
     }));
-    elements.push({
+    workspaceDropdown = {
       tag: 'select_static',
       name: 'workspace_pick',
       placeholder: { tag: 'plain_text', content: '切换工作区' },
       initial_index: initialIndex(wsOptions, currentWorkspace),
       options: wsOptions,
       behaviors: [{ type: 'callback', value: { action: 'workspace_pick' } }],
+    };
+  }
+
+  // 左右并排：column_set 两列，左会话右工作区
+  if (sessionDropdown && workspaceDropdown) {
+    elements.push({
+      tag: 'column_set',
+      flex_mode: 'none',
+      columns: [
+        { tag: 'column', width: 'weighted', weight: 1, elements: [sessionDropdown] },
+        { tag: 'column', width: 'weighted', weight: 1, elements: [workspaceDropdown] },
+      ],
     });
   } else {
+    if (sessionDropdown) elements.push(sessionDropdown);
+    if (workspaceDropdown) elements.push(workspaceDropdown);
+  }
+
+  // 新会话 + 全部会话按钮
+  elements.push(buttonPair('🆕 新会话', 'new', '📋 全部会话', 'sessions'));
+
+  // 如果既没有会话也没有工作区，显示工作区列表按钮
+  if (!hasSessions && !hasWorkspaces) {
     elements.push(button('🗂 工作区列表', 'workspaces'));
   }
   elements.push({ tag: 'hr' });
@@ -210,23 +234,15 @@ export function menuCard(ctx) {
   });
   elements.push({ tag: 'hr' });
 
-  // ── 任务追踪 ───────────────────────────────────────────────
-  elements.push({ tag: 'div', text: markdown(`**任务追踪** · 👁 关注任务 ${watchCount}`) });
-  elements.push(buttonPair('👁 关注任务', 'watchlist', '📊 状态', 'status'));
-  elements.push({ tag: 'hr' });
+  // ── 底部操作（系统功能）────────────────────────────────────
+  elements.push(buttonPair('📊 状态', 'status', '📖 帮助', 'help'));
+  elements.push(button('⚙ 更多设置', 'settings'));
 
-  // ── 底部操作（低频配置收敛到「更多设置」）──────────────────
-  elements.push(buttonPair('⚙ 更多设置', 'settings', '📖 帮助', 'help'));
-
-  // 命令与数字兜底说明（飞书 schema 2.0 不支持 collapse，用平铺文本）
+  // 命令与数字兜底说明
   elements.push({ tag: 'div', text: markdown(
     '**数字兜底**\n'
-    + '**1**续写 · **2**新会话 · **3**会话列表 · **4**关注 · **5**状态\n'
-    + '**6 · 修复卡片按钮** · **7**更多设置 · **8**帮助',
-  ) });
-  elements.push({ tag: 'div', text: markdown(
-    '**任务控制**（需先绑定会话）\n'
-    + '`/stop` 停止 · `/steer <指令>` 补充指令',
+    + '**1**续写 · **2**新会话 · **3**会话列表 · **4**状态\n'
+    + '**5**🔧修复 · **6**更多设置 · **7**帮助',
   ) });
   return cardWith('🤖 助手中心', elements);
 }
@@ -496,12 +512,15 @@ export function menuHelpText() {
     '/workspacelist  列出工作区绝对路径',
     '/new  开启全新会话',
     '',
-    '📊 状态 / 压缩 / 关注',
+    '📊 状态 / 压缩',
     '/status  连接状态',
     '/compact  压缩当前会话上下文',
+    '/archived on/off  会话列表显示/隐藏归档',
+    '',
+    '👁 关注',
     '/watch ID  关注会话（完成后推送）',
     '/watchlist  关注列表',
-    '/archived on/off  会话列表显示/隐藏归档',
+    '/unwatch ID  取消关注',
     '',
     '🤖 预设 / 模型',
     '/presetlist  列出可用 Agent Preset',
@@ -526,28 +545,43 @@ export function helpCard(extraTextLines = []) {
     ? ('\n' + extraTextLines.join('\n'))
     : '';
   const elements = [
-    { tag: 'div', text: markdown('**回复数字或点击按钮使用功能**\n\n' +
-      '📋 会话列表 — 查看/绑定已有会话\n' +
-      '🆕 新会话 — 开启全新会话\n' +
-      '📊 状态 — 查看系统连接状态\n' +
-      '📐 压缩 — 压缩当前会话上下文\n' +
-      '🤖 预设 — 选择 Agent 预设\n' +
-      '🧠 模型 — 选择 AI 模型\n' +
-      '🔍 关注列表 — 管理关注会话\n' +
-      '🔄 修复 — 修复卡片按钮回调') },
+    { tag: 'div', text: markdown('**📋 卡片功能**\n\n' +
+      '1. 会话下拉 — 切换当前绑定会话\n' +
+      '2. 工作区下拉 — 切换工作区\n' +
+      '3. 🆕 新会话 — 开启全新会话\n' +
+      '4. 📋 全部会话 — 查看/绑定会话\n' +
+      '5. ⏹ 停止 — 停止当前任务\n' +
+      '6. 📐 压缩 — 压缩当前会话上下文\n' +
+      '7. 补充指令 — 给 Agent 发送指令\n' +
+      '8. 📊 状态 — 查看系统连接状态\n' +
+      '9. 📖 帮助 — 查看本帮助\n' +
+      '10. ⚙ 更多设置 — 预设/模型/归档设置') },
     { tag: 'hr' },
-    { tag: 'div', text: markdown('**文本命令**\n\n' +
+    { tag: 'div', text: markdown('**⌨️ 文本命令**\n\n' +
+      '`/m` — 打开菜单卡片\n' +
+      '`/new` — 开启全新会话\n' +
       '`/session ID` — 绑定已有会话\n' +
+      '`/sessionlist [工作区]` — 列出会话\n' +
       '`/workspace 路径` — 切换工作区\n' +
-      '`/workspacelist` — 列出工作区绝对路径\n' +
-      '`/sessionlist [工作区序号或绝对路径]` — 列出会话 ID 和标题\n' +
-      '`/watch ID` — 关注会话（完成后推送）\n' +
-      '`/stop` — 停止当前任务\n' +
-      '`/steer 指令` — 给 Agent 补充指令\n' +
-      '`/archived on/off` — 会话列表显示/隐藏归档\n' +
+      '`/workspacelist` — 列出工作区\n' +
+      '`/status` — 查看连接状态\n' +
       '`/compact` — 压缩上下文\n' +
+      '`/stop` — 停止当前任务\n' +
+      '`/steer 指令` — 补充指令\n' +
+      '`/watch ID` — 关注会话\n' +
+      '`/watchlist` — 关注列表\n' +
+      '`/unwatch ID` — 取消关注\n' +
+      '`/archived on/off` — 归档显隐\n' +
       '`/presetlist` — 列出预设\n' +
-      '`/models` — 列出模型' + extraText) },
+      '`/preset [序号/ID]` — 切换预设\n' +
+      '`/preset --default` — 跟随默认\n' +
+      '`/models` — 列出模型\n' +
+      '`/model 2` — 切换模型\n' +
+      '`/repair` — 修复卡片按钮') },
+    { tag: 'hr' },
+    { tag: 'div', text: markdown('**💡 数字兜底**\n回复数字快速操作：\n' +
+      '**1**续写 · **2**新会话 · **3**全部会话\n' +
+      '**4**状态 · **5**修复 · **6**更多设置 · **7**帮助') },
     { tag: 'hr' },
     backButton(),
   ];
@@ -620,7 +654,7 @@ export function sessionListCard(workspace, sessions, page, total, watchedSession
       const label = `${offset + 1}. ${safeTitle(session.title)}${session.archived === true ? '（已归档）' : ''}`;
       const watching = watched(session.sessionId);
       return row(
-        buttonElement(watching ? '⭐取关' : '⭐关注', watching ? `unwatch:${session.sessionId}` : `watch:${session.sessionId}`),
+        buttonElement(watching ? '⭐ 取消关注' : '☆ 关注', watching ? `unwatch:${session.sessionId}` : `watch:${session.sessionId}`),
         buttonElement(label, `use:${session.sessionId}`),
       );
     }),

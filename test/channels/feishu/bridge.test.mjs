@@ -2182,7 +2182,9 @@ test('number replies on a later session page use page-local labels', async () =>
 
   await bridge.accept(event('sessions-number-pick', '1', { senderOpenId: 'ou_owner' }));
   await bridge.waitForIdle();
-  assert.match(JSON.parse(sent.at(-1).content).text, /ID：session-21/);
+  // #bindSession 先发文本确认，再原地更新/重发菜单卡；取最后一条文本消息验证绑定结果
+  const texts = sent.filter((m) => m.msgType !== 'interactive');
+  assert.match(JSON.parse(texts.at(-1).content).text, /ID：session-21/);
 });
 
 test('session pagination preserves an explicitly selected workspace', async () => {
@@ -2342,17 +2344,17 @@ test('/repair status after a runtime restart never starts a duplicate authorizat
   assert.match(message, /不会启动新的授权/);
 });
 
-test('menu repair entry is number-only and reply 6 starts the same repair flow', async () => {
+test('menu repair entry is number-only and reply 5 starts the same repair flow', async () => {
   const repair = repairCapability();
   const fx = repairBridge({ capability: repair.capability });
 
   await fx.bridge.accept(event('repair-menu-open', '/m', { senderOpenId: 'ou_owner' }));
   await fx.bridge.waitForIdle();
   const menu = cards(fx.sent)[0].content;
-  assert.match(JSON.stringify(menu), /6 · 修复卡片按钮/);
+  assert.match(JSON.stringify(menu), /\*\*5\*\*🔧修复/);
   assert.equal(buttonsFromCard(menu).some((button) => callbackAction(button) === 'repair'), false);
 
-  await fx.bridge.accept(event('repair-menu-six', '6', { senderOpenId: 'ou_owner' }));
+  await fx.bridge.accept(event('repair-menu-five', '5', { senderOpenId: 'ou_owner' }));
   await fx.bridge.waitForIdle();
   assert.equal(repair.calls.start.length, 1);
   assert.equal(fx.asks, 0);
@@ -3040,5 +3042,5 @@ test('menu stop and steer reply friendly when no session is bound', async () => 
   await bridge.onCardAction(steerDropdownEvent('om_card_1', '继续', 'ou_owner'));
   await bridge.waitForIdle();
   assert.equal(calls.steer.length, 0);
-  assert.match(JSON.parse(sent.at(-1).content).text, /普通消息/);
+  assert.match(JSON.parse(sent.at(-1).content).text, /没有绑定会话/);
 });

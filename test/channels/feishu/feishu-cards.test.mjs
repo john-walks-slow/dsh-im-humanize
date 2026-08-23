@@ -43,15 +43,15 @@ function forms(value, result = []) {
 
 test('menu exposes the increased command set and keeps repair number-only', () => {
   const card = JSON.parse(menuCard());
-  assert.match(JSON.stringify(card), /6 · 修复卡片按钮/);
+  assert.match(JSON.stringify(card), /\*\*5\*\*\S*修复/);
   const actions = buttons(card).flatMap((button) => (
     button.behaviors?.map((behavior) => behavior?.value?.action) ?? []
   ));
   assert.deepEqual(actions, [
     'new', 'sessions', 'workspaces', 'stop', 'compact',
-    'watchlist', 'status', 'settings', 'help',
+    'status', 'help', 'settings',
   ]);
-  // 修复不占位按钮：仅通过数字兜底「6」触发（见 bridge）
+  // 修复不占位按钮：仅通过数字兜底「5🔧」触发（见 bridge）
   assert.equal(actions.includes('repair'), false);
 });
 

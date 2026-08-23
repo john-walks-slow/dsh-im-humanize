@@ -262,6 +262,8 @@ export class FeishuHarnessBridge {
   #menus = new Map();
   /** Interactive-card message id → route context for button callbacks. */
   #cardKeys = new Map();
+  /** chatId → last card message id (for in-place update). */
+  #lastCardMessages = new Map();
   /** The global event-mux watcher (one per bridge). */
   #eventWatcher = null;
   /** Serializes live completions and reconnect compensation. */
@@ -1336,8 +1338,8 @@ export class FeishuHarnessBridge {
   async #handleMenuPick(menu, number, { chatId, key, event }) {
     if (menu.kind === 'menu') {
       // Number fallback for the total menu:
-      // 1=续写 2=新会话 3=会话列表 4=关注任务 5=状态 6=修复 7=更多设置 8=帮助
-      const actions = ['use:current', 'new', 'sessions', 'watchlist', 'status', 'repair', 'settings', 'help'];
+      // 1=续写 2=新会话 3=会话列表 4=状态 5=修复 6=更多设置 7=帮助
+      const actions = ['use:current', 'new', 'sessions', 'status', 'repair', 'settings', 'help'];
       const action = actions[number - 1];
       if (!action) {
         await this.#send(chatId, '菜单没有这个编号，回复 /m 重新打开。');
@@ -1443,6 +1445,7 @@ export class FeishuHarnessBridge {
       const bound = await this.#harness.bindWorkspaceSession(key, sessionId);
       const title = String(bound?.title ?? '').replace(/\s+/gu, ' ').trim() || '暂无标题';
       await this.#send(chatId, `已绑定会话「${title}」\nID：${bound?.sessionId ?? sessionId}`);
+      await this.#sendMenuCard(key, chatId);
     } catch (error) {
       await this.#send(chatId, `绑定失败：${safeErrorText(error)}`);
     }
@@ -1459,6 +1462,25 @@ export class FeishuHarnessBridge {
   }
 
   async #sendCard(chatId, cardJson, options = {}) {
+    const { update = false } = options;
+
+    // 尝试更新已有卡片（不发送新消息）
+    if (update) {
+      const existingId = this.#lastCardMessages.get(chatId);
+      if (existingId) {
+        try {
+          await this.#client.request({
+            method: 'PATCH',
+            url: `/open-apis/im/v1/messages/${existingId}`,
+            data: { content: cardJson },
+          });
+          return existingId;
+        } catch (error) {
+          this.#logger.warn?.('[dsh-feishu] card update failed:', error?.code ?? error?.message ?? error, 'sending new');
+        }
+      }
+    }
+
     const response = await this.#client.im.v1.message.create({
       params: { receive_id_type: 'chat_id' },
       data: { receive_id: chatId, msg_type: 'interactive', content: cardJson },
@@ -1479,6 +1501,9 @@ export class FeishuHarnessBridge {
         const oldest = this.#cardKeys.keys().next().value;
         if (oldest !== undefined) this.#cardKeys.delete(oldest);
       }
+    }
+    if (messageId) {
+      this.#lastCardMessages.set(chatId, messageId);
     }
     return messageId;
   }
@@ -1532,7 +1557,6 @@ export class FeishuHarnessBridge {
       currentSessionId = sessions[0].id;
       currentSessionTitle = sessions[0].title ?? sessions[0].id;
     }
-    const watchCount = Array.isArray(this.#state.watchEntries?.(key)) ? this.#state.watchEntries(key).length : 0;
     const archiveVisible = this.#state?.includesArchivedSessions?.() ?? false;
     this.#rememberMenu(key, { kind: 'menu', chatId });
     await this.#sendCard(
@@ -1540,9 +1564,9 @@ export class FeishuHarnessBridge {
       menuCard({
         workspaces, currentWorkspace,
         currentSession: currentSessionId ? { id: currentSessionId, title: currentSessionTitle } : null,
-        sessions, watchCount, archiveVisible,
+        sessions, archiveVisible,
       }),
-      { key },
+      { key, update: true },
     );
   }
 
@@ -1754,8 +1778,8 @@ export class FeishuHarnessBridge {
       const text = compactCommand?.message || '上下文压缩失败。';
       await this.#send(chatId, text);
     } catch (error) {
-      this.#logger.warn?.('[dsh-feishu] compact failed:', error.message);
-      await this.#send(chatId, '上下文压缩失败，请稍后重试。');
+      this.#logger.warn?.('[dsh-feishu] compact failed:', error.message, error.code);
+      await this.#send(chatId, compactCommand?.message || '上下文压缩失败，请稍后重试。');
     }
   }
 
