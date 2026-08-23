@@ -616,7 +616,8 @@ test('QQ pushes one notice per tool call and ignores status frames', async () =>
   });
 
   await bridge.accept(message({ messageId: 'msg-status-frame' }));
-  assert.deepEqual(sent, ['Tool call bash', 'Tool call read', '最终回答']);
+  // 工具调用本身不推送，避免多工具任务刷屏。
+  assert.deepEqual(sent, ['最终回答']);
 });
 
 test('QQ pushes a failed tool error and any interim explanation text', async () => {
@@ -637,6 +638,7 @@ test('QQ pushes a failed tool error and any interim explanation text', async () 
           toolName: 'add_observations',
           error: 'Error calling add_observations. Status code: 404.',
         });
+        await onUpdate({ type: 'text', text: '改用创建实体的方式：' });
         await onUpdate({ type: 'tool', name: 'create_entities' });
         await onUpdate({ type: 'status', text: '正在整理结果…', toolName: 'create_entities' });
         return '已存入两套记忆。';
@@ -654,9 +656,8 @@ test('QQ pushes a failed tool error and any interim explanation text', async () 
   await bridge.accept(message({ messageId: 'msg-tool-error' }));
   assert.deepEqual(sent, [
     '实体不存在，先创建再添加观察：',
-    'Tool call add_observations',
     'Tool call add_observations\nError: Error calling add_observations. Status code: 404.',
-    'Tool call create_entities',
+    '改用创建实体的方式：',
     '已存入两套记忆。',
   ]);
 });
@@ -757,7 +758,7 @@ test('QQ announces a stopped turn after any tool notices already pushed', async 
 
   await bridge.accept(message({ messageId: 'qq-stopped-stream' }));
 
-  assert.deepEqual(sent, ['Tool call bash', '已停止。']);
+  assert.deepEqual(sent, ['已停止。']);
   assert.equal(loggedErrors, 0);
   assert.equal(fixture.seen.has('qq-stopped-stream'), true);
 });

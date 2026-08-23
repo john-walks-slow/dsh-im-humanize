@@ -675,11 +675,12 @@ export class QqHarnessBridge {
                 return;
               }
               if (update.type === 'tool') {
+                // 工具调用本身不推送：agent 任务工具调用频繁，逐条推送会刷屏；
+                // 它只作为边界把上一段说明文本定稿推送。失败时随错误详情带出工具名。
                 if (nonEmptyString(pendingStepText)) {
                   await pushNotice(pendingStepText.trim());
                 }
                 pendingStepText = null;
-                await pushNotice(`Tool call ${update.name}`);
                 return;
               }
               if (update.error) {
