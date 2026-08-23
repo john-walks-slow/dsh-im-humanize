@@ -5,6 +5,7 @@ import { DiscordApi } from './discord-api.mjs';
 import { createDiscordBridgeStatus, DiscordHarnessBridge } from './discord-bridge.mjs';
 
 const DISCORD_GATEWAY_INTENTS = (1 << 0) | (1 << 9) | (1 << 12) | (1 << 15);
+const THREAD_RECOVERY_TIMEOUT_MS = 5_000;
 const RECONNECT_DELAYS_MS = Object.freeze([1_000, 3_000, 5_000, 10_000, 30_000]);
 const GUILD_TEXT = 0;
 const GUILD_ANNOUNCEMENT = 5;
@@ -87,13 +88,13 @@ function rememberChannel(channel, callback) {
 }
 
 function withConversationRoute(normalized, channel, botId, {
-  created = false,
+  fromSourceMessage = false,
   fallback = null,
   notice = null,
 } = {}) {
   const channelId = String(channel?.id ?? normalized.conversationId);
   const thread = isThreadChannel(channel);
-  const managed = thread && (created || String(channel?.owner_id ?? '') === String(botId));
+  const managed = thread && String(channel?.owner_id ?? '') === String(botId);
   const parentId = thread && channel?.parent_id ? String(channel.parent_id) : channelId;
   return {
     ...normalized,
@@ -102,7 +103,7 @@ function withConversationRoute(normalized, channel, botId, {
     requiresMention: thread ? !managed : normalized.kind === 'group',
     replyTarget: {
       channelId,
-      ...(!created && normalized.replyTarget?.replyToMessageId
+      ...(!fromSourceMessage && normalized.replyTarget?.replyToMessageId
         ? { replyToMessageId: normalized.replyTarget.replyToMessageId }
         : {}),
       ...(notice ? { notice } : {}),
@@ -239,6 +240,7 @@ export async function resolveDiscordMessageRoute(message, botId, {
 } = {}) {
   const normalized = normalizeDiscordMessage(message, botId, { fetchImpl });
   if (!normalized || normalized.senderIsBot) return normalized;
+  signal?.throwIfAborted();
   if (normalized.kind === 'direct') {
     return withConversationRoute(normalized, { id: normalized.conversationId, type: 1 }, botId);
   }
@@ -263,6 +265,7 @@ export async function resolveDiscordMessageRoute(message, botId, {
     });
   }
 
+  signal?.throwIfAborted();
   let created;
   try {
     created = rememberChannel(await api.startThreadFromMessage({
@@ -275,15 +278,21 @@ export async function resolveDiscordMessageRoute(message, botId, {
       throw new Error('Discord returned an invalid thread for the source message');
     }
   } catch (error) {
-    if (signal?.aborted) throw signal.reason ?? error;
     let recovered;
     try {
-      recovered = await findCreatedThread(api, message, { signal, onChannel });
+      recovered = await findCreatedThread(api, message, {
+        signal: AbortSignal.timeout(THREAD_RECOVERY_TIMEOUT_MS),
+        onChannel,
+      });
     } catch (recoveryError) {
+      if (signal?.aborted) throw signal.reason ?? error;
       await sendThreadUncertainNotice(api, normalized, signal);
       throw threadCreateUncertain(recoveryError);
     }
-    if (recovered) return withConversationRoute(normalized, recovered, botId, { created: true });
+    if (recovered) {
+      return withConversationRoute(normalized, recovered, botId, { fromSourceMessage: true });
+    }
+    if (signal?.aborted) throw signal.reason ?? error;
     if (uncertainThreadCreate(error)) {
       await sendThreadUncertainNotice(api, normalized, signal);
       throw threadCreateUncertain(error);
@@ -293,7 +302,7 @@ export async function resolveDiscordMessageRoute(message, botId, {
       notice: '无法创建 Thread，已直接在当前频道回复。',
     });
   }
-  return withConversationRoute(normalized, created, botId, { created: true });
+  return withConversationRoute(normalized, created, botId, { fromSourceMessage: true });
 }
 
 export class DiscordBotClient {
