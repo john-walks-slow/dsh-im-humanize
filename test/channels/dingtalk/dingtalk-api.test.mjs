@@ -382,6 +382,38 @@ test('DingTalk image downloads exchange downloadCode with the callback robotCode
   assert.equal(calls[2].options.headers?.['x-acs-dingtalk-access-token'], undefined);
 });
 
+test('DingTalk downloads ordinary files through the native downloadCode exchange without image limits', async () => {
+  const fileBytes = Buffer.from('ordinary-dingtalk-file');
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    const href = url.toString();
+    calls.push({ url: href, options });
+    if (href === `${DINGTALK_API_BASE_URL}v1.0/oauth2/accessToken`) {
+      return jsonResponse({ accessToken: 'file-access-token', expireIn: 7_200 });
+    }
+    if (href === `${DINGTALK_API_BASE_URL}v1.0/robot/messageFiles/download`) {
+      return jsonResponse({ downloadUrl: 'https://download.example.test/native-file' });
+    }
+    return new Response(fileBytes);
+  };
+  const api = createDingtalkApi({ fetchImpl });
+
+  assert.deepEqual(await api.downloadFile({
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    robotCode: 'robot-from-callback',
+    downloadCode: 'ordinary-file-code',
+  }), fileBytes);
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    downloadCode: 'ordinary-file-code',
+    robotCode: 'robot-from-callback',
+  });
+  assert.equal(calls[1].options.headers['x-acs-dingtalk-access-token'], 'file-access-token');
+  assert.equal(calls[2].options.method, 'GET');
+  assert.equal(calls[2].options.redirect, 'follow');
+  assert.equal(calls[2].options.headers, undefined);
+});
+
 test('DingTalk upgrades its HTTP temporary image URL to HTTPS without changing the signed request', async () => {
   const imageBytes = Buffer.from([0xff, 0xd8, 0xff, 0x01]);
   const calls = [];

@@ -86,9 +86,10 @@ export async function createProductionController(ctx, config = {}, internals = {
     return state;
   };
   const commandExecutor = createHarnessCommandExecutor(ctx, internals.commandExecutor);
-  const { controlExecutor, sessionMaintenanceExecutor } = createHarnessSessionExecutors(ctx, {
+  const { controlExecutor, sessionMaintenanceExecutor, fileIngressExecutor } = createHarnessSessionExecutors(ctx, {
     controlExecutor: internals.controlExecutor,
     sessionMaintenanceExecutor: internals.sessionMaintenanceExecutor,
+    fileIngressExecutor: internals.fileIngressExecutor,
   });
   const harness = new Harness({
     baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
@@ -98,6 +99,7 @@ export async function createProductionController(ctx, config = {}, internals = {
     ...(commandExecutor ? { commandExecutor } : {}),
     ...(controlExecutor ? { controlExecutor } : {}),
     ...(sessionMaintenanceExecutor ? { sessionMaintenanceExecutor } : {}),
+    ...(fileIngressExecutor ? { fileIngressExecutor } : {}),
   });
   const coreController = new Controller({
     deviceAuth,

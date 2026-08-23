@@ -419,10 +419,17 @@ test('Slack downloads private files with the bot token from Slack hosts only', a
   }), png);
   assert.equal(calls[1].options.headers.authorization, `Bearer ${BOT_TOKEN}`);
   assert.equal(calls[1].url.hostname, 'files.slack.com');
+  const streamed = await api.downloadFileStream({
+    url: 'https://files.slack.com/files-pri/T123-F126/download/notes.txt',
+  });
+  const streamedChunks = [];
+  for await (const chunk of streamed.stream) streamedChunks.push(Buffer.from(chunk));
+  assert.deepEqual(Buffer.concat(streamedChunks), png);
+  assert.equal(calls[2].options.signal, undefined);
   await assert.rejects(() => api.downloadFile({
     url: 'https://example.com/internal.png', maxBytes: 100,
   }), /messaging platform/);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
 
   const redirectCalls = [];
   const redirectingApi = new SlackApi({
@@ -446,6 +453,29 @@ test('Slack downloads private files with the bot token from Slack hosts only', a
   assert.equal(redirectCalls[0].url.hostname, 'files.slack.com');
   assert.equal(redirectCalls[0].options.headers.authorization, `Bearer ${BOT_TOKEN}`);
   assert.match(SLACK_APP_MANIFEST_YAML, /\n\s+- files:read\n/);
+});
+
+test('Slack resolves file_access metadata through files.info', async () => {
+  const calls = [];
+  const api = new SlackApi({
+    botToken: BOT_TOKEN,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return jsonResponse({
+        ok: true,
+        file: {
+          id: 'F12345678',
+          name: 'connect.txt',
+          mimetype: 'text/plain',
+          url_private: 'https://files.slack.com/files-pri/T123-F123/connect.txt',
+        },
+      });
+    },
+  });
+  assert.equal((await api.fileInfo({ fileId: 'F12345678' })).name, 'connect.txt');
+  assert.equal(calls[0].url.pathname.endsWith('/files.info'), true);
+  assert.equal(calls[0].options.body, 'file=F12345678');
+  assert.equal(calls[0].options.headers.authorization, `Bearer ${BOT_TOKEN}`);
 });
 
 test('Slack refuses unsafe file redirects and explains stale files:read authorization', async () => {
@@ -711,7 +741,7 @@ test('Slack normalizes direct messages and addressed channel events', () => {
   assert.equal(botMessage, null);
 });
 
-test('Slack accepts image file shares and keeps other files out of image prompts', async () => {
+test('Slack keeps image shares in image prompts and exposes ordinary files lazily', async () => {
   const loads = [];
   const direct = normalizeSlackEvent({
     event_id: 'Ev010',
@@ -734,14 +764,32 @@ test('Slack accepts image file shares and keeps other files out of image prompts
     },
   }, 'U12345678', {
     loadFile: async (url, options) => {
-      loads.push({ url, options });
+      loads.push({ kind: 'image', url, options });
       return Buffer.from('image');
+    },
+    loadFileStream: async (url, options) => {
+      loads.push({ kind: 'file', url, options });
+      return { stream: (async function* content() { yield Buffer.from('file'); }()) };
     },
   });
   assert.equal(direct.images.length, 1);
   assert.equal(direct.images[0].name, 'screen.png');
   await direct.images[0].load({ maxBytes: 5_000 });
   assert.match(loads[0].url, /screen\.png$/);
+  assert.equal(direct.files.length, 1);
+  assert.deepEqual({
+    name: direct.files[0].name,
+    mediaType: direct.files[0].mediaType,
+    size: direct.files[0].size,
+  }, { name: 'notes.txt', mediaType: 'text/plain', size: 20 });
+  const controller = new AbortController();
+  const loadedFile = await direct.files[0].load({ signal: controller.signal });
+  const chunks = [];
+  for await (const chunk of loadedFile.stream) chunks.push(Buffer.from(chunk));
+  assert.equal(Buffer.concat(chunks).toString(), 'file');
+  assert.match(loads[1].url, /notes\.txt$/);
+  assert.equal(loads[1].kind, 'file');
+  assert.deepEqual(loads[1].options, { signal: controller.signal });
 
   const group = normalizeSlackEvent({
     event_id: 'Ev011',
@@ -757,6 +805,7 @@ test('Slack accepts image file shares and keeps other files out of image prompts
   }, 'U12345678');
   assert.equal(group.addressed, true);
   assert.equal(group.images.length, 1);
+  assert.deepEqual(group.files, []);
 
   assert.equal(normalizeSlackEvent({
     event_id: 'Ev012',
@@ -765,6 +814,54 @@ test('Slack accepts image file shares and keeps other files out of image prompts
       user: 'U87654321', ts: '1700000000.012', text: '', files: [],
     },
   }, 'U12345678'), null);
+});
+
+test('Slack Connect file placeholders load metadata before streaming the file', async () => {
+  const calls = [];
+  const message = normalizeSlackEvent({
+    event_id: 'Ev013',
+    event: {
+      type: 'message',
+      subtype: 'file_share',
+      channel_type: 'im',
+      channel: 'D12345678',
+      user: 'U87654321',
+      ts: '1700000000.013',
+      text: '',
+      files: [{
+        id: 'F12345681',
+        mode: 'file_access',
+        file_access: 'check_file_info',
+      }],
+    },
+  }, 'U12345678', {
+    loadFileInfo: async (fileId, options) => {
+      calls.push({ kind: 'info', fileId, options });
+      return {
+        id: fileId,
+        name: 'connect-report.pdf',
+        mimetype: 'application/pdf',
+        url_private_download: 'https://files.slack.com/files-pri/T123-F123/connect-report.pdf',
+      };
+    },
+    loadFileStream: async (url, options) => {
+      calls.push({ kind: 'stream', url, options });
+      return { stream: (async function* content() { yield Buffer.from('connect'); }()) };
+    },
+  });
+  assert.equal(message.files.length, 1);
+  const controller = new AbortController();
+  const loaded = await message.files[0].load({ signal: controller.signal });
+  assert.equal(loaded.name, 'connect-report.pdf');
+  assert.equal(loaded.mediaType, 'application/pdf');
+  const chunks = [];
+  for await (const chunk of loaded.stream) chunks.push(Buffer.from(chunk));
+  assert.equal(Buffer.concat(chunks).toString(), 'connect');
+  assert.deepEqual(calls[0], {
+    kind: 'info', fileId: 'F12345681', options: { signal: controller.signal },
+  });
+  assert.equal(calls[1].kind, 'stream');
+  assert.match(calls[1].url, /connect-report\.pdf$/);
 });
 
 class FakeSocket {

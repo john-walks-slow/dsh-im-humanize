@@ -3,6 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 
 import { adoptRegisteredWorkspaceSession } from './harness-session-binding.mjs';
+import {
+  appendInboundFilesToPrompt,
+  InboundFileError,
+} from './inbound-file.mjs';
 import { outboundArtifactRegistry } from './semantic/artifact.mjs';
 
 // Every channel plugin runs in the same Host process. Sharing ownership by
@@ -511,6 +515,7 @@ export class HarnessClient {
   #commandExecutor;
   #controlExecutor;
   #sessionMaintenanceExecutor;
+  #fileIngressExecutor;
   #managedProcess = null;
   #interactionRegistry;
   #interactionOwnerships;
@@ -531,6 +536,7 @@ export class HarnessClient {
     commandExecutor,
     controlExecutor,
     sessionMaintenanceExecutor,
+    fileIngressExecutor,
   }) {
     if (typeof createWebSocket !== 'function') {
       throw new TypeError('createWebSocket must be a function');
@@ -554,6 +560,9 @@ export class HarnessClient {
       && typeof sessionMaintenanceExecutor !== 'function') {
       throw new TypeError('sessionMaintenanceExecutor must be a function');
     }
+    if (fileIngressExecutor !== undefined && typeof fileIngressExecutor !== 'function') {
+      throw new TypeError('fileIngressExecutor must be a function');
+    }
     this.#baseUrl = new URL(baseUrl);
     this.#workspace = workspace;
     // Keep an omitted preset absent so session.create resolves the Host's current default.
@@ -568,6 +577,7 @@ export class HarnessClient {
     this.#commandExecutor = commandExecutor;
     this.#controlExecutor = controlExecutor;
     this.#sessionMaintenanceExecutor = sessionMaintenanceExecutor;
+    this.#fileIngressExecutor = fileIngressExecutor;
     this.#interactionRegistry = interactionRegistry(this.#baseUrl.origin);
     this.#interactionOwnerships = this.#interactionRegistry.ownerships;
     this.#interactionClaims = this.#interactionRegistry.claims;
@@ -1079,6 +1089,7 @@ export class HarnessClient {
       ? options.onInteractionResolved
       : undefined;
     const control = normalizeControl(options.control);
+    const inboundFiles = Array.isArray(options.files) ? options.files.filter(Boolean) : [];
     await this.ensureRunning({ signal });
     const before = await this.rpc(
       'session.history',
@@ -1120,6 +1131,9 @@ export class HarnessClient {
     let interactionTask = null;
     let artifactsDelivered = false;
     let deliveredArtifactCount = 0;
+    let stagedInboundFiles = null;
+    let promptAccepted = false;
+    let turnFinished = false;
 
     const deliverArtifacts = async () => {
       if (!onArtifact || artifactsDelivered || tracker.turn === null) {
@@ -1148,6 +1162,30 @@ export class HarnessClient {
     const closeArtifactConsumer = outboundArtifactRegistry.openConsumer(sessionId, promptRpcId);
 
     try {
+      if (inboundFiles.length > 0) {
+        if (!this.#fileIngressExecutor) {
+          throw new InboundFileError(
+            'inbound-file-ingress-unavailable',
+            'Harness file ingress is unavailable in this Host process.',
+          );
+        }
+        const sessionList = await this.rpc(
+          'session.list',
+          {},
+          30_000,
+          { signal },
+        );
+        const sessionWorkspace = sessionList?.items?.find(
+          (item) => item?.sessionId === sessionId,
+        )?.cwd;
+        stagedInboundFiles = await this.#fileIngressExecutor({
+          sessionId,
+          workspace: sessionWorkspace,
+          files: inboundFiles,
+          signal,
+        });
+        prompt = appendInboundFilesToPrompt(prompt, stagedInboundFiles);
+      }
       if (interactionSignal) {
         let markOpen;
         const opened = new Promise((resolve) => { markOpen = resolve; });
@@ -1179,6 +1217,7 @@ export class HarnessClient {
         content,
         clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       }, 30_000, { rpcId: promptRpcId, signal });
+      promptAccepted = true;
 
       try {
         const deadline = Date.now() + timeoutMs;
@@ -1206,6 +1245,7 @@ export class HarnessClient {
             }
           }
           if (!tracker.finished) continue;
+          turnFinished = true;
           // An accepted /stop revokes attachment delivery even when Harness
           // preserved a useful partial text answer for the existing UX.
           const artifactCount = ownership?.stopRequested
@@ -1232,6 +1272,11 @@ export class HarnessClient {
         throw turnStoppedError();
       }
     } finally {
+      if (stagedInboundFiles && (!promptAccepted || turnFinished)) {
+        await stagedInboundFiles.cleanup().catch((error) => {
+          console.warn(`[${this.#logPrefix}] unable to clean inbound files:`, error.message);
+        });
+      }
       closeArtifactConsumer();
       if (ownership) {
         this.#unregisterControlOwnership(ownership);

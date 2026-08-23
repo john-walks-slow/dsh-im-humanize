@@ -29,6 +29,11 @@ import {
   imagePromptUserMessage,
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
+import {
+  hasInboundFiles,
+  inboundFileUserMessage,
+  prefetchInboundFiles,
+} from '../shared/inbound-file.mjs';
 import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
 import {
   materializeOutboundArtifact,
@@ -48,7 +53,7 @@ const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无
 const HELP_TEXT = [
   '钉钉机器人已连接 DeepSeek Harness。',
   '',
-  '直接发送文字或图片即可继续当前会话。',
+  '直接发送文字、图片或文件即可继续当前会话。',
   '/new  开启一个全新会话',
   '/compact  压缩当前会话的较早上下文',
   '/workspace 工作区绝对路径  切换工作区',
@@ -175,6 +180,7 @@ export function dingtalkInboundMessage(message, {
       if (code) imageCodes.push(code);
     }
   }
+  const fileCode = msgtype === 'file' ? downloadCodeFor(content) : null;
   return {
     content: text,
     images: imageCodes.map((downloadCode, index) => ({
@@ -193,6 +199,21 @@ export function dingtalkInboundMessage(message, {
         });
       },
     })),
+    files: fileCode ? [{
+      name: nonEmptyString(content?.fileName ?? content?.file_name) ?? 'file',
+      load: ({ signal } = {}) => {
+        if (typeof api?.downloadFile !== 'function') {
+          throw new Error('DingTalk API does not support file downloads');
+        }
+        return api.downloadFile({
+          clientId,
+          clientSecret,
+          robotCode: message?.robotCode,
+          downloadCode: fileCode,
+          signal,
+        });
+      },
+    }] : [],
   };
 }
 
@@ -393,7 +414,7 @@ export class DingtalkHarnessBridge {
       clientSecret: this.#clientSecret,
     });
     const commandText = nonEmptyString(promptMessage.content) ?? '';
-    const commandRunner = isControlCommand(commandText)
+    const commandRunner = hasInboundFiles(promptMessage) ? null : isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText)
           ? runModelCommand
@@ -499,10 +520,28 @@ export class DingtalkHarnessBridge {
     releaseMessageId = true,
     alreadyRecorded = false,
   } = {}) {
+    let hasSafeReplyRoute = false;
+    try {
+      normalizeDingtalkSessionWebhook(message.sessionWebhook);
+      hasSafeReplyRoute = true;
+    } catch {
+      // Keep the existing rejection path without downloading an unusable file.
+    }
+    const addressed = String(message.conversationType) !== '2' || message.isInAtList === true;
+    const preparedMessage = hasSafeReplyRoute && addressed
+      ? prefetchInboundFiles(dingtalkInboundMessage(message, {
+          api: this.#api,
+          clientId: this.#clientId,
+          clientSecret: this.#clientSecret,
+        }), { signal: this.#signal })
+      : undefined;
     const previous = this.#queues.get(key) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
-      .then(() => this.#process(message, messageId, sender, key, { alreadyRecorded }))
+      .then(() => this.#process(message, messageId, sender, key, {
+        alreadyRecorded,
+        preparedMessage,
+      }))
       .finally(() => {
         if (releaseMessageId) this.#acceptedMessageIds.delete(messageId);
         if (this.#queues.get(key) === current) this.#queues.delete(key);
@@ -536,6 +575,7 @@ export class DingtalkHarnessBridge {
       {
         signal: this.#signal,
         hasImages: hasInboundImages(prompt),
+        hasFiles: hasInboundFiles(prompt),
         pendingInteraction: this.#pendingInteractions.has(key)
           || this.#approvals.hasPending(key),
         control: { owner: this, key },
@@ -553,7 +593,10 @@ export class DingtalkHarnessBridge {
     this.#status.lastError = null;
   }
 
-  async #process(message, messageId, sender, key, { alreadyRecorded = false } = {}) {
+  async #process(message, messageId, sender, key, {
+    alreadyRecorded = false,
+    preparedMessage,
+  } = {}) {
     this.#signal?.throwIfAborted();
     if (!alreadyRecorded) {
       if (this.#state.hasSeen(messageId)) return;
@@ -577,38 +620,39 @@ export class DingtalkHarnessBridge {
       return;
     }
 
-    const promptMessage = dingtalkInboundMessage(message, {
+    const promptMessage = preparedMessage ?? dingtalkInboundMessage(message, {
       api: this.#api,
       clientId: this.#clientId,
       clientSecret: this.#clientSecret,
     });
     const text = promptMessage.content;
     const hasImages = hasInboundImages(promptMessage);
+    const hasFiles = hasInboundFiles(promptMessage);
     const isPlainText = String(message?.msgtype).toLowerCase() === 'text';
     let cardStream = null;
     let cardStarted = false;
     try {
-      if (!text && !hasImages) {
-        await this.#send(sessionWebhook, '目前支持文字和图片消息。');
+      if (!text && !hasImages && !hasFiles) {
+        await this.#send(sessionWebhook, '目前支持文字、图片和文件消息。');
         return;
       }
 
       const command = text.toLowerCase();
-      if (isPlainText && !hasImages && command === '/help') {
+      if (isPlainText && !hasImages && !hasFiles && command === '/help') {
         await this.#send(sessionWebhook, HELP_TEXT);
         return;
       }
-      if (isPlainText && !hasImages && command === '/status') {
+      if (isPlainText && !hasImages && !hasFiles && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#send(sessionWebhook, '钉钉机器人与 DeepSeek Harness 连接正常。');
         return;
       }
-      if (isPlainText && !hasImages && command === '/new') {
+      if (isPlainText && !hasImages && !hasFiles && command === '/new') {
         await this.#state.clearSession(key);
         await this.#send(sessionWebhook, '已开启新会话。请发送你的问题。');
         return;
       }
-      const workspaceCommand = isPlainText && !hasImages
+      const workspaceCommand = isPlainText && !hasImages && !hasFiles
         ? await runWorkspaceCommand(text, this.#harness, key)
         : null;
       if (workspaceCommand) {
@@ -617,7 +661,7 @@ export class DingtalkHarnessBridge {
         }
         return;
       }
-      const compactCommand = isPlainText && !hasImages
+      const compactCommand = isPlainText && !hasImages && !hasFiles
         ? await runCompactCommand(
             text,
             this.#harness,
@@ -668,6 +712,7 @@ export class DingtalkHarnessBridge {
             requiresMention: String(message.conversationType) === '2',
           }),
           onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
+          files: promptMessage.files,
         },
       });
       const answerText = typeof answer === 'string' && answer.trim()
@@ -717,7 +762,9 @@ export class DingtalkHarnessBridge {
         safeErrorDiagnostic(error),
       );
       try {
-        const errorText = dingtalkImageErrorUserMessage(error) ?? CARD_ERROR_TEXT;
+        const errorText = inboundFileUserMessage(error)
+          ?? dingtalkImageErrorUserMessage(error)
+          ?? CARD_ERROR_TEXT;
         const streamed = cardStarted && await cardStream.finish(errorText);
         if (!streamed) await this.#send(sessionWebhook, errorText);
       } catch {

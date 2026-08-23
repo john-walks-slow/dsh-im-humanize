@@ -125,6 +125,31 @@ async function readBoundedStream(stream, { signal, maxBytes }) {
   }
 }
 
+async function readStream(stream, { signal }) {
+  if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') {
+    throw new Error('Feishu file download returned no readable stream');
+  }
+  signal?.throwIfAborted();
+  const abort = () => stream.destroy?.(
+    signal.reason ?? new DOMException('Feishu file download aborted', 'AbortError'),
+  );
+  signal?.addEventListener('abort', abort, { once: true });
+  const chunks = [];
+  let size = 0;
+  try {
+    for await (const chunk of stream) {
+      signal?.throwIfAborted();
+      const data = Buffer.from(chunk);
+      size += data.length;
+      chunks.push(data);
+    }
+    signal?.throwIfAborted();
+    return Buffer.concat(chunks, size);
+  } finally {
+    signal?.removeEventListener('abort', abort);
+  }
+}
+
 function providerCode(value) {
   if (!value || typeof value !== 'object') return null;
   const code = value.code ?? value.error?.code;
@@ -232,6 +257,26 @@ function feishuImageSource(event, client, key) {
   };
 }
 
+function feishuFileSource(event, client, file) {
+  const key = nonEmptyString(file?.file_key);
+  if (!key) return null;
+  return {
+    name: nonEmptyString(file?.file_name) ?? 'file',
+    async load({ signal } = {}) {
+      signal?.throwIfAborted();
+      const resource = await client?.im?.v1?.messageResource?.get?.({
+        path: {
+          message_id: event.message.message_id,
+          file_key: key,
+        },
+        params: { type: 'file' },
+      });
+      signal?.throwIfAborted();
+      return readStream(resource?.getReadableStream?.(), { signal });
+    },
+  };
+}
+
 export function extractInboundMessage(event, client) {
   const messageType = event?.message?.message_type;
   const parsed = parsedMessageContent(event);
@@ -240,9 +285,11 @@ export function extractInboundMessage(event, client) {
     ? nonEmptyString(parsed?.image_key)
     : null;
   const imageKeys = standaloneImageKey ? [standaloneImageKey] : post?.imageKeys ?? [];
+  const file = messageType === 'file' ? feishuFileSource(event, client, parsed) : null;
   return {
     content: messageType === 'text' ? extractText(event) ?? '' : post?.text ?? '',
     images: imageKeys.map((key) => feishuImageSource(event, client, key)),
+    files: file ? [file] : [],
   };
 }
 

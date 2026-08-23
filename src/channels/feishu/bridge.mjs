@@ -13,6 +13,10 @@ import {
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
 import {
+  hasInboundFiles,
+  inboundFileUserMessage,
+} from '../shared/inbound-file.mjs';
+import {
   harnessAnswerForQuestion,
   harnessQuestionText,
   validHarnessQuestion,
@@ -91,7 +95,7 @@ const REPAIR_URL_HOSTS = new Set([
 const HELP_TEXT = [
   '北汇星河 AIOS 已连接 DeepSeek Harness。',
   '',
-  '直接发送文字或图片即可继续当前会话。',
+  '直接发送文字、图片或文件即可继续当前会话。',
   '/new  开启一个全新会话',
   '/compact  压缩当前会话的较早上下文',
   '/workspace 工作区绝对路径  切换工作区',
@@ -431,7 +435,7 @@ export class FeishuHarnessBridge {
     const processingReaction = this.#addReaction(messageId, 'OnIt');
     const commandMessage = extractInboundMessage(event, this.#client);
     const commandText = nonEmptyString(commandMessage.content) ?? '';
-    const commandRunner = isControlCommand(commandText)
+    const commandRunner = hasInboundFiles(commandMessage) ? null : isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText)
           ? runModelCommand
@@ -610,7 +614,8 @@ export class FeishuHarnessBridge {
     await this.#finishReaction(messageId, processingReaction, 'ERROR');
     await this.#send(
       event.message.chat_id,
-      imagePromptUserMessage(error)
+      inboundFileUserMessage(error)
+        ?? imagePromptUserMessage(error)
         ?? '处理失败，请稍后重试。如果问题持续，请在 DeepSeek Harness 的飞书插件页面检查连接状态。',
     ).catch(() => undefined);
   }
@@ -641,6 +646,7 @@ export class FeishuHarnessBridge {
       {
         signal: this.#signal,
         hasImages: hasInboundImages(message),
+        hasFiles: hasInboundFiles(message),
         pendingInteraction: this.#pendingInteractions.has(key)
           || this.#approvals.hasPending(key),
         control: { owner: this, key },
@@ -671,9 +677,10 @@ export class FeishuHarnessBridge {
     const message = extractInboundMessage(event, this.#client);
     const text = message.content;
     const hasImages = hasInboundImages(message);
-    const commandText = event.message.message_type === 'text' && !hasImages ? text : null;
-    if (!text && !hasImages) {
-      await this.#send(event.message.chat_id, '目前支持文字和图片消息。');
+    const hasFiles = hasInboundFiles(message);
+    const commandText = event.message.message_type === 'text' && !hasImages && !hasFiles ? text : null;
+    if (!text && !hasImages && !hasFiles) {
+      await this.#send(event.message.chat_id, '目前支持文字、图片和文件消息。');
       return;
     }
 
@@ -1603,7 +1610,7 @@ export class FeishuHarnessBridge {
     }
   }
 
-  #interactionAskOptions(event, key) {
+  #interactionAskOptions(event, key, files) {
     return {
       timeoutMs: this.#replyTimeoutMs,
       signal: this.#signal,
@@ -1615,6 +1622,7 @@ export class FeishuHarnessBridge {
         requiresMention: event.message.chat_type !== 'p2p',
       }),
       onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
+      files,
     };
   }
 
@@ -1709,7 +1717,7 @@ export class FeishuHarnessBridge {
         content,
         createOptions: { signal: this.#signal },
         existsOptions: { signal: this.#signal },
-        askOptions: this.#interactionAskOptions(event, key),
+        askOptions: this.#interactionAskOptions(event, key, message.files),
       });
       let textReceipt;
       let textSendError = null;
@@ -1749,7 +1757,7 @@ export class FeishuHarnessBridge {
         markdown: async (controller) => {
           promptStarted = true;
           const askOptions = {
-            ...this.#interactionAskOptions(event, key),
+            ...this.#interactionAskOptions(event, key, message.files),
             onUpdate: async (update) => {
               await controller.setContent(this.#progressText(update));
               this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
@@ -1821,7 +1829,7 @@ export class FeishuHarnessBridge {
         content,
         createOptions: { signal: this.#signal },
         existsOptions: { signal: this.#signal },
-        askOptions: this.#interactionAskOptions(event, key),
+        askOptions: this.#interactionAskOptions(event, key, message.files),
       });
       let textReceipt;
       let textSendError = null;

@@ -26,6 +26,10 @@ import {
   imagePromptUserMessage,
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
+import {
+  hasInboundFiles,
+  inboundFileUserMessage,
+} from '../shared/inbound-file.mjs';
 import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
 import {
   materializeOutboundArtifact,
@@ -43,7 +47,7 @@ const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
 const HELP_TEXT = [
   '企业微信机器人已连接 DeepSeek Harness。',
   '',
-  '直接发送文字或图片即可继续当前会话。',
+  '直接发送文字、图片或文件即可继续当前会话。',
   '/new  开启一个全新会话',
   '/compact  压缩当前会话的较早上下文',
   '/workspace 工作区绝对路径  切换工作区',
@@ -110,6 +114,13 @@ function imageContents(frame) {
     .map((item) => item.image);
 }
 
+function fileContents(frame) {
+  const body = bodyOf(frame);
+  return body.msgtype === 'file' && body.file && typeof body.file === 'object'
+    ? [body.file]
+    : [];
+}
+
 function imageSource(client, image) {
   const url = nonEmptyString(image?.url);
   if (!url) return null;
@@ -139,10 +150,56 @@ function imageSource(client, image) {
   };
 }
 
+function fileSource(client, file) {
+  const url = nonEmptyString(file?.url);
+  if (!url) return null;
+  const aeskey = nonEmptyString(file?.aeskey) ?? undefined;
+  return {
+    name: nonEmptyString(file?.filename ?? file?.file_name ?? file?.name) ?? 'file',
+    async load({ signal } = {}) {
+      signal?.throwIfAborted();
+      if (typeof client?.downloadFile !== 'function') {
+        throw new Error('Enterprise WeChat file download is unavailable');
+      }
+      const result = await client.downloadFile(url, aeskey);
+      signal?.throwIfAborted();
+      const raw = result?.buffer ?? result?.data;
+      if (!Buffer.isBuffer(raw) && !(raw instanceof Uint8Array)) {
+        throw new Error('Enterprise WeChat file download returned no data');
+      }
+      return {
+        data: Buffer.from(raw),
+        ...(nonEmptyString(result?.filename) ? { name: result.filename.trim() } : {}),
+      };
+    },
+  };
+}
+
 export function wecomInboundMessage(frame, client) {
   return {
     content: messageText(frame),
     images: imageContents(frame).map((image) => imageSource(client, image)).filter(Boolean),
+    files: fileContents(frame).map((file) => fileSource(client, file)).filter(Boolean),
+  };
+}
+
+function prefetchInboundFiles(message, signal) {
+  if (!Array.isArray(message?.files) || message.files.length === 0) return message;
+  return {
+    ...message,
+    files: message.files.map((source) => {
+      const download = source.load({ signal });
+      download.catch(() => undefined);
+      return {
+        ...source,
+        async load({ signal: loadSignal } = {}) {
+          loadSignal?.throwIfAborted();
+          const result = await download;
+          loadSignal?.throwIfAborted();
+          return result;
+        },
+      };
+    }),
   };
 }
 
@@ -400,7 +457,7 @@ export class WecomHarnessBridge {
     const pending = this.#pendingInteractions.get(key);
     const commandMessage = wecomInboundMessage(frame, this.#client);
     const commandText = nonEmptyString(commandMessage.content) ?? '';
-    const commandRunner = isControlCommand(commandText)
+    const commandRunner = hasInboundFiles(commandMessage) ? null : isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText)
           ? runModelCommand
@@ -510,6 +567,7 @@ export class WecomHarnessBridge {
         preparedMessage = imageQueueFullMessage(inboundMessage);
       }
     }
+    preparedMessage = prefetchInboundFiles(preparedMessage, this.#signal);
     const previous = this.#queues.get(key) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
@@ -543,6 +601,7 @@ export class WecomHarnessBridge {
     const result = await runner(message.content, this.#harness, this.#state, key, {
       signal: this.#signal,
       hasImages: hasInboundImages(message),
+      hasFiles: hasInboundFiles(message),
       pendingInteraction: this.#pendingInteractions.has(key)
         || this.#approvals.hasPending(key),
       control: { owner: this, key },
@@ -701,34 +760,35 @@ export class WecomHarnessBridge {
     const message = preparedMessage ?? wecomInboundMessage(frame, this.#client);
     const text = message.content;
     const hasImages = hasInboundImages(message);
+    const hasFiles = hasInboundFiles(message);
     const key = conversationKey(frame);
     let streamId = null;
     let streamStarted = false;
     try {
-      if (!text && !hasImages) {
-        await this.#sendImmediate(frame, chatId, '目前支持文字、图片和语音转写消息。');
+      if (!text && !hasImages && !hasFiles) {
+        await this.#sendImmediate(frame, chatId, '目前支持文字、图片、文件和语音转写消息。');
         await this.#state.markSeen(messageId);
         return;
       }
       const command = text.toLowerCase();
-      if (!hasImages && command === '/help') {
+      if (!hasImages && !hasFiles && command === '/help') {
         await this.#sendImmediate(frame, chatId, HELP_TEXT);
         await this.#state.markSeen(messageId);
         return;
       }
-      if (!hasImages && command === '/status') {
+      if (!hasImages && !hasFiles && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#sendImmediate(frame, chatId, '企业微信机器人与 DeepSeek Harness 连接正常。');
         await this.#state.markSeen(messageId);
         return;
       }
-      if (!hasImages && command === '/new') {
+      if (!hasImages && !hasFiles && command === '/new') {
         await this.#state.clearSession(key);
         await this.#sendImmediate(frame, chatId, '已开启新会话。请发送你的问题。');
         await this.#state.markSeen(messageId);
         return;
       }
-      const workspaceCommand = hasImages
+      const workspaceCommand = hasImages || hasFiles
         ? null
         : await runWorkspaceCommand(text, this.#harness, key);
       if (workspaceCommand) {
@@ -738,7 +798,7 @@ export class WecomHarnessBridge {
         await this.#state.markSeen(messageId);
         return;
       }
-      const compactCommand = hasImages
+      const compactCommand = hasImages || hasFiles
         ? null
         : await runCompactCommand(
             text,
@@ -789,6 +849,7 @@ export class WecomHarnessBridge {
             requiresMention: body.chattype === 'group',
           }),
           onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
+          files: message.files,
         },
       });
 
@@ -862,7 +923,9 @@ export class WecomHarnessBridge {
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);
       this.#logger.error?.('[dsh-im:wecom] failed to process an inbound message');
-      const errorText = imagePromptUserMessage(error) ?? '消息处理失败，请稍后重试。';
+      const errorText = inboundFileUserMessage(error)
+        ?? imagePromptUserMessage(error)
+        ?? '消息处理失败，请稍后重试。';
       try {
         if (streamStarted && streamId) {
           await this.#client.replyStream(frame, streamId, errorText, true);

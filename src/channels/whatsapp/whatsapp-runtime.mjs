@@ -170,6 +170,39 @@ function whatsappImageSource(message, content, download, { viewOnce = false } = 
   };
 }
 
+function whatsappFileSource(message, content, download) {
+  const media = content?.documentMessage;
+  if (!media) return null;
+  const mediaType = typeof media.mimetype === 'string' && media.mimetype
+    ? media.mimetype.toLowerCase() : undefined;
+  if (IMAGE_MEDIA_TYPES.has(mediaType)) return null;
+  return {
+    name: typeof media.fileName === 'string' && media.fileName
+      ? media.fileName : 'whatsapp-file',
+    ...(mediaType ? { mediaType } : {}),
+    size: mediaSize(media.fileLength),
+    async load({ signal } = {}) {
+      signal?.throwIfAborted();
+      const stream = await download(message, 'stream', { options: { signal } });
+      signal?.throwIfAborted();
+      return { stream };
+    },
+  };
+}
+
+export function createWhatsappMediaDownloader({
+  socket,
+  logger = console,
+  download = downloadMediaMessage,
+} = {}) {
+  if (typeof download !== 'function') throw new TypeError('WhatsApp media downloader is required');
+  if (typeof socket?.updateMediaMessage !== 'function') return download;
+  return (message, type, options) => download(message, type, options, {
+    logger,
+    reuploadRequest: (candidate) => socket.updateMediaMessage(candidate),
+  });
+}
+
 export function normalizeWhatsappMessage(message, accountJid, {
   download = downloadMediaMessage,
 } = {}) {
@@ -195,6 +228,7 @@ export function normalizeWhatsappMessage(message, accountJid, {
   const replyToSelf = typeof context?.participant === 'string'
     && areJidsSameUser(context.participant, accountJid);
   const image = whatsappImageSource(message, content, download, { viewOnce });
+  const file = whatsappFileSource(message, content, download);
   return {
     messageId: `${remoteJid}:${messageId}`,
     providerMessageId: messageId,
@@ -205,6 +239,7 @@ export function normalizeWhatsappMessage(message, accountJid, {
     conversationId: remoteJid,
     content: messageText(content),
     images: image ? [image] : [],
+    files: file ? [file] : [],
     addressed: !group || mentioned || replyToSelf,
     selfChat,
     replyTarget: { jid: remoteJid, quoted: message, selfChat },
@@ -495,8 +530,13 @@ export class WhatsappRuntime {
           new Error('WhatsApp linked-device session must be scanned again'),
           { code: 'relink-required' },
         )),
-        onMessage: async (raw) => {
-          const message = normalizeWhatsappMessage(raw, this.#config.accountJid);
+        onMessage: async (raw, context) => {
+          const message = normalizeWhatsappMessage(raw, this.#config.accountJid, {
+            download: createWhatsappMediaDownloader({
+              socket: context?.socket,
+              logger: this.#logger,
+            }),
+          });
           if (!message || outboundIds.has(message.providerMessageId) || !this.#bridge) return;
           this.#status.lastCheckedAt = Date.now();
           if (!whatsappInboundAllowed(message, {

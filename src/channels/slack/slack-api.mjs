@@ -1,3 +1,4 @@
+import { fetchFileStream } from '../shared/file-download.mjs';
 import { fetchImageBuffer, ImagePromptError } from '../shared/image-prompt.mjs';
 
 const DEFAULT_BASE_URL = 'https://slack.com/api/';
@@ -232,6 +233,18 @@ export class SlackApi {
     });
   }
 
+  async fileInfo({ fileId, signal } = {}) {
+    const value = await this.#request('files.info', {
+      tokenKind: 'bot',
+      signal,
+      body: { file: slackId(fileId, 'file id') },
+    });
+    if (!value?.file || typeof value.file !== 'object' || Array.isArray(value.file)) {
+      throw new Error('Slack files.info returned no file object');
+    }
+    return value.file;
+  }
+
   postMessage({ channelId, text, threadTs, signal }) {
     return this.#request('chat.postMessage', {
       tokenKind: 'bot',
@@ -396,6 +409,14 @@ export class SlackApi {
   }
 
   async downloadFile({ url, signal, maxBytes }) {
+    return this.#downloadFile({ url, signal, maxBytes, stream: false });
+  }
+
+  async downloadFileStream({ url, signal }) {
+    return this.#downloadFile({ url, signal, stream: true });
+  }
+
+  async #downloadFile({ url, signal, maxBytes, stream }) {
     if (!this.#botToken) throw new TypeError('Slack bot token is required for file download');
     const target = secureSlackFileUrl(url);
     const fetchSlackFile = async (requestUrl, options) => {
@@ -414,13 +435,15 @@ export class SlackApi {
       }
       return response;
     };
-    return fetchImageBuffer(target, {
+    const options = {
       fetchImpl: fetchSlackFile,
       headers: { authorization: `Bearer ${this.#botToken}` },
       signal,
-      maxBytes,
       allowedHosts: SLACK_FILE_HOSTS,
-    });
+    };
+    return stream
+      ? fetchFileStream(target, options)
+      : fetchImageBuffer(target, { ...options, maxBytes });
   }
 
   async #request(method, {
@@ -432,7 +455,7 @@ export class SlackApi {
   }) {
     const token = tokenKind === 'app' ? this.#appToken : this.#botToken;
     if (!token) throw new TypeError(`Slack ${tokenKind} token is required for ${method}`);
-    const formEncoded = method === 'files.getUploadURLExternal';
+    const formEncoded = method === 'files.getUploadURLExternal' || method === 'files.info';
     let response;
     try {
       response = await this.#fetch(new URL(method, this.#baseUrl), {

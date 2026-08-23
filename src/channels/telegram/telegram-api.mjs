@@ -1,3 +1,4 @@
+import { fetchFileStream } from '../shared/file-download.mjs';
 import { fetchImageBuffer } from '../shared/image-prompt.mjs';
 
 const DEFAULT_BASE_URL = 'https://api.telegram.org/';
@@ -131,6 +132,25 @@ export class TelegramApi {
   }
 
   async downloadFile({ fileId, signal, maxBytes } = {}) {
+    const url = await this.#downloadUrl(fileId, signal);
+    return fetchImageBuffer(url, {
+      fetchImpl: this.#fetch,
+      signal,
+      maxBytes,
+      allowedHosts: TELEGRAM_FILE_HOSTS,
+    });
+  }
+
+  async downloadFileStream({ fileId, signal } = {}) {
+    const url = await this.#downloadUrl(fileId, signal);
+    return fetchFileStream(url, {
+      fetchImpl: this.#fetch,
+      signal,
+      allowedHosts: TELEGRAM_FILE_HOSTS,
+    });
+  }
+
+  async #downloadUrl(fileId, signal) {
     const file = await this.getFile({ fileId, signal });
     const filePath = cleanString(file?.file_path);
     if (!filePath || filePath.startsWith('/') || filePath.includes('\\')
@@ -148,12 +168,7 @@ export class TelegramApi {
     }
     const url = new URL(this.#baseUrl);
     url.pathname = `/file/bot${this.#token}/${filePath}`;
-    return fetchImageBuffer(url, {
-      fetchImpl: this.#fetch,
-      signal,
-      maxBytes,
-      allowedHosts: TELEGRAM_FILE_HOSTS,
-    });
+    return url;
   }
 
   async sendMessage({ chatId, text, replyToMessageId, messageThreadId, signal }) {

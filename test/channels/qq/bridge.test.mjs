@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { QqHarnessBridge } from '../../../src/channels/qq/qq-bridge.mjs';
+import { qqInboundMessage, QqHarnessBridge } from '../../../src/channels/qq/qq-bridge.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
 import {
   OUTBOUND_ARTIFACT_TOOL,
@@ -95,6 +95,141 @@ const PNG_BYTES = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
   0x00, 0x00, 0x00, 0x00,
 ]);
+
+test('QQ normalizes protocol-relative ordinary-file URLs and lets the CDN redirect', async () => {
+  const bytes = Buffer.from('qq-native-file');
+  const calls = [];
+  const inbound = qqInboundMessage(message({
+    content: '请读取附件',
+    attachments: [{
+      content_type: 'application/pdf',
+      filename: 'QQ 报告.pdf',
+      size: bytes.length,
+      url: '//provider-issued-download.example/native-file',
+    }],
+  }), {
+    fetchImpl: async (url, init) => {
+      calls.push({ url: url.toString(), init });
+      return new Response(bytes);
+    },
+  });
+
+  assert.equal(inbound.content, '请读取附件');
+  assert.deepEqual(inbound.images, []);
+  assert.equal(inbound.files.length, 1);
+  assert.equal(inbound.files[0].name, 'QQ 报告.pdf');
+  assert.equal(inbound.files[0].mediaType, 'application/pdf');
+  assert.equal(inbound.files[0].size, bytes.length);
+  assert.equal(calls.length, 0, 'file download stays lazy');
+  assert.deepEqual(await inbound.files[0].load({}), bytes);
+  assert.deepEqual(calls, [{
+    url: 'https://provider-issued-download.example/native-file',
+    init: { method: 'GET', signal: undefined, redirect: 'follow' },
+  }]);
+});
+
+test('QQ does not duplicate image attachments in ordinary files', () => {
+  const inbound = qqInboundMessage(message({
+    attachments: [{
+      content_type: 'file',
+      filename: 'diagram.PNG',
+      url: 'https://multimedia.nt.qq.com.cn/download/opaque',
+    }],
+  }));
+  assert.equal(inbound.images.length, 1);
+  assert.deepEqual(inbound.files, []);
+});
+
+test('QQ bridge hands a native non-image attachment to the current Harness turn', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-native-file']]);
+  const bytes = Buffer.from('qq-bridge-file');
+  const downloads = [];
+  const prompts = [];
+  const sent = [];
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, prompt, options) => {
+        prompts.push({
+          sessionId,
+          prompt,
+          name: options.files[0].name,
+          bytes: await options.files[0].load({ signal: options.signal }),
+        });
+        return '文件已收到';
+      },
+    },
+    state: fixture.state,
+    fetchImpl: async (url, init) => {
+      downloads.push({ url: url.toString(), init });
+      return new Response(bytes);
+    },
+  });
+
+  await bridge.accept(message({
+    messageId: 'qq-native-file',
+    content: '',
+    attachments: [{
+      content_type: 'application/octet-stream',
+      filename: 'QQ报告.bin',
+      url: 'https://provider-issued-download.example/qq-file',
+    }],
+  }));
+
+  assert.equal(downloads.length, 1);
+  assert.deepEqual(prompts, [{
+    sessionId: 'session-native-file',
+    prompt: '',
+    name: 'QQ报告.bin',
+    bytes,
+  }]);
+  assert.deepEqual(sent, ['文件已收到']);
+});
+
+test('QQ starts an ordinary-file download before an earlier queued turn finishes', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-prefetch-file']]);
+  const firstTurn = deferred();
+  const bytes = Buffer.from('qq-prefetched-file');
+  let asks = 0;
+  let downloads = 0;
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async () => {} },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _prompt, options) => {
+        asks += 1;
+        if (asks === 1) return firstTurn.promise;
+        assert.deepEqual(await options.files[0].load({ signal: options.signal }), bytes);
+        return '第二条完成';
+      },
+    },
+    state: fixture.state,
+    fetchImpl: async () => {
+      downloads += 1;
+      return new Response(bytes);
+    },
+  });
+
+  const first = bridge.accept(message({ messageId: 'qq-prefetch-first', content: '先等待' }));
+  await eventually(() => asks === 1);
+  const second = bridge.accept(message({
+    messageId: 'qq-prefetch-second',
+    content: '',
+    attachments: [{
+      content_type: 'application/octet-stream',
+      filename: 'queued.bin',
+      url: '//provider-issued-download.example/queued-file',
+    }],
+  }));
+
+  await eventually(() => downloads === 1, 'queued QQ file did not start downloading');
+  assert.equal(asks, 1, 'the second Harness turn must remain queued');
+  firstTurn.resolve('第一条完成');
+  await Promise.all([first, second]);
+});
 
 test('QQ sends image-only attachments to Harness and accepts the SDK file MIME fallback', async () => {
   const fixture = stateFixture([['c2c:owner-openid', 'session-image']]);

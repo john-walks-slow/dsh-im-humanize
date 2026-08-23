@@ -505,6 +505,63 @@ test('bridge downloads an inbound Feishu image once and submits structured Harne
   assert.deepEqual(sent, ['看到了一张图片']);
 });
 
+test('bridge hands a native Feishu file source to the current Harness turn', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-file']]);
+  const bytes = Buffer.from('feishu-native-file');
+  const downloads = [];
+  const asked = [];
+  const sent = [];
+  const client = {
+    im: { v1: {
+      messageResource: { get: async (request) => {
+        downloads.push(request);
+        return { getReadableStream: () => Readable.from([bytes]) };
+      } },
+      message: { create: async (request) => {
+        sent.push(JSON.parse(request.data.content).text);
+        return { code: 0, data: { message_id: 'om_file_reply' } };
+      } },
+    } },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, prompt, options) => {
+        asked.push({
+          sessionId,
+          prompt,
+          name: options.files[0].name,
+          bytes: await options.files[0].load({ signal: options.signal }),
+        });
+        return '文件已收到';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  await bridge.accept(event('om_file_input', '', {
+    message_type: 'file',
+    content: JSON.stringify({ file_key: 'file_input', file_name: '飞书报告.pdf' }),
+  }));
+  await bridge.waitForIdle();
+
+  assert.deepEqual(downloads, [{
+    path: { message_id: 'om_file_input', file_key: 'file_input' },
+    params: { type: 'file' },
+  }]);
+  assert.deepEqual(asked, [{
+    sessionId: 'session-file',
+    prompt: '',
+    name: '飞书报告.pdf',
+    bytes,
+  }]);
+  assert.deepEqual(sent, ['文件已收到']);
+});
+
 test('bridge tells users to grant im:message:readonly when Feishu rejects image access', async () => {
   const fixture = stateFixture([['p2p:ou_user', 'session-image-permission']]);
   const sent = [];

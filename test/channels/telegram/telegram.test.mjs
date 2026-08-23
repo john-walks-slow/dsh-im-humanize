@@ -139,11 +139,16 @@ test('Telegram API resolves and downloads files without exposing arbitrary paths
     },
   });
   assert.deepEqual(await api.downloadFile({ fileId: 'AgAC_test-file', maxBytes: 100 }), png);
-  assert.equal(calls.length, 2);
+  const streamed = await api.downloadFileStream({ fileId: 'AgAC_test-file' });
+  const streamedChunks = [];
+  for await (const chunk of streamed.stream) streamedChunks.push(Buffer.from(chunk));
+  assert.deepEqual(Buffer.concat(streamedChunks), png);
+  assert.equal(calls.length, 4);
   assert.equal(calls[0].options.method, 'POST');
   assert.equal(calls[1].options.method, 'GET');
   assert.equal(calls[1].url.hostname, 'api.telegram.org');
   assert.match(calls[1].url.pathname, /\/file\/bot.+\/photos\/file_1\.png$/);
+  assert.equal(calls[3].options.signal, undefined);
 
   const unsafeApi = new TelegramApi({
     token: TOKEN,
@@ -799,7 +804,7 @@ test('Telegram compatible mode preserves old routing and private allowlist mode 
   }), false);
 });
 
-test('Telegram normalizes photo captions and image documents into one downloadable image', async () => {
+test('Telegram keeps native photos and image documents as images and exposes ordinary documents as files', async () => {
   const loads = [];
   const groupPhoto = normalizeTelegramUpdate({
     update_id: 20,
@@ -839,9 +844,23 @@ test('Telegram normalizes photo captions and image documents into one downloadab
         file_id: 'png-document', file_name: 'diagram.png', mime_type: 'image/png', file_size: 3_000,
       },
     },
-  }, { botId: '123456789', username: 'HarnessBot' });
+  }, {
+    botId: '123456789',
+    username: 'HarnessBot',
+    loadFile: async (fileId, options) => {
+      loads.push({ fileId, options });
+      return Buffer.from('document');
+    },
+  });
   assert.equal(document.images[0].name, 'diagram.png');
   assert.equal(document.images[0].mediaType, 'image/png');
+  assert.equal(document.images[0].size, 3_000);
+  assert.deepEqual(document.files, []);
+  await document.images[0].load({ maxBytes: 5_000 });
+  assert.deepEqual(loads[1], {
+    fileId: 'png-document',
+    options: { maxBytes: 5_000 },
+  });
 
   const documentWithoutMime = normalizeTelegramUpdate({
     update_id: 23,
@@ -852,8 +871,11 @@ test('Telegram normalizes photo captions and image documents into one downloadab
       document: { file_id: 'webp-document', file_name: 'diagram.webp', file_size: 2_000 },
     },
   }, { botId: '123456789', username: 'HarnessBot' });
+  assert.equal(documentWithoutMime.images[0].name, 'diagram.webp');
   assert.equal(documentWithoutMime.images[0].mediaType, 'image/webp');
+  assert.deepEqual(documentWithoutMime.files, []);
 
+  const fileLoads = [];
   const pdf = normalizeTelegramUpdate({
     update_id: 22,
     message: {
@@ -862,8 +884,26 @@ test('Telegram normalizes photo captions and image documents into one downloadab
       from: { id: 42, is_bot: false },
       document: { file_id: 'pdf-document', file_name: 'file.pdf', mime_type: 'application/pdf' },
     },
-  }, { botId: '123456789', username: 'HarnessBot' });
+  }, {
+    botId: '123456789',
+    username: 'HarnessBot',
+    loadFileStream: async (fileId, options) => {
+      fileLoads.push({ fileId, options });
+      return { stream: (async function* content() { yield Buffer.from('pdf'); }()) };
+    },
+  });
   assert.deepEqual(pdf.images, []);
+  assert.equal(pdf.files[0].name, 'file.pdf');
+  assert.equal(pdf.files[0].mediaType, 'application/pdf');
+  const controller = new AbortController();
+  const loadedPdf = await pdf.files[0].load({ signal: controller.signal });
+  const pdfChunks = [];
+  for await (const chunk of loadedPdf.stream) pdfChunks.push(Buffer.from(chunk));
+  assert.equal(Buffer.concat(pdfChunks).toString(), 'pdf');
+  assert.deepEqual(fileLoads, [{
+    fileId: 'pdf-document',
+    options: { signal: controller.signal },
+  }]);
 });
 
 test('Telegram bridge ignores unaddressed groups and streams direct replies', async () => {

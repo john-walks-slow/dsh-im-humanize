@@ -27,6 +27,11 @@ import {
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
 import {
+  hasInboundFiles,
+  inboundFileUserMessage,
+  prefetchInboundFiles,
+} from '../shared/inbound-file.mjs';
+import {
   materializeOutboundArtifact,
   releaseOutboundArtifact,
   trackOutboundArtifactProviderPromise,
@@ -56,7 +61,7 @@ const QQ_IMAGE_FILENAME = /\.(?:gif|jpe?g|png|webp)$/i;
 const HELP_TEXT = [
   'QQ 机器人已连接 DeepSeek Harness。',
   '',
-  '直接发送文字或图片即可继续当前会话。',
+  '直接发送文字、图片或文件即可继续当前会话。',
   '/new  开启一个全新会话',
   '/compact  压缩当前会话的较早上下文',
   '/workspace 工作区绝对路径  切换工作区',
@@ -101,32 +106,63 @@ function hasQqImageAttachments(message) {
     && message.attachments.some(isQqImageAttachment);
 }
 
+function hasQqFileAttachments(message) {
+  return Array.isArray(message?.attachments)
+    && message.attachments.some((attachment) => !isQqImageAttachment(attachment));
+}
+
+async function fetchQqFileBuffer(url, { fetchImpl, signal }) {
+  const normalizedUrl = url.startsWith('//') ? `https:${url}` : url;
+  const response = await fetchImpl(new URL(normalizedUrl), {
+    method: 'GET',
+    signal,
+    redirect: 'follow',
+  });
+  if (!response?.ok) {
+    await response?.body?.cancel?.().catch?.(() => undefined);
+    throw new Error(`QQ file download failed with HTTP ${response?.status ?? 'unknown'}`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
 /** Convert QQ's attachment metadata into lazily downloaded image references. */
 export function qqInboundMessage(message, { fetchImpl = fetch } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
   const images = [];
+  const files = [];
   for (const attachment of message?.attachments ?? []) {
-    if (!isQqImageAttachment(attachment)) continue;
     const url = nonEmptyString(attachment?.url);
     const name = nonEmptyString(attachment?.filename) ?? undefined;
     const mediaType = attachmentMediaType(attachment);
     const declaredSize = Number(attachment?.size);
-    images.push({
-      ...(name ? { name } : {}),
-      ...(mediaType?.startsWith('image/') ? { mediaType } : {}),
+    if (isQqImageAttachment(attachment)) {
+      images.push({
+        ...(name ? { name } : {}),
+        ...(mediaType?.startsWith('image/') ? { mediaType } : {}),
+        ...(Number.isFinite(declaredSize) && declaredSize >= 0 ? { size: declaredSize } : {}),
+        load: ({ signal, maxBytes }) => {
+          if (!url) throw new Error('QQ image attachment has no download URL');
+          return fetchImageBuffer(url, {
+            fetchImpl,
+            signal,
+            maxBytes,
+            allowedHosts: QQ_IMAGE_HOSTS,
+          });
+        },
+      });
+      continue;
+    }
+    files.push({
+      name: name ?? (files.length === 0 ? 'file' : `file-${files.length + 1}`),
+      ...(mediaType?.includes('/') ? { mediaType } : {}),
       ...(Number.isFinite(declaredSize) && declaredSize >= 0 ? { size: declaredSize } : {}),
-      load: ({ signal, maxBytes }) => {
-        if (!url) throw new Error('QQ image attachment has no download URL');
-        return fetchImageBuffer(url, {
-          fetchImpl,
-          signal,
-          maxBytes,
-          allowedHosts: QQ_IMAGE_HOSTS,
-        });
+      load: ({ signal } = {}) => {
+        if (!url) throw new Error('QQ file attachment has no download URL');
+        return fetchQqFileBuffer(url, { fetchImpl, signal });
       },
     });
   }
-  return { content: safeText(message), images };
+  return { content: safeText(message), images, files };
 }
 
 function nonEmptyString(value) {
@@ -214,6 +250,7 @@ function canClaimInteractionReply(message, pending) {
     && nonEmptyString(message?.senderId) === pending.actor
     && (message.kind !== 'group' || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE')
     && !hasQqImageAttachments(message)
+    && !hasQqFileAttachments(message)
     && nonEmptyString(safeText(message));
 }
 
@@ -304,7 +341,7 @@ export class QqHarnessBridge {
     }
     const pending = this.#pendingInteractions.get(key);
     const commandText = safeText(message);
-    const commandRunner = isControlCommand(commandText)
+    const commandRunner = hasQqFileAttachments(message) ? null : isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText)
           ? runModelCommand
@@ -337,7 +374,7 @@ export class QqHarnessBridge {
       key,
       actor: sender,
       messageId,
-      text: hasQqImageAttachments(message) ? '' : safeText(message),
+      text: hasQqImageAttachments(message) || hasQqFileAttachments(message) ? '' : safeText(message),
       addressed: message.kind !== 'group' || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE',
       hasPendingQuestion: Boolean(pending),
       questionCompletion: pending?.submitting || pending?.claimedReplyMessageId
@@ -392,10 +429,19 @@ export class QqHarnessBridge {
     releaseMessageId = true,
     alreadyRecorded = false,
   } = {}) {
+    const allowed = this.#ownerUserOpenid === '*' || message.senderId === this.#ownerUserOpenid;
+    const addressed = message.kind !== 'group'
+      || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE';
+    const preparedMessage = allowed && addressed
+      ? prefetchInboundFiles(
+          qqInboundMessage(message, { fetchImpl: this.#fetchImpl }),
+          { signal: this.#signal },
+        )
+      : undefined;
     const previous = this.#queues.get(key) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
-      .then(() => this.#process(message, key, { alreadyRecorded }))
+      .then(() => this.#process(message, key, { alreadyRecorded, preparedMessage }))
       .finally(() => {
         if (releaseMessageId) this.#acceptedMessageIds.delete(messageId);
         if (this.#queues.get(key) === current) this.#queues.delete(key);
@@ -424,6 +470,7 @@ export class QqHarnessBridge {
     const result = await runner(text, this.#harness, this.#state, key, {
       signal: this.#signal,
       hasImages: hasQqImageAttachments(message),
+      hasFiles: hasQqFileAttachments(message),
       pendingInteraction: this.#pendingInteractions.has(key)
         || this.#approvals.hasPending(key),
       control: { owner: this, key },
@@ -521,7 +568,7 @@ export class QqHarnessBridge {
     };
   }
 
-  async #process(message, key, { alreadyRecorded = false } = {}) {
+  async #process(message, key, { alreadyRecorded = false, preparedMessage } = {}) {
     if (this.#signal?.aborted) return;
     const messageId = nonEmptyString(message?.messageId);
     const sender = nonEmptyString(message?.senderId);
@@ -540,34 +587,36 @@ export class QqHarnessBridge {
     if (message.kind === 'group' && message.rawEventType !== 'GROUP_AT_MESSAGE_CREATE') return;
 
     const target = message.replyTarget;
-    const promptMessage = qqInboundMessage(message, { fetchImpl: this.#fetchImpl });
+    const promptMessage = preparedMessage
+      ?? qqInboundMessage(message, { fetchImpl: this.#fetchImpl });
     const text = promptMessage.content;
     const hasImages = hasInboundImages(promptMessage);
+    const hasFiles = hasInboundFiles(promptMessage);
     try {
-      if (!text && !hasImages) {
-        await this.#bot.sendText(target, '目前支持文字和图片消息。');
+      if (!text && !hasImages && !hasFiles) {
+        await this.#bot.sendText(target, '目前支持文字、图片和文件消息。');
         await this.#state.markSeen(messageId);
         return;
       }
       const command = text.toLowerCase();
-      if (!hasImages && command === '/help') {
+      if (!hasImages && !hasFiles && command === '/help') {
         await this.#bot.sendText(target, HELP_TEXT);
         await this.#state.markSeen(messageId);
         return;
       }
-      if (!hasImages && command === '/status') {
+      if (!hasImages && !hasFiles && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#bot.sendText(target, 'QQ 机器人与 DeepSeek Harness 连接正常。');
         await this.#state.markSeen(messageId);
         return;
       }
-      if (!hasImages && command === '/new') {
+      if (!hasImages && !hasFiles && command === '/new') {
         await this.#state.clearSession(key);
         await this.#bot.sendText(target, '已开启新会话。请发送你的问题。');
         await this.#state.markSeen(messageId);
         return;
       }
-      const workspaceCommand = hasImages
+      const workspaceCommand = hasImages || hasFiles
         ? null
         : await runWorkspaceCommand(text, this.#harness, key);
       if (workspaceCommand) {
@@ -577,7 +626,7 @@ export class QqHarnessBridge {
         await this.#state.markSeen(messageId);
         return;
       }
-      const compactCommand = hasImages
+      const compactCommand = hasImages || hasFiles
         ? null
         : await runCompactCommand(
             text,
@@ -646,6 +695,7 @@ export class QqHarnessBridge {
               requiresMention: message.kind === 'group',
             }),
             onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
+            files: promptMessage.files,
           },
         }));
       } finally {
@@ -704,7 +754,9 @@ export class QqHarnessBridge {
       try {
         await this.#bot.sendText(
           target,
-          imagePromptUserMessage(error) ?? '消息处理失败，请稍后重试。',
+          inboundFileUserMessage(error)
+            ?? imagePromptUserMessage(error)
+            ?? '消息处理失败，请稍后重试。',
         );
         await this.#state.markSeen(messageId);
       } catch (sendError) {
@@ -730,7 +782,7 @@ export class QqHarnessBridge {
 
     if (message.kind === 'group' && message.rawEventType !== 'GROUP_AT_MESSAGE_CREATE') return;
     const text = nonEmptyString(safeText(message));
-    if (!text || hasQqImageAttachments(message)) {
+    if (!text || hasQqImageAttachments(message) || hasQqFileAttachments(message)) {
       await this.#bot.sendText(message.replyTarget, '请用文字回答当前问题。');
       return;
     }

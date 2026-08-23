@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { DiscordHarnessBridge } from '../../../src/channels/discord/discord-bridge.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
+import { InboundFileError } from '../../../src/channels/shared/inbound-file.mjs';
 import {
   OUTBOUND_ARTIFACT_TOOL,
   OutboundArtifactRegistry,
@@ -212,6 +213,162 @@ test('all four shared text channels execute /compact outside the model prompt pa
     assert.deepEqual(executed, [{ sessionId: `session-${name}`, line: '/compact' }]);
     assert.deepEqual(sent, ['已压缩 12 条历史记录（约 3456 个 token）。']);
   }
+});
+
+test('shared text bridge passes a file-only message through askOptions.files', async () => {
+  const fixture = stateFixture();
+  const source = Object.freeze({
+    name: 'report.bin',
+    load: async () => Buffer.from([0x00, 0xff]),
+  });
+  const asks = [];
+  const sent = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    harness: {
+      createSession: async () => 'session-file-only-inbound',
+      ask: async (sessionId, text, options) => {
+        asks.push({ sessionId, text, files: options.files });
+        return '文件已交给 Harness。';
+      },
+    },
+  });
+
+  await bridge.accept(message('inbound-file-only', '', { files: [source] }));
+
+  assert.deepEqual(asks, [{
+    sessionId: 'session-file-only-inbound',
+    text: '',
+    files: [source],
+  }]);
+  assert.deepEqual(sent, ['文件已交给 Harness。']);
+});
+
+test('shared text bridge keeps caption and native files in one Harness ask', async () => {
+  const fixture = stateFixture();
+  const sources = [
+    { name: 'one.txt', data: Buffer.from('one') },
+    { name: 'two.zip', load: async () => Buffer.from('two') },
+  ];
+  const asks = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async () => undefined },
+    harness: {
+      createSession: async () => 'session-text-and-files',
+      ask: async (sessionId, text, options) => {
+        asks.push({ sessionId, text, files: options.files });
+        return '完成';
+      },
+    },
+  });
+
+  await bridge.accept(message('inbound-text-and-files', '请检查这两个文件', { files: sources }));
+
+  assert.deepEqual(asks, [{
+    sessionId: 'session-text-and-files',
+    text: '请检查这两个文件',
+    files: sources,
+  }]);
+});
+
+test('a command-looking file caption is an ordinary Harness prompt, not a bridge command', async () => {
+  const fixture = stateFixture({ 'direct:chat-a': 'session-existing' });
+  const source = { name: 'new.txt', data: Buffer.from('not a command') };
+  const asks = [];
+  const sent = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, text, options) => {
+        asks.push({ sessionId, text, files: options.files });
+        return '附件消息已处理';
+      },
+    },
+  });
+
+  await bridge.accept(message('file-caption-command', '/new', { files: [source] }));
+
+  assert.equal(fixture.sessions.get('direct:chat-a'), 'session-existing');
+  assert.deepEqual(asks, [{
+    sessionId: 'session-existing',
+    text: '/new',
+    files: [source],
+  }]);
+  assert.deepEqual(sent, ['附件消息已处理']);
+});
+
+test('an inbound file cannot claim a pending Harness interaction answer', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const questionAnswered = deferred();
+  let interactionResponses = 0;
+  const asks = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    harness: {
+      createSession: async () => 'session-file-during-question',
+      ask: async (sessionId, text, options) => {
+        asks.push({ sessionId, text, files: options.files });
+        await options.onInteraction(questionInteraction({
+          sessionId,
+          questions: [{ id: 'confirm', question: '是否继续？' }],
+          respond: async (result) => {
+            interactionResponses += 1;
+            questionAnswered.resolve(result);
+            return { accepted: true };
+          },
+        }));
+        await questionAnswered.promise;
+        return '继续执行';
+      },
+    },
+  });
+
+  const processing = bridge.accept(message('question-with-file-start', '先询问我'));
+  await eventually(() => sent.some((text) => text.includes('是否继续？')));
+  await bridge.accept(message('question-file-attempt', 'yes', {
+    files: [{ name: 'answer.txt', data: Buffer.from('yes') }],
+  }));
+
+  assert.equal(interactionResponses, 0);
+  assert.equal(asks.length, 1, 'the attachment must not become a sibling ask while interaction is open');
+  assert.equal(sent.at(-1), '请用文字回答当前问题。');
+
+  await bridge.accept(message('question-text-answer', 'yes'));
+  await processing;
+  assert.equal(interactionResponses, 1);
+  assert.equal(sent.at(-1), '继续执行');
+});
+
+test('shared text bridge reports a safe native-file download failure', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    harness: {
+      createSession: async () => 'session-file-download-failure',
+      ask: async () => {
+        throw new InboundFileError(
+          'inbound-file-download-failed',
+          'private channel URL https://secret.example/token failed',
+          '文件下载失败，请重新发送后再试。',
+        );
+      },
+    },
+  });
+
+  await bridge.accept(message('file-download-failure', '', {
+    files: [{ name: 'failed.txt', load: async () => Buffer.from('unused') }],
+  }));
+
+  assert.deepEqual(sent, ['文件下载失败，请重新发送后再试。']);
+  assert.doesNotMatch(sent[0], /secret|token|https:/i);
 });
 
 test('all four shared text channels list models and presets locally and advertise fast commands', async () => {
