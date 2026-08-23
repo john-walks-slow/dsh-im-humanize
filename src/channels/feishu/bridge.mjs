@@ -655,7 +655,7 @@ export class FeishuHarnessBridge {
       return;
     }
     if (MENU_COMMAND.test(commandText)) {
-      await this.#sendMenuCard(key, event.message.chat_id);
+      await this.#sendMenuCard(key, event.message.chat_id, { newCard: true });
       return;
     }
     if (commandText === '/new') {
@@ -1508,7 +1508,7 @@ export class FeishuHarnessBridge {
     return messageId;
   }
 
-  async #sendMenuCard(key, chatId) {
+  async #sendMenuCard(key, chatId, { newCard = false } = {}) {
     let workspaces = [];
     let currentWorkspace = null;
     try {
@@ -1566,7 +1566,7 @@ export class FeishuHarnessBridge {
         currentSession: currentSessionId ? { id: currentSessionId, title: currentSessionTitle } : null,
         sessions, archiveVisible,
       }),
-      { key, update: true },
+      { key, update: !newCard },
     );
   }
 
