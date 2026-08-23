@@ -406,6 +406,65 @@ test('Discord normalizes DMs and only addressed server messages', () => {
   assert.equal(unmentionedReply.addressed, false);
 });
 
+test('Discord preserves existing channel and thread addressing before native routing', () => {
+  const botId = '1234567890123456789';
+  const parentChannelId = '222222222222222223';
+  const fixtures = [
+    { label: 'guild text', channelId: parentChannelId, channelType: 0 },
+    { label: 'announcement', channelId: '222222222222222224', channelType: 5 },
+    { label: 'announcement thread', channelId: '222222222222222225', channelType: 10 },
+    { label: 'public thread', channelId: '222222222222222226', channelType: 11 },
+    { label: 'private thread', channelId: '222222222222222227', channelType: 12 },
+  ];
+
+  for (const [index, fixture] of fixtures.entries()) {
+    const message = normalizeDiscordMessage({
+      id: `11111111111111112${index}`,
+      channel_id: fixture.channelId,
+      guild_id: '444444444444444444',
+      channel_type: fixture.channelType,
+      author: { id: `33333333333333333${index}`, bot: false },
+      mentions: [{ id: botId }],
+      content: `<@${botId}> ${fixture.label}`,
+    }, botId);
+    assert.equal(message.kind, 'group');
+    assert.equal(message.addressed, true);
+    assert.equal(message.conversationId, fixture.channelId);
+    assert.deepEqual(message.replyTarget, {
+      channelId: fixture.channelId,
+      replyToMessageId: `11111111111111112${index}`,
+    });
+  }
+
+  const firstUser = normalizeDiscordMessage({
+    id: '111111111111111130',
+    channel_id: parentChannelId,
+    guild_id: '444444444444444444',
+    author: { id: '333333333333333330', bot: false },
+    mentions: [{ id: botId }],
+    content: `<@${botId}> first`,
+  }, botId);
+  const secondUser = normalizeDiscordMessage({
+    id: '111111111111111131',
+    channel_id: parentChannelId,
+    guild_id: '444444444444444444',
+    author: { id: '333333333333333331', bot: false },
+    mentions: [{ id: botId }],
+    content: `<@${botId}> second`,
+  }, botId);
+  assert.equal(firstUser.conversationId, secondUser.conversationId);
+
+  const unmentionedThread = normalizeDiscordMessage({
+    id: '111111111111111132',
+    channel_id: '222222222222222226',
+    guild_id: '444444444444444444',
+    author: { id: '333333333333333330', bot: false },
+    mentions: [],
+    content: 'continue',
+  }, botId);
+  assert.equal(unmentionedThread.addressed, false);
+});
+
 test('Discord keeps image attachments in images and exposes ordinary attachments as files', async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const calls = [];
