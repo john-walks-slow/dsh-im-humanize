@@ -247,6 +247,81 @@ test('Telegram API registers the command menu and commands-type menu button', as
   await assert.rejects(() => api.setChatMenuButton({ menuButton: 'commands' }), /menu button is invalid/);
 });
 
+test('Telegram API preserves the legacy plain send and edit payloads', async () => {
+  const calls = [];
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      calls.push({ method: url.pathname.split('/').at(-1), body: JSON.parse(options.body) });
+      return jsonResponse({ ok: true, result: { message_id: 501 } });
+    },
+  });
+
+  await api.sendMessage({
+    chatId: -100123,
+    text: 'legacy send',
+    replyToMessageId: 44,
+    messageThreadId: 55,
+  });
+  await api.editMessageText({
+    chatId: -100123,
+    messageId: 501,
+    text: 'legacy edit',
+  });
+
+  assert.deepEqual(calls, [{
+    method: 'sendMessage',
+    body: {
+      chat_id: -100123,
+      text: 'legacy send',
+      link_preview_options: { is_disabled: true },
+      reply_parameters: { message_id: 44, allow_sending_without_reply: true },
+      message_thread_id: 55,
+    },
+  }, {
+    method: 'editMessageText',
+    body: {
+      chat_id: -100123,
+      message_id: 501,
+      text: 'legacy edit',
+      link_preview_options: { is_disabled: true },
+    },
+  }]);
+  assert.equal(Object.hasOwn(calls[0].body, 'parse_mode'), false);
+  assert.equal(Object.hasOwn(calls[1].body, 'parse_mode'), false);
+});
+
+test('Telegram plain delivery keeps the 4000 boundary, reply, topic, and content', async () => {
+  const calls = [];
+  let nextMessageId = 600;
+  const client = new TelegramBotClient({
+    api: {
+      sendMessage: async (payload) => {
+        calls.push(payload);
+        return { message_id: nextMessageId++ };
+      },
+    },
+  });
+  const target = { chatId: -100123, replyToMessageId: 44, messageThreadId: 55 };
+
+  const exact = `\`\`\`js\n${'a'.repeat(3990)}\n\`\`\``;
+  assert.equal(exact.length, 4000);
+  await client.sendText(target, exact);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].text, exact);
+
+  calls.length = 0;
+  const long = `${'中'.repeat(3998)}😀Z`;
+  assert.equal(long.length, 4001);
+  const receipt = await client.sendText(target, long);
+  assert.equal(calls.length, 2);
+  assert.equal(calls.map((call) => call.text).join(''), long);
+  assert.equal(calls[0].replyToMessageId, 44);
+  assert.equal(calls[1].replyToMessageId, undefined);
+  assert.deepEqual(calls.map((call) => call.messageThreadId), [55, 55]);
+  assert.deepEqual(receipt.providerMessageIds, ['601', '602']);
+});
+
 test('Telegram API uploads a result file as a native document in the same topic and reply chain', async () => {
   let request;
   const api = new TelegramApi({
