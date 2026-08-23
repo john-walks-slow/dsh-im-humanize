@@ -1,8 +1,18 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { DiscordHarnessBridge } from '../../../src/channels/discord/discord-bridge.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
+import { InboundFileError } from '../../../src/channels/shared/inbound-file.mjs';
+import {
+  OUTBOUND_ARTIFACT_TOOL,
+  OutboundArtifactRegistry,
+  createOutboundArtifactTool,
+  releaseOutboundArtifact,
+} from '../../../src/channels/shared/semantic/artifact.mjs';
 import { TextHarnessBridge } from '../../../src/channels/shared/text-harness-bridge.mjs';
 import { SlackHarnessBridge } from '../../../src/channels/slack/slack-bridge.mjs';
 import { TelegramHarnessBridge } from '../../../src/channels/telegram/telegram-bridge.mjs';
@@ -121,7 +131,13 @@ function approvalInteraction({
   };
 }
 
-function createBridge({ harness, state, bot, signal, logger } = {}) {
+function createBridge({
+  harness,
+  state,
+  bot,
+  signal,
+  logger,
+} = {}) {
   return new TextHarnessBridge({
     descriptor: { key: 'test', label: 'Test' },
     bot,
@@ -130,6 +146,41 @@ function createBridge({ harness, state, bot, signal, logger } = {}) {
     signal,
     logger: logger ?? { warn() {}, error() {} },
   });
+}
+
+async function committedArtifact(t, fileName, content, suffix) {
+  const workspace = await mkdtemp(join(tmpdir(), `dsh-im-text-artifact-${suffix}-`));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const sessionId = `session-artifact-${suffix}`;
+  const rpcId = `rpc-artifact-${suffix}`;
+  let nextId = 0;
+  const registry = new OutboundArtifactRegistry({
+    uuid: () => `${suffix}-${++nextId}`,
+  });
+  t.after(() => registry.clear());
+  const agent = {
+    session: {
+      header: { id: sessionId, cwd: workspace },
+      events: [
+        { type: 'turn/start', data: { turn: 1 } },
+        { type: 'user/message', data: { turn: 1, source: { rpcId } } },
+      ],
+    },
+  };
+  await writeFile(join(workspace, fileName), content);
+  const tool = createOutboundArtifactTool({ registry });
+  const exec = {
+    name: OUTBOUND_ARTIFACT_TOOL,
+    callId: `call-${suffix}`,
+    rootCallId: `call-${suffix}`,
+    token: Symbol(`call-${suffix}`),
+    agent,
+  };
+  await tool.definition.execute({ path: fileName }, exec);
+  tool.onResult(exec, { isError: false });
+  const artifact = registry.take(sessionId, 1)[0];
+  t.after(() => releaseOutboundArtifact(artifact));
+  return artifact;
 }
 
 test('all four shared text channels execute /compact outside the model prompt path', async () => {
@@ -162,6 +213,162 @@ test('all four shared text channels execute /compact outside the model prompt pa
     assert.deepEqual(executed, [{ sessionId: `session-${name}`, line: '/compact' }]);
     assert.deepEqual(sent, ['已压缩 12 条历史记录（约 3456 个 token）。']);
   }
+});
+
+test('shared text bridge passes a file-only message through askOptions.files', async () => {
+  const fixture = stateFixture();
+  const source = Object.freeze({
+    name: 'report.bin',
+    load: async () => Buffer.from([0x00, 0xff]),
+  });
+  const asks = [];
+  const sent = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    harness: {
+      createSession: async () => 'session-file-only-inbound',
+      ask: async (sessionId, text, options) => {
+        asks.push({ sessionId, text, files: options.files });
+        return '文件已交给 Harness。';
+      },
+    },
+  });
+
+  await bridge.accept(message('inbound-file-only', '', { files: [source] }));
+
+  assert.deepEqual(asks, [{
+    sessionId: 'session-file-only-inbound',
+    text: '',
+    files: [source],
+  }]);
+  assert.deepEqual(sent, ['文件已交给 Harness。']);
+});
+
+test('shared text bridge keeps caption and native files in one Harness ask', async () => {
+  const fixture = stateFixture();
+  const sources = [
+    { name: 'one.txt', data: Buffer.from('one') },
+    { name: 'two.zip', load: async () => Buffer.from('two') },
+  ];
+  const asks = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async () => undefined },
+    harness: {
+      createSession: async () => 'session-text-and-files',
+      ask: async (sessionId, text, options) => {
+        asks.push({ sessionId, text, files: options.files });
+        return '完成';
+      },
+    },
+  });
+
+  await bridge.accept(message('inbound-text-and-files', '请检查这两个文件', { files: sources }));
+
+  assert.deepEqual(asks, [{
+    sessionId: 'session-text-and-files',
+    text: '请检查这两个文件',
+    files: sources,
+  }]);
+});
+
+test('a command-looking file caption is an ordinary Harness prompt, not a bridge command', async () => {
+  const fixture = stateFixture({ 'direct:chat-a': 'session-existing' });
+  const source = { name: 'new.txt', data: Buffer.from('not a command') };
+  const asks = [];
+  const sent = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, text, options) => {
+        asks.push({ sessionId, text, files: options.files });
+        return '附件消息已处理';
+      },
+    },
+  });
+
+  await bridge.accept(message('file-caption-command', '/new', { files: [source] }));
+
+  assert.equal(fixture.sessions.get('direct:chat-a'), 'session-existing');
+  assert.deepEqual(asks, [{
+    sessionId: 'session-existing',
+    text: '/new',
+    files: [source],
+  }]);
+  assert.deepEqual(sent, ['附件消息已处理']);
+});
+
+test('an inbound file cannot claim a pending Harness interaction answer', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const questionAnswered = deferred();
+  let interactionResponses = 0;
+  const asks = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    harness: {
+      createSession: async () => 'session-file-during-question',
+      ask: async (sessionId, text, options) => {
+        asks.push({ sessionId, text, files: options.files });
+        await options.onInteraction(questionInteraction({
+          sessionId,
+          questions: [{ id: 'confirm', question: '是否继续？' }],
+          respond: async (result) => {
+            interactionResponses += 1;
+            questionAnswered.resolve(result);
+            return { accepted: true };
+          },
+        }));
+        await questionAnswered.promise;
+        return '继续执行';
+      },
+    },
+  });
+
+  const processing = bridge.accept(message('question-with-file-start', '先询问我'));
+  await eventually(() => sent.some((text) => text.includes('是否继续？')));
+  await bridge.accept(message('question-file-attempt', 'yes', {
+    files: [{ name: 'answer.txt', data: Buffer.from('yes') }],
+  }));
+
+  assert.equal(interactionResponses, 0);
+  assert.equal(asks.length, 1, 'the attachment must not become a sibling ask while interaction is open');
+  assert.equal(sent.at(-1), '请用文字回答当前问题。');
+
+  await bridge.accept(message('question-text-answer', 'yes'));
+  await processing;
+  assert.equal(interactionResponses, 1);
+  assert.equal(sent.at(-1), '继续执行');
+});
+
+test('shared text bridge reports a safe native-file download failure', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    harness: {
+      createSession: async () => 'session-file-download-failure',
+      ask: async () => {
+        throw new InboundFileError(
+          'inbound-file-download-failed',
+          'private channel URL https://secret.example/token failed',
+          '文件下载失败，请重新发送后再试。',
+        );
+      },
+    },
+  });
+
+  await bridge.accept(message('file-download-failure', '', {
+    files: [{ name: 'failed.txt', load: async () => Buffer.from('unused') }],
+  }));
+
+  assert.deepEqual(sent, ['文件下载失败，请重新发送后再试。']);
+  assert.doesNotMatch(sent[0], /secret|token|https:/i);
 });
 
 test('all four shared text channels list models and presets locally and advertise fast commands', async () => {
@@ -327,6 +534,301 @@ test('a stopped shared-channel turn closes an opened stream instead of leaving a
   assert.deepEqual(finished, ['已停止。']);
   assert.equal(cancelled, 0);
   assert.deepEqual(sent, []);
+});
+
+test('shared text artifact delivery sends text first and each materialized file in order', async (t) => {
+  const first = await committedArtifact(t, 'result.html', '<h1>result</h1>', 'success-html');
+  const second = await committedArtifact(t, 'notes.txt', 'notes', 'success-text');
+  const fixture = stateFixture();
+  const order = [];
+  const files = [];
+  const target = { id: 'artifact-success-target' };
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: {
+      sendText: async (_target, text) => {
+        order.push(`text:${text}`);
+        return { id: 'text-success' };
+      },
+      sendFile: async (receivedTarget, file) => {
+        order.push(`file:${file.fileName}`);
+        files.push({ target: receivedTarget, file });
+        return { message_id: `file-${files.length}` };
+      },
+    },
+    harness: {
+      createSession: async () => 'session-artifact-success',
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(first);
+        await options.onArtifact(second);
+        return '结果文件如下。';
+      },
+    },
+  });
+
+  const receipt = await bridge.accept(message(
+    'artifact-success',
+    '生成结果文件',
+    { replyTarget: target },
+  ));
+
+  assert.deepEqual(order, [
+    'text:结果文件如下。',
+    'file:result.html',
+    'file:notes.txt',
+  ]);
+  assert.equal(files[0].target, target);
+  assert.equal(files[0].file.bytes.toString(), '<h1>result</h1>');
+  assert.equal(files[1].file.bytes.toString(), 'notes');
+  assert.equal(bridge.status.artifactsSent, 2);
+  assert.deepEqual(receipt, {
+    schemaVersion: 1,
+    deliveryId: 'artifact-success',
+    presentation: 'test-text-and-files',
+    providerMessageIds: ['text-success', 'file-1', 'file-2'],
+    artifacts: [
+      { artifactId: 'success-html-1', outcome: 'sent' },
+      { artifactId: 'success-text-1', outcome: 'sent' },
+    ],
+  });
+});
+
+test('a file-only shared text reply shows one neutral completion message before the file', async (t) => {
+  const artifact = await committedArtifact(t, 'only.txt', 'only file', 'file-only');
+  const fixture = stateFixture();
+  const order = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: {
+      sendText: async (_target, text) => order.push(`text:${text}`),
+      sendFile: async (_target, file) => order.push(`file:${file.fileName}`),
+    },
+    harness: {
+      createSession: async () => 'session-file-only',
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '   ';
+      },
+    },
+  });
+
+  await bridge.accept(message('artifact-file-only', '只生成并发送文件'));
+
+  assert.deepEqual(order, ['text:任务已完成。', 'file:only.txt']);
+});
+
+test('shared text delivery still attempts registered files when its final text cannot be sent', async (t) => {
+  const artifact = await committedArtifact(t, 'text-failed.txt', 'still delivered', 'text-failed');
+  const fixture = stateFixture();
+  const files = [];
+  const texts = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: {
+      sendText: async (_target, text) => {
+        texts.push(text);
+        if (texts.length === 1) throw new Error('private text transport failure');
+      },
+      sendFile: async (_target, file) => {
+        files.push(file.fileName);
+        return { key: { id: 'file-after-text-failure' } };
+      },
+    },
+    harness: {
+      createSession: async () => 'session-text-failed',
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '文字回答';
+      },
+    },
+  });
+
+  const receipt = await bridge.accept(message('artifact-text-failed', '生成文件'));
+
+  assert.deepEqual(files, ['text-failed.txt']);
+  assert.deepEqual(texts, ['文字回答']);
+  assert.equal(bridge.status.artifactsSent, 1);
+  assert.equal(bridge.status.messagesReplied, 1);
+  assert.deepEqual(receipt.providerMessageIds, ['file-after-text-failure']);
+  assert.deepEqual(receipt.artifacts, [{ artifactId: 'text-failed-1', outcome: 'sent' }]);
+});
+
+test('shared text artifact provider failures are isolated from text and later files', async (t) => {
+  const providerFailure = await committedArtifact(t, 'provider.txt', 'bad', 'provider-failure');
+  const oversized = await committedArtifact(t, 'oversized.txt', '123456789', 'oversized');
+  const success = await committedArtifact(t, 'success.txt', 'ok', 'partial-success');
+  const fixture = stateFixture();
+  const sent = [];
+  const attempted = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: {
+      sendText: async (_target, text) => {
+        sent.push(text);
+        return { id: `text-partial-${sent.length}` };
+      },
+      sendFile: async (_target, file) => {
+        attempted.push(file.fileName);
+        if (file.fileName === 'provider.txt') {
+          throw new Error('private provider diagnostic');
+        }
+        if (file.fileName === 'oversized.txt') {
+          const error = new Error('provider upload limit');
+          error.code = 'artifact-too-large';
+          throw error;
+        }
+        return { id: 'file-partial-success' };
+      },
+    },
+    harness: {
+      createSession: async () => 'session-artifact-partial',
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(providerFailure);
+        await options.onArtifact(oversized);
+        await options.onArtifact(success);
+        return '三个文件已生成。';
+      },
+    },
+  });
+
+  const receipt = await bridge.accept(message('artifact-partial', '生成三个文件'));
+
+  assert.deepEqual(attempted, ['provider.txt', 'oversized.txt', 'success.txt']);
+  assert.equal(sent[0], '三个文件已生成。');
+  assert.match(sent[1], /provider\.txt.*暂时未能发送/);
+  assert.doesNotMatch(sent[1], /private provider diagnostic/);
+  assert.match(sent[2], /oversized\.txt.*超过当前渠道大小上限/);
+  assert.equal(bridge.status.artifactsSent, 1);
+  assert.equal(bridge.status.artifactSendErrors, 2);
+  assert.deepEqual(receipt.providerMessageIds, [
+    'text-partial-1',
+    'text-partial-2',
+    'text-partial-3',
+    'file-partial-success',
+  ]);
+  assert.deepEqual(receipt.artifacts, [
+    {
+      artifactId: 'provider-failure-1',
+      outcome: 'failed',
+      reason: 'artifact-provider-failed',
+    },
+    { artifactId: 'oversized-1', outcome: 'rejected', reason: 'artifact-too-large' },
+    { artifactId: 'partial-success-1', outcome: 'sent' },
+  ]);
+});
+
+test('shared text bridge tells users to check the chat before retrying an uncertain file send', async (t) => {
+  const artifact = await committedArtifact(t, 'uncertain.txt', 'bytes', 'uncertain');
+  const sent = [];
+  let textAttempts = 0;
+  const bridge = createBridge({
+    state: stateFixture().state,
+    bot: {
+      sendText: async (_target, text) => {
+        textAttempts += 1;
+        if (textAttempts === 1) throw new Error('initial text delivery failed');
+        sent.push(text);
+        return { ts: 'unknown-notice' };
+      },
+      sendFile: async () => {
+        const error = new Error('private timeout detail');
+        error.code = 'artifact-delivery-uncertain';
+        throw error;
+      },
+    },
+    harness: {
+      createSession: async () => 'session-uncertain',
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '文件已生成。';
+      },
+    },
+  });
+
+  const receipt = await bridge.accept(message('artifact-uncertain', '生成文件'));
+
+  assert.equal(textAttempts, 2, 'must not append a contradictory generic retry notice');
+  assert.match(sent[0], /发送结果未能确认.*先检查聊天内是否已收到.*不要立即重试/);
+  assert.doesNotMatch(sent[0], /private timeout detail/);
+  assert.deepEqual(receipt.providerMessageIds, ['unknown-notice']);
+  assert.deepEqual(receipt.artifacts, [{
+    artifactId: 'uncertain-1',
+    outcome: 'unknown',
+    reason: 'artifact-delivery-uncertain',
+  }]);
+});
+
+test('shared text streaming finalizes once before delivering result files', async (t) => {
+  const artifact = await committedArtifact(t, 'stream.txt', 'stream file', 'stream');
+  const fixture = stateFixture();
+  const order = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: {
+      sendText: async (_target, text) => order.push(`text:${text}`),
+      sendTyping: async () => order.push('typing'),
+      openStream: async () => {
+        order.push('open');
+        return {
+          messageId: 'stream-message',
+          update: async (text) => order.push(`update:${text}`),
+          finish: async (text) => order.push(`finish:${text}`),
+          cancel: () => order.push('cancel'),
+        };
+      },
+      sendFile: async (_target, file) => order.push(`file:${file.fileName}`),
+    },
+    harness: {
+      createSession: async () => 'session-artifact-stream',
+      ask: async (_sessionId, _text, options) => {
+        await options.onUpdate({ type: 'text', text: '处理中' });
+        await options.onArtifact(artifact);
+        return '流式回答完成';
+      },
+    },
+  });
+
+  const receipt = await bridge.accept(message('artifact-stream', '流式生成文件'));
+
+  assert.deepEqual(order, [
+    'typing',
+    'open',
+    'update:处理中',
+    'finish:流式回答完成',
+    'file:stream.txt',
+  ]);
+  assert.deepEqual(receipt.providerMessageIds, ['stream-message']);
+});
+
+test('aborting shared text delivery stops before any registered file is sent', async (t) => {
+  const artifact = await committedArtifact(t, 'cancelled.txt', 'cancelled', 'cancelled');
+  const fixture = stateFixture();
+  const controller = new AbortController();
+  const sent = [];
+  const files = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    signal: controller.signal,
+    bot: {
+      sendText: async (_target, text) => {
+        sent.push(text);
+        controller.abort(new DOMException('runtime stopped', 'AbortError'));
+      },
+      sendFile: async (_target, file) => files.push(file.fileName),
+    },
+    harness: {
+      createSession: async () => 'session-artifact-cancelled',
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '回答完成';
+      },
+    },
+  });
+
+  await bridge.accept(message('artifact-cancelled', '生成后取消'));
+
+  assert.deepEqual(sent, ['回答完成']);
+  assert.deepEqual(files, []);
 });
 
 test('Slack, Telegram, and Discord remember any valid direct message per bot', async () => {
@@ -910,6 +1412,49 @@ test('a group question only accepts an addressed reply from the initiating actor
   await Promise.all([first, intruder]);
   assert.deepEqual(asked, ['甲发起交互', '乙试图代答']);
   assert.equal(bridge.status.messagesRejected, 1);
+});
+
+test('a managed native thread can keep group isolation without asking for another mention', async () => {
+  const fixture = stateFixture({ 'group:managed-thread': 'session-managed' });
+  const sent = [];
+  const submitted = deferred();
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, _text, options) => {
+        await options.onInteraction(questionInteraction({
+          id: 'managed-thread-question',
+          sessionId,
+          questions: [{ id: 'choice', question: '请选择下一步' }],
+          respond: async (result) => {
+            submitted.resolve(result);
+            return { accepted: true };
+          },
+        }));
+        await submitted.promise;
+        return '已继续';
+      },
+    },
+  });
+  const route = {
+    kind: 'group',
+    conversationId: 'managed-thread',
+    addressed: true,
+    requiresMention: false,
+  };
+
+  const processing = bridge.accept(message('managed-start', '开始', route));
+  await eventually(() => sent.some(({ text }) => text.includes('请选择下一步')));
+  assert.doesNotMatch(sent[0].text, /群聊中请 @机器人/);
+  await bridge.accept(message('managed-answer', '继续', route));
+  assert.deepEqual((await submitted.promise).value.answer.answers, [{
+    id: 'choice',
+    selected: [],
+    custom: '继续',
+  }]);
+  await processing;
 });
 
 test('deduplicates replays and safely closes recovered questions and approvals', async () => {

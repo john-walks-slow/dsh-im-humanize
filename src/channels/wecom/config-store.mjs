@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+import { t } from '../shared/i18n.mjs';
+
 const EMPTY_DOCUMENT = Object.freeze({ version: 1, bots: Object.freeze([]) });
 
 function cleanString(value) {
@@ -30,7 +32,7 @@ export function deriveWecomBotIdentity(remoteBotId) {
 
 export function maskWecomBotId(remoteBotId) {
   const value = cleanString(remoteBotId) ?? '';
-  if (!value) return '企业微信机器人';
+  if (!value) return t('企业微信机器人');
   if (value.length <= 10) return `${value.slice(0, 3)}•••`;
   return `${value.slice(0, 6)}••••${value.slice(-4)}`;
 }

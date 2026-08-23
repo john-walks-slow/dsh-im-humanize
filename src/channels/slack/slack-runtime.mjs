@@ -1,4 +1,5 @@
 import { splitMessageText } from '../shared/editable-message-stream.mjs';
+import { t } from '../shared/i18n.mjs';
 import { SlackApi } from './slack-api.mjs';
 import { createSlackBridgeStatus, SlackHarnessBridge } from './slack-bridge.mjs';
 
@@ -43,10 +44,14 @@ function stripBotMention(value, botUserId) {
     .trim();
 }
 
+function slackFileUrl(file) {
+  return typeof file?.url_private_download === 'string' && file.url_private_download
+    ? file.url_private_download : file?.url_private;
+}
+
 function slackImageSource(file, loadFile) {
   const mediaType = typeof file?.mimetype === 'string' ? file.mimetype.toLowerCase() : '';
-  const url = typeof file?.url_private_download === 'string' && file.url_private_download
-    ? file.url_private_download : file?.url_private;
+  const url = slackFileUrl(file);
   if (!IMAGE_MEDIA_TYPES.has(mediaType) || typeof url !== 'string' || !url) return null;
   return {
     name: typeof file.name === 'string' ? file.name : undefined,
@@ -56,9 +61,50 @@ function slackImageSource(file, loadFile) {
   };
 }
 
-export function normalizeSlackEvent(payload, botUserId, { loadFile = async () => {
-  throw new Error('Slack file downloader is unavailable');
-} } = {}) {
+function slackFileSource(file, loadFile, loadFileInfo) {
+  const mediaType = typeof file?.mimetype === 'string' && file.mimetype
+    ? file.mimetype.toLowerCase() : undefined;
+  const url = slackFileUrl(file);
+  if (IMAGE_MEDIA_TYPES.has(mediaType)) return null;
+  const requiresInfo = file?.file_access === 'check_file_info'
+    && typeof file?.id === 'string' && file.id;
+  if ((typeof url !== 'string' || !url) && !requiresInfo) return null;
+  return {
+    name: typeof file?.name === 'string' && file.name
+      ? file.name : typeof file?.title === 'string' && file.title
+        ? file.title : requiresInfo ? file.id : 'slack-file',
+    ...(mediaType ? { mediaType } : {}),
+    size: Number.isSafeInteger(file?.size) && file.size >= 0 ? file.size : undefined,
+    load: async ({ signal } = {}) => {
+      if (!requiresInfo) return loadFile(url, { signal });
+      const resolved = await loadFileInfo(file.id, { signal });
+      const resolvedUrl = slackFileUrl(resolved);
+      if (typeof resolvedUrl !== 'string' || !resolvedUrl) {
+        throw new Error('Slack files.info returned no downloadable URL');
+      }
+      const loaded = await loadFile(resolvedUrl, { signal });
+      const name = typeof resolved?.name === 'string' && resolved.name
+        ? resolved.name : typeof resolved?.title === 'string' && resolved.title
+          ? resolved.title : file.id;
+      const resolvedMediaType = typeof resolved?.mimetype === 'string' && resolved.mimetype
+        ? resolved.mimetype.toLowerCase() : undefined;
+      if (Buffer.isBuffer(loaded) || loaded instanceof Uint8Array) {
+        return { data: loaded, name, ...(resolvedMediaType ? { mediaType: resolvedMediaType } : {}) };
+      }
+      return {
+        ...loaded,
+        name,
+        ...(resolvedMediaType ? { mediaType: resolvedMediaType } : {}),
+      };
+    },
+  };
+}
+
+export function normalizeSlackEvent(payload, botUserId, {
+  loadFile = async () => { throw new Error('Slack file downloader is unavailable'); },
+  loadFileStream = loadFile,
+  loadFileInfo = async () => { throw new Error('Slack file metadata loader is unavailable'); },
+} = {}) {
   const event = payload?.event;
   if (!event || !payload?.event_id || !event.channel || !event.user || !event.ts) return null;
   const direct = event.type === 'message' && event.channel_type === 'im';
@@ -76,6 +122,9 @@ export function normalizeSlackEvent(payload, botUserId, { loadFile = async () =>
     images: Array.isArray(event.files)
       ? event.files.map((file) => slackImageSource(file, loadFile)).filter(Boolean)
       : [],
+    files: Array.isArray(event.files)
+      ? event.files.map((file) => slackFileSource(file, loadFileStream, loadFileInfo)).filter(Boolean)
+      : [],
     addressed: direct || mentioned,
     replyTarget: {
       channelId: String(event.channel),
@@ -87,8 +136,18 @@ export function normalizeSlackEvent(payload, botUserId, { loadFile = async () =>
   };
 }
 
-function isToolProgress(text) {
-  return typeof text === 'string' && /^正在使用.+…$/.test(text.trim());
+export function isSlackToolProgress(text) {
+  if (typeof text !== 'string') return false;
+  const marker = '__DSH_IM_TOOL_NAME__';
+  const template = t('正在使用{name}…', { name: marker });
+  const markerIndex = template.indexOf(marker);
+  if (markerIndex < 0) return false;
+  const prefix = template.slice(0, markerIndex);
+  const suffix = template.slice(markerIndex + marker.length);
+  const source = text.trim();
+  return source.startsWith(prefix)
+    && source.endsWith(suffix)
+    && source.length > prefix.length + suffix.length;
 }
 
 async function appendInChunks(api, target, ts, text, signal) {
@@ -120,6 +179,7 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
   let inFlight = null;
   let broken = false;
   let closed = false;
+  const providerMessageIds = [ts];
 
   const appendLatest = async (text) => {
     const next = splitMessageText(text, SLACK_MESSAGE_LIMIT)[0] ?? '';
@@ -150,8 +210,13 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
   };
 
   return {
+    messageId: ts,
+    get providerMessageIds() {
+      return [...providerMessageIds];
+    },
     update(text) {
-      if (closed || broken || typeof text !== 'string' || !text.trim() || isToolProgress(text)) return;
+      if (closed || broken || typeof text !== 'string' || !text.trim()
+        || isSlackToolProgress(text)) return;
       pending = text;
       schedule();
     },
@@ -164,7 +229,7 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
       await inFlight?.catch(() => undefined);
 
       const chunks = splitMessageText(text, SLACK_MESSAGE_LIMIT);
-      const first = chunks[0] ?? '处理完成。';
+      const first = chunks[0] ?? t('处理完成。');
       if (!broken && first.startsWith(appended)) {
         await appendInChunks(api, target, ts, first.slice(appended.length), signal);
         await api.stopStream({ channelId: target.channelId, ts, signal });
@@ -173,12 +238,13 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
         await api.updateMessage({ channelId: target.channelId, ts, text: first, signal });
       }
       for (const chunk of chunks.slice(1)) {
-        await api.postMessage({
+        const result = await api.postMessage({
           channelId: target.channelId,
           threadTs: target.threadTs,
           text: chunk,
           signal,
         });
+        if (typeof result?.ts === 'string' && result.ts) providerMessageIds.push(result.ts);
       }
     },
     cancel() {
@@ -191,7 +257,7 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
   };
 }
 
-class SlackBotClient {
+export class SlackBotClient {
   #api;
   #signal;
   #logger;
@@ -204,16 +270,17 @@ class SlackBotClient {
 
   async sendText(target, text) {
     const chunks = splitMessageText(text, SLACK_MESSAGE_LIMIT);
-    let result = null;
+    const providerMessageIds = [];
     for (const chunk of chunks) {
-      result = await this.#api.postMessage({
+      const result = await this.#api.postMessage({
         channelId: target.channelId,
         threadTs: target.threadTs,
         text: chunk,
         signal: this.#signal,
       });
+      if (typeof result?.ts === 'string' && result.ts) providerMessageIds.push(result.ts);
     }
-    return result;
+    return { providerMessageIds };
   }
 
   openStream(target) {
@@ -222,6 +289,15 @@ class SlackBotClient {
       target,
       signal: this.#signal,
       logger: this.#logger,
+    });
+  }
+
+  sendFile(target, file) {
+    return this.#api.uploadFile({
+      channelId: target.channelId,
+      threadTs: target.threadTs,
+      file,
+      signal: this.#signal,
     });
   }
 }
@@ -420,6 +496,8 @@ export class SlackRuntime {
           && packet.payload.api_app_id !== this.#appId) return;
         const message = normalizeSlackEvent(packet.payload, this.#config.platformId.split(':')[1], {
           loadFile: (url, options) => this.#api.downloadFile({ url, ...options }),
+          loadFileStream: (url, options) => this.#api.downloadFileStream({ url, ...options }),
+          loadFileInfo: (fileId, options) => this.#api.fileInfo({ fileId, ...options }),
         });
         const bridge = this.#bridge;
         if (message && bridge) {

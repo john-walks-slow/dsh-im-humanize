@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import { normalizeWeixinApiBaseUrl } from './weixin-api.mjs';
+import { t } from '../shared/i18n.mjs';
 
 const EMPTY_DOCUMENT = Object.freeze({ version: 1, accounts: Object.freeze([]) });
 
@@ -32,7 +33,7 @@ export function deriveWeixinBotIdentity(accountId) {
 
 export function maskWeixinAccountId(accountId) {
   const value = cleanString(accountId) ?? '';
-  if (value.length <= 10) return value ? `${value.slice(0, 3)}•••` : '微信机器人';
+  if (value.length <= 10) return value ? `${value.slice(0, 3)}•••` : t('微信机器人');
   return `${value.slice(0, 6)}••••${value.slice(-4)}`;
 }
 

@@ -52,15 +52,33 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 | 微信 | 使用微信扫码绑定机器人 | 腾讯 iLink 长轮询收发消息 |
 | 钉钉 | 扫码创建机器人，或使用 Client ID + Client Secret 手动绑定 | 钉钉 Stream 长连接；通过 AI Card 流式显示回答 |
 | 企业微信 | 使用企业微信 App 扫码创建智能机器人，或使用 Bot ID + Secret 手动绑定 | 官方 WebSocket 长连接；原生显示“正在思考中”、工具执行进度和流式回答 |
-| QQ | 使用手机 QQ 扫码创建机器人，或使用 AppID + AppSecret 手动绑定 | WebSocket 长连接；私聊显示“正在输入”和流式回答，群聊被 @ 后回复 |
+| QQ | 使用手机 QQ 扫码创建机器人，或使用 AppID + AppSecret 手动绑定 | WebSocket 长连接；私聊显示“正在输入”并以单条 Markdown 回复，群聊被 @ 后只发送最终答案 |
 | Slack | 使用预置 App Manifest 创建应用，再填写 Bot Token（`xoxb-`）和 App Token（`xapp-`） | Socket Mode 长连接；私聊直接回复，频道被 @ 后响应，优先使用官方流式消息 API |
-| Telegram | 使用 @BotFather 生成的 Bot Token | Bot API 长轮询；默认私聊直接响应、群聊被提及或回复时响应，也可为每个机器人独立启用私聊白名单安全模式；通过编辑消息流式显示回答 |
-| Discord | 使用 Developer Portal 生成的 Bot Token | Gateway v10 长连接；私信直接回复，服务器频道被提及时响应，通过编辑消息流式显示回答 |
-| WhatsApp | 使用手机 WhatsApp 扫码关联设备 | WhatsApp Web 长连接；显示已读和“正在输入”，再发送最终回答 |
+| Telegram | 使用 @BotFather 生成的 Bot Token | Bot API 长轮询；默认私聊直接响应、群聊被提及或回复时响应，也可为每个机器人独立启用私聊白名单安全模式；私聊通过 Rich Message Draft 流式预览并持久化最终富消息，群聊和 Topic 原位完成占位消息，平台不支持时回退为普通文字 |
+| Discord | 使用 Developer Portal 生成的 Bot Token | Gateway v10 长连接；私信直接回复；服务器文字/公告频道首次 @ 后创建原生 Thread，后续在线程中无需重复 @，并通过编辑消息流式显示回答 |
+| WhatsApp | 使用手机 WhatsApp 扫码关联设备 | WhatsApp Web 长连接；默认仅响应账号自聊，也可切换到指定联系人或开放响应模式；显示已读和“正在输入”，再发送最终回答 |
 
 其他 IM 平台可继续按同一渠道适配器结构接入。
 
 九个内置渠道均支持把 JPEG、PNG、WebP 图片，以及以图片文件方式发送的 GIF，连同可选文字说明发送给 Harness；单张图片上限为 5 MB，单条消息中的图片总大小上限为 20 MB。
+
+### 结果文件与图片回传
+
+九个内置渠道均已实现把 Harness 可读取的文件作为渠道原生附件回传。已有文件和当前任务新生成的文件都可以直接发送；该能力对所有已连接机器人默认可用，无需开关或机器人白名单，原有文字、图片、流式回复、命令和会话行为保持不变。
+
+模型调用文件回传工具后，插件把指定文件交给当前渠道的原生接口。图片会优先以原生图片消息呈现；渠道不支持或明确拒绝图片发送时自动回退为文件附件，发送结果不确定时不会补发文件造成重复消息。插件不额外设置文件来源、创建时间、工作区边界、扩展名、内容、数量、大小或有效期规则；文件只需真实存在且可读取。渠道平台仍可能依据自身权限、配额、文件能力或账号等级拒绝发送，插件会按平台返回结果提示。
+
+| 渠道 | 平台要求 |
+| --- | --- |
+| 微信 | 当前绑定协议和会话需支持原生文件消息，实际可发送范围以微信接口返回为准。 |
+| 飞书 | 飞书文件上传接口要求文件非空且不超过平台 30 MB；应用需有租户权限 `im:resource`（“读取与上传图片或文件资源”）。内置扫码流程新建应用时默认申请该权限；已有或手动绑定的应用仍需在开发者后台添加并完成必要审批。飞书开发者后台当前没有单独的 `im:resource:upload` 权限。 |
+| 钉钉 | 应用需开通 `qyapi_base`，机器人需具备文件消息能力；实际格式和大小以当前 OAPI 与机器人能力返回为准。 |
+| 企业微信 | 应用需具备素材上传和文件消息能力，实际可发送范围以企业微信接口返回为准。 |
+| QQ | 机器人需具备文件消息能力，并受 QQ 当日文件上传配额约束；额度耗尽时会明确提示稍后重试。 |
+| Slack | Bot Token 需有 `files:write`；实际大小上限由 Workspace 当前策略决定。已有 App 新增或变更 Scope 后，必须重新授权/安装 App 并重新连接机器人。 |
+| Telegram | 机器人必须能在当前聊天发送文档，实际可发送范围以 Bot API 返回为准。 |
+| Discord | Developer Portal 的 Bot 设置中需启用 **Message Content Intent**；机器人需有 **Send Messages**、**Create Public Threads**、**Send Messages in Threads** 和 **Read Message History** 权限；发送结果文件还需 **Attach Files**。实际附件额度由当前账号与服务器能力决定。 |
+| WhatsApp | 当前绑定会话需支持 Document Message，实际可发送范围以 WhatsApp/Baileys 返回为准。 |
 
 ## AI Office Connector
 
@@ -100,6 +118,8 @@ GitHub 源安装会直接拉取并构建 Git 依赖；pnpm 10 及以上版本可
 | Agent Preset | 每个机器人可在设置页卡片中选择 Agent Preset。未选择时跟随 Host 的 `agent-presets.default`；渠道级 `config.agentPreset` 只作为该渠道之后新接入机器人的默认值。切换不会修改或清空已有会话；若当前聊天已有会话，需先发送 `/new`，再发送一条普通消息，才会按新选择创建会话。 |
 
 每个 Telegram 机器人都可以在自己的卡片中切换访问模式。旧机器人和新接入机器人均默认使用**兼容模式**：私聊直接响应，群聊仅在提及机器人或回复机器人消息时响应。只有主动切换到**安全模式（私聊白名单）**后，机器人才会忽略全部群聊，并只接受该机器人白名单中的数字 User ID。白名单每行一个 ID、按机器人独立保存；切回兼容模式时会保留但不使用，再切回安全模式即可继续使用。安全模式的空白名单会拒绝该机器人的所有入站消息。
+
+每个 WhatsApp 机器人也有独立的访问模式。旧机器人升级后和新接入机器人都默认使用**仅自己模式**，只响应已绑定账号的自聊消息。**指定联系人模式**额外接受白名单电话号码的私聊并忽略群聊；号码需包含国家或地区代码，每行一个，可带开头的 `+`。**开放响应模式**保留原有行为：响应所有私聊，以及群聊中的提及或回复。切换模式会保留白名单；指定联系人模式的空白名单等同于仅自己模式。未授权消息会被静默忽略。
 
 ## 机器人命令
 
@@ -151,7 +171,7 @@ Slack 桌面端若未注册同名的原生 Slash Command，会拦截直接以 `/
 - `/session` 只接受一个由 `/sessionlist` 获得的 Session ID。它不会新建会话或立即向模型发送消息；绑定成功后，当前聊天的后续消息会继续该会话。普通归档会话可以绑定但不会自动取消归档，子代理会话不能绑定。
 - `/session` 会自动定位会话唯一所属的工作区。同工作区绑定只替换当前聊天的映射；跨工作区绑定会切换该机器人的工作区、清除该机器人所有聊天的旧会话映射，再绑定当前聊天，因此会影响该机器人的其他聊天。已经开始生成的回复仍可完成。
 - 工作区切换和会话绑定只会清除或替换 dsh-im 的聊天映射，不会删除、清空或归档任何旧 Session 内容；旧 Session 仍可再次列出和绑定。
-- 任何已在对应平台可见范围内、能够正常向机器人发消息的用户都可以执行这些命令，不区分管理员和普通用户。Telegram 兼容模式遵循原有私聊及群聊提及/回复规则；安全模式只允许当前机器人白名单中的私聊用户执行，群聊命令始终忽略。
+- 任何通过当前渠道访问策略的用户都可以执行这些命令，不另行区分管理员和普通用户。Telegram 兼容模式遵循原有私聊及群聊提及/回复规则；安全模式只允许当前机器人白名单中的私聊用户执行。WhatsApp 仅自己模式只接受自聊，指定联系人模式接受自聊和白名单私聊，开放响应模式接受所有私聊及群聊中的提及或回复。
 - Agent Preset 名称和 ID 来自同一个 Harness Host，且任何有命令权限的用户都能修改该机器人所有聊天未来新 Session 的 Preset；请只向可信用户开放 `/presetlist` 和 `/preset`。
 - 工作区列表来自 Harness Host 的全局登记信息，可能包含其他机器人、其他渠道或非 IM 项目的本机绝对路径。请将机器人可见范围限制给可信用户。
 - 会话列表同样来自该全局 Harness Host；会话 ID 和标题可能属于其他机器人、其他渠道或非 IM 项目，并可能包含敏感元数据。开放命令前请确保所有可见用户都可信。
@@ -173,10 +193,10 @@ Slack 桌面端若未注册同名的原生 Slash Command，会拦截直接以 `/
 
 - Harness 中只注册一个「IM机器人」设置页，其中包含九个 IM 渠道和一个 AI Office Connector；
 - 九个渠道及 Office Connector 的 Host、客户端与运行时源码都在本仓库维护，不依赖外部独立插件；
-- 设置页跟随 DeepSeek Harness 的语言选择，在中文和 English 之间即时切换；
+- 设置页跟随 DeepSeek Harness 的语言选择，在中文和 English 之间即时切换；机器人发出的聊天消息跟随 Host 的 `language` 配置（默认中文；设为 `en` 即为英文），中文始终为兜底，未收录的文案原样输出；
 - 左侧使用 Logo 切换微信、飞书、钉钉、企业微信、QQ、Slack、Telegram、Discord、WhatsApp 和 AI Office，不使用启用/停用开关；
 - 九个 IM 渠道保持独立的 RPC、凭据、连接监督和会话映射；Office Connector 另行维护设备凭据、Job 租约、审批等待与并发上限；
-- 浏览器只获得二维码、Manifest、脱敏状态，以及用户为当前 Telegram 机器人主动保存的访问模式和白名单 User ID；手动输入的 Secret 或 Token 仅单向提交给本机 Host，任何 RPC 响应都不会返回 App Secret、`bot_token`、钉钉 `client_secret`、企业微信 Secret、QQ `app_secret`、Slack Bot/App Token、Telegram/Discord Bot Token、WhatsApp 关联设备密钥、AI Office Device Token，或从平台消息中观察到的其他原始用户标识。
+- 浏览器只获得二维码、Manifest、脱敏状态，以及用户为当前 Telegram 或 WhatsApp 机器人主动保存的访问模式和白名单标识；手动输入的 Secret 或 Token 仅单向提交给本机 Host，任何 RPC 响应都不会返回 App Secret、`bot_token`、钉钉 `client_secret`、企业微信 Secret、QQ `app_secret`、Slack Bot/App Token、Telegram/Discord Bot Token、WhatsApp 关联设备密钥、AI Office Device Token，或从平台消息中观察到的其他原始用户标识。
 
 ## 本地开发
 
@@ -197,6 +217,18 @@ IM 管理 RPC 默认仅接受回环浏览器。如果 Web profile 在受信任�
 ```
 
 `trusted-host` 只复用 Harness 的 Host／Origin 防护，不是用户认证。启用后，能访问该局域网地址的人也能查看机器人状态、扫码或提交应用凭据、重连和删除机器人；只应在可信网络中使用。
+
+### 聊天消息语言
+
+机器人发出的聊天消息默认使用中文。要切换为英文，在插件配置中设置 `language: en`（也接受 `en-US`、`english`），或设置环境变量 `DSH_IM_LANGUAGE=en`：
+
+```yaml
+- id: xmanrui-dsh-im
+  config:
+    language: en
+```
+
+未设置时保持中文；中文始终是兜底语言，任何未收录到英文词典的文案都会原样以中文输出，因此该功能不会改变现有中文用户的行为。
 
 ---
 

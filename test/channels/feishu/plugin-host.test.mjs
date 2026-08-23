@@ -1223,6 +1223,7 @@ test('production assembly needs only ctx credentials and the active DSH webServe
   const alphaState = constructed.runtime.state;
   assert.equal(constructed.runtime.botId, 'bot_alpha');
   assert.equal(constructed.runtime.repair, repair);
+  assert.equal(Object.hasOwn(constructed.runtime, 'outboundArtifactsEnabled'), false);
   await constructed.controller.createRuntime({
     botId: 'bot_beta',
     config: {
@@ -1235,6 +1236,7 @@ test('production assembly needs only ctx credentials and the active DSH webServe
     appSecret: 'beta-secret',
   });
   const betaState = constructed.runtime.state;
+  assert.equal(Object.hasOwn(constructed.runtime, 'outboundArtifactsEnabled'), false);
   assert.notEqual(alphaState, betaState);
   assert.ok(constructed.statePaths.some((path) => /bots\/bot_alpha\/state\.json$/.test(path)));
   assert.ok(constructed.statePaths.some((path) => /bots\/bot_beta\/state\.json$/.test(path)));

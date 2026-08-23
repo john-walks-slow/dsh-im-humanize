@@ -10,6 +10,7 @@ import {
   EmptyView,
   ProvisionView,
   QrPanel,
+  WhatsappAccessSettings,
   WhatsappAccountCard,
   WhatsappSettingsTab,
 } from '../../../plugin-src/client/channels/whatsapp/index.js';
@@ -66,12 +67,74 @@ test('WhatsApp account card uses the unified compact channel layout', () => {
     testNotice: '测试消息已发送，请到 WhatsApp 自聊会话中确认。',
   }));
   assert.match(markup, /data-im-channel-logo="whatsapp"/);
-  assert.match(markup, /WhatsApp Web/);
+  assert.match(markup, /class="dim-botHealthGroup"[^]*class="dim-lastChecked"><span>最近检查<\/span>/);
+  assert.doesNotMatch(markup, /WhatsApp Web|消息通道|dim-botMetric/);
   assert.match(markup, /检查连接/);
   assert.match(markup, /移除接入/);
   assert.match(markup, /class="dim-presetSelect"/);
+  assert.match(markup, /仅自己模式（默认）/);
+  assert.match(markup, /指定联系人模式/);
+  assert.match(markup, /开放响应模式/);
   assert.match(markup, /role="status"[^>]*>测试消息已发送/);
-  assert.equal((markup.match(/class="ddt-metric dim-botMetric"/g) ?? []).length, 2);
+});
+
+test('WhatsApp access settings save a normalized selected-contact allowlist', async () => {
+  const saved = [];
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(WhatsappAccessSettings, {
+      account: {
+        accessPolicy: { accessMode: 'self-only', allowedNumbers: [] },
+      },
+      onSave: async (value) => saved.push(value),
+    }));
+  });
+  const select = renderer.root.findByProps({ 'aria-label': 'WhatsApp 访问模式' });
+  await act(async () => {
+    select.props.onChange({ target: { value: 'private-allowlist' } });
+  });
+  const textarea = renderer.root.findByProps({
+    'aria-label': '允许私聊的 WhatsApp 电话号码',
+  });
+  await act(async () => {
+    textarea.props.onChange({ target: { value: '+16505550999\n16505550999' } });
+  });
+  await act(async () => {
+    renderer.root.findByType('form').props.onSubmit({ preventDefault() {} });
+    await flushMicrotasks();
+  });
+  assert.deepEqual(saved, [{
+    accessMode: 'private-allowlist',
+    allowedNumbers: ['16505550999'],
+  }]);
+  await act(async () => { renderer.unmount(); });
+});
+
+test('WhatsApp access settings only show the allowlist for selected contacts', async () => {
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(WhatsappAccessSettings, {
+      account: {
+        accessPolicy: { accessMode: 'self-only', allowedNumbers: ['16505550999'] },
+      },
+      onSave: async () => {},
+    }));
+  });
+  const select = renderer.root.findByProps({ 'aria-label': 'WhatsApp 访问模式' });
+  const allowlistFields = () => renderer.root.findAllByProps({
+    'aria-label': '允许私聊的 WhatsApp 电话号码',
+  });
+
+  assert.equal(allowlistFields().length, 0);
+  await act(async () => {
+    select.props.onChange({ target: { value: 'private-allowlist' } });
+  });
+  assert.equal(allowlistFields().length, 1);
+  await act(async () => {
+    select.props.onChange({ target: { value: 'open' } });
+  });
+  assert.equal(allowlistFields().length, 0);
+  await act(async () => { renderer.unmount(); });
 });
 
 test('WhatsApp connection check requests a test message from the existing reconnect endpoint', async () => {
@@ -80,6 +143,7 @@ test('WhatsApp connection check requests a test message from the existing reconn
     import.meta.url,
   ), 'utf8');
   assert.match(source, /WHATSAPP_ENDPOINTS\.reconnectBot,[\s\S]*\{ botId: account\.botId, sendTest: true \}/);
+  assert.match(source, /WHATSAPP_ENDPOINTS\.setAccessPolicy/);
   assert.match(source, /\[account\.botId\]: '连接检查失败，请稍后重试。'/);
   assert.doesNotMatch(source, /连接检查失败：\$\{presentError\(error\)\.message\}/);
 });

@@ -9,6 +9,7 @@ export const REQUIRED_TENANT_SCOPES = Object.freeze([
   'im:message:send_as_bot',
   'im:message.reactions:write_only',
   'im:message:recall',
+  'im:resource',
   'cardkit:card:write',
 ]);
 

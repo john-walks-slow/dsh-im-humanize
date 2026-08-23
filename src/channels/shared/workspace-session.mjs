@@ -59,9 +59,23 @@ export async function askInWorkspaceSession({
         return { sessionId, session };
       });
       if (!binding) continue;
+      const artifacts = [];
+      const originalOnArtifact = typeof askOptions === 'object'
+        && typeof askOptions?.onArtifact === 'function'
+        ? askOptions.onArtifact
+        : null;
+      const artifactOptions = typeof askOptions === 'number'
+        ? { timeoutMs: askOptions }
+        : { ...askOptions };
+      artifactOptions.onArtifact = async (artifact) => {
+        artifacts.push(artifact);
+        await originalOnArtifact?.(artifact);
+      };
+      const answer = await binding.session.ask(content ?? text, artifactOptions);
       return {
         sessionId: binding.sessionId,
-        answer: await binding.session.ask(content ?? text, askOptions),
+        answer,
+        ...(artifacts.length > 0 ? { artifacts } : {}),
       };
     } catch (error) {
       if (error?.code !== WORKSPACE_SESSION_STALE) throw error;

@@ -10,6 +10,7 @@ import {
   EMPTY_AGENT_PRESET_CATALOG,
 } from '../../agent-preset.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
+import { BotStatusMeta, ChannelListHeading } from '../../channel-card-meta.js';
 import { installDingtalkStyles } from '../dingtalk/styles.js';
 import {
   WHATSAPP_ENDPOINTS,
@@ -23,6 +24,119 @@ import {
 import { installWhatsappStyles } from './styles.js';
 
 const ACTIVE_STATES = new Set(['pending', 'connecting']);
+
+function accessPolicyFor(account) {
+  const accessMode = ['self-only', 'private-allowlist', 'open'].includes(
+    account?.accessPolicy?.accessMode,
+  ) ? account.accessPolicy.accessMode : 'self-only';
+  return {
+    accessMode,
+    allowedNumbers: Array.isArray(account?.accessPolicy?.allowedNumbers)
+      ? account.accessPolicy.allowedNumbers : [],
+  };
+}
+
+function allowedNumbersFromText(value) {
+  const entries = value.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
+  const normalized = entries.map((entry) => entry.replace(/^\+/, ''));
+  if (normalized.some((entry) => !/^[1-9]\d{4,14}$/.test(entry))) {
+    throw new TypeError('电话号码必须包含国家或地区代码，每行一个。');
+  }
+  return [...new Set(normalized)];
+}
+
+export function WhatsappAccessSettings({ account, busy = false, onSave }) {
+  const policy = accessPolicyFor(account);
+  const sourceNumbers = policy.allowedNumbers.join('\n');
+  const helpId = React.useId();
+  const [accessMode, setAccessMode] = React.useState(policy.accessMode);
+  const [allowedNumbers, setAllowedNumbers] = React.useState(sourceNumbers);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    setAccessMode(policy.accessMode);
+    setAllowedNumbers(sourceNumbers);
+    setError(null);
+  }, [policy.accessMode, sourceNumbers]);
+
+  const save = async (event) => {
+    event.preventDefault();
+    setError(null);
+    try {
+      const normalized = allowedNumbersFromText(allowedNumbers);
+      if (typeof onSave !== 'function') throw new Error('WhatsApp 访问设置暂不可用。');
+      await onSave({ accessMode, allowedNumbers: normalized });
+    } catch (caught) {
+      setError(caught?.message ?? 'WhatsApp 访问设置保存失败。');
+    }
+  };
+
+  const allowlistEnabled = accessMode === 'private-allowlist';
+  const labels = {
+    'self-only': '仅自己模式',
+    'private-allowlist': '指定联系人模式',
+    open: '开放响应模式',
+  };
+  return h('form', { className: 'dwa-access', onSubmit: save },
+    h('div', { className: 'dwa-accessHeading' },
+      h('strong', null, '访问设置'),
+      h('span', { className: 'dwa-accessStatus' },
+        h('span', { className: 'dwa-accessBadge', 'data-mode': policy.accessMode },
+          ['已生效：', labels[policy.accessMode]]),
+        h('span', { className: 'dwa-accessHelp' },
+          h('button', {
+            type: 'button',
+            className: 'dwa-accessHelpButton',
+            'aria-label': '查看 WhatsApp 访问模式说明',
+            'aria-describedby': helpId,
+          }, h('span', { 'aria-hidden': 'true' }, '?')),
+          h('span', { id: helpId, className: 'dwa-accessTooltip', role: 'tooltip' },
+            h('span', { className: 'dwa-accessTooltipItem' },
+              h('strong', null, '仅自己模式'),
+              h('span', null, '只响应已绑定 WhatsApp 账号的自聊消息。')),
+            h('span', { className: 'dwa-accessTooltipItem' },
+              h('strong', null, '指定联系人模式'),
+              h('span', null, '响应自聊和白名单联系人的私聊，忽略群聊。')),
+            h('span', { className: 'dwa-accessTooltipItem' },
+              h('strong', null, '开放响应模式'),
+              h('span', null, '响应所有私聊，以及群聊中的提及或回复。')))))),
+    h('label', { className: 'dwa-accessField' },
+      h('span', null, '模式'),
+      h('select', {
+        value: accessMode,
+        disabled: busy,
+        'aria-label': 'WhatsApp 访问模式',
+        onChange: (event) => { setAccessMode(event.target.value); setError(null); },
+      },
+      h('option', { value: 'self-only' }, '仅自己模式（默认）'),
+      h('option', { value: 'private-allowlist' }, '指定联系人模式'),
+      h('option', { value: 'open' }, '开放响应模式'))),
+    allowlistEnabled
+      ? h('label', { className: 'dwa-accessField' },
+          h('span', null, '允许私聊的 WhatsApp 电话号码'),
+          h('textarea', {
+            value: allowedNumbers,
+            disabled: busy,
+            rows: 3,
+            placeholder: '每行一个含国家或地区代码的号码',
+            'aria-label': '允许私聊的 WhatsApp 电话号码',
+            onChange: (event) => { setAllowedNumbers(event.target.value); setError(null); },
+          }),
+          h('small', null, '可以包含开头的 +，保存时会自动移除。'))
+      : null,
+    allowlistEnabled && allowedNumbers.trim() === ''
+      ? h('p', { className: 'dwa-accessWarning', role: 'status' },
+          '白名单为空；保存后将只接受自聊消息。')
+      : null,
+    error ? h('p', { className: 'dwa-accessError', role: 'alert' }, error) : null,
+    h('div', { className: 'dwa-accessActions' },
+      h('button', {
+        type: 'submit',
+        className: 'ddt-button',
+        'data-kind': 'secondary',
+        disabled: busy,
+      }, busy ? '正在保存…' : '保存访问设置')));
+}
 
 const Button = React.forwardRef(function Button(
   { children, kind = 'secondary', className = '', ...props },
@@ -179,6 +293,7 @@ export function WhatsappAccountCard({
   onReconnect,
   onWorkspaceSave,
   onAgentPresetSave,
+  onAccessPolicySave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -197,15 +312,14 @@ export function WhatsappAccountCard({
           }, h(WhatsappLogoGlyph, { size: 29 })),
           h('div', { className: 'dim-botName' },
             h('h3', null, account.bot.name), h('p', null, account.bot.idMasked))),
-        h('div', { className: 'ddt-health dim-botHealth' },
-          h('span', { className: 'ddt-dot dim-healthDot', 'data-tone': tone }),
-          h('span', null, stateLabel))),
-      h('dl', { className: 'ddt-metrics dim-botMetrics' },
-        h('div', { className: 'ddt-metric dim-botMetric' },
-          h('dt', null, '消息通道'),
-          h('dd', null, account.connected ? 'WhatsApp Web' : '离线')),
-        h('div', { className: 'ddt-metric dim-botMetric' },
-          h('dt', null, '最近检查'), h('dd', null, checkedTime(account.health.lastCheckedAt)))),
+        h(BotStatusMeta, {
+          className: 'ddt-health',
+          dotClassName: 'ddt-dot',
+          tone,
+          stateLabel,
+          lastCheckedAt: account.health.lastCheckedAt,
+          formatCheckedTime: checkedTime,
+        })),
       h(WorkspaceEditor, {
         workspace: account.workspace,
         disabled: Boolean(busy),
@@ -215,6 +329,11 @@ export function WhatsappAccountCard({
         agentPreset: account.agentPreset,
         disabled: Boolean(busy),
         onSave: onAgentPresetSave,
+      }),
+      h(WhatsappAccessSettings, {
+        account,
+        busy: Boolean(busy),
+        onSave: onAccessPolicySave,
       }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         h('div', { className: 'dim-cardFooterLayout' },
@@ -440,8 +559,11 @@ export function WhatsappSettingsTab({ rpcCall }) {
 
   const botList = model.bots.length > 0
     ? h('section', { className: 'dim-listSection' },
-        h('div', { className: 'ddt-listHeading dim-listHeading' },
-          h('h3', null, '已接入的 WhatsApp 机器人')),
+        h(ChannelListHeading, {
+          className: 'ddt-listHeading',
+          title: '已接入的 WhatsApp 机器人',
+          connectionLabel: 'WhatsApp Web',
+        }),
         h('ul', { className: 'ddt-list dim-botList' }, model.bots.map((account) =>
           h('li', { key: account.botId }, h(WhatsappAccountCard, {
             account,
@@ -465,6 +587,12 @@ export function WhatsappSettingsTab({ rpcCall }) {
               'preset',
               WHATSAPP_ENDPOINTS.setAgentPreset,
               { botId: account.botId, agentPreset },
+            ),
+            onAccessPolicySave: (accessPolicy) => botAction(
+              account,
+              'access',
+              WHATSAPP_ENDPOINTS.setAccessPolicy,
+              { botId: account.botId, ...accessPolicy },
             ),
             onRequestRemove: () => setRemoveTarget(account.botId),
             onCancelRemove: () => setRemoveTarget(null),

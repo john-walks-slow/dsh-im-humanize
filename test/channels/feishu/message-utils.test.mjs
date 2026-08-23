@@ -110,6 +110,36 @@ test('extractInboundMessage preserves visible Feishu post text and every embedde
   ]);
 });
 
+test('extractInboundMessage exposes a native Feishu file as a lazy unbounded resource download', async () => {
+  const calls = [];
+  const bytes = Buffer.from('ordinary-file-payload');
+  const event = {
+    message: {
+      message_id: 'om_file',
+      message_type: 'file',
+      content: JSON.stringify({ file_key: 'file_test', file_name: 'report.bin' }),
+    },
+  };
+  const client = { im: { v1: { messageResource: { get: async (request) => {
+    calls.push(request);
+    return {
+      getReadableStream: () => Readable.from([bytes.subarray(0, 4), bytes.subarray(4)]),
+    };
+  } } } } };
+
+  const message = extractInboundMessage(event, client);
+  assert.equal(message.content, '');
+  assert.deepEqual(message.images, []);
+  assert.equal(message.files.length, 1);
+  assert.equal(message.files[0].name, 'report.bin');
+  assert.equal(calls.length, 0, 'file download stays lazy');
+  assert.deepEqual(await message.files[0].load({}), bytes);
+  assert.deepEqual(calls, [{
+    path: { message_id: 'om_file', file_key: 'file_test' },
+    params: { type: 'file' },
+  }]);
+});
+
 test('Feishu image loading rejects declared or streamed data above the caller limit', async () => {
   for (const resource of [
     {
@@ -182,10 +212,10 @@ test('Feishu image loading leaves unrelated provider failures on the generic pat
 test('malformed Feishu image content does not create a downloadable image reference', () => {
   assert.deepEqual(extractInboundMessage({
     message: { message_type: 'image', content: '{not-json' },
-  }, {}), { content: '', images: [] });
+  }, {}), { content: '', images: [], files: [] });
   assert.deepEqual(extractInboundMessage({
     message: { message_type: 'post', content: '{not-json' },
-  }, {}), { content: '', images: [] });
+  }, {}), { content: '', images: [], files: [] });
 });
 
 test('conversationKey isolates p2p users and groups', () => {

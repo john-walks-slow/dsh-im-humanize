@@ -5,6 +5,12 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  OUTBOUND_ARTIFACT_TOOL,
+  OutboundArtifactRegistry,
+  createOutboundArtifactTool,
+} from '../../../src/channels/shared/semantic/artifact.mjs';
+import { setImHostLanguage } from '../../../src/channels/shared/i18n.mjs';
+import {
   TELEGRAM_ACCESS_MODES,
   TelegramConfigStore,
   deriveTelegramBotIdentity,
@@ -19,9 +25,11 @@ import {
 } from '../../../src/channels/telegram/telegram-api.mjs';
 import { TelegramHarnessBridge } from '../../../src/channels/telegram/telegram-bridge.mjs';
 import {
+  TelegramBotClient,
   TelegramRuntime,
   TELEGRAM_COMMAND_MENU,
   normalizeTelegramUpdate,
+  telegramCommandMenu,
   telegramInboundAllowed,
 } from '../../../src/channels/telegram/telegram-runtime.mjs';
 import { TelegramStateStore } from '../../../src/channels/telegram/state-store.mjs';
@@ -87,6 +95,42 @@ async function bounded(promise, message, timeoutMs = 1_000) {
   }
 }
 
+async function committedTelegramArtifact(t, {
+  suffix,
+  fileName,
+  content,
+}) {
+  const workspace = await mkdtemp(join(tmpdir(), `dsh-im-telegram-artifact-${suffix}-`));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const sessionId = `session-telegram-artifact-${suffix}`;
+  let nextId = 0;
+  const registry = new OutboundArtifactRegistry({
+    uuid: () => `${suffix}-${++nextId}`,
+  });
+  t.after(() => registry.clear());
+  const agent = {
+    session: {
+      header: { id: sessionId, cwd: workspace },
+      events: [
+        { type: 'turn/start', data: { turn: 1 } },
+        { type: 'user/message', data: { turn: 1, source: { rpcId: `rpc-${suffix}` } } },
+      ],
+    },
+  };
+  await writeFile(join(workspace, fileName), content);
+  const tool = createOutboundArtifactTool({ registry });
+  const execution = {
+    name: OUTBOUND_ARTIFACT_TOOL,
+    callId: `call-${suffix}`,
+    rootCallId: `call-${suffix}`,
+    token: Symbol(`call-${suffix}`),
+    agent,
+  };
+  await tool.definition.execute({ path: fileName }, execution);
+  tool.onResult(execution, { isError: false });
+  return registry.take(sessionId, 1)[0];
+}
+
 test('Telegram API validates a Bot Token without exposing it in requests or errors', async () => {
   assert.equal(validTelegramToken(TOKEN), true);
   assert.equal(validTelegramToken('short'), false);
@@ -139,11 +183,16 @@ test('Telegram API resolves and downloads files without exposing arbitrary paths
     },
   });
   assert.deepEqual(await api.downloadFile({ fileId: 'AgAC_test-file', maxBytes: 100 }), png);
-  assert.equal(calls.length, 2);
+  const streamed = await api.downloadFileStream({ fileId: 'AgAC_test-file' });
+  const streamedChunks = [];
+  for await (const chunk of streamed.stream) streamedChunks.push(Buffer.from(chunk));
+  assert.deepEqual(Buffer.concat(streamedChunks), png);
+  assert.equal(calls.length, 4);
   assert.equal(calls[0].options.method, 'POST');
   assert.equal(calls[1].options.method, 'GET');
   assert.equal(calls[1].url.hostname, 'api.telegram.org');
   assert.match(calls[1].url.pathname, /\/file\/bot.+\/photos\/file_1\.png$/);
+  assert.equal(calls[3].options.signal, undefined);
 
   const unsafeApi = new TelegramApi({
     token: TOKEN,
@@ -198,6 +247,315 @@ test('Telegram API registers the command menu and commands-type menu button', as
     commands: [{ command: 'help' }],
   }), /commands are invalid/);
   await assert.rejects(() => api.setChatMenuButton({ menuButton: 'commands' }), /menu button is invalid/);
+});
+
+test('Telegram command menu follows the host language at runtime', () => {
+  assert.equal(TELEGRAM_COMMAND_MENU[0].description, '开启一个全新会话');
+  setImHostLanguage('en');
+  try {
+    assert.equal(telegramCommandMenu()[0].description, 'Start a brand-new Session');
+  } finally {
+    setImHostLanguage('zh');
+  }
+  assert.deepEqual(telegramCommandMenu(), TELEGRAM_COMMAND_MENU);
+});
+
+test('Telegram API preserves the legacy plain send and edit payloads', async () => {
+  const calls = [];
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      calls.push({ method: url.pathname.split('/').at(-1), body: JSON.parse(options.body) });
+      return jsonResponse({ ok: true, result: { message_id: 501 } });
+    },
+  });
+
+  await api.sendMessage({
+    chatId: -100123,
+    text: 'legacy send',
+    replyToMessageId: 44,
+    messageThreadId: 55,
+  });
+  await api.editMessageText({
+    chatId: -100123,
+    messageId: 501,
+    text: 'legacy edit',
+  });
+
+  assert.deepEqual(calls, [{
+    method: 'sendMessage',
+    body: {
+      chat_id: -100123,
+      text: 'legacy send',
+      link_preview_options: { is_disabled: true },
+      reply_parameters: { message_id: 44, allow_sending_without_reply: true },
+      message_thread_id: 55,
+    },
+  }, {
+    method: 'editMessageText',
+    body: {
+      chat_id: -100123,
+      message_id: 501,
+      text: 'legacy edit',
+      link_preview_options: { is_disabled: true },
+    },
+  }]);
+  assert.equal(Object.hasOwn(calls[0].body, 'parse_mode'), false);
+  assert.equal(Object.hasOwn(calls[1].body, 'parse_mode'), false);
+});
+
+test('Telegram plain delivery keeps the 4000 boundary, reply, topic, and content', async () => {
+  const calls = [];
+  let nextMessageId = 600;
+  const client = new TelegramBotClient({
+    api: {
+      sendMessage: async (payload) => {
+        calls.push(payload);
+        return { message_id: nextMessageId++ };
+      },
+    },
+  });
+  const target = { chatId: -100123, replyToMessageId: 44, messageThreadId: 55 };
+
+  const exact = `\`\`\`js\n${'a'.repeat(3990)}\n\`\`\``;
+  assert.equal(exact.length, 4000);
+  await client.sendText(target, exact);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].text, exact);
+
+  calls.length = 0;
+  const long = `${'中'.repeat(3998)}😀Z`;
+  assert.equal(long.length, 4001);
+  const receipt = await client.sendText(target, long);
+  assert.equal(calls.length, 2);
+  assert.equal(calls.map((call) => call.text).join(''), long);
+  assert.equal(calls[0].replyToMessageId, 44);
+  assert.equal(calls[1].replyToMessageId, undefined);
+  assert.deepEqual(calls.map((call) => call.messageThreadId), [55, 55]);
+  assert.deepEqual(receipt.providerMessageIds, ['601', '602']);
+});
+
+test('Telegram API uploads a result file as a native document in the same topic and reply chain', async () => {
+  let request;
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return jsonResponse({ ok: true, result: { message_id: 901 } });
+    },
+  });
+  const result = await api.sendDocument({
+    chatId: -100123,
+    replyToMessageId: 44,
+    messageThreadId: 55,
+    file: {
+      fileName: 'result.txt',
+      mediaType: 'text/plain',
+      bytes: Buffer.from('telegram-result'),
+    },
+  });
+
+  assert.equal(result.message_id, 901);
+  assert.match(request.url.pathname, /sendDocument$/);
+  assert.equal(request.options.method, 'POST');
+  assert.equal(request.options.headers, undefined);
+  assert.ok(request.options.body instanceof FormData);
+  assert.equal(request.options.body.get('chat_id'), '-100123');
+  assert.equal(request.options.body.get('message_thread_id'), '55');
+  assert.deepEqual(JSON.parse(request.options.body.get('reply_parameters')), {
+    message_id: 44,
+    allow_sending_without_reply: true,
+  });
+  const document = request.options.body.get('document');
+  assert.equal(document.name, 'result.txt');
+  assert.equal(document.type, 'text/plain');
+  assert.equal(Buffer.from(await document.arrayBuffer()).toString(), 'telegram-result');
+});
+
+test('Telegram API uploads a result image as a native photo in the same topic and reply chain', async () => {
+  let request;
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return jsonResponse({ ok: true, result: { message_id: 902 } });
+    },
+  });
+  const result = await api.sendPhoto({
+    chatId: -100123,
+    replyToMessageId: 44,
+    messageThreadId: 55,
+    file: {
+      fileName: 'result.png',
+      mediaType: 'image/png',
+      bytes: Buffer.from('telegram-image'),
+    },
+  });
+
+  assert.equal(result.message_id, 902);
+  assert.match(request.url.pathname, /sendPhoto$/);
+  assert.equal(request.options.method, 'POST');
+  assert.equal(request.options.headers, undefined);
+  assert.ok(request.options.body instanceof FormData);
+  assert.equal(request.options.body.get('chat_id'), '-100123');
+  assert.equal(request.options.body.get('message_thread_id'), '55');
+  assert.deepEqual(JSON.parse(request.options.body.get('reply_parameters')), {
+    message_id: 44,
+    allow_sending_without_reply: true,
+  });
+  const photo = request.options.body.get('photo');
+  assert.equal(photo.name, 'result.png');
+  assert.equal(photo.type, 'image/png');
+  assert.equal(Buffer.from(await photo.arrayBuffer()).toString(), 'telegram-image');
+});
+
+test('Telegram bot client routes images through sendPhoto with the existing reply context', async () => {
+  let request;
+  const controller = new AbortController();
+  const client = new TelegramBotClient({
+    api: {
+      sendPhoto: async (value) => {
+        request = value;
+        return { message_id: 903 };
+      },
+    },
+    signal: controller.signal,
+  });
+  const file = {
+    fileName: 'result.png',
+    mediaType: 'image/png',
+    bytes: Buffer.from('telegram-image'),
+  };
+
+  assert.deepEqual(await client.sendImage({
+    chatId: -100456,
+    replyToMessageId: 66,
+    messageThreadId: 77,
+  }, file), { message_id: 903 });
+  assert.equal(request.chatId, -100456);
+  assert.equal(request.file, file);
+  assert.equal(request.replyToMessageId, 66);
+  assert.equal(request.messageThreadId, 77);
+  assert.equal(request.signal, controller.signal);
+});
+
+test('Telegram photo delivery reuses stable artifact error mapping', async () => {
+  const rejectedApi = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async () => jsonResponse({
+      ok: false,
+      error_code: 400,
+      description: 'Bad Request: unsupported photo',
+    }, 400),
+  });
+  await assert.rejects(() => rejectedApi.sendPhoto({
+    chatId: 123,
+    file: { fileName: 'result.webp', bytes: Buffer.from('result') },
+  }), (error) => error.code === 'artifact-provider-rejected'
+    && error.providerCode === 400
+    && error.status === 400);
+
+  const uncertainApi = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async () => new Response('not-json', { status: 200 }),
+  });
+  await assert.rejects(() => uncertainApi.sendPhoto({
+    chatId: 123,
+    file: { fileName: 'result.png', bytes: Buffer.from('result') },
+  }), (error) => error.code === 'artifact-delivery-uncertain');
+});
+
+test('Telegram document errors retain provider details and use stable artifact reasons', async () => {
+  const cases = [{
+    body: { ok: false, error_code: 403, description: 'Forbidden: bot was blocked' },
+    status: 403,
+    code: 'artifact-permission-required',
+  }, {
+    body: { ok: false, error_code: 400, description: 'Bad Request: file is too big' },
+    status: 400,
+    code: 'artifact-too-large',
+  }, {
+    body: {
+      ok: false,
+      error_code: 429,
+      description: 'Too Many Requests',
+      parameters: { retry_after: 7 },
+    },
+    status: 429,
+    code: 'artifact-rate-limited',
+    retryAfter: 7,
+  }, {
+    body: { ok: false, error_code: 400, description: 'Bad Request: unsupported document' },
+    status: 400,
+    code: 'artifact-provider-rejected',
+  }, {
+    body: { ok: false, error_code: 500, description: 'Internal Server Error' },
+    status: 500,
+    code: 'artifact-delivery-uncertain',
+  }];
+
+  for (const entry of cases) {
+    const api = new TelegramApi({
+      token: TOKEN,
+      fetchImpl: async () => jsonResponse(entry.body, entry.status),
+    });
+    await assert.rejects(() => api.sendDocument({
+      chatId: 123,
+      file: { fileName: 'result.bin', bytes: Buffer.from('result') },
+    }), (error) => {
+      assert.equal(error.code, entry.code);
+      assert.equal(error.providerCode, entry.body.error_code);
+      assert.equal(error.status, entry.status);
+      assert.equal(error.retry_after, entry.retryAfter);
+      assert.equal(error.retryAfter, entry.retryAfter);
+      return true;
+    });
+  }
+});
+
+test('Telegram document delivery marks post-dispatch failures uncertain but preserves caller aborts', async () => {
+  for (const fetchImpl of [
+    async () => { throw new TypeError('socket reset'); },
+    async () => new Response('not-json', { status: 200 }),
+  ]) {
+    const api = new TelegramApi({ token: TOKEN, fetchImpl });
+    await assert.rejects(() => api.sendDocument({
+      chatId: 123,
+      file: { fileName: 'result.bin', bytes: Buffer.from('result') },
+    }), (error) => error.code === 'artifact-delivery-uncertain');
+  }
+
+  const timeoutApi = new TelegramApi({
+    token: TOKEN,
+    fileUploadTimeoutMs: 10,
+    fetchImpl: async (_url, { signal }) => new Promise((resolve, reject) => {
+      if (signal.aborted) reject(signal.reason);
+      else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }),
+  });
+  await assert.rejects(() => timeoutApi.sendDocument({
+    chatId: 123,
+    file: { fileName: 'result.bin', bytes: Buffer.from('result') },
+  }), (error) => error.code === 'artifact-delivery-uncertain'
+    && error.cause?.name === 'TimeoutError');
+
+  const caller = new AbortController();
+  const reason = new DOMException('caller stopped', 'AbortError');
+  caller.abort(reason);
+  let calls = 0;
+  const cancelledApi = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async () => {
+      calls += 1;
+      return jsonResponse({ ok: true, result: {} });
+    },
+  });
+  await assert.rejects(() => cancelledApi.sendDocument({
+    chatId: 123,
+    file: { fileName: 'result.bin', bytes: Buffer.from('result') },
+    signal: caller.signal,
+  }), (error) => error === reason && error.code !== 'artifact-delivery-uncertain');
+  assert.equal(calls, 0);
 });
 
 test('Telegram config and controller store only a credential reference in bot data', async (t) => {
@@ -607,6 +965,7 @@ test('Telegram normalizes private messages and requires an explicit group addres
   }, { botId: '123456789', username: 'HarnessBot' });
   assert.equal(privateMessage.kind, 'direct');
   assert.equal(privateMessage.addressed, true);
+  assert.equal(privateMessage.replyTarget.chatType, 'private');
   assert.deepEqual(privateMessage.connectionTestTarget, { chatId: 88, messageThreadId: undefined });
 
   const groupMessage = normalizeTelegramUpdate({
@@ -622,6 +981,7 @@ test('Telegram normalizes private messages and requires an explicit group addres
   assert.equal(groupMessage.kind, 'group');
   assert.equal(groupMessage.addressed, true);
   assert.equal(groupMessage.content, 'run this');
+  assert.equal(groupMessage.replyTarget.chatType, 'supergroup');
 
   const topicOne = normalizeTelegramUpdate({
     update_id: 12,
@@ -669,7 +1029,7 @@ test('Telegram compatible mode preserves old routing and private allowlist mode 
   }), false);
 });
 
-test('Telegram normalizes photo captions and image documents into one downloadable image', async () => {
+test('Telegram keeps native photos and image documents as images and exposes ordinary documents as files', async () => {
   const loads = [];
   const groupPhoto = normalizeTelegramUpdate({
     update_id: 20,
@@ -709,9 +1069,23 @@ test('Telegram normalizes photo captions and image documents into one downloadab
         file_id: 'png-document', file_name: 'diagram.png', mime_type: 'image/png', file_size: 3_000,
       },
     },
-  }, { botId: '123456789', username: 'HarnessBot' });
+  }, {
+    botId: '123456789',
+    username: 'HarnessBot',
+    loadFile: async (fileId, options) => {
+      loads.push({ fileId, options });
+      return Buffer.from('document');
+    },
+  });
   assert.equal(document.images[0].name, 'diagram.png');
   assert.equal(document.images[0].mediaType, 'image/png');
+  assert.equal(document.images[0].size, 3_000);
+  assert.deepEqual(document.files, []);
+  await document.images[0].load({ maxBytes: 5_000 });
+  assert.deepEqual(loads[1], {
+    fileId: 'png-document',
+    options: { maxBytes: 5_000 },
+  });
 
   const documentWithoutMime = normalizeTelegramUpdate({
     update_id: 23,
@@ -722,8 +1096,11 @@ test('Telegram normalizes photo captions and image documents into one downloadab
       document: { file_id: 'webp-document', file_name: 'diagram.webp', file_size: 2_000 },
     },
   }, { botId: '123456789', username: 'HarnessBot' });
+  assert.equal(documentWithoutMime.images[0].name, 'diagram.webp');
   assert.equal(documentWithoutMime.images[0].mediaType, 'image/webp');
+  assert.deepEqual(documentWithoutMime.files, []);
 
+  const fileLoads = [];
   const pdf = normalizeTelegramUpdate({
     update_id: 22,
     message: {
@@ -732,8 +1109,26 @@ test('Telegram normalizes photo captions and image documents into one downloadab
       from: { id: 42, is_bot: false },
       document: { file_id: 'pdf-document', file_name: 'file.pdf', mime_type: 'application/pdf' },
     },
-  }, { botId: '123456789', username: 'HarnessBot' });
+  }, {
+    botId: '123456789',
+    username: 'HarnessBot',
+    loadFileStream: async (fileId, options) => {
+      fileLoads.push({ fileId, options });
+      return { stream: (async function* content() { yield Buffer.from('pdf'); }()) };
+    },
+  });
   assert.deepEqual(pdf.images, []);
+  assert.equal(pdf.files[0].name, 'file.pdf');
+  assert.equal(pdf.files[0].mediaType, 'application/pdf');
+  const controller = new AbortController();
+  const loadedPdf = await pdf.files[0].load({ signal: controller.signal });
+  const pdfChunks = [];
+  for await (const chunk of loadedPdf.stream) pdfChunks.push(Buffer.from(chunk));
+  assert.equal(Buffer.concat(pdfChunks).toString(), 'pdf');
+  assert.deepEqual(fileLoads, [{
+    fileId: 'pdf-document',
+    options: { signal: controller.signal },
+  }]);
 });
 
 test('Telegram bridge ignores unaddressed groups and streams direct replies', async () => {
@@ -786,6 +1181,86 @@ test('Telegram bridge ignores unaddressed groups and streams direct replies', as
   await reconnectedBridge.sendConnectionTest('after reconnect');
   assert.equal(sent.at(-1), 'after reconnect');
   assert.deepEqual(sentTargets.at(-1), { chatId: 88 });
+});
+
+test('Telegram bridge routes outbound image artifacts natively with safe file fallback', async (t) => {
+  const scenarios = [{
+    name: 'native image',
+    suffix: 'native-image',
+    fileName: 'result.png',
+    content: Buffer.from([1, 2, 3]),
+    expectedCalls: ['image:result.png:image/png'],
+    expectedOutcome: 'sent',
+  }, {
+    name: 'ordinary file',
+    suffix: 'ordinary-file',
+    fileName: 'result.txt',
+    content: 'ordinary file',
+    expectedCalls: ['file:result.txt:text/plain'],
+    expectedOutcome: 'sent',
+  }, {
+    name: 'definitive image rejection',
+    suffix: 'image-fallback',
+    fileName: 'result.webp',
+    content: Buffer.from([4, 5, 6]),
+    imageErrorCode: 'artifact-provider-rejected',
+    expectedCalls: ['image:result.webp:image/webp', 'file:result.webp:image/webp'],
+    expectedOutcome: 'sent',
+  }, {
+    name: 'uncertain image result',
+    suffix: 'image-uncertain',
+    fileName: 'result.gif',
+    content: Buffer.from([7, 8, 9]),
+    imageErrorCode: 'artifact-delivery-uncertain',
+    expectedCalls: ['image:result.gif:image/gif'],
+    expectedOutcome: 'unknown',
+  }];
+
+  for (const scenario of scenarios) {
+    const artifact = await committedTelegramArtifact(t, scenario);
+    const calls = [];
+    const bot = {
+      sendText: async () => ({ message_id: `text-${scenario.suffix}` }),
+      sendImage: async (_target, file) => {
+        calls.push(`image:${file.fileName}:${file.mediaType}`);
+        if (scenario.imageErrorCode) {
+          const error = new Error(scenario.imageErrorCode);
+          error.code = scenario.imageErrorCode;
+          throw error;
+        }
+        return { message_id: `image-${scenario.suffix}` };
+      },
+      sendFile: async (_target, file) => {
+        calls.push(`file:${file.fileName}:${file.mediaType}`);
+        return { message_id: `file-${scenario.suffix}` };
+      },
+    };
+    const bridge = new TelegramHarnessBridge({
+      bot,
+      state: memoryState(),
+      logger: { warn() {}, error() {} },
+      harness: {
+        createSession: async () => `session-${scenario.suffix}`,
+        ask: async (_sessionId, _text, options) => {
+          await options.onArtifact(artifact);
+          return '图片已生成。';
+        },
+      },
+    });
+
+    const receipt = await bridge.accept({
+      messageId: `telegram-artifact-${scenario.suffix}`,
+      senderId: '42',
+      kind: 'direct',
+      conversationId: `telegram-artifact-${scenario.suffix}`,
+      content: '生成结果',
+      addressed: true,
+      replyTarget: { chatId: 88, replyToMessageId: 7, messageThreadId: 9 },
+    });
+
+    assert.deepEqual(calls, scenario.expectedCalls, scenario.name);
+    assert.equal(receipt.artifacts[0].outcome, scenario.expectedOutcome, scenario.name);
+  }
 });
 
 test('Telegram runtime validates webhook state and starts a cancellable long poll', async () => {
@@ -920,6 +1395,8 @@ test('Telegram runtime enforces the selected bot private allowlist', async () =>
   const fakeApi = {
     getMe: async () => ({ id: 123456789, is_bot: true }),
     getWebhookInfo: async () => ({ url: '' }),
+    setMyCommands: async () => true,
+    setChatMenuButton: async () => true,
     getUpdates: async ({ timeout, signal }) => {
       if (timeout === 0) return [];
       if (!delivered) {
@@ -931,6 +1408,8 @@ test('Telegram runtime enforces the selected bot private allowlist', async () =>
       });
     },
     sendChatAction: async () => true,
+    sendRichMessageDraft: async () => true,
+    sendRichMessage: async () => ({ message_id: nextMessageId++ }),
     sendMessage: async () => ({ message_id: nextMessageId++ }),
     editMessageText: async () => true,
   };
@@ -1029,6 +1508,13 @@ test('Telegram runtime keeps polling while a Harness question waits for its answ
       const messageId = nextOutboundMessageId;
       nextOutboundMessageId += 1;
       if (text.includes('请选择测试环境')) questionSent.resolve();
+      return { message_id: messageId };
+    },
+    sendRichMessageDraft: async () => true,
+    sendRichMessage: async ({ richMessage }) => {
+      if (richMessage.markdown === '已选择生产环境') finalReplySent.resolve();
+      const messageId = nextOutboundMessageId;
+      nextOutboundMessageId += 1;
       return { message_id: messageId };
     },
     editMessageText: async ({ text }) => {

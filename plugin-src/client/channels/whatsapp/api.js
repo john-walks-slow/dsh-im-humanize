@@ -9,6 +9,7 @@ export const WHATSAPP_ENDPOINTS = Object.freeze({
   cancelProvisioning: 'provision.cancel',
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
+  setAccessPolicy: 'bot.access-policy.set',
   setWorkspace: 'bot.workspace.set',
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
 });
@@ -86,6 +87,16 @@ function normalizeBot(value) {
     state: connected ? 'connected' : state,
     workspace: text(value.workspace, '', 4_096),
     agentPreset: normalizeAgentPresetId(value.agentPreset),
+    accessPolicy: {
+      accessMode: ['self-only', 'private-allowlist', 'open'].includes(
+        value.accessPolicy?.accessMode,
+      ) ? value.accessPolicy.accessMode : 'self-only',
+      allowedNumbers: Array.isArray(value.accessPolicy?.allowedNumbers)
+        ? [...new Set(value.accessPolicy.allowedNumbers.filter((entry) => (
+            typeof entry === 'string' && /^[1-9]\d{4,14}$/.test(entry)
+          )))]
+        : [],
+    },
     bot: {
       name: text(value.bot?.name, 'WhatsApp机器人', 100),
       idMasked: text(value.bot?.idMasked, 'WhatsApp账号', 140),

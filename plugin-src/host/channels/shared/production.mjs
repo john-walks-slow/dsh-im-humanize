@@ -78,9 +78,10 @@ export async function createTokenProductionController(ctx, config, internals, de
     return state;
   };
   const commandExecutor = createHarnessCommandExecutor(ctx, internals.commandExecutor);
-  const { controlExecutor, sessionMaintenanceExecutor } = createHarnessSessionExecutors(ctx, {
+  const { controlExecutor, sessionMaintenanceExecutor, fileIngressExecutor } = createHarnessSessionExecutors(ctx, {
     controlExecutor: internals.controlExecutor,
     sessionMaintenanceExecutor: internals.sessionMaintenanceExecutor,
+    fileIngressExecutor: internals.fileIngressExecutor,
   });
   const harness = new ResolvedHarness({
     baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
@@ -90,6 +91,7 @@ export async function createTokenProductionController(ctx, config, internals, de
     ...(commandExecutor ? { commandExecutor } : {}),
     ...(controlExecutor ? { controlExecutor } : {}),
     ...(sessionMaintenanceExecutor ? { sessionMaintenanceExecutor } : {}),
+    ...(fileIngressExecutor ? { fileIngressExecutor } : {}),
   });
   const coreController = new ResolvedController({
     credentials: ctx.credentials,

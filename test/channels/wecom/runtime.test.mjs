@@ -157,3 +157,45 @@ test('Enterprise WeChat runtime aborts an in-flight Harness interaction when sto
   await runtime.stop();
   assert.equal(askSignal.aborted, true);
 });
+
+test('Enterprise WeChat runtime enables result-file delivery without per-bot configuration', async () => {
+  const client = new FakeClient();
+  const finished = deferred();
+  let onArtifact;
+  const runtime = new WecomRuntime({
+    config: { botId: 'wecom_bot', remoteBotId: 'remote-bot' },
+    secret: 'private-secret',
+    harness: {
+      ensureRunning: async () => true,
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        onArtifact = options.onArtifact;
+        return '完成';
+      },
+    },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => finished.resolve(),
+      sessionFor: () => 'session-existing',
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+    createClient: () => client,
+    connectTimeoutMs: 100,
+  });
+
+  await runtime.start();
+  client.emit('message', {
+    headers: { req_id: 'req-artifact-gate' },
+    body: {
+      msgid: 'msg-artifact-gate',
+      chattype: 'single',
+      from: { userid: 'member-1' },
+      msgtype: 'text',
+      text: { content: '生成文件' },
+    },
+  });
+  await finished.promise;
+  assert.equal(typeof onArtifact, 'function');
+  await runtime.stop();
+});

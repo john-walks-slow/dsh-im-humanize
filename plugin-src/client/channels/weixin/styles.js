@@ -77,10 +77,6 @@ const CSS = String.raw`
 .dxw-accountIdentity h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
 .dxw-accountIdentity p { color: var(--dsw-alias-label-secondary, #646a73); font: 12px ui-monospace, SFMono-Regular, monospace; margin-top: 4px; }
 .dxw-health { display: inline-flex; align-items: center; gap: 7px; color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; white-space: nowrap; }
-.dxw-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }
-.dxw-metric { padding: 12px 14px; border-radius: 9px; background: var(--dsw-alias-interactive-bg-hover, #f7f8fa); }
-.dxw-metric dt { color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 11px; }
-.dxw-metric dd { overflow: hidden; margin: 5px 0 0; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .dxw-accountFooter { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding-top: 16px; border-top: 1px solid var(--dsw-alias-border-l1, #eef0f3); }
 .dxw-accountFooter .dxw-actions { flex: none; flex-wrap: nowrap; gap: 8px; margin-top: 0; }
 .dxw-accountFooter .dxw-button { flex: none; white-space: nowrap; }
@@ -99,7 +95,6 @@ const CSS = String.raw`
   .dxw-logo { display: none; }
   .dxw-qrLayout { grid-template-columns: minmax(0, 1fr); justify-items: center; }
   .dxw-qrCopy { width: 100%; }
-  .dxw-metrics { grid-template-columns: minmax(0, 1fr); }
   .dxw-cardBody { padding: 20px; }
 }
 @media (prefers-reduced-motion: reduce) {

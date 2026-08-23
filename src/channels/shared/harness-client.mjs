@@ -3,6 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 
 import { adoptRegisteredWorkspaceSession } from './harness-session-binding.mjs';
+import {
+  appendInboundFilesToPrompt,
+  InboundFileError,
+} from './inbound-file.mjs';
+import { outboundArtifactRegistry } from './semantic/artifact.mjs';
+import { t } from './i18n.mjs';
 
 // Every channel plugin runs in the same Host process. Sharing ownership by
 // Harness origin prevents two channel-specific clients bound to one Session
@@ -250,6 +256,21 @@ function assistantMessageText(event) {
     .trim();
 }
 
+function nonEmptyText(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/** Flatten a tool/result error payload into a displayable one-line reason. */
+function toolResultErrorText(error) {
+  if (!error || typeof error !== 'object') return null;
+  const message = nonEmptyText(error.message);
+  if (message) return message;
+  const name = nonEmptyText(error.name);
+  const code = nonEmptyText(error.code);
+  if (name || code) return [name ?? 'Error', code].filter(Boolean).join(': ');
+  return null;
+}
+
 function consumeInteractionOwnership(ownership, entries) {
   const ordered = [...entries]
     .map((entry) => entry?.event ?? entry)
@@ -320,6 +341,8 @@ export class HarnessReplyTracker {
   #latestText = '';
   #finished = false;
   #reason = null;
+  #toolNames = new Map();
+  #lastToolName = null;
 
   constructor({ promptRpcId, afterSeq = -1 }) {
     this.#promptRpcId = promptRpcId;
@@ -346,8 +369,20 @@ export class HarnessReplyTracker {
     return this.#targetTurn;
   }
 
-  consume(entries) {
-    let update = null;
+  consumeAll(entries) {
+    const updates = [];
+    // 同一批轮询内的 text 帧只保留最新累积，其余事件逐帧透出，
+    // 让消费方能按顺序看到每个工具调用与结果。
+    const pushUpdate = (update) => {
+      if (update.type === 'text' && updates.length > 0) {
+        const last = updates[updates.length - 1];
+        if (last.type === 'text') {
+          updates[updates.length - 1] = update;
+          return;
+        }
+      }
+      updates.push(update);
+    };
     const ordered = [...entries]
       .map((entry) => entry?.event ?? entry)
       .filter(Boolean)
@@ -389,7 +424,7 @@ export class HarnessReplyTracker {
           .trim();
         if (text && text !== this.#latestText) {
           this.#latestText = text;
-          update = { type: 'text', text };
+          pushUpdate({ type: 'text', text });
         }
         continue;
       }
@@ -398,18 +433,38 @@ export class HarnessReplyTracker {
         const text = assistantMessageText(event);
         if (text && text !== this.#latestText) {
           this.#latestText = text;
-          update = { type: 'text', text };
+          pushUpdate({ type: 'text', text });
         }
         continue;
       }
 
       if (event.type === 'tool/call') {
-        update = { type: 'tool', name: event.data?.name ?? '工具' };
+        const name = nonEmptyText(event.data?.name) ?? t('工具');
+        const callId = nonEmptyText(event.data?.callId)
+          ?? nonEmptyText(event.data?.subCallId);
+        if (callId) this.#toolNames.set(callId, name);
+        this.#lastToolName = name;
+        pushUpdate({ type: 'tool', name, ...(callId ? { callId } : {}) });
       } else if (event.type === 'tool/result') {
-        update = { type: 'status', text: '正在整理结果…' };
+        const callId = nonEmptyText(event.data?.message?.source?.callId)
+          ?? nonEmptyText(event.data?.callId)
+          ?? nonEmptyText(event.data?.subCallId);
+        const toolName = (callId ? this.#toolNames.get(callId) : null)
+          ?? this.#lastToolName;
+        const error = toolResultErrorText(event.data?.error);
+        pushUpdate({
+          type: 'status',
+          text: t('正在整理结果…'),
+          ...(toolName ? { toolName } : {}),
+          ...(error ? { error } : {}),
+        });
       }
     }
-    return update;
+    return updates;
+  }
+
+  consume(entries) {
+    return this.consumeAll(entries).at(-1) ?? null;
   }
 }
 
@@ -465,6 +520,7 @@ export class HarnessClient {
   #commandExecutor;
   #controlExecutor;
   #sessionMaintenanceExecutor;
+  #fileIngressExecutor;
   #managedProcess = null;
   #interactionRegistry;
   #interactionOwnerships;
@@ -485,6 +541,7 @@ export class HarnessClient {
     commandExecutor,
     controlExecutor,
     sessionMaintenanceExecutor,
+    fileIngressExecutor,
   }) {
     if (typeof createWebSocket !== 'function') {
       throw new TypeError('createWebSocket must be a function');
@@ -508,6 +565,9 @@ export class HarnessClient {
       && typeof sessionMaintenanceExecutor !== 'function') {
       throw new TypeError('sessionMaintenanceExecutor must be a function');
     }
+    if (fileIngressExecutor !== undefined && typeof fileIngressExecutor !== 'function') {
+      throw new TypeError('fileIngressExecutor must be a function');
+    }
     this.#baseUrl = new URL(baseUrl);
     this.#workspace = workspace;
     // Keep an omitted preset absent so session.create resolves the Host's current default.
@@ -522,6 +582,7 @@ export class HarnessClient {
     this.#commandExecutor = commandExecutor;
     this.#controlExecutor = controlExecutor;
     this.#sessionMaintenanceExecutor = sessionMaintenanceExecutor;
+    this.#fileIngressExecutor = fileIngressExecutor;
     this.#interactionRegistry = interactionRegistry(this.#baseUrl.origin);
     this.#interactionOwnerships = this.#interactionRegistry.ownerships;
     this.#interactionClaims = this.#interactionRegistry.claims;
@@ -1025,6 +1086,8 @@ export class HarnessClient {
     const timeoutMs = options.timeoutMs ?? 600_000;
     const signal = options.signal;
     const onUpdate = typeof options.onUpdate === 'function' ? options.onUpdate : null;
+    const progressMode = options.progressMode === 'all' ? 'all' : 'latest';
+    const onArtifact = typeof options.onArtifact === 'function' ? options.onArtifact : null;
     const onInteraction = typeof options.onInteraction === 'function'
       ? options.onInteraction
       : undefined;
@@ -1032,6 +1095,7 @@ export class HarnessClient {
       ? options.onInteractionResolved
       : undefined;
     const control = normalizeControl(options.control);
+    const inboundFiles = Array.isArray(options.files) ? options.files.filter(Boolean) : [];
     await this.ensureRunning({ signal });
     const before = await this.rpc(
       'session.history',
@@ -1071,13 +1135,63 @@ export class HarnessClient {
         }
       : null;
     let interactionTask = null;
+    let artifactsDelivered = false;
+    let deliveredArtifactCount = 0;
+    let stagedInboundFiles = null;
+    let promptAccepted = false;
+    let turnFinished = false;
+
+    const deliverArtifacts = async () => {
+      if (!onArtifact || artifactsDelivered || tracker.turn === null) {
+        return deliveredArtifactCount;
+      }
+      artifactsDelivered = true;
+      const artifacts = outboundArtifactRegistry.take(sessionId, tracker.turn, { signal });
+      for (const artifact of artifacts) {
+        try {
+          await onArtifact(artifact);
+          deliveredArtifactCount += 1;
+        } catch (error) {
+          outboundArtifactRegistry.release(artifact);
+          console.warn(`[${this.#logPrefix}] ignored an artifact handoff failure:`, error.message);
+        }
+      }
+      return deliveredArtifactCount;
+    };
 
     if (ownership) {
       this.#registerInteractionOwnership(sessionId, ownership);
       this.#registerControlOwnership(ownership);
     }
+    // This is resource ownership, not a feature Gate: it lets the Host retain
+    // this Turn's snapshots until the channel has polled and claimed them.
+    const closeArtifactConsumer = outboundArtifactRegistry.openConsumer(sessionId, promptRpcId);
 
     try {
+      if (inboundFiles.length > 0) {
+        if (!this.#fileIngressExecutor) {
+          throw new InboundFileError(
+            'inbound-file-ingress-unavailable',
+            'Harness file ingress is unavailable in this Host process.',
+          );
+        }
+        const sessionList = await this.rpc(
+          'session.list',
+          {},
+          30_000,
+          { signal },
+        );
+        const sessionWorkspace = sessionList?.items?.find(
+          (item) => item?.sessionId === sessionId,
+        )?.cwd;
+        stagedInboundFiles = await this.#fileIngressExecutor({
+          sessionId,
+          workspace: sessionWorkspace,
+          files: inboundFiles,
+          signal,
+        });
+        prompt = appendInboundFilesToPrompt(prompt, stagedInboundFiles);
+      }
       if (interactionSignal) {
         let markOpen;
         const opened = new Promise((resolve) => { markOpen = resolve; });
@@ -1109,6 +1223,7 @@ export class HarnessClient {
         content,
         clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       }, 30_000, { rpcId: promptRpcId, signal });
+      promptAccepted = true;
 
       try {
         const deadline = Date.now() + timeoutMs;
@@ -1125,16 +1240,28 @@ export class HarnessClient {
             this.#consumeInteractionOwnerships(sessionId, history.events ?? []);
             if (!wasActive && ownership.active) ownership.reconnect?.();
           }
-          const update = tracker.consume(history.events ?? []);
-          if (update && onUpdate) {
-            try {
-              await onUpdate(update);
-            } catch (error) {
-              console.warn(`[${this.#logPrefix}] ignored a progress update failure:`, error.message);
+          const updates = tracker.consumeAll(history.events ?? []);
+          if (onUpdate) {
+            const visibleUpdates = progressMode === 'all' ? updates : updates.slice(-1);
+            for (const update of visibleUpdates) {
+              try {
+                await onUpdate(update);
+              } catch (error) {
+                console.warn(`[${this.#logPrefix}] ignored a progress update failure:`, error.message);
+              }
             }
           }
           if (!tracker.finished) continue;
-          if (tracker.answer) return tracker.answer;
+          turnFinished = true;
+          // An accepted /stop revokes attachment delivery even when Harness
+          // preserved a useful partial text answer for the existing UX.
+          const artifactCount = ownership?.stopRequested
+            ? 0
+            : await deliverArtifacts();
+          if (tracker.answer) {
+            return tracker.answer;
+          }
+          if (artifactCount > 0) return '';
           if (ownership?.stopRequested) throw turnStoppedError();
           throw new Error(
             `Harness turn ended without a text reply${tracker.reason ? ` (${JSON.stringify(tracker.reason)})` : ''}`,
@@ -1145,15 +1272,24 @@ export class HarnessClient {
         // Once cancellation was accepted, transport/poll failures and timeouts
         // describe the convergence of that stop, not an unrelated ask failure.
         if (!ownership?.stopRequested) throw error;
-        if (tracker.answer) return tracker.answer;
+        if (tracker.answer) {
+          return tracker.answer;
+        }
         if (error?.code === 'turn-stopped') throw error;
         throw turnStoppedError();
       }
     } finally {
+      if (stagedInboundFiles && (!promptAccepted || turnFinished)) {
+        await stagedInboundFiles.cleanup().catch((error) => {
+          console.warn(`[${this.#logPrefix}] unable to clean inbound files:`, error.message);
+        });
+      }
+      closeArtifactConsumer();
       if (ownership) {
         this.#unregisterControlOwnership(ownership);
         this.#unregisterInteractionOwnership(sessionId, ownership);
       }
+      if (tracker.turn !== null) outboundArtifactRegistry.discard(sessionId, tracker.turn);
       interactionController?.abort(new DOMException('Harness turn finished', 'AbortError'));
       if (interactionTask) await interactionTask.catch(() => undefined);
     }

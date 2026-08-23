@@ -1,3 +1,4 @@
+import { t } from './i18n.mjs';
 import { WORKSPACE_SESSION_STALE } from './workspace-session.mjs';
 
 const COMPACT_COMMAND = /^\/compact(?=$|\s)([\s\S]*)$/i;
@@ -41,27 +42,27 @@ function compactResultText(result) {
   const text = result.text?.trim() ?? '';
   const compacted = /^Compacted (\d+) history items \(~(\d+) tokens\)\.$/u.exec(text);
   if (compacted) {
-    return `已压缩 ${compacted[1]} 条历史记录（约 ${compacted[2]} 个 token）。`;
+    return t('已压缩 {count} 条历史记录（约 {tokens} 个 token）。', { count: compacted[1], tokens: compacted[2] });
   }
-  if (COMPACT_RESULT_TEXT.has(text)) return COMPACT_RESULT_TEXT.get(text);
+  if (COMPACT_RESULT_TEXT.has(text)) return t(COMPACT_RESULT_TEXT.get(text));
   if (text) return text;
-  return result.kind === 'success' ? '上下文压缩完成。' : '上下文压缩失败。';
+  return result.kind === 'success' ? t('上下文压缩完成。') : t('上下文压缩失败。');
 }
 
 function compactErrorMessage(error) {
   const code = error?.code ?? error?.failure?.code;
   if (code === 'session-not-found') {
-    return '当前聊天绑定的会话已不存在，请发送新消息开启会话。';
+    return t('当前聊天绑定的会话已不存在，请发送新消息开启会话。');
   }
-  if (code === 'agent-busy') return '当前会话正在生成回复，请稍后重试。';
-  if (code === 'cancelled' || error?.name === 'AbortError') return '上下文压缩已取消。';
+  if (code === 'agent-busy') return t('当前会话正在生成回复，请稍后重试。');
+  if (code === 'cancelled' || error?.name === 'AbortError') return t('上下文压缩已取消。');
   if (code === WORKSPACE_SESSION_STALE || code === 'workspace-bot-not-found') {
-    return '工作区或机器人状态已发生变化，请重试。';
+    return t('工作区或机器人状态已发生变化，请重试。');
   }
   if (code === 'commands-unavailable') {
-    return '当前 Harness 暂不支持从机器人执行上下文压缩。';
+    return t('当前 Harness 暂不支持从机器人执行上下文压缩。');
   }
-  return '上下文压缩失败，请稍后重试。';
+  return t('上下文压缩失败，请稍后重试。');
 }
 
 /**
@@ -72,21 +73,21 @@ export async function runCompactCommand(text, harness, state, conversationKey, o
   if (typeof text !== 'string') return null;
   const match = COMPACT_COMMAND.exec(text.trim());
   if (!match) return null;
-  if (match[1].trim()) return commandResult(COMPACT_USAGE);
+  if (match[1].trim()) return commandResult(t(COMPACT_USAGE));
   if (typeof state?.sessionFor !== 'function') {
-    return commandResult('当前机器人没有可用的会话状态。');
+    return commandResult(t('当前机器人没有可用的会话状态。'));
   }
   const sessionId = state.sessionFor(conversationKey);
   if (typeof sessionId !== 'string' || !sessionId) {
-    return commandResult('当前聊天还没有可压缩的会话，请先发送一条消息。');
+    return commandResult(t('当前聊天还没有可压缩的会话，请先发送一条消息。'));
   }
   if (typeof harness?.executeCommand !== 'function') {
-    return commandResult('当前机器人暂不支持上下文压缩。');
+    return commandResult(t('当前机器人暂不支持上下文压缩。'));
   }
   try {
     const execution = await harness.executeCommand(sessionId, '/compact', options);
     if (execution === undefined) {
-      return commandResult('当前 Harness 未注册 /compact 命令，请确认上下文压缩组件已启用。');
+      return commandResult(t('当前 Harness 未注册 /compact 命令，请确认上下文压缩组件已启用。'));
     }
     return commandResult(compactResultText(execution?.result));
   } catch (error) {

@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { createBotWorkspaceScope } from '../../../src/channels/shared/bot-workspace-store.mjs';
 import { HarnessClient } from '../../../src/channels/shared/harness-client.mjs';
+import {
+  OUTBOUND_ARTIFACT_TOOL,
+  createOutboundArtifactTool,
+  outboundArtifactRegistry,
+} from '../../../src/channels/shared/semantic/artifact.mjs';
 import { WORKSPACE_SESSION_STALE } from '../../../src/channels/shared/workspace-session.mjs';
 
 const CATALOG = {
@@ -201,6 +209,7 @@ function controlledTurn({ sessionId, initialEnd = false, controlExecutor } = {})
     calls,
     client,
     admitted: admitted.promise,
+    promptRpcId: () => promptRpcId,
     setText(text) { answer = text; },
     failHistory(error = new Error('history unavailable')) { historyFailure = error; },
     finish({ text = '', reason = 'cancelled' } = {}) {
@@ -257,6 +266,96 @@ test('a stopped turn returns partial text instead of a generic failure', async (
   assert.equal(await turn.client.stopActiveTurn(turn.id, control), true);
   turn.finish({ text: 'partial result' });
   assert.equal(await asking, 'partial result');
+});
+
+test('an accepted stop preserves partial text but never hands off a registered artifact', async (t) => {
+  outboundArtifactRegistry.clear();
+  t.after(() => outboundArtifactRegistry.clear());
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-im-stopped-artifact-'));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const turn = controlledTurn({ sessionId: 'session-stopped-artifact' });
+  const control = { owner: {}, key: 'direct:stopped-artifact' };
+  const handedOff = [];
+  const asking = turn.client.ask(turn.id, 'work', {
+    control,
+    timeoutMs: 2_000,
+    onArtifact: async (artifact) => handedOff.push(artifact),
+  });
+  await turn.admitted;
+  const agent = {
+    session: {
+      header: { id: turn.id, cwd: workspace },
+      events: [
+        { type: 'turn/start', data: { turn: 7 } },
+        {
+          type: 'user/message',
+          data: { turn: 7, source: { rpcId: turn.promptRpcId() } },
+        },
+      ],
+    },
+  };
+  await writeFile(join(workspace, 'must-not-send.txt'), 'cancelled result');
+  const tool = createOutboundArtifactTool({ registry: outboundArtifactRegistry });
+  const exec = {
+    name: OUTBOUND_ARTIFACT_TOOL,
+    callId: 'stopped-artifact-call',
+    rootCallId: 'stopped-artifact-call',
+    token: Symbol('stopped-artifact-call'),
+    agent,
+  };
+  await tool.definition.execute({ path: 'must-not-send.txt' }, exec);
+  tool.onResult(exec, { isError: false });
+
+  assert.equal(await turn.client.stopActiveTurn(turn.id, control), true);
+  turn.finish({ text: 'partial result', reason: 'stopped' });
+  assert.equal(await asking, 'partial result');
+  assert.deepEqual(handedOff, []);
+  assert.deepEqual(outboundArtifactRegistry.take(turn.id, 7), []);
+});
+
+test('an accepted stop also discards a file-only result instead of handing it off', async (t) => {
+  outboundArtifactRegistry.clear();
+  t.after(() => outboundArtifactRegistry.clear());
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-im-stopped-file-only-'));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const turn = controlledTurn({ sessionId: 'session-stopped-file-only' });
+  const control = { owner: {}, key: 'direct:stopped-file-only' };
+  const handedOff = [];
+  const asking = turn.client.ask(turn.id, 'work', {
+    control,
+    timeoutMs: 2_000,
+    onArtifact: async (artifact) => handedOff.push(artifact),
+  });
+  await turn.admitted;
+  const agent = {
+    session: {
+      header: { id: turn.id, cwd: workspace },
+      events: [
+        { type: 'turn/start', data: { turn: 7 } },
+        {
+          type: 'user/message',
+          data: { turn: 7, source: { rpcId: turn.promptRpcId() } },
+        },
+      ],
+    },
+  };
+  await writeFile(join(workspace, 'must-not-send.txt'), 'cancelled file-only result');
+  const tool = createOutboundArtifactTool({ registry: outboundArtifactRegistry });
+  const exec = {
+    name: OUTBOUND_ARTIFACT_TOOL,
+    callId: 'stopped-file-only-call',
+    rootCallId: 'stopped-file-only-call',
+    token: Symbol('stopped-file-only-call'),
+    agent,
+  };
+  await tool.definition.execute({ path: 'must-not-send.txt' }, exec);
+  tool.onResult(exec, { isError: false });
+
+  assert.equal(await turn.client.stopActiveTurn(turn.id, control), true);
+  turn.finish({ reason: 'stopped' });
+  await assert.rejects(asking, (error) => error?.code === 'turn-stopped');
+  assert.deepEqual(handedOff, []);
+  assert.deepEqual(outboundArtifactRegistry.take(turn.id, 7), []);
 });
 
 test('accepted stop converts later polling failures to turn-stopped and preserves streamed text', async () => {

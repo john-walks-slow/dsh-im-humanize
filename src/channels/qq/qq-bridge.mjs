@@ -26,8 +26,26 @@ import {
   imagePromptUserMessage,
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
+import {
+  hasInboundFiles,
+  inboundFileUserMessage,
+  prefetchInboundFiles,
+} from '../shared/inbound-file.mjs';
+import {
+  trackOutboundArtifactProviderPromise,
+} from '../shared/semantic/artifact.mjs';
+import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
+import {
+  createDeliveryReceipt,
+  providerMessageIdsFor,
+} from '../shared/semantic/delivery.mjs';
+import { sendMarkdownReply } from './markdown-reply.mjs';
+import { t } from '../shared/i18n.mjs';
 
-const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
+function interactionResolvedText() {
+  return t('这个问题已在其他客户端处理，无需再次回答。');
+}
+const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
 
 export const QQ_IMAGE_HOSTS = Object.freeze([
   '.myqcloud.com',
@@ -40,28 +58,30 @@ export const QQ_IMAGE_HOSTS = Object.freeze([
 
 const QQ_IMAGE_FILENAME = /\.(?:gif|jpe?g|png|webp)$/i;
 
-const HELP_TEXT = [
-  'QQ 机器人已连接 DeepSeek Harness。',
-  '',
-  '直接发送文字或图片即可继续当前会话。',
-  '/new  开启一个全新会话',
-  '/compact  压缩当前会话的较早上下文',
-  '/workspace 工作区绝对路径  切换工作区',
-  '/workspacelist  列出工作区绝对路径',
-  '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
-  '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
-  '/models  按序号列出所有可用模型',
-  '/model [序号或完整模型ID]  查看或切换当前会话模型',
-  '示例：先发 /models，再发 /model 2',
-  '/presetlist  按序号列出可用 Agent Preset',
-  '/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset',
-  '纯数字 ID：/preset id:<ID>',
-  '/preset --default  跟随 Host 默认',
-  '/stop  停止当前任务',
-  '/steer 补充指令  纠偏当前任务',
-  '/status  检查连接状态',
-  '/help  显示本帮助',
-].join('\n');
+function helpText() {
+  return [
+    t('QQ 机器人已连接 DeepSeek Harness。'),
+    '',
+    t('直接发送文字、图片或文件即可继续当前会话。'),
+    t('/new  开启一个全新会话'),
+    t('/compact  压缩当前会话的较早上下文'),
+    t('/workspace 工作区绝对路径  切换工作区'),
+    t('/workspacelist  列出工作区绝对路径'),
+    t('/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题'),
+    t('/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话'),
+    t('/models  按序号列出所有可用模型'),
+    t('/model [序号或完整模型ID]  查看或切换当前会话模型'),
+    t('示例：先发 /models，再发 /model 2'),
+    t('/presetlist  按序号列出可用 Agent Preset'),
+    t('/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset'),
+    t('纯数字 ID：/preset id:<ID>'),
+    t('/preset --default  跟随 Host 默认'),
+    t('/stop  停止当前任务'),
+    t('/steer 补充指令  纠偏当前任务'),
+    t('/status  检查连接状态'),
+    t('/help  显示本帮助'),
+  ].join('\n');
+}
 
 function conversationKey(message) {
   return `${message.kind}:${message.kind === 'group' ? message.groupOpenid : message.senderId}`;
@@ -88,36 +108,205 @@ function hasQqImageAttachments(message) {
     && message.attachments.some(isQqImageAttachment);
 }
 
+function hasQqFileAttachments(message) {
+  return Array.isArray(message?.attachments)
+    && message.attachments.some((attachment) => !isQqImageAttachment(attachment));
+}
+
+async function fetchQqFileBuffer(url, { fetchImpl, signal }) {
+  const normalizedUrl = url.startsWith('//') ? `https:${url}` : url;
+  const response = await fetchImpl(new URL(normalizedUrl), {
+    method: 'GET',
+    signal,
+    redirect: 'follow',
+  });
+  if (!response?.ok) {
+    await response?.body?.cancel?.().catch?.(() => undefined);
+    throw new Error(`QQ file download failed with HTTP ${response?.status ?? 'unknown'}`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
 /** Convert QQ's attachment metadata into lazily downloaded image references. */
 export function qqInboundMessage(message, { fetchImpl = fetch } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
   const images = [];
+  const files = [];
   for (const attachment of message?.attachments ?? []) {
-    if (!isQqImageAttachment(attachment)) continue;
     const url = nonEmptyString(attachment?.url);
     const name = nonEmptyString(attachment?.filename) ?? undefined;
     const mediaType = attachmentMediaType(attachment);
     const declaredSize = Number(attachment?.size);
-    images.push({
-      ...(name ? { name } : {}),
-      ...(mediaType?.startsWith('image/') ? { mediaType } : {}),
+    if (isQqImageAttachment(attachment)) {
+      images.push({
+        ...(name ? { name } : {}),
+        ...(mediaType?.startsWith('image/') ? { mediaType } : {}),
+        ...(Number.isFinite(declaredSize) && declaredSize >= 0 ? { size: declaredSize } : {}),
+        load: ({ signal, maxBytes }) => {
+          if (!url) throw new Error('QQ image attachment has no download URL');
+          return fetchImageBuffer(url, {
+            fetchImpl,
+            signal,
+            maxBytes,
+            allowedHosts: QQ_IMAGE_HOSTS,
+          });
+        },
+      });
+      continue;
+    }
+    files.push({
+      name: name ?? (files.length === 0 ? 'file' : `file-${files.length + 1}`),
+      ...(mediaType?.includes('/') ? { mediaType } : {}),
       ...(Number.isFinite(declaredSize) && declaredSize >= 0 ? { size: declaredSize } : {}),
-      load: ({ signal, maxBytes }) => {
-        if (!url) throw new Error('QQ image attachment has no download URL');
-        return fetchImageBuffer(url, {
-          fetchImpl,
-          signal,
-          maxBytes,
-          allowedHosts: QQ_IMAGE_HOSTS,
-        });
+      load: ({ signal } = {}) => {
+        if (!url) throw new Error('QQ file attachment has no download URL');
+        return fetchQqFileBuffer(url, { fetchImpl, signal });
       },
     });
   }
-  return { content: safeText(message), images };
+  return { content: safeText(message), images, files };
 }
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function artifactFailureText(fileName, error) {
+  const name = String(fileName ?? t('结果文件')).replace(/[\r\n]+/g, ' ').trim() || t('结果文件');
+  if (error?.name === 'UploadDailyLimitExceededError') {
+    return t('结果文件「{name}」已生成，但 QQ 今日文件上传额度已用完，请稍后重试。', { name });
+  }
+  switch (error?.code) {
+    case 'artifact-delivery-uncertain':
+      return t('结果文件「{name}」的发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。', { name });
+    case 'artifact-permission-required':
+      return t('结果文件「{name}」已生成，但当前 QQ 机器人没有文件消息权限。', { name });
+    case 'artifact-too-large':
+      return t('结果文件「{name}」超过当前 QQ 机器人可发送的文件大小，未发送。', { name });
+    case 'artifact-empty':
+      return t('结果文件「{name}」为空，QQ 不允许发送空文件。', { name });
+    case 'artifact-changed':
+    case 'artifact-invalid':
+    case 'artifact-unavailable':
+      return t('结果文件「{name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。', { name });
+    case 'artifact-rate-limited':
+      return t('结果文件「{name}」暂时被 QQ 限流，未能发送，请稍后重试。', { name });
+    case 'artifact-provider-rejected':
+      return t('结果文件「{name}」已生成，但 QQ 拒绝了该文件或文件消息。', { name });
+    default:
+      return t('结果文件「{name}」已生成，但暂时未能通过 QQ 发送，请稍后重试。', { name });
+  }
+}
+
+function answerTextForDelivery(answer, artifacts) {
+  if (typeof answer === 'string' && answer.trim()) return answer;
+  return artifacts.length > 0 ? t('结果文件已生成。') : answer;
+}
+
+function qqArtifactError(error, { dispatched = false } = {}) {
+  if (error?.code?.startsWith?.('artifact-') || error?.name === 'UploadDailyLimitExceededError') {
+    return error;
+  }
+  const status = Number(error?.httpStatus);
+  const wrapped = new Error('QQ file delivery failed', { cause: error });
+  if (status === 401 || status === 403) wrapped.code = 'artifact-permission-required';
+  else if (status === 413) wrapped.code = 'artifact-too-large';
+  else if (status === 429) wrapped.code = 'artifact-rate-limited';
+  else if ([400, 404, 405, 406, 410, 415, 422].includes(status)) {
+    wrapped.code = 'artifact-provider-rejected';
+  } else {
+    wrapped.code = dispatched ? 'artifact-delivery-uncertain' : 'artifact-provider-failed';
+  }
+  return wrapped;
+}
+
+function abortReason(signal) {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new DOMException('The operation was aborted', 'AbortError');
+}
+
+function waitWithSignal(promise, signal) {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback(value);
+    };
+    const onAbort = () => finish(reject, abortReason(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
+/** Send one materialized artifact through QQ's native image message. */
+export async function sendQqImage(
+  bot,
+  target,
+  file,
+  { signal, timeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS } = {},
+) {
+  signal?.throwIfAborted();
+  if (typeof bot?.sendImage !== 'function') {
+    const unavailable = new Error('QQ image delivery is unavailable');
+    unavailable.code = 'artifact-provider-unavailable';
+    throw unavailable;
+  }
+
+  try {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const waitSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    const pending = bot.sendImage(
+      target,
+      { buffer: file.bytes },
+      { onProgress: () => signal?.throwIfAborted() },
+    );
+    trackOutboundArtifactProviderPromise(file, pending);
+    return await waitWithSignal(pending, waitSignal);
+  } catch (error) {
+    if (signal?.aborted) throw abortReason(signal);
+    throw qqArtifactError(error, { dispatched: true });
+  }
+}
+
+async function sendQqFile(
+  bot,
+  target,
+  file,
+  { signal, timeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS } = {},
+) {
+  signal?.throwIfAborted();
+  if (typeof bot?.sendFile !== 'function') {
+    const unavailable = new Error('QQ file delivery is unavailable');
+    unavailable.code = 'artifact-provider-unavailable';
+    throw unavailable;
+  }
+
+  try {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const waitSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    const pending = bot.sendFile(
+      target,
+      { buffer: file.bytes },
+      {
+        fileName: file.fileName,
+        onProgress: () => signal?.throwIfAborted(),
+      },
+    );
+    trackOutboundArtifactProviderPromise(file, pending);
+    return await waitWithSignal(pending, waitSignal);
+  } catch (error) {
+    if (signal?.aborted) throw abortReason(signal);
+    throw qqArtifactError(error, { dispatched: true });
+  }
 }
 
 function canClaimInteractionReply(message, pending) {
@@ -125,6 +314,7 @@ function canClaimInteractionReply(message, pending) {
     && nonEmptyString(message?.senderId) === pending.actor
     && (message.kind !== 'group' || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE')
     && !hasQqImageAttachments(message)
+    && !hasQqFileAttachments(message)
     && nonEmptyString(safeText(message));
 }
 
@@ -133,6 +323,8 @@ export function createQqBridgeStatus() {
     messagesReceived: 0,
     messagesReplied: 0,
     messagesRejected: 0,
+    artifactsSent: 0,
+    artifactSendErrors: 0,
     lastMessageAt: null,
     lastReplyAt: null,
     lastRejectedAt: null,
@@ -150,6 +342,7 @@ export class QqHarnessBridge {
   #replyTimeoutMs;
   #signal;
   #fetchImpl;
+  #fileUploadTimeoutMs;
   #queues = new Map();
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
@@ -168,11 +361,15 @@ export class QqHarnessBridge {
     replyTimeoutMs = 600_000,
     signal,
     fetchImpl = fetch,
+    fileUploadTimeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS,
   }) {
     if (!bot || typeof bot.sendText !== 'function') throw new TypeError('QQ bot client is required');
     if (!ownerUserOpenid) throw new TypeError('QQ scanner identity is required');
     if (!harness || !state) throw new TypeError('Harness client and state store are required');
     if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
+    if (!Number.isInteger(fileUploadTimeoutMs) || fileUploadTimeoutMs < 1) {
+      throw new TypeError('fileUploadTimeoutMs must be a positive integer');
+    }
     this.#bot = bot;
     this.#ownerUserOpenid = ownerUserOpenid;
     this.#harness = harness;
@@ -182,6 +379,7 @@ export class QqHarnessBridge {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#signal = signal;
     this.#fetchImpl = fetchImpl;
+    this.#fileUploadTimeoutMs = Math.min(fileUploadTimeoutMs, DEFAULT_FILE_UPLOAD_TIMEOUT_MS);
     this.#approvals = new HarnessApprovalQueue({ label: 'qq', logger });
   }
 
@@ -207,7 +405,7 @@ export class QqHarnessBridge {
     }
     const pending = this.#pendingInteractions.get(key);
     const commandText = safeText(message);
-    const commandRunner = isControlCommand(commandText)
+    const commandRunner = hasQqFileAttachments(message) ? null : isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText)
           ? runModelCommand
@@ -227,7 +425,7 @@ export class QqHarnessBridge {
         if (error?.code === 'turn-stopped' || this.#signal?.aborted) return;
         this.#status.lastError = error?.message ?? String(error);
         this.#logger.error?.('[dsh-im:qq] failed to process a command:', error);
-        return this.#bot.sendText(message.replyTarget, '消息处理失败，请稍后重试。')
+        return this.#bot.sendText(message.replyTarget, t('消息处理失败，请稍后重试。'))
           .catch(() => undefined);
       }).finally(() => {
         this.#acceptedMessageIds.delete(messageId);
@@ -240,7 +438,7 @@ export class QqHarnessBridge {
       key,
       actor: sender,
       messageId,
-      text: hasQqImageAttachments(message) ? '' : safeText(message),
+      text: hasQqImageAttachments(message) || hasQqFileAttachments(message) ? '' : safeText(message),
       addressed: message.kind !== 'group' || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE',
       hasPendingQuestion: Boolean(pending),
       questionCompletion: pending?.submitting || pending?.claimedReplyMessageId
@@ -295,10 +493,19 @@ export class QqHarnessBridge {
     releaseMessageId = true,
     alreadyRecorded = false,
   } = {}) {
+    const allowed = this.#ownerUserOpenid === '*' || message.senderId === this.#ownerUserOpenid;
+    const addressed = message.kind !== 'group'
+      || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE';
+    const preparedMessage = allowed && addressed
+      ? prefetchInboundFiles(
+          qqInboundMessage(message, { fetchImpl: this.#fetchImpl }),
+          { signal: this.#signal },
+        )
+      : undefined;
     const previous = this.#queues.get(key) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
-      .then(() => this.#process(message, key, { alreadyRecorded }))
+      .then(() => this.#process(message, key, { alreadyRecorded, preparedMessage }))
       .finally(() => {
         if (releaseMessageId) this.#acceptedMessageIds.delete(messageId);
         if (this.#queues.get(key) === current) this.#queues.delete(key);
@@ -327,6 +534,7 @@ export class QqHarnessBridge {
     const result = await runner(text, this.#harness, this.#state, key, {
       signal: this.#signal,
       hasImages: hasQqImageAttachments(message),
+      hasFiles: hasQqFileAttachments(message),
       pendingInteraction: this.#pendingInteractions.has(key)
         || this.#approvals.hasPending(key),
       control: { owner: this, key },
@@ -343,7 +551,43 @@ export class QqHarnessBridge {
     this.#status.lastError = null;
   }
 
-  async #process(message, key, { alreadyRecorded = false } = {}) {
+  async #deliverArtifacts(target, replyTo, artifacts = [], baseReceipt = null) {
+    if (artifacts.length === 0) {
+      return { receipt: baseReceipt, failureNoticeVisible: false };
+    }
+    const delivery = await deliverOutboundArtifacts({
+      artifacts,
+      baseReceipt,
+      deliveryId: replyTo,
+      aggregatePresentation: baseReceipt ? 'qq-text-and-files' : 'qq-files',
+      alwaysMerge: true,
+      channelKey: 'qq',
+      signal: this.#signal,
+      sendImage: (file) => sendQqImage(this.#bot, target, file, {
+        signal: this.#signal,
+        timeoutMs: this.#fileUploadTimeoutMs,
+      }),
+      sendFile: (file) => sendQqFile(this.#bot, target, file, {
+        signal: this.#signal,
+        timeoutMs: this.#fileUploadTimeoutMs,
+      }),
+      sendFailureNotice: (artifact, error) => this.#bot.sendText(
+        target,
+        artifactFailureText(artifact?.fileName, error),
+      ),
+      logger: this.#logger,
+    });
+    this.#status.artifactsSent = (this.#status.artifactsSent ?? 0)
+      + delivery.artifactsSent;
+    this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0)
+      + delivery.artifactSendErrors;
+    return {
+      receipt: delivery.receipt,
+      failureNoticeVisible: delivery.failureNoticeVisible,
+    };
+  }
+
+  async #process(message, key, { alreadyRecorded = false, preparedMessage } = {}) {
     if (this.#signal?.aborted) return;
     const messageId = nonEmptyString(message?.messageId);
     const sender = nonEmptyString(message?.senderId);
@@ -362,35 +606,37 @@ export class QqHarnessBridge {
     if (message.kind === 'group' && message.rawEventType !== 'GROUP_AT_MESSAGE_CREATE') return;
 
     const target = message.replyTarget;
-    const promptMessage = qqInboundMessage(message, { fetchImpl: this.#fetchImpl });
+    const promptMessage = preparedMessage
+      ?? qqInboundMessage(message, { fetchImpl: this.#fetchImpl });
     const text = promptMessage.content;
     const hasImages = hasInboundImages(promptMessage);
+    const hasFiles = hasInboundFiles(promptMessage);
     let stream = null;
     try {
-      if (!text && !hasImages) {
-        await this.#bot.sendText(target, '目前支持文字和图片消息。');
+      if (!text && !hasImages && !hasFiles) {
+        await this.#bot.sendText(target, t('目前支持文字、图片和文件消息。'));
         await this.#state.markSeen(messageId);
         return;
       }
       const command = text.toLowerCase();
-      if (!hasImages && command === '/help') {
-        await this.#bot.sendText(target, HELP_TEXT);
+      if (!hasImages && !hasFiles && command === '/help') {
+        await this.#bot.sendText(target, helpText());
         await this.#state.markSeen(messageId);
         return;
       }
-      if (!hasImages && command === '/status') {
+      if (!hasImages && !hasFiles && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
-        await this.#bot.sendText(target, 'QQ 机器人与 DeepSeek Harness 连接正常。');
+        await this.#bot.sendText(target, t('QQ 机器人与 DeepSeek Harness 连接正常。'));
         await this.#state.markSeen(messageId);
         return;
       }
-      if (!hasImages && command === '/new') {
+      if (!hasImages && !hasFiles && command === '/new') {
         await this.#state.clearSession(key);
-        await this.#bot.sendText(target, '已开启新会话。请发送你的问题。');
+        await this.#bot.sendText(target, t('已开启新会话。请发送你的问题。'));
         await this.#state.markSeen(messageId);
         return;
       }
-      const workspaceCommand = hasImages
+      const workspaceCommand = hasImages || hasFiles
         ? null
         : await runWorkspaceCommand(text, this.#harness, key);
       if (workspaceCommand) {
@@ -400,7 +646,7 @@ export class QqHarnessBridge {
         await this.#state.markSeen(messageId);
         return;
       }
-      const compactCommand = hasImages
+      const compactCommand = hasImages || hasFiles
         ? null
         : await runCompactCommand(
             text,
@@ -418,17 +664,21 @@ export class QqHarnessBridge {
       const content = hasImages
         ? await promptContentForMessage(promptMessage, { signal: this.#signal })
         : undefined;
-      let streamFinished = false;
+      // QQ C2C keeps one stream bubble. Progress is collected but never submitted:
+      // some clients reject replacing an already visible stream frame, which would
+      // otherwise leave a stale progress bubble plus a separate fallback answer.
       if (message.kind === 'c2c' && target?.msgId && typeof this.#bot.openStream === 'function') {
         try {
           stream = this.#bot.openStream({ target });
         } catch (error) {
-          this.#logger.warn?.('[dsh-im:qq] unable to start a QQ stream; using a text reply:', error);
+          this.#logger.warn?.('[dsh-im:qq] unable to start a QQ stream; using markdown fallback:', error);
         }
       }
+      const toolErrors = [];
       let answer;
+      let artifacts = [];
       try {
-        ({ answer } = await askInWorkspaceSession({
+        ({ answer, artifacts = [] } = await askInWorkspaceSession({
           harness: this.#harness,
           state: this.#state,
           key,
@@ -439,14 +689,15 @@ export class QqHarnessBridge {
             timeoutMs: this.#replyTimeoutMs,
             signal: this.#signal,
             control: { owner: this, key },
-            onUpdate: stream ? async (update) => {
-              const progress = update.type === 'text'
-                ? update.text
-                : update.type === 'tool'
-                  ? `正在使用${update.name}…`
-                  : update.text;
-              if (progress) await stream.update(progress);
-            } : undefined,
+            progressMode: 'all',
+            onUpdate: (update) => {
+              if (update.error) {
+                const label = nonEmptyString(update.toolName)
+                  ? `Tool call ${update.toolName}` : 'Tool call';
+                const text = `${label}\nError: ${update.error}`;
+                toolErrors.push(text);
+              }
+            },
             onInteraction: (interaction) => this.#handleInteraction(interaction, {
               key,
               actor: sender,
@@ -454,6 +705,7 @@ export class QqHarnessBridge {
               requiresMention: message.kind === 'group',
             }),
             onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
+            files: promptMessage.files,
           },
         }));
       } finally {
@@ -462,46 +714,89 @@ export class QqHarnessBridge {
           this.#approvals.closeRoute(key),
         ]);
       }
-      if (stream) {
-        try {
-          await stream.update(answer);
-          await stream.complete();
-          streamFinished = true;
-        } catch (error) {
-          stream.cancel?.();
-          this.#logger.warn?.('[dsh-im:qq] QQ stream finalization failed; using a text reply:', error);
+      this.#signal?.throwIfAborted();
+      const answerText = answerTextForDelivery(answer, artifacts);
+      const displayAnswer = toolErrors.length > 0
+        ? `${answerText}\n\n---\n\n${toolErrors.join('\n\n')}`
+        : answerText;
+      let textReceipt = null;
+      let textSendError = null;
+      try {
+        let streamFinished = false;
+        if (stream) {
+          try {
+            await stream.update(displayAnswer);
+            streamFinished = true;
+            textReceipt = createDeliveryReceipt({
+              deliveryId: messageId,
+              presentation: 'qq-text',
+              providerMessageIds: providerMessageIdsFor(stream),
+            });
+            try {
+              await stream.complete();
+            } catch (error) {
+              this.#logger.warn?.('[dsh-im:qq] QQ stream completion failed after visible final content:', error);
+            }
+          } catch (error) {
+            stream.cancel?.();
+            this.#logger.warn?.('[dsh-im:qq] QQ stream update failed; using markdown fallback:', error);
+          }
         }
+        if (!streamFinished) {
+          const deliveries = await sendMarkdownReply(this.#bot, target, displayAnswer, {
+            logger: this.#logger,
+          });
+          textReceipt = createDeliveryReceipt({
+            deliveryId: messageId,
+            presentation: 'qq-text',
+            providerMessageIds: deliveries.flatMap((delivery) => providerMessageIdsFor(delivery)),
+          });
+        }
+      } catch (error) {
+        textSendError = error;
+        this.#logger.warn?.('[dsh-im:qq] final text delivery failed; continuing with result files:', error);
       }
-      if (!streamFinished) await this.#bot.sendText(target, answer);
+      const delivery = await this.#deliverArtifacts(target, messageId, artifacts, textReceipt);
+      const artifactDispatched = delivery.receipt?.artifacts?.some(
+        ({ outcome }) => outcome === 'sent' || outcome === 'unknown',
+      );
+      if (textSendError && !artifactDispatched && !delivery.failureNoticeVisible) {
+        throw textSendError;
+      }
       await this.#state.markSeen(messageId);
       this.#status.messagesReplied += 1;
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
+      return delivery.receipt;
     } catch (error) {
       if (error?.code === 'turn-stopped') {
-        if (stream) {
-          try {
-            await stream.cancel?.();
-          } catch (streamError) {
-            this.#logger.warn?.('[dsh-im:qq] unable to cancel a stopped QQ stream:', streamError);
-          }
-          try {
-            await this.#bot.sendText(target, '已停止。');
-          } catch (sendError) {
-            this.#logger.warn?.('[dsh-im:qq] unable to announce a stopped QQ turn:', sendError);
-          }
+        try {
+          stream?.cancel?.();
+        } catch (streamError) {
+          this.#logger.warn?.('[dsh-im:qq] unable to cancel a stopped QQ stream:', streamError);
+        }
+        try {
+          await this.#bot.sendText(target, t('已停止。'));
+        } catch (sendError) {
+          this.#logger.warn?.('[dsh-im:qq] unable to announce a stopped QQ turn:', sendError);
         }
         await this.#state.markSeen(messageId);
         return;
       }
-      stream?.cancel?.();
+      try {
+        stream?.cancel?.();
+      } catch (streamError) {
+        this.#logger.warn?.('[dsh-im:qq] unable to cancel a failed QQ stream:', streamError);
+      }
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);
       this.#logger.error?.('[dsh-im:qq] failed to process an inbound message:', error);
       try {
         await this.#bot.sendText(
           target,
-          imagePromptUserMessage(error) ?? '消息处理失败，请稍后重试。',
+          inboundFileUserMessage(error)
+            ?? imagePromptUserMessage(error)
+            ?? t('消息处理失败，请稍后重试。'),
         );
         await this.#state.markSeen(messageId);
       } catch (sendError) {
@@ -527,15 +822,15 @@ export class QqHarnessBridge {
 
     if (message.kind === 'group' && message.rawEventType !== 'GROUP_AT_MESSAGE_CREATE') return;
     const text = nonEmptyString(safeText(message));
-    if (!text || hasQqImageAttachments(message)) {
-      await this.#bot.sendText(message.replyTarget, '请用文字回答当前问题。');
+    if (!text || hasQqImageAttachments(message) || hasQqFileAttachments(message)) {
+      await this.#bot.sendText(message.replyTarget, t('请用文字回答当前问题。'));
       return;
     }
 
     const pending = this.#pendingInteractions.get(key);
     if (!pending || pending !== expected || pending.submitting) {
       if (claimed && (!pending || pending !== expected)) {
-        await this.#bot.sendText(message.replyTarget, INTERACTION_RESOLVED_TEXT);
+        await this.#bot.sendText(message.replyTarget, interactionResolvedText());
         return;
       }
       return this.#enqueueMessage(message, messageId, key, {
@@ -548,7 +843,7 @@ export class QqHarnessBridge {
       try {
         await this.#presentInteraction(pending);
       } catch {
-        this.#status.lastError = 'QQ 交互问题发送失败。';
+        this.#status.lastError = t('QQ 交互问题发送失败。');
         this.#logger.error?.('[dsh-im:qq] failed to retry an interaction question');
         pending.interaction.reconnect?.();
         return;
@@ -556,7 +851,7 @@ export class QqHarnessBridge {
       const presentedPending = this.#pendingInteractions.get(key);
       if (!presentedPending || presentedPending !== expected || presentedPending.submitting) {
         if (claimed && (!presentedPending || presentedPending !== expected)) {
-          await this.#bot.sendText(message.replyTarget, INTERACTION_RESOLVED_TEXT)
+          await this.#bot.sendText(message.replyTarget, interactionResolvedText())
             .catch(() => undefined);
           return;
         }
@@ -579,7 +874,7 @@ export class QqHarnessBridge {
       try {
         await this.#presentInteraction(pending);
       } catch {
-        this.#status.lastError = 'QQ 交互问题发送失败。';
+        this.#status.lastError = t('QQ 交互问题发送失败。');
         this.#logger.error?.('[dsh-im:qq] failed to send the next interaction question');
         pending.interaction.reconnect?.();
       }
@@ -601,16 +896,16 @@ export class QqHarnessBridge {
       if (this.#signal?.aborted) return;
       if (error?.code === 'interaction-not-pending') {
         this.#clearPendingInteraction(key, pending.interactionId);
-        await this.#bot.sendText(pending.target, INTERACTION_RESOLVED_TEXT).catch(() => undefined);
+        await this.#bot.sendText(pending.target, interactionResolvedText()).catch(() => undefined);
         return;
       }
       if (this.#pendingInteractions.get(key) !== pending) return;
       pending.submitting = false;
       pending.answers.pop();
       pending.index -= 1;
-      this.#status.lastError = '回答提交失败。';
+      this.#status.lastError = t('回答提交失败。');
       this.#logger.error?.('[dsh-im:qq] failed to answer a Harness interaction');
-      await this.#bot.sendText(pending.target, '回答提交失败，请重新发送当前问题的答案。')
+      await this.#bot.sendText(pending.target, t('回答提交失败，请重新发送当前问题的答案。'))
         .catch(() => undefined);
     }
   }
@@ -655,7 +950,7 @@ export class QqHarnessBridge {
       });
       await this.#bot.sendText(
         target,
-        '检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。',
+        t('检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。'),
       ).catch(() => undefined);
       return;
     }
@@ -740,7 +1035,7 @@ export class QqHarnessBridge {
     await this.#state.markSeen(messageId);
     this.#status.messagesReceived += 1;
     this.#status.lastMessageAt = new Date().toISOString();
-    await this.#bot.sendText(message.replyTarget, INTERACTION_RESOLVED_TEXT).catch(() => undefined);
+    await this.#bot.sendText(message.replyTarget, interactionResolvedText()).catch(() => undefined);
   }
 
   #takePendingInteraction(key, interactionId) {
@@ -782,7 +1077,7 @@ export class QqHarnessBridge {
     if (!this.#state.hasSeen(messageId)) {
       await this.#state.markSeen(messageId).catch(() => undefined);
     }
-    await this.#bot.sendText(message.replyTarget, '消息处理失败，请稍后重试。')
+    await this.#bot.sendText(message.replyTarget, t('消息处理失败，请稍后重试。'))
       .catch(() => undefined);
   }
 }

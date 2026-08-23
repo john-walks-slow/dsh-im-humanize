@@ -3,6 +3,7 @@ import {
   maskPlatformId,
   TokenBotConfigStore,
 } from '../shared/token-config-store.mjs';
+import { t } from '../shared/i18n.mjs';
 
 const IDENTITY_OPTIONS = Object.freeze({
   botPrefix: 'discord',
@@ -14,7 +15,7 @@ export function deriveDiscordBotIdentity(platformId) {
 }
 
 export function maskDiscordBotId(platformId) {
-  return maskPlatformId(platformId, 'Discord机器人');
+  return maskPlatformId(platformId, t('Discord机器人'));
 }
 
 export class DiscordConfigStore extends TokenBotConfigStore {

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   areJidsSameUser,
   downloadMediaMessage,
@@ -5,13 +7,20 @@ import {
 } from '@whiskeysockets/baileys';
 
 import { splitMessageText } from '../shared/editable-message-stream.mjs';
+import { t } from '../shared/i18n.mjs';
 import { ImagePromptError } from '../shared/image-prompt.mjs';
+import { trackOutboundArtifactProviderPromise } from '../shared/semantic/artifact.mjs';
 import { createWhatsappBridgeStatus, WhatsappHarnessBridge } from './whatsapp-bridge.mjs';
+import {
+  WHATSAPP_ACCESS_MODES,
+  normalizeWhatsappAccessPolicy,
+} from './config-store.mjs';
 import { createWhatsappWebSession } from './whatsapp-web-session.mjs';
 
 const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 const DEFAULT_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const IMAGE_DOWNLOAD_TIMEOUT_MS = 15_000;
+const WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS = 120_000;
 const MESSAGE_WRAPPER_KEYS = [
   'ephemeralMessage',
   'viewOnceMessage',
@@ -99,7 +108,7 @@ async function downloadWhatsappImage(message, download, {
       throw new ImagePromptError(
         'image-download-failed',
         `WhatsApp image download timed out after ${IMAGE_DOWNLOAD_TIMEOUT_MS} ms`,
-        '图片下载失败，请重新发送后再试。',
+        t('图片下载失败，请重新发送后再试。'),
       );
     }
     throw error;
@@ -118,7 +127,7 @@ async function downloadWhatsappImage(message, download, {
         throw new ImagePromptError(
           'image-too-large',
           `WhatsApp image exceeded ${maxBytes} bytes`,
-          '图片超过 5 MB，请压缩后重试。',
+          t('图片超过 5 MB，请压缩后重试。'),
         );
       }
       chunks.push(data);
@@ -129,7 +138,7 @@ async function downloadWhatsappImage(message, download, {
       throw new ImagePromptError(
         'image-download-failed',
         `WhatsApp image stream timed out after ${IMAGE_DOWNLOAD_TIMEOUT_MS} ms`,
-        '图片下载失败，请重新发送后再试。',
+        t('图片下载失败，请重新发送后再试。'),
       );
     }
     throw error;
@@ -162,6 +171,39 @@ function whatsappImageSource(message, content, download, { viewOnce = false } = 
   };
 }
 
+function whatsappFileSource(message, content, download) {
+  const media = content?.documentMessage;
+  if (!media) return null;
+  const mediaType = typeof media.mimetype === 'string' && media.mimetype
+    ? media.mimetype.toLowerCase() : undefined;
+  if (IMAGE_MEDIA_TYPES.has(mediaType)) return null;
+  return {
+    name: typeof media.fileName === 'string' && media.fileName
+      ? media.fileName : 'whatsapp-file',
+    ...(mediaType ? { mediaType } : {}),
+    size: mediaSize(media.fileLength),
+    async load({ signal } = {}) {
+      signal?.throwIfAborted();
+      const stream = await download(message, 'stream', { options: { signal } });
+      signal?.throwIfAborted();
+      return { stream };
+    },
+  };
+}
+
+export function createWhatsappMediaDownloader({
+  socket,
+  logger = console,
+  download = downloadMediaMessage,
+} = {}) {
+  if (typeof download !== 'function') throw new TypeError('WhatsApp media downloader is required');
+  if (typeof socket?.updateMediaMessage !== 'function') return download;
+  return (message, type, options) => download(message, type, options, {
+    logger,
+    reuploadRequest: (candidate) => socket.updateMediaMessage(candidate),
+  });
+}
+
 export function normalizeWhatsappMessage(message, accountJid, {
   download = downloadMediaMessage,
 } = {}) {
@@ -177,6 +219,7 @@ export function normalizeWhatsappMessage(message, accountJid, {
     && [remoteJid, alternateRemoteJid].some((jid) => jid && areJidsSameUser(jid, accountJid));
   if (fromMe && !selfChat) return null;
   const senderJid = selfChat ? accountJid : group ? message.key.participant : remoteJid;
+  const senderAlternateJid = group ? message.key.participantAlt : alternateRemoteJid;
   if (typeof senderJid !== 'string' || !senderJid) return null;
   const viewOnce = hasViewOnceWrapper(message.message);
   const content = normalizeMessageContent(message.message);
@@ -186,19 +229,38 @@ export function normalizeWhatsappMessage(message, accountJid, {
   const replyToSelf = typeof context?.participant === 'string'
     && areJidsSameUser(context.participant, accountJid);
   const image = whatsappImageSource(message, content, download, { viewOnce });
+  const file = whatsappFileSource(message, content, download);
   return {
     messageId: `${remoteJid}:${messageId}`,
     providerMessageId: messageId,
     senderId: senderJid,
+    senderAlternateId: typeof senderAlternateJid === 'string' ? senderAlternateJid : '',
     senderIsBot: false,
     kind: group ? 'group' : 'direct',
     conversationId: remoteJid,
     content: messageText(content),
     images: image ? [image] : [],
+    files: file ? [file] : [],
     addressed: !group || mentioned || replyToSelf,
     selfChat,
     replyTarget: { jid: remoteJid, quoted: message, selfChat },
   };
+}
+
+export function whatsappInboundAllowed(message, {
+  accessMode = WHATSAPP_ACCESS_MODES.selfOnly,
+  allowedNumbers = new Set(),
+} = {}) {
+  if (accessMode === WHATSAPP_ACCESS_MODES.open) return true;
+  if (message?.kind !== 'direct') return false;
+  if (message.selfChat === true) return true;
+  if (accessMode !== WHATSAPP_ACCESS_MODES.privateAllowlist
+    || !(allowedNumbers instanceof Set)) return false;
+  const senderJids = [message.senderId, message.senderAlternateId]
+    .filter((jid) => typeof jid === 'string' && jid.endsWith('@s.whatsapp.net'));
+  return [...allowedNumbers].some((number) => senderJids.some((jid) => (
+    areJidsSameUser(jid, `${number}@s.whatsapp.net`)
+  )));
 }
 
 class RecentWhatsappOutboundIds {
@@ -225,27 +287,147 @@ class RecentWhatsappOutboundIds {
   }
 }
 
-class WhatsappBotClient {
+function abortReason(signal) {
+  return signal?.reason ?? new DOMException('The operation was aborted.', 'AbortError');
+}
+
+function waitWithSignal(promise, signal) {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback(value);
+    };
+    const onAbort = () => finish(reject, abortReason(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
+function uncertainArtifactDelivery(error) {
+  if (error?.code === 'artifact-delivery-uncertain') return error;
+  const uncertain = new Error('WhatsApp could not confirm artifact delivery.');
+  uncertain.code = 'artifact-delivery-uncertain';
+  uncertain.cause = error;
+  return uncertain;
+}
+
+function whatsappArtifactError(error) {
+  if (error?.code?.startsWith?.('artifact-')) return error;
+  const status = error?.output?.statusCode
+    ?? error?.data?.statusCode
+    ?? error?.statusCode;
+  let code;
+  if (status === 401 || status === 403) code = 'artifact-permission-required';
+  else if (status === 413) code = 'artifact-too-large';
+  else if (status === 429) code = 'artifact-rate-limited';
+  else if ([400, 404, 405, 406, 410, 415, 422].includes(status)) {
+    code = 'artifact-provider-rejected';
+  }
+  if (!code) return uncertainArtifactDelivery(error);
+  const wrapped = new Error('WhatsApp rejected artifact delivery.');
+  wrapped.code = code;
+  wrapped.cause = error;
+  return wrapped;
+}
+
+export class WhatsappBotClient {
   #socket;
   #outboundIds;
+  #signal;
+  #mediaUploadTimeoutMs;
   #typingTimers = new Map();
 
-  constructor(socket, outboundIds) {
+  constructor(socket, outboundIds, {
+    signal,
+    mediaUploadTimeoutMs = WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS,
+  } = {}) {
     this.#socket = socket;
     this.#outboundIds = outboundIds;
+    this.#signal = signal;
+    this.#mediaUploadTimeoutMs = mediaUploadTimeoutMs;
   }
 
   async sendText(target, text) {
     await this.#stopTyping(target.jid);
-    let result = null;
+    const providerMessageIds = [];
     for (const [index, chunk] of splitMessageText(text, 4_000).entries()) {
-      result = await this.#socket.sendMessage(
+      const result = await this.#socket.sendMessage(
         target.jid,
         { text: chunk },
         index === 0 && target.quoted ? { quoted: target.quoted } : undefined,
       );
       this.#outboundIds.remember(result?.key?.id);
+      if (typeof result?.key?.id === 'string' && result.key.id) {
+        providerMessageIds.push(result.key.id);
+      }
     }
+    return { providerMessageIds };
+  }
+
+  async sendFile(target, file) {
+    return this.#sendArtifact(target, file, {
+      document: file.bytes,
+      mimetype: file.mediaType ?? 'application/octet-stream',
+      fileName: file.fileName,
+    }, 'file');
+  }
+
+  async sendImage(target, file) {
+    return this.#sendArtifact(target, file, {
+      image: file.bytes,
+      mimetype: file.mediaType ?? 'image/jpeg',
+    }, 'image');
+  }
+
+  async #sendArtifact(target, file, content, presentation) {
+    this.#signal?.throwIfAborted();
+    await this.#stopTyping(target.jid);
+    this.#signal?.throwIfAborted();
+    const deliverySeed = typeof file.deliveryKey === 'string' && file.deliveryKey
+      ? file.deliveryKey
+      : file.artifactId;
+    const messageIdSeed = presentation === 'image'
+      ? `${deliverySeed}:image`
+      : deliverySeed;
+    const messageId = typeof messageIdSeed === 'string' && messageIdSeed
+      ? createHash('sha256').update(messageIdSeed).digest('hex').slice(0, 20).toUpperCase()
+      : undefined;
+    const options = {
+      ...(target.quoted ? { quoted: target.quoted } : {}),
+      ...(messageId ? { messageId } : {}),
+      mediaUploadTimeoutMs: this.#mediaUploadTimeoutMs,
+    };
+    // Baileys can emit a self-chat echo before sendMessage settles. Reserve the
+    // deterministic id before dispatch so that echo cannot re-enter the bridge.
+    this.#outboundIds.remember(messageId);
+    let result;
+    try {
+      const pending = this.#socket.sendMessage(
+        target.jid,
+        content,
+        options,
+      );
+      trackOutboundArtifactProviderPromise(file, pending);
+      const timeout = AbortSignal.timeout(this.#mediaUploadTimeoutMs);
+      const waitSignal = this.#signal
+        ? AbortSignal.any([this.#signal, timeout])
+        : timeout;
+      result = await waitWithSignal(pending, waitSignal);
+    } catch (error) {
+      if (this.#signal?.aborted) throw abortReason(this.#signal);
+      throw whatsappArtifactError(error);
+    }
+    this.#signal?.throwIfAborted();
+    this.#outboundIds.remember(result?.key?.id);
     return result;
   }
 
@@ -298,6 +480,9 @@ export class WhatsappRuntime {
   #logger;
   #replyTimeoutMs;
   #connectTimeoutMs;
+  #mediaUploadTimeoutMs;
+  #accessMode;
+  #allowedPrivateNumbers;
   #createSession;
   #status = createWhatsappRuntimeStatus();
   #abortController = null;
@@ -314,6 +499,7 @@ export class WhatsappRuntime {
     logger = console,
     replyTimeoutMs = 600_000,
     connectTimeoutMs = 30_000,
+    mediaUploadTimeoutMs = WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS,
     createSession = createWhatsappWebSession,
   }) {
     if (!config || !authDir || !harness || !state || typeof createSession !== 'function') {
@@ -326,11 +512,27 @@ export class WhatsappRuntime {
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#connectTimeoutMs = connectTimeoutMs;
+    if (!Number.isSafeInteger(mediaUploadTimeoutMs) || mediaUploadTimeoutMs <= 0) {
+      throw new TypeError('mediaUploadTimeoutMs must be a positive safe integer');
+    }
+    this.#mediaUploadTimeoutMs = Math.min(
+      mediaUploadTimeoutMs,
+      WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS,
+    );
     this.#createSession = createSession;
+    this.setAccessPolicy(config);
   }
 
   get status() {
     return structuredClone(this.#status);
+  }
+
+  setAccessPolicy(value) {
+    const policy = normalizeWhatsappAccessPolicy(value);
+    this.#accessMode = policy.accessMode;
+    this.#allowedPrivateNumbers = new Set(policy.allowedNumbers);
+    this.#config = { ...this.#config, ...policy };
+    return policy;
   }
 
   async start() {
@@ -362,10 +564,23 @@ export class WhatsappRuntime {
           new Error('WhatsApp linked-device session must be scanned again'),
           { code: 'relink-required' },
         )),
-        onMessage: async (raw) => {
-          const message = normalizeWhatsappMessage(raw, this.#config.accountJid);
+        onMessage: async (raw, context) => {
+          const message = normalizeWhatsappMessage(raw, this.#config.accountJid, {
+            download: createWhatsappMediaDownloader({
+              socket: context?.socket,
+              logger: this.#logger,
+            }),
+          });
           if (!message || outboundIds.has(message.providerMessageId) || !this.#bridge) return;
           this.#status.lastCheckedAt = Date.now();
+          if (!whatsappInboundAllowed(message, {
+            accessMode: this.#accessMode,
+            allowedNumbers: this.#allowedPrivateNumbers,
+          })) {
+            this.#status.messagesRejected += 1;
+            this.#status.lastRejectedAt = new Date().toISOString();
+            return;
+          }
           await this.#bridge.accept(message);
         },
         onDisconnect: ({ error }) => {
@@ -390,7 +605,10 @@ export class WhatsappRuntime {
       if (!areJidsSameUser(identity.accountJid, this.#config.accountJid)) {
         throw new Error('WhatsApp linked account does not match the saved bot');
       }
-      const client = new WhatsappBotClient(session.socket, outboundIds);
+      const client = new WhatsappBotClient(session.socket, outboundIds, {
+        signal: controller.signal,
+        mediaUploadTimeoutMs: this.#mediaUploadTimeoutMs,
+      });
       this.#client = client;
       this.#bridge = new WhatsappHarnessBridge({
         bot: client,
@@ -423,7 +641,7 @@ export class WhatsappRuntime {
 
   async sendConnectionTest(text) {
     if (!this.#status.ready || !this.#client) {
-      const error = new Error('WhatsApp机器人尚未连接');
+      const error = new Error(t('WhatsApp机器人尚未连接'));
       error.code = 'test-target-unavailable';
       throw error;
     }

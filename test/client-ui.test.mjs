@@ -11,6 +11,7 @@ import {
   inject as clientInject,
 } from '../plugin-src/client/index.js';
 import { CredentialBindingPanel } from '../plugin-src/client/credential-binding.js';
+import { ChannelListHeading } from '../plugin-src/client/channel-card-meta.js';
 import { DINGTALK_ENDPOINTS } from '../plugin-src/client/channels/dingtalk/api.js';
 import {
   AccountCard as DingtalkAccountCard,
@@ -235,11 +236,11 @@ test('Feishu bot cards place the application identifier under the bot name', asy
   assert.equal((markup.match(/dim-cardAction(?: |")/g) ?? []).length, 3);
   assert.doesNotMatch(markup, /连接状态：|bxf-divider/);
   assert.doesNotMatch(markup, /custom-bot-avatar/);
-  assert.equal((markup.match(/class="bxf-metric dim-botMetric"/g) ?? []).length, 2);
-  assert.match(markup, />消息通道<[^]*>最近检查</);
+  assert.match(markup, /class="dim-botHealthGroup"[^]*class="dim-lastChecked"><span>最近检查<\/span>/);
+  assert.doesNotMatch(markup, /消息通道|dim-botMetric/);
   assert.match(markup, /class="dim-presetSelect"/);
   assert.doesNotMatch(markup, />应用标识<|>飞书机器人</);
-  assert.match(styles, /\.bxf-statusGrid \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.doesNotMatch(styles, /\.bxf-statusGrid|\.bxf-metric/);
 });
 
 test('Feishu keeps its heading controls on one row without a plus icon', async () => {
@@ -369,7 +370,22 @@ test('bot list headings omit the total already shown by the online badge', async
 
   for (const source of sources) {
     assert.doesNotMatch(source, /length} 个/);
+    assert.match(source, /ChannelListHeading/);
   }
+});
+
+test('channel connection details live in an accessible heading tooltip', async () => {
+  const styles = await readFile(STYLES_URL, 'utf8');
+  const markup = renderToStaticMarkup(React.createElement(ChannelListHeading, {
+    className: 'dxw-listHeading',
+    title: '已接入的微信账号',
+    connectionLabel: 'iLink 长轮询',
+  }));
+
+  assert.match(markup, /<h3>已接入的微信账号<\/h3>/);
+  assert.match(markup, /aria-label="查看消息通道说明"/);
+  assert.match(markup, /role="tooltip"><span>消息通道<\/span><strong>iLink 长轮询<\/strong>/);
+  assert.match(styles, /\.dim-panel \.dim-channelHelp:hover \.dim-channelTooltip, \.dim-panel \.dim-channelHelp:focus-within \.dim-channelTooltip \{[^}]*opacity: 1;[^}]*visibility: visible;/);
 });
 
 test('all channel settings states use the DingTalk page treatment', async () => {
@@ -398,7 +414,6 @@ test('all channel settings states use the DingTalk page treatment', async () => 
       'dim-emptyView',
       'dim-qrLayout',
       'dim-inlineError',
-      'dim-listHeading',
       'dim-confirm',
     ]) {
       assert.match(source, new RegExp(className));
@@ -449,7 +464,8 @@ test('bot cards reuse the same channel brand logos as the channel rail', () => {
   assert.match(accountMarkup, /class="dim-presetSelect"/);
   assert.doesNotMatch(accountMarkup, /dim-cardSummary|微信消息长轮询运行正常/);
   assert.equal((accountMarkup.match(/dim-cardAction(?: |")/g) ?? []).length, 2);
-  assert.equal((accountMarkup.match(/class="dxw-metric dim-botMetric"/g) ?? []).length, 2);
+  assert.match(accountMarkup, /class="dim-botHealthGroup"[^]*class="dim-lastChecked"><span>最近检查<\/span>/);
+  assert.doesNotMatch(accountMarkup, /消息通道|dim-botMetric/);
   assert.doesNotMatch(accountMarkup, /收到 \/ 回复/);
 });
 
@@ -464,7 +480,8 @@ test('Enterprise WeChat cards reuse the rail logo and compact action treatment',
   }));
   assert.match(markup, /data-im-channel-logo="wecom"/);
   assert.equal((markup.match(/dim-cardAction(?: |")/g) ?? []).length, 2);
-  assert.equal((markup.match(/class="ddt-metric dim-botMetric"/g) ?? []).length, 2);
+  assert.match(markup, /class="dim-lastChecked"><span>最近检查<\/span>/);
+  assert.doesNotMatch(markup, /消息通道|dim-botMetric/);
 });
 
 test('DingTalk bot cards omit the redundant received and replied metric', () => {
@@ -485,11 +502,11 @@ test('DingTalk bot cards omit the redundant received and replied metric', () => 
 
   assert.match(markup, /class="ddt-card dim-botCard"/);
   assert.match(markup, /class="ddt-health dim-botHealth"/);
-  assert.equal((markup.match(/class="ddt-metric dim-botMetric"/g) ?? []).length, 2);
+  assert.match(markup, /class="dim-lastChecked"><span>最近检查<\/span>/);
   assert.match(markup, /class="ddt-accountFooter dim-cardFooter"/);
   assert.doesNotMatch(markup, /dim-cardSummary|Stream 长连接运行正常/);
   assert.equal((markup.match(/dim-cardAction(?: |")/g) ?? []).length, 2);
-  assert.match(markup, />消息通道<[^]*>最近检查</);
+  assert.doesNotMatch(markup, /消息通道|dim-botMetric/);
   assert.doesNotMatch(markup, /收到 \/ 回复/);
 });
 
@@ -562,10 +579,10 @@ test('all channel bot cards use the DingTalk card treatment', async () => {
   assert.match(styles, /\.dim-panel \.dim-botCardTop \{[^}]*align-items: flex-start;[^}]*gap: 12px;/);
   assert.match(styles, /\.dim-panel \.dim-botAvatar \{[^}]*width: 38px;[^}]*height: 38px;[^}]*border-radius: 11px;/);
   assert.match(styles, /\.dim-panel \.dim-botName h3 \{[^}]*font-size: 15px;/);
+  assert.match(styles, /\.dim-panel \.dim-botHealthGroup \{[^}]*display: grid;[^}]*justify-items: end;[^}]*gap: 5px;/);
   assert.match(styles, /\.dim-panel \.dim-botCard \.dim-botHealth \{[^}]*background: transparent;[^}]*font-size: 12px;[^}]*font-weight: 400;/);
-  assert.match(styles, /\.dim-panel \.dim-botMetrics \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);[^}]*gap: 8px;[^}]*margin: 6px 0;/);
-  assert.match(styles, /\.dim-panel \.dim-botMetric \{[^}]*padding: 6px 8px;[^}]*border: 0;[^}]*border-radius: 9px;/);
-  assert.match(styles, /\.dim-panel \.dim-botMetric dd \{[^}]*margin: 3px 0 0;[^}]*font-size: 12px;[^}]*font-weight: 400;/);
+  assert.match(styles, /\.dim-panel \.dim-lastChecked \{[^}]*display: inline-flex;[^}]*font-size: 11px;[^}]*white-space: nowrap;/);
+  assert.doesNotMatch(styles, /\.dim-panel \.dim-botMetrics|\.dim-panel \.dim-botMetric/);
 });
 
 test('bot cards keep the full workspace path on its own single line', async () => {
@@ -779,7 +796,7 @@ test('all nine channel settings and connected cards render English copy', () => 
     ];
     const cardMarkup = cards.map(renderToStaticMarkup).join('\n');
     assert.match(cardMarkup, /Connected/);
-    assert.match(cardMarkup, /Message channel/);
+    assert.doesNotMatch(cardMarkup, /Message channel/);
     assert.match(cardMarkup, /Last checked/);
     assert.match(cardMarkup, /Check connection/);
     assert.match(cardMarkup, /Remove connection/);

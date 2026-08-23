@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { t } from '../shared/i18n.mjs';
 import { harnessApprovalText } from '../shared/harness-approval.mjs';
 import {
   harnessAnswerForQuestion,
@@ -21,23 +22,23 @@ function clean(value, max = 8_000) {
 
 function safeFailure(error) {
   if (error?.code === 'office-job-alias-invalid') return error.message;
-  if (error?.code === 'turn-stopped') return '本机 Harness 已停止这次执行。';
-  if (error?.code === 'office-job-conflict') return 'Office Job 已被领取、取消或结束。';
-  return '本机 Harness 未能完成任务；请检查 Harness 会话后重试。';
+  if (error?.code === 'turn-stopped') return t('本机 Harness 已停止这次执行。');
+  if (error?.code === 'office-job-conflict') return t('Office Job 已被领取、取消或结束。');
+  return t('本机 Harness 未能完成任务；请检查 Harness 会话后重试。');
 }
 
 function renderPrompt(job, preset) {
   return [
     '# AI Office Handoff',
     '',
-    '你正在本机 DeepSeek Harness 中继续一个来自 AI Office 的任务。',
-    '只在当前 Workspace 内行动。完成后必须返回：结果摘要、改动文件、验证证据、未解决风险。',
+    t('你正在本机 DeepSeek Harness 中继续一个来自 AI Office 的任务。'),
+    t('只在当前 Workspace 内行动。完成后必须返回：结果摘要、改动文件、验证证据、未解决风险。'),
     '',
-    '## 本机 Instruction Preset',
+    t('## 本机 Instruction Preset'),
     preset,
     '',
-    ...(clean(job.instruction) ? ['## 本轮补充指令', clean(job.instruction), ''] : []),
-    '## Office 时间线',
+    ...(clean(job.instruction) ? [t('## 本轮补充指令'), clean(job.instruction), ''] : []),
+    t('## Office 时间线'),
     clean(job.markdown, 200_000),
   ].join('\n');
 }
@@ -54,7 +55,7 @@ function approvalRequest(interaction) {
     return {
       id,
       kind: 'approval',
-      title: `批准 ${clean(interaction.payload?.toolName, 120) || 'Harness 工具'}`,
+      title: t('批准 {tool}', { tool: clean(interaction.payload?.toolName, 120) || t('Harness 工具') }),
       prompt,
       toolName: clean(interaction.payload?.toolName, 120),
     };
@@ -66,7 +67,7 @@ function approvalRequest(interaction) {
   return {
     id,
     kind: 'question',
-    title: questions.length > 1 ? `Harness 需要 ${questions.length} 项补充信息` : clean(questions[0].header || questions[0].question, 160),
+    title: questions.length > 1 ? t('Harness 需要 {count} 项补充信息', { count: questions.length }) : clean(questions[0].header || questions[0].question, 160),
     prompt: questions.map((question, index) => harnessQuestionText(question, index, questions.length)).join('\n\n---\n\n'),
     questions,
   };
@@ -216,14 +217,14 @@ export class OfficeJobExecutor {
       const workspace = this.#config.workspaces[job.workspaceAlias];
       const preset = this.#config.instructionPresets[job.instructionPreset];
       if (!workspace || !preset) {
-        const error = new Error('Office Job 引用了本机未配置的 Workspace/Preset alias。');
+        const error = new Error(t('Office Job 引用了本机未配置的 Workspace/Preset alias。'));
         error.code = 'office-job-alias-invalid';
         throw error;
       }
       entry.harness = this.#createHarness({ workspace });
-      await this.#progress(jobId, entry, { kind: 'status', message: `已领取 Job，准备 Workspace alias：${job.workspaceAlias}` }, true);
+      await this.#progress(jobId, entry, { kind: 'status', message: t('已领取 Job，准备 Workspace alias：{alias}', { alias: job.workspaceAlias }) }, true);
       entry.sessionId = await entry.harness.createSession({ signal, workspace });
-      await this.#progress(jobId, entry, { kind: 'status', message: 'Harness Session 已创建。', sessionId: entry.sessionId }, true);
+      await this.#progress(jobId, entry, { kind: 'status', message: t('Harness Session 已创建。'), sessionId: entry.sessionId }, true);
       const answer = await entry.harness.ask(entry.sessionId, renderPrompt(job, preset), {
         timeoutMs: 30 * 60_000,
         signal,
@@ -300,7 +301,7 @@ export class OfficeJobExecutor {
   }
 
   async #handleUpdate(jobId, entry, update) {
-    const message = update?.type === 'tool' ? `正在使用 ${clean(update.name, 160) || 'Harness 工具'}…`
+    const message = update?.type === 'tool' ? t('正在使用 {tool}…', { tool: clean(update.name, 160) || t('Harness 工具') })
       : clean(update?.text, 4_000);
     if (!message) return;
     const key = `${update.type}:${message}`;

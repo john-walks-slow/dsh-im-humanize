@@ -5,6 +5,7 @@ import {
   createDingtalkApi,
   DINGTALK_AI_CARD_TEMPLATE_ID,
   DINGTALK_API_BASE_URL,
+  DingtalkApiError,
   normalizeDingtalkCardMarkdown,
   normalizeDingtalkSessionWebhook,
   splitDingtalkText,
@@ -113,6 +114,301 @@ test('session replies use the fixed token endpoint, reject redirects, and cache 
   });
 });
 
+test('DingTalk uploads and sends a native file message to the exact robot conversation', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url: url.toString(), options });
+    if (url.pathname.endsWith('/oauth2/accessToken')) {
+      return jsonResponse({ accessToken: 'file-access-token', expireIn: 7_200 });
+    }
+    if (url.pathname.endsWith('/media/upload')) {
+      return jsonResponse({ errcode: 0, media_id: '@media-one', type: 'file' });
+    }
+    return jsonResponse({ processQueryKey: 'query-one' });
+  };
+  const api = createDingtalkApi({ fetchImpl });
+  const response = await api.sendFile({
+    clientId: 'ding-client',
+    clientSecret: 'host-only-secret',
+    target: {
+      type: 'group',
+      robotCode: 'robot-code',
+      openConversationId: 'cid-one',
+    },
+    file: {
+      fileName: 'result.pdf',
+      mediaType: 'application/pdf',
+      bytes: Buffer.from('dingtalk-result'),
+    },
+  });
+
+  assert.equal(response.processQueryKey, 'query-one');
+  const uploadUrl = new URL(calls[1].url);
+  assert.equal(uploadUrl.origin, 'https://oapi.dingtalk.com');
+  assert.equal(uploadUrl.pathname, '/media/upload');
+  assert.equal(uploadUrl.searchParams.get('access_token'), 'file-access-token');
+  assert.equal(uploadUrl.searchParams.get('type'), 'file');
+  assert.ok(calls[1].options.body instanceof FormData);
+  const media = calls[1].options.body.get('media');
+  assert.equal(media.name, 'result.pdf');
+  assert.equal(media.type, 'application/pdf');
+  assert.equal(Buffer.from(await media.arrayBuffer()).toString(), 'dingtalk-result');
+  assert.equal(calls[1].options.headers, undefined);
+
+  assert.equal(
+    calls[2].url,
+    `${DINGTALK_API_BASE_URL}v1.0/robot/groupMessages/send`,
+  );
+  assert.equal(calls[2].options.headers['x-acs-dingtalk-access-token'], 'file-access-token');
+  const sent = JSON.parse(calls[2].options.body);
+  assert.deepEqual(sent, {
+    robotCode: 'robot-code',
+    msgKey: 'sampleFile',
+    msgParam: JSON.stringify({
+      mediaId: '@media-one',
+      fileName: 'result.pdf',
+      fileType: 'pdf',
+    }),
+    openConversationId: 'cid-one',
+  });
+});
+
+test('DingTalk uploads and sends a native image message to the exact robot user', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url: url.toString(), options });
+    if (url.pathname.endsWith('/oauth2/accessToken')) {
+      return jsonResponse({ accessToken: 'image-access-token', expireIn: 7_200 });
+    }
+    if (url.pathname.endsWith('/media/upload')) {
+      return jsonResponse({ errcode: 0, media_id: '@image-one', type: 'image' });
+    }
+    return jsonResponse({ processQueryKey: 'image-query-one' });
+  };
+  const api = createDingtalkApi({ fetchImpl });
+  const response = await api.sendImage({
+    clientId: 'ding-client',
+    clientSecret: 'host-only-secret',
+    target: {
+      type: 'user',
+      robotCode: 'robot-code',
+      userId: 'user-one',
+    },
+    file: {
+      fileName: 'result.png',
+      mediaType: 'image/png',
+      bytes: Buffer.from('dingtalk-image'),
+    },
+  });
+
+  assert.equal(response.processQueryKey, 'image-query-one');
+  const uploadUrl = new URL(calls[1].url);
+  assert.equal(uploadUrl.origin, 'https://oapi.dingtalk.com');
+  assert.equal(uploadUrl.pathname, '/media/upload');
+  assert.equal(uploadUrl.searchParams.get('access_token'), 'image-access-token');
+  assert.equal(uploadUrl.searchParams.get('type'), 'image');
+  const media = calls[1].options.body.get('media');
+  assert.equal(media.name, 'result.png');
+  assert.equal(media.type, 'image/png');
+  assert.equal(Buffer.from(await media.arrayBuffer()).toString(), 'dingtalk-image');
+
+  assert.equal(
+    calls[2].url,
+    `${DINGTALK_API_BASE_URL}v1.0/robot/oToMessages/batchSend`,
+  );
+  assert.equal(calls[2].options.headers['x-acs-dingtalk-access-token'], 'image-access-token');
+  assert.deepEqual(JSON.parse(calls[2].options.body), {
+    robotCode: 'robot-code',
+    msgKey: 'sampleImageMsg',
+    msgParam: JSON.stringify({ photoURL: '@image-one' }),
+    userIds: ['user-one'],
+  });
+});
+
+function dingtalkFileRequest(overrides = {}) {
+  return {
+    clientId: 'ding-client',
+    clientSecret: 'host-only-secret',
+    target: {
+      type: 'group',
+      robotCode: 'robot-code',
+      openConversationId: 'cid-error-case',
+    },
+    file: {
+      fileName: 'result.pdf',
+      mediaType: 'application/pdf',
+      bytes: Buffer.from('dingtalk-error-case'),
+    },
+    ...overrides,
+  };
+}
+
+function dingtalkFileFetch(finalResponse) {
+  return async (url, options) => {
+    if (url.pathname.endsWith('/oauth2/accessToken')) {
+      return jsonResponse({ accessToken: 'file-access-token', expireIn: 7_200 });
+    }
+    if (url.pathname.endsWith('/media/upload')) {
+      return jsonResponse({ errcode: 0, media_id: '@media-error-case', type: 'file' });
+    }
+    return finalResponse(url, options);
+  };
+}
+
+test('DingTalk marks every ambiguous robot file send result as uncertain', async (t) => {
+  const cases = [
+    {
+      name: 'network failure',
+      finalResponse: async () => { throw new TypeError('private socket detail'); },
+    },
+    {
+      name: 'timeout',
+      finalResponse: async () => {
+        throw new DingtalkApiError('timeout', 'private timeout detail');
+      },
+    },
+    {
+      name: 'invalid JSON',
+      finalResponse: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => { throw new SyntaxError('private invalid JSON detail'); },
+      }),
+    },
+    {
+      name: 'HTTP 5xx',
+      finalResponse: async () => jsonResponse({ code: 'InternalError' }, { status: 503 }),
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const api = createDingtalkApi({
+        fetchImpl: dingtalkFileFetch(scenario.finalResponse),
+      });
+      await assert.rejects(
+        api.sendFile(dingtalkFileRequest()),
+        (error) => error.code === 'artifact-delivery-uncertain'
+          && !error.message.includes('private'),
+      );
+    });
+  }
+});
+
+test('DingTalk keeps ambiguous native image sends in the uncertain bucket', async () => {
+  const api = createDingtalkApi({
+    fetchImpl: dingtalkFileFetch(async () => { throw new TypeError('private socket detail'); }),
+  });
+
+  await assert.rejects(
+    api.sendImage(dingtalkFileRequest({
+      file: {
+        fileName: 'result.png',
+        mediaType: 'image/png',
+        bytes: Buffer.from('dingtalk-image-error'),
+      },
+    })),
+    (error) => error.code === 'artifact-delivery-uncertain'
+      && !error.message.includes('private'),
+  );
+});
+
+test('DingTalk maps definitive robot file rejection statuses without treating them as uncertain', async (t) => {
+  const cases = [
+    { name: 'permission', status: 403, code: 'artifact-permission-required' },
+    { name: 'too large', status: 413, code: 'artifact-too-large' },
+    { name: 'rate limited', status: 429, code: 'artifact-rate-limited' },
+    { name: 'provider rejected', status: 400, code: 'artifact-provider-rejected' },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const api = createDingtalkApi({
+        fetchImpl: dingtalkFileFetch(async () => jsonResponse(
+          { code: scenario.status },
+          { status: scenario.status },
+        )),
+      });
+      await assert.rejects(
+        api.sendFile(dingtalkFileRequest()),
+        (error) => error.code === scenario.code,
+      );
+    });
+  }
+
+  const permissionApi = createDingtalkApi({
+    fetchImpl: dingtalkFileFetch(async () => jsonResponse({
+      code: 'Forbidden.AccessDenied',
+    })),
+  });
+  await assert.rejects(
+    permissionApi.sendFile(dingtalkFileRequest()),
+    (error) => error.code === 'artifact-permission-required'
+      && error.providerCode === 'Forbidden.AccessDenied',
+  );
+
+  const rejectedApi = createDingtalkApi({
+    fetchImpl: dingtalkFileFetch(async () => jsonResponse({ code: 'InvalidParameter' })),
+  });
+  await assert.rejects(
+    rejectedApi.sendFile(dingtalkFileRequest()),
+    (error) => error.code === 'artifact-provider-rejected'
+      && error.providerCode === 'InvalidParameter',
+  );
+});
+
+test('DingTalk preserves caller abort and never marks a pre-send upload failure uncertain', async () => {
+  let uploadCalls = 0;
+  const uploadApi = createDingtalkApi({
+    fetchImpl: async (url) => {
+      uploadCalls += 1;
+      if (url.pathname.endsWith('/oauth2/accessToken')) {
+        return jsonResponse({ accessToken: 'file-access-token', expireIn: 7_200 });
+      }
+      throw new TypeError('private upload transport failure');
+    },
+  });
+  await assert.rejects(
+    uploadApi.sendFile(dingtalkFileRequest()),
+    (error) => error.code === 'artifact-provider-failed'
+      && error.code !== 'artifact-delivery-uncertain',
+  );
+  assert.equal(uploadCalls, 2);
+
+  const controller = new AbortController();
+  const reason = new Error('caller stopped the turn');
+  const abortApi = createDingtalkApi({
+    fetchImpl: dingtalkFileFetch(async () => {
+      controller.abort(reason);
+      throw new DOMException('Aborted', 'AbortError');
+    }),
+  });
+  await assert.rejects(
+    abortApi.sendFile(dingtalkFileRequest({ signal: controller.signal })),
+    (error) => error === reason && error.code !== 'artifact-delivery-uncertain',
+  );
+});
+
+test('DingTalk lets the provider decide whether a robot file type is supported', async () => {
+  let providerCalls = 0;
+  const api = createDingtalkApi({
+    fetchImpl: dingtalkFileFetch(async () => {
+      providerCalls += 1;
+      return jsonResponse({ code: 400 }, { status: 400 });
+    }),
+  });
+  await assert.rejects(
+    api.sendFile({
+      clientId: 'ding-client',
+      clientSecret: 'host-only-secret',
+      target: { type: 'user', robotCode: 'robot-code', userId: 'user-one' },
+      file: { fileName: 'result.html', bytes: Buffer.from('<h1>result</h1>') },
+    }),
+    (error) => error.code === 'artifact-provider-rejected',
+  );
+  assert.equal(providerCalls, 1);
+});
+
 test('DingTalk image downloads exchange downloadCode with the callback robotCode and do not forward auth', async () => {
   const imageBytes = Buffer.from([
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -154,6 +450,38 @@ test('DingTalk image downloads exchange downloadCode with the callback robotCode
   assert.equal(calls[2].options.method, 'GET');
   assert.equal(calls[2].options.redirect, 'manual');
   assert.equal(calls[2].options.headers?.['x-acs-dingtalk-access-token'], undefined);
+});
+
+test('DingTalk downloads ordinary files through the native downloadCode exchange without image limits', async () => {
+  const fileBytes = Buffer.from('ordinary-dingtalk-file');
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    const href = url.toString();
+    calls.push({ url: href, options });
+    if (href === `${DINGTALK_API_BASE_URL}v1.0/oauth2/accessToken`) {
+      return jsonResponse({ accessToken: 'file-access-token', expireIn: 7_200 });
+    }
+    if (href === `${DINGTALK_API_BASE_URL}v1.0/robot/messageFiles/download`) {
+      return jsonResponse({ downloadUrl: 'https://download.example.test/native-file' });
+    }
+    return new Response(fileBytes);
+  };
+  const api = createDingtalkApi({ fetchImpl });
+
+  assert.deepEqual(await api.downloadFile({
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    robotCode: 'robot-from-callback',
+    downloadCode: 'ordinary-file-code',
+  }), fileBytes);
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    downloadCode: 'ordinary-file-code',
+    robotCode: 'robot-from-callback',
+  });
+  assert.equal(calls[1].options.headers['x-acs-dingtalk-access-token'], 'file-access-token');
+  assert.equal(calls[2].options.method, 'GET');
+  assert.equal(calls[2].options.redirect, 'follow');
+  assert.equal(calls[2].options.headers, undefined);
 });
 
 test('DingTalk upgrades its HTTP temporary image URL to HTTPS without changing the signed request', async () => {

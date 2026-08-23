@@ -9,6 +9,7 @@ import {
   EMPTY_AGENT_PRESET_CATALOG,
 } from '../../agent-preset.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
+import { BotStatusMeta, ChannelListHeading } from '../../channel-card-meta.js';
 import {
   DINGTALK_ENDPOINTS,
   DINGTALK_RPC_CHANNEL,
@@ -235,13 +236,14 @@ export function AccountCard({
           h('div', { className: 'dim-botName' },
             h('h3', { title: account.bot.name }, account.bot.name),
             h('p', { title: account.bot.clientIdMasked }, account.bot.clientIdMasked))),
-        h('div', { className: 'ddt-health dim-botHealth' },
-          h('span', { className: 'ddt-dot dim-healthDot', 'data-tone': tone }), h('span', null, stateLabel))),
-      h('dl', { className: 'ddt-metrics dim-botMetrics' },
-        h('div', { className: 'ddt-metric dim-botMetric' }, h('dt', null, '消息通道'),
-          h('dd', null, account.connected ? 'Stream 长连接' : '离线')),
-        h('div', { className: 'ddt-metric dim-botMetric' }, h('dt', null, '最近检查'),
-          h('dd', null, checkedTime(account.health.lastCheckedAt)))),
+        h(BotStatusMeta, {
+          className: 'ddt-health',
+          dotClassName: 'ddt-dot',
+          tone,
+          stateLabel,
+          lastCheckedAt: account.health.lastCheckedAt,
+          formatCheckedTime: checkedTime,
+        })),
       h(WorkspaceEditor, {
         workspace: account.workspace,
         disabled: Boolean(busy),
@@ -274,8 +276,11 @@ export function AccountCard({
 
 function AccountList(props) {
   return h('section', { className: 'dim-listSection' },
-    h('div', { className: 'ddt-listHeading dim-listHeading' },
-      h('h3', null, '已接入的钉钉机器人')),
+    h(ChannelListHeading, {
+      className: 'ddt-listHeading',
+      title: '已接入的钉钉机器人',
+      connectionLabel: 'Stream 长连接',
+    }),
     h('ul', { className: 'ddt-list dim-botList' }, props.bots.map((account) => h('li', { key: account.botId },
       h(AccountCard, {
         account,

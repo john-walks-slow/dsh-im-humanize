@@ -7,6 +7,7 @@ import {
   connectionTestTargetUnavailable,
   sendRememberedConnectionTest,
 } from '../shared/connection-test.mjs';
+import { t } from '../shared/i18n.mjs';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const CALLBACK_PROBE_SUCCESS_NOTICE = '✅ 修复完成：已实测收到 card.action.trigger，菜单按钮现在可用。';
@@ -206,7 +207,7 @@ export class FeishuRuntime {
       this.#client = new this.#lark.Client(larkConfig);
       const channel = new VerifiedFeishuChannel({
         client: this.#client,
-        initialText: '已连接 DeepSeek Harness，正在思考…',
+        initialText: t('已连接 DeepSeek Harness，正在思考…'),
       });
       this.#bridge = new FeishuHarnessBridge({
         client: this.#client,
@@ -340,7 +341,7 @@ export class FeishuRuntime {
     } catch {
       void this.#sendCardActionProbeNotice(
         operatorOpenId,
-        CALLBACK_PROBE_SEND_FAILURE_NOTICE,
+        t(CALLBACK_PROBE_SEND_FAILURE_NOTICE),
         'failure',
       );
       throw probeError('card_action_probe_send_failed', '无法发送飞书卡片回调测试');
@@ -348,7 +349,7 @@ export class FeishuRuntime {
     if (response?.code && response.code !== 0) {
       void this.#sendCardActionProbeNotice(
         operatorOpenId,
-        CALLBACK_PROBE_SEND_FAILURE_NOTICE,
+        t(CALLBACK_PROBE_SEND_FAILURE_NOTICE),
         'failure',
       );
       throw probeError('card_action_probe_send_failed', '无法发送飞书卡片回调测试');
@@ -358,7 +359,7 @@ export class FeishuRuntime {
     if (!messageId) {
       void this.#sendCardActionProbeNotice(
         operatorOpenId,
-        CALLBACK_PROBE_SEND_FAILURE_NOTICE,
+        t(CALLBACK_PROBE_SEND_FAILURE_NOTICE),
         'failure',
       );
       throw probeError('card_action_probe_send_failed', '飞书未返回测试卡片的消息 ID');
@@ -371,7 +372,7 @@ export class FeishuRuntime {
         this.#pendingCardActionProbes.delete(messageId);
         void this.#sendCardActionProbeNotice(
           operatorOpenId,
-          CALLBACK_PROBE_TIMEOUT_NOTICE,
+          t(CALLBACK_PROBE_TIMEOUT_NOTICE),
           'timeout',
         );
         reject(probeError(
@@ -413,7 +414,7 @@ export class FeishuRuntime {
     // the callback proof itself.
     void this.#sendCardActionProbeNotice(
       operatorOpenId,
-      CALLBACK_PROBE_SUCCESS_NOTICE,
+      t(CALLBACK_PROBE_SUCCESS_NOTICE),
       'success',
     ).finally(() => {
       probe.resolve({
@@ -482,10 +483,10 @@ export class FeishuRuntime {
     return sendRememberedConnectionTest({
       state: this.#state,
       text,
-      channelLabel: '飞书机器人',
+      channelLabel: t('飞书机器人'),
       send: async (target, content) => {
         const chatId = typeof target?.chatId === 'string' ? target.chatId.trim() : '';
-        if (!chatId) throw connectionTestTargetUnavailable('飞书机器人');
+        if (!chatId) throw connectionTestTargetUnavailable(t('飞书机器人'));
         await send('chat_id', chatId, content);
       },
     });
@@ -500,7 +501,7 @@ export class FeishuRuntime {
       clearTimeout(probe.timeout);
       void this.#sendCardActionProbeNotice(
         probe.expectedOperatorOpenId,
-        CALLBACK_PROBE_ABORT_NOTICE,
+        t(CALLBACK_PROBE_ABORT_NOTICE),
         'abort',
       );
       probe.reject(probeError('abort', '飞书运行时已停止'));

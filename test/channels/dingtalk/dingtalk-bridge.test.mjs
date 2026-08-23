@@ -1,11 +1,21 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import {
   createDingtalkBridgeStatus,
+  dingtalkInboundMessage,
   DingtalkHarnessBridge,
 } from '../../../src/channels/dingtalk/dingtalk-bridge.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
+import {
+  OUTBOUND_ARTIFACT_TOOL,
+  OutboundArtifactRegistry,
+  createOutboundArtifactTool,
+  releaseOutboundArtifact,
+} from '../../../src/channels/shared/semantic/artifact.mjs';
 
 function deferred() {
   let resolve;
@@ -82,6 +92,172 @@ const PNG_BYTES = Buffer.from([
   0x01, 0x02, 0x03,
 ]);
 
+async function committedArtifact(t, fileName, content) {
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-im-dingtalk-artifact-'));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const registry = new OutboundArtifactRegistry({ uuid: () => 'dingtalk-artifact-one' });
+  t.after(() => registry.clear());
+  const fileContent = fileName.endsWith('.pdf') ? `%PDF-1.7\n${content}` : content;
+  const agent = {
+    session: {
+      header: { id: 'artifact-session', cwd: workspace },
+      events: [
+        { type: 'turn/start', data: { turn: 1 } },
+        { type: 'user/message', data: { turn: 1, source: { rpcId: 'artifact-rpc' } } },
+      ],
+    },
+  };
+  await writeFile(join(workspace, fileName), fileContent);
+  const tool = createOutboundArtifactTool({ registry });
+  const exec = {
+    name: OUTBOUND_ARTIFACT_TOOL,
+    callId: 'dingtalk-artifact-call',
+    rootCallId: 'dingtalk-artifact-call',
+    token: Symbol('dingtalk-artifact-call'),
+    agent,
+  };
+  await tool.definition.execute({ path: fileName }, exec);
+  tool.onResult(exec, { isError: false });
+  const artifact = registry.take('artifact-session', 1)[0];
+  t.after(() => releaseOutboundArtifact(artifact));
+  return artifact;
+}
+
+test('DingTalk normalizes a native file callback into one lazy ordinary file', async () => {
+  const calls = [];
+  const bytes = Buffer.from('dingtalk-native-file');
+  const inbound = dingtalkInboundMessage({
+    msgtype: 'file',
+    robotCode: 'robot-from-callback',
+    content: JSON.stringify({
+      spaceId: 'space-one',
+      fileId: 'file-one',
+      fileName: '钉钉报告.zip',
+      downloadCode: 'opaque-file-code',
+    }),
+  }, {
+    api: {
+      downloadFile: async (request) => {
+        calls.push(request);
+        return bytes;
+      },
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+  });
+
+  assert.equal(inbound.content, '');
+  assert.deepEqual(inbound.images, []);
+  assert.equal(inbound.files.length, 1);
+  assert.equal(inbound.files[0].name, '钉钉报告.zip');
+  assert.equal(calls.length, 0, 'file download stays lazy');
+  assert.deepEqual(await inbound.files[0].load({}), bytes);
+  assert.deepEqual(calls, [{
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    robotCode: 'robot-from-callback',
+    downloadCode: 'opaque-file-code',
+    signal: undefined,
+  }]);
+});
+
+test('DingTalk bridge hands a native file source to the current Harness turn', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:staff-approved', 'session-native-file');
+  const bytes = Buffer.from('dingtalk-bridge-file');
+  const downloads = [];
+  const prompts = [];
+  const sent = [];
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      downloadFile: async (request) => {
+        downloads.push(request);
+        return bytes;
+      },
+      sendText: async (request) => sent.push(request.text),
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, prompt, options) => {
+        prompts.push({
+          sessionId,
+          prompt,
+          name: options.files[0].name,
+          bytes: await options.files[0].load({ signal: options.signal }),
+        });
+        return '文件已收到';
+      },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('dingtalk-native-file', '', {
+    msgtype: 'file',
+    text: undefined,
+    robotCode: 'robot-from-callback',
+    content: {
+      fileName: '钉钉报告.pdf',
+      downloadCode: 'native-file-code',
+    },
+  }));
+
+  assert.equal(downloads.length, 1);
+  assert.equal(downloads[0].downloadCode, 'native-file-code');
+  assert.deepEqual(prompts, [{
+    sessionId: 'session-native-file',
+    prompt: '',
+    name: '钉钉报告.pdf',
+    bytes,
+  }]);
+  assert.equal(sent.at(-1), '文件已收到');
+});
+
+test('DingTalk starts a native-file download before an earlier queued turn finishes', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:staff-approved', 'session-prefetch-file');
+  const firstTurn = deferred();
+  const bytes = Buffer.from('dingtalk-prefetched-file');
+  let asks = 0;
+  let downloads = 0;
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      downloadFile: async () => {
+        downloads += 1;
+        return bytes;
+      },
+      sendText: async () => {},
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _prompt, options) => {
+        asks += 1;
+        if (asks === 1) return firstTurn.promise;
+        assert.deepEqual(await options.files[0].load({ signal: options.signal }), bytes);
+        return '第二条完成';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const first = bridge.accept(message('dingtalk-prefetch-first', '先等待'));
+  await eventually(() => asks === 1);
+  const second = bridge.accept(message('dingtalk-prefetch-second', '', {
+    msgtype: 'file',
+    text: undefined,
+    robotCode: 'robot-from-callback',
+    content: { fileName: 'queued.bin', downloadCode: 'queued-file-code' },
+  }));
+
+  await eventually(() => downloads === 1, 'queued DingTalk file did not start downloading');
+  assert.equal(asks, 1, 'the second Harness turn must remain queued');
+  firstTurn.resolve('第一条完成');
+  await Promise.all([first, second]);
+});
+
 test('DingTalk remembers any private inbound session webhook for connection tests', async () => {
   const privateFixture = stateFixture();
   const privateSent = [];
@@ -112,6 +288,265 @@ test('DingTalk remembers any private inbound session webhook for connection test
     isInAtList: true,
   }));
   assert.equal(connectionTestTarget(groupFixture.state), null);
+});
+
+test('DingTalk returns a registered result file through the native robot conversation', async (t) => {
+  const artifact = await committedArtifact(t, 'result.pdf', 'dingtalk-result');
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:staff-approved', 'session-artifact');
+  const order = [];
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      sendText: async ({ text }) => {
+        order.push(`text:${text}`);
+        return { messageId: 'dingtalk-text-one' };
+      },
+      sendFile: async (request) => {
+        order.push(`file:${request.file.fileName}`);
+        assert.deepEqual(request.target, {
+          type: 'user', userId: 'staff-approved', robotCode: 'robot-code',
+        });
+        assert.equal(request.file.bytes.toString(), '%PDF-1.7\ndingtalk-result');
+        return { processQueryKey: 'dingtalk-file-query-one' };
+      },
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const receipt = await bridge.accept(message(
+    'dingtalk-artifact',
+    '生成文件',
+    { robotCode: 'robot-code' },
+  ));
+
+  assert.deepEqual(order, ['text:结果文件已生成。', 'file:result.pdf']);
+  assert.equal(bridge.status.artifactsSent, 1);
+  assert.deepEqual(receipt, {
+    schemaVersion: 1,
+    deliveryId: 'dingtalk-artifact',
+    presentation: 'dingtalk-text-and-files',
+    providerMessageIds: ['dingtalk-text-one', 'dingtalk-file-query-one'],
+    artifacts: [{ artifactId: 'dingtalk-artifact-one', outcome: 'sent' }],
+  });
+});
+
+test('DingTalk routes Artifact images natively and preserves the shared fallback boundary', async (t) => {
+  const scenarios = [
+    {
+      name: 'native image',
+      fileName: 'native.png',
+      content: PNG_BYTES,
+      expectedCalls: ['image'],
+      expectedPresentation: 'dingtalk-image',
+      expectedProviderIds: ['dingtalk-native-image'],
+    },
+    {
+      name: 'ordinary file',
+      fileName: 'ordinary.txt',
+      content: 'ordinary file',
+      expectedCalls: ['file'],
+      expectedPresentation: 'dingtalk-file',
+      expectedProviderIds: ['dingtalk-native-file'],
+    },
+    {
+      name: 'definite image rejection falls back',
+      fileName: 'fallback.png',
+      content: PNG_BYTES,
+      imageError: 'artifact-provider-rejected',
+      expectedCalls: ['image', 'file'],
+      expectedPresentation: 'dingtalk-file',
+      expectedProviderIds: ['dingtalk-native-file'],
+    },
+    {
+      name: 'uncertain image never falls back',
+      fileName: 'uncertain.png',
+      content: PNG_BYTES,
+      imageError: 'artifact-delivery-uncertain',
+      expectedCalls: ['image'],
+      expectedPresentation: 'text-fallback',
+      expectedProviderIds: [],
+      expectedOutcome: 'unknown',
+    },
+  ];
+
+  for (const [index, scenario] of scenarios.entries()) {
+    await t.test(scenario.name, async (subtest) => {
+      const artifact = await committedArtifact(subtest, scenario.fileName, scenario.content);
+      const fixture = stateFixture();
+      fixture.sessions.set('p2p:staff-approved', `session-image-route-${index}`);
+      const calls = [];
+      const bridge = new DingtalkHarnessBridge({
+        api: {
+          sendText: async () => { throw new Error('text intentionally unavailable'); },
+          sendImage: async ({ file, target }) => {
+            calls.push('image');
+            assert.equal(file.fileName, scenario.fileName);
+            assert.equal(file.mediaType, 'image/png');
+            assert.deepEqual(target, {
+              type: 'user', userId: 'staff-approved', robotCode: 'robot-code',
+            });
+            if (scenario.imageError) {
+              const error = new Error('private image result');
+              error.code = scenario.imageError;
+              throw error;
+            }
+            return { processQueryKey: 'dingtalk-native-image' };
+          },
+          sendFile: async ({ file, target }) => {
+            calls.push('file');
+            assert.equal(file.fileName, scenario.fileName);
+            assert.deepEqual(target, {
+              type: 'user', userId: 'staff-approved', robotCode: 'robot-code',
+            });
+            return { processQueryKey: 'dingtalk-native-file' };
+          },
+        },
+        clientId: 'ding-client',
+        clientSecret: 'host-secret',
+        harness: {
+          sessionExists: async () => true,
+          ask: async (_sessionId, _text, options) => {
+            await options.onArtifact(artifact);
+            return '';
+          },
+        },
+        state: fixture.state,
+        logger: { warn() {}, error() {} },
+      });
+
+      const receipt = await bridge.accept(message(`dingtalk-image-route-${index}`, '生成产物', {
+        robotCode: 'robot-code',
+      }));
+
+      assert.deepEqual(calls, scenario.expectedCalls);
+      assert.equal(receipt.presentation, scenario.expectedPresentation);
+      assert.deepEqual(receipt.providerMessageIds, scenario.expectedProviderIds);
+      assert.deepEqual(receipt.artifacts, [{
+        artifactId: artifact.artifactId,
+        outcome: scenario.expectedOutcome ?? 'sent',
+        ...(scenario.imageError === 'artifact-delivery-uncertain'
+          ? { reason: 'artifact-delivery-uncertain' }
+          : {}),
+      }]);
+      assert.equal(bridge.status.artifactsSent, scenario.expectedOutcome === 'unknown' ? 0 : 1);
+      assert.equal(bridge.status.artifactSendErrors, scenario.expectedOutcome === 'unknown' ? 1 : 0);
+    });
+  }
+});
+
+test('DingTalk still attempts a registered file when the final text transport fails', async (t) => {
+  const artifact = await committedArtifact(t, 'dingtalk-text-failed.pdf', 'dingtalk-file');
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:staff-approved', 'session-artifact-text-failed');
+  const files = [];
+  let textAttempts = 0;
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      sendText: async () => {
+        textAttempts += 1;
+        throw new Error('private text failure');
+      },
+      sendFile: async ({ file }) => {
+        files.push(file.fileName);
+        return { messageId: 'dingtalk-file-after-text-failure' };
+      },
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '文字回答';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const receipt = await bridge.accept(message('dingtalk-artifact-text-failed', '生成文件', {
+    robotCode: 'robot-code',
+  }));
+
+  assert.deepEqual(files, ['dingtalk-text-failed.pdf']);
+  assert.equal(textAttempts, 1, 'must not send a generic retry notice after the file succeeds');
+  assert.equal(bridge.status.artifactsSent, 1);
+  assert.deepEqual(receipt.providerMessageIds, ['dingtalk-file-after-text-failure']);
+  assert.deepEqual(receipt.artifacts, [{
+    artifactId: 'dingtalk-artifact-one',
+    outcome: 'sent',
+  }]);
+});
+
+test('DingTalk gives safe, actionable file delivery failure guidance', async (t) => {
+  const cases = [
+    {
+      name: 'uncertain delivery',
+      code: 'artifact-delivery-uncertain',
+      fileName: 'dingtalk-uncertain.pdf',
+      expected: '结果文件「dingtalk-uncertain.pdf」发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。',
+    },
+    {
+      name: 'missing permission',
+      code: 'artifact-permission-required',
+      fileName: 'dingtalk-permission.pdf',
+      expected: '结果文件「dingtalk-permission.pdf」已生成，但钉钉应用或机器人缺少文件消息权限。请开通应用 qyapi_base 权限，并确认机器人具备文件消息发送能力。',
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (subtest) => {
+      const artifact = await committedArtifact(subtest, scenario.fileName, 'dingtalk-file');
+      const fixture = stateFixture();
+      fixture.sessions.set('p2p:staff-approved', `session-${scenario.name}`);
+      const sent = [];
+      const bridge = new DingtalkHarnessBridge({
+        api: {
+          sendText: async ({ text }) => {
+            sent.push(text);
+            return { messageId: `dingtalk-text-${sent.length}` };
+          },
+          sendFile: async () => {
+            const error = new Error('private provider rejection detail');
+            error.code = scenario.code;
+            throw error;
+          },
+        },
+        clientId: 'ding-client',
+        clientSecret: 'host-secret',
+        harness: {
+          sessionExists: async () => true,
+          ask: async (_sessionId, _text, options) => {
+            await options.onArtifact(artifact);
+            return '';
+          },
+        },
+        state: fixture.state,
+        logger: { warn() {}, error() {} },
+      });
+
+      const receipt = await bridge.accept(message(`dingtalk-artifact-${scenario.name}`, '生成文件', {
+        robotCode: 'robot-code',
+      }));
+
+      assert.equal(sent.at(-1), scenario.expected);
+      assert.doesNotMatch(sent.join('\n'), /private provider rejection detail/);
+      assert.equal(bridge.status.artifactSendErrors, 1);
+      assert.deepEqual(receipt.artifacts, [{
+        artifactId: 'dingtalk-artifact-one',
+        outcome: scenario.code === 'artifact-delivery-uncertain' ? 'unknown' : 'rejected',
+        reason: scenario.code,
+      }]);
+    });
+  }
 });
 
 test('DingTalk resolves picture downloadCode lazily and sends image-only content to Harness', async () => {

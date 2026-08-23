@@ -52,6 +52,34 @@ async function fixture(t) {
   return { root, defaultWorkspace, alternateWorkspace, path: join(root, 'workspaces.json') };
 }
 
+test('workspace asks collect result files without an explicit Gate', async () => {
+  const observed = [];
+  const harness = {
+    async sessionExists() { return true; },
+    async ask(_sessionId, _text, options) {
+      observed.push(options);
+      await options?.onArtifact?.({ artifactId: 'artifact-one' });
+      return 'answer';
+    },
+  };
+  const state = { sessionFor: () => 'session-existing' };
+  const askOptions = { timeoutMs: 1234 };
+
+  assert.deepEqual(await askInWorkspaceSession({
+    harness,
+    state,
+    key: 'default',
+    text: 'file request',
+    askOptions,
+  }), {
+    sessionId: 'session-existing',
+    answer: 'answer',
+    artifacts: [{ artifactId: 'artifact-one' }],
+  });
+  assert.notEqual(observed[0], askOptions);
+  assert.equal(typeof observed[0].onArtifact, 'function');
+});
+
 test('BotWorkspaceStore persists the creation default and keeps bots isolated', async (t) => {
   const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
   const store = await new BotWorkspaceStore(path, { defaultWorkspace }).load();

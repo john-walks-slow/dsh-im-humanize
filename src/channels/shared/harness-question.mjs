@@ -1,3 +1,5 @@
+import { t } from './i18n.mjs';
+
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -17,9 +19,9 @@ export function validHarnessQuestion(question) {
 export function harnessQuestionText(question, index, total, { requiresMention = false } = {}) {
   const lines = [];
   const progress = total > 1 ? `（${index + 1}/${total}）` : '';
-  lines.push(`DeepSeek Harness 需要你补充信息${progress}：`);
+  lines.push(t('DeepSeek Harness 需要你补充信息{progress}：', { progress }));
   if (nonEmptyString(question.header)) lines.push('', question.header.trim());
-  lines.push('', nonEmptyString(question.question) ?? '请输入你的回答。');
+  lines.push('', nonEmptyString(question.question) ?? t('请输入你的回答。'));
   if (nonEmptyString(question.detail)) lines.push('', question.detail.trim());
 
   const options = Array.isArray(question.options) ? question.options : [];
@@ -31,12 +33,12 @@ export function harnessQuestionText(question, index, total, { requiresMention = 
       lines.push(`${optionIndex + 1}. ${label}${description ? ` — ${description}` : ''}`);
     });
     lines.push('', question.multiSelect === true
-      ? '请回复选项序号或文字；多选用逗号分隔，也可补充其他内容。'
-      : '请回复一个选项序号或文字，也可直接输入其他答案。');
+      ? t('请回复选项序号或文字；多选用逗号分隔，也可补充其他内容。')
+      : t('请回复一个选项序号或文字，也可直接输入其他答案。'));
   } else {
-    lines.push('', '请直接回复你的答案。');
+    lines.push('', t('请直接回复你的答案。'));
   }
-  if (requiresMention) lines.push('', '群聊中请 @机器人 后发送答案。');
+  if (requiresMention) lines.push('', t('群聊中请 @机器人 后发送答案。'));
   return lines.join('\n');
 }
 

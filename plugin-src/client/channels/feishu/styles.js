@@ -402,10 +402,6 @@ const CSS = String.raw`
 .bxf-healthPill[data-health="degraded"], .bxf-healthPill[data-health="checking"], .bxf-healthPill[data-health="connecting"] { color: var(--bxf-warning); background: color-mix(in srgb, var(--bxf-warning) 10%, transparent); }
 .bxf-healthPill[data-health="offline"], .bxf-healthPill[data-health="error"] { color: var(--bxf-error); background: color-mix(in srgb, var(--bxf-error) 10%, transparent); }
 
-.bxf-statusGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 22px; }
-.bxf-metric { min-width: 0; border: 1px solid var(--dsw-alias-border-l2, #dee0e3); border-radius: 9px; padding: 12px 13px; background: var(--dsw-alias-bg-module-platform, #f7f8fa); }
-.bxf-metric dt { color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 11px; line-height: 17px; }
-.bxf-metric dd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-primary, #1f2329); font-size: 12px; line-height: 18px; font-weight: 550; margin: 3px 0 0; }
 
 .bxf-responseMode { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: center; column-gap: 10px; row-gap: 5px; margin-top: 6px; padding: 8px 10px; border: 1px solid var(--dsw-alias-border-l1, #eef0f3); border-radius: 9px; background: var(--dsw-alias-bg-module-platform, #f7f8fa); }
 .bxf-responseModeHeader { display: contents; color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; line-height: normal; }
@@ -517,7 +513,6 @@ const CSS = String.raw`
   .bxf-qrLayout { grid-template-columns: minmax(0, 1fr); justify-items: center; }
   .bxf-botProvision .bxf-qrLayout { grid-template-columns: minmax(0, 1fr); }
   .bxf-qrCopy { width: 100%; }
-  .bxf-statusGrid { grid-template-columns: minmax(0, 1fr); }
   .bxf-connectedTop { align-items: flex-start; flex-direction: column; }
   .bxf-inlineError { grid-template-columns: minmax(0, 1fr); padding: 20px; }
   .bxf-statusNotice { align-items: flex-start; flex-wrap: wrap; }

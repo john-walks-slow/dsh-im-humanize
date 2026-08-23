@@ -1,3 +1,5 @@
+import { t } from './i18n.mjs';
+
 export function splitMessageText(value, limit) {
   const text = typeof value === 'string' ? value.trim() : '';
   if (!text) return [];
@@ -15,15 +17,17 @@ export function splitMessageText(value, limit) {
 }
 
 export function createEditableMessageStream({
-  initialText = '正在处理…',
+  initialText = t('正在处理…'),
   limit,
   updateIntervalMs = 800,
   create,
   edit,
   sendRemainder,
+  messageIdForResult = () => null,
   logger = console,
 }) {
   let messageId;
+  const providerMessageIds = [];
   let pending = null;
   let timer = null;
   let inFlight = null;
@@ -49,8 +53,17 @@ export function createEditableMessageStream({
   };
 
   return {
+    get messageId() {
+      return messageId;
+    },
+    get providerMessageIds() {
+      return [...providerMessageIds];
+    },
     async start() {
       messageId = await create(initialText);
+      if ((typeof messageId === 'string' && messageId.trim()) || Number.isSafeInteger(messageId)) {
+        providerMessageIds.push(String(messageId));
+      }
       return this;
     },
     update(text) {
@@ -66,10 +79,16 @@ export function createEditableMessageStream({
       pending = null;
       await inFlight?.catch(() => undefined);
       const chunks = splitMessageText(text, limit);
-      const first = chunks[0] ?? '处理完成。';
+      const first = chunks[0] ?? t('处理完成。');
       if (first !== lastSent) await edit(messageId, first);
       lastSent = first;
-      for (const chunk of chunks.slice(1)) await sendRemainder(chunk);
+      for (const chunk of chunks.slice(1)) {
+        const result = await sendRemainder(chunk);
+        const id = messageIdForResult(result);
+        if ((typeof id === 'string' && id.trim()) || Number.isSafeInteger(id)) {
+          providerMessageIds.push(String(id));
+        }
+      }
     },
     cancel() {
       closed = true;

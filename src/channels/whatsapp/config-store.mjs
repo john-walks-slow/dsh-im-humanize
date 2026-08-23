@@ -2,9 +2,18 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+import { t } from '../shared/i18n.mjs';
+
 const EMPTY_DOCUMENT = Object.freeze({ version: 2, bots: Object.freeze([]) });
 const BOT_ID_PATTERN = /^whatsapp_[a-f0-9]{24}$/;
 const AUTH_DIRECTORY_PATTERN = /^[a-f0-9-]{36}$/;
+const WHATSAPP_PHONE_NUMBER = /^[1-9]\d{4,14}$/;
+
+export const WHATSAPP_ACCESS_MODES = Object.freeze({
+  selfOnly: 'self-only',
+  privateAllowlist: 'private-allowlist',
+  open: 'open',
+});
 
 function cleanString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -23,9 +32,38 @@ export function deriveWhatsappBotId(accountJid) {
 
 export function maskWhatsappAccount(accountJid) {
   const digits = normalizeWhatsappAccountJid(accountJid)?.split('@')[0] ?? '';
-  if (!digits) return 'WhatsApp账号';
+  if (!digits) return t('WhatsApp账号');
   if (digits.length <= 7) return `${digits.slice(0, 2)}•••${digits.slice(-2)}`;
   return `${digits.slice(0, 4)}••••${digits.slice(-4)}`;
+}
+
+export function normalizeWhatsappAllowedNumbers(value) {
+  if (value === undefined) return Object.freeze([]);
+  if (!Array.isArray(value)) {
+    throw new TypeError('allowedNumbers must be an array of WhatsApp phone numbers');
+  }
+  const normalized = value.map((entry) => {
+    const number = typeof entry === 'string' ? entry.trim().replace(/^\+/, '') : '';
+    if (!WHATSAPP_PHONE_NUMBER.test(number)) {
+      throw new TypeError('allowedNumbers contains an invalid WhatsApp phone number');
+    }
+    return number;
+  });
+  return Object.freeze([...new Set(normalized)]);
+}
+
+export function normalizeWhatsappAccessPolicy(value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('WhatsApp access policy must be an object');
+  }
+  const accessMode = value.accessMode ?? WHATSAPP_ACCESS_MODES.selfOnly;
+  if (!Object.values(WHATSAPP_ACCESS_MODES).includes(accessMode)) {
+    throw new TypeError('WhatsApp accessMode is invalid');
+  }
+  return Object.freeze({
+    accessMode,
+    allowedNumbers: normalizeWhatsappAllowedNumbers(value.allowedNumbers),
+  });
 }
 
 export class WhatsappConfigStore {
@@ -112,6 +150,12 @@ export class WhatsappConfigStore {
     if (!accountJid || !botId || !authDirectory || !name
       || !BOT_ID_PATTERN.test(botId) || !AUTH_DIRECTORY_PATTERN.test(authDirectory)
       || deriveWhatsappBotId(accountJid) !== botId) return null;
+    let accessPolicy;
+    try {
+      accessPolicy = normalizeWhatsappAccessPolicy(value);
+    } catch {
+      return null;
+    }
     return Object.freeze({
       botId,
       accountJid,
@@ -119,6 +163,7 @@ export class WhatsappConfigStore {
       name,
       createdAt: cleanString(value.createdAt) ?? new Date().toISOString(),
       connectedAt: cleanString(value.connectedAt),
+      ...accessPolicy,
     });
   }
 

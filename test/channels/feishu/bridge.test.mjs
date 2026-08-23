@@ -2,11 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import { mkdirSync, realpathSync } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FeishuHarnessBridge } from '../../../src/channels/feishu/bridge.mjs';
 import { DEFAULT_IMAGE_PROMPT } from '../../../src/channels/shared/image-prompt.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
+import {
+  OUTBOUND_ARTIFACT_TOOL,
+  OutboundArtifactRegistry,
+  createOutboundArtifactTool,
+} from '../../../src/channels/shared/semantic/artifact.mjs';
 
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
@@ -88,6 +94,41 @@ function textClient(sendText) {
       return { code: 0, data: { message_id: `om_test_${sequence}` } };
     } } } },
   };
+}
+
+async function committedArtifact(t, fileName, content, suffix = '') {
+  const workspace = await mkdtemp(join(tmpdir(), `dsh-im-feishu-artifact-${suffix}`));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  let nextId = 0;
+  const registry = new OutboundArtifactRegistry({
+    uuid: () => `${suffix || 'file'}-${++nextId}`,
+  });
+  t.after(() => registry.clear());
+  const agent = {
+    session: {
+      header: { id: `session-${suffix || 'file'}`, cwd: workspace },
+      events: [
+        { type: 'turn/start', data: { turn: 1 } },
+        {
+          type: 'user/message',
+          data: { turn: 1, source: { rpcId: `rpc-${suffix || 'file'}` } },
+        },
+      ],
+    },
+  };
+  const tool = createOutboundArtifactTool({ registry });
+  const exec = {
+    name: OUTBOUND_ARTIFACT_TOOL,
+    callId: `call-${suffix || 'file'}`,
+    rootCallId: `call-${suffix || 'file'}`,
+    token: Symbol(`call-${suffix || 'file'}`),
+    agent,
+  };
+  await writeFile(join(workspace, fileName), content);
+  await tool.definition.execute({ path: fileName }, exec);
+  tool.onResult(exec, { isError: false });
+  const [artifact] = registry.take(agent.session.header.id, 1);
+  return artifact;
 }
 
 test('Feishu remembers any authorized private inbound message as a connection-test target', async () => {
@@ -462,6 +503,63 @@ test('bridge downloads an inbound Feishu image once and submits structured Harne
     ],
   }]);
   assert.deepEqual(sent, ['看到了一张图片']);
+});
+
+test('bridge hands a native Feishu file source to the current Harness turn', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-file']]);
+  const bytes = Buffer.from('feishu-native-file');
+  const downloads = [];
+  const asked = [];
+  const sent = [];
+  const client = {
+    im: { v1: {
+      messageResource: { get: async (request) => {
+        downloads.push(request);
+        return { getReadableStream: () => Readable.from([bytes]) };
+      } },
+      message: { create: async (request) => {
+        sent.push(JSON.parse(request.data.content).text);
+        return { code: 0, data: { message_id: 'om_file_reply' } };
+      } },
+    } },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, prompt, options) => {
+        asked.push({
+          sessionId,
+          prompt,
+          name: options.files[0].name,
+          bytes: await options.files[0].load({ signal: options.signal }),
+        });
+        return '文件已收到';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  await bridge.accept(event('om_file_input', '', {
+    message_type: 'file',
+    content: JSON.stringify({ file_key: 'file_input', file_name: '飞书报告.pdf' }),
+  }));
+  await bridge.waitForIdle();
+
+  assert.deepEqual(downloads, [{
+    path: { message_id: 'om_file_input', file_key: 'file_input' },
+    params: { type: 'file' },
+  }]);
+  assert.deepEqual(asked, [{
+    sessionId: 'session-file',
+    prompt: '',
+    name: '飞书报告.pdf',
+    bytes,
+  }]);
+  assert.deepEqual(sent, ['文件已收到']);
 });
 
 test('bridge tells users to grant im:message:readonly when Feishu rejects image access', async () => {
@@ -1877,6 +1975,495 @@ test('reaction failures do not block streaming replies', async () => {
   assert.equal(status.messagesReplied, 1);
   assert.equal(status.reactionErrors, 2);
   assert.equal(status.streamResponses, 1);
+});
+
+test('Feishu routes Artifact images natively and preserves the shared fallback boundary', async (t) => {
+  const scenarios = [
+    {
+      name: 'native image',
+      fileName: 'native.png',
+      content: PNG_1X1,
+      expectedCalls: ['image'],
+      expectedPresentation: 'feishu-image',
+      expectedProviderIds: ['om-native-image'],
+    },
+    {
+      name: 'ordinary file',
+      fileName: 'ordinary.txt',
+      content: 'ordinary file',
+      expectedCalls: ['file'],
+      expectedPresentation: 'feishu-file',
+      expectedProviderIds: ['om-native-file'],
+    },
+    {
+      name: 'definite image rejection falls back',
+      fileName: 'fallback.png',
+      content: PNG_1X1,
+      imageError: 'artifact-provider-rejected',
+      expectedCalls: ['image', 'file'],
+      expectedPresentation: 'feishu-file',
+      expectedProviderIds: ['om-native-file'],
+    },
+    {
+      name: 'uncertain image never falls back',
+      fileName: 'uncertain.png',
+      content: PNG_1X1,
+      imageError: 'artifact-delivery-uncertain',
+      expectedCalls: ['image'],
+      expectedPresentation: 'text-fallback',
+      expectedProviderIds: [],
+      expectedOutcome: 'unknown',
+    },
+  ];
+
+  for (const [index, scenario] of scenarios.entries()) {
+    await t.test(scenario.name, async (subtest) => {
+      const artifact = await committedArtifact(
+        subtest,
+        scenario.fileName,
+        scenario.content,
+        `bridge-image-route-${index}`,
+      );
+      const calls = [];
+      const status = bridgeStatus();
+      const resultFor = (file, presentation, providerMessageId) => ({
+        schemaVersion: 1,
+        deliveryId: file.deliveryKey,
+        presentation,
+        providerMessageIds: [providerMessageId],
+        artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
+      });
+      const bridge = new FeishuHarnessBridge({
+        client: textClient(async () => { throw new Error('text intentionally unavailable'); }),
+        channel: {
+          addReaction: async () => 'reaction',
+          removeReaction: async () => undefined,
+          sendImage: async (chatId, file, options) => {
+            calls.push('image');
+            assert.equal(chatId, 'oc_chat');
+            assert.equal(file.fileName, scenario.fileName);
+            assert.equal(file.mediaType, 'image/png');
+            assert.equal(options.replyTo, `om-feishu-image-route-${index}`);
+            if (scenario.imageError) {
+              const error = new Error('private image result');
+              error.code = scenario.imageError;
+              throw error;
+            }
+            return resultFor(file, 'feishu-image', 'om-native-image');
+          },
+          sendFile: async (chatId, file, options) => {
+            calls.push('file');
+            assert.equal(chatId, 'oc_chat');
+            assert.equal(file.fileName, scenario.fileName);
+            assert.equal(options.replyTo, `om-feishu-image-route-${index}`);
+            return resultFor(file, 'feishu-file', 'om-native-file');
+          },
+        },
+        harness: {
+          sessionExists: async () => true,
+          ask: async (_sessionId, _text, options) => {
+            await options.onArtifact(artifact);
+            return '';
+          },
+        },
+        state: stateFixture([
+          ['p2p:ou_user', `session-feishu-image-route-${index}`],
+        ]).state,
+        status,
+        allowedSenderOpenIds: new Set(['ou_user']),
+        logger: { info() {}, warn() {}, error() {} },
+      });
+
+      const receipt = await bridge.accept(event(`om-feishu-image-route-${index}`, '生成产物'));
+
+      assert.deepEqual(calls, scenario.expectedCalls);
+      assert.equal(receipt.presentation, scenario.expectedPresentation);
+      assert.deepEqual(receipt.providerMessageIds, scenario.expectedProviderIds);
+      assert.deepEqual(receipt.artifacts, [{
+        artifactId: artifact.artifactId,
+        outcome: scenario.expectedOutcome ?? 'sent',
+        ...(scenario.imageError === 'artifact-delivery-uncertain'
+          ? { reason: 'artifact-delivery-uncertain' }
+          : {}),
+      }]);
+      assert.equal(status.artifactsSent, scenario.expectedOutcome === 'unknown' ? 0 : 1);
+      assert.equal(status.artifactSendErrors, scenario.expectedOutcome === 'unknown' ? 1 : 0);
+    });
+  }
+});
+
+test('Feishu finalizes the answer card before delivering registered result files and reports partial failure', async (t) => {
+  const html = await committedArtifact(t, 'result.html', '<h1>result</h1>', 'html');
+  const generic = await committedArtifact(t, 'notes.txt', 'notes', 'notes');
+  const fixture = stateFixture([['p2p:ou_user', 'session-artifacts']]);
+  const order = [];
+  const delivered = [];
+  const notices = [];
+  const status = bridgeStatus();
+  const abort = new AbortController();
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => notices.push(text)),
+    channel: {
+      addReaction: async () => 'reaction',
+      removeReaction: async () => undefined,
+      stream: async (_chatId, input) => {
+        await input.markdown({ setContent: async () => undefined });
+        order.push('card-finalized');
+        return { messageId: 'om-card' };
+      },
+      sendFile: async (chatId, file, options) => {
+        order.push(`file:${file.fileName}`);
+        delivered.push({ chatId, file, options });
+        if (file.fileName === 'notes.txt') {
+          const error = new Error('provider detail must stay private');
+          error.code = 'artifact-rate-limited';
+          throw error;
+        }
+        return {
+          schemaVersion: 1,
+          deliveryId: file.deliveryKey,
+          presentation: 'feishu-file',
+          providerMessageIds: ['om-file'],
+          artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
+        };
+      },
+    },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(html);
+        await options.onArtifact(generic);
+        return '两个结果文件已经生成。';
+      },
+    },
+    state: fixture.state,
+    status,
+    allowedSenderOpenIds: new Set(['ou_user']),
+    signal: abort.signal,
+  });
+
+  bridge.accept(event('om_artifacts', '生成 HTML 和说明文件并发给我'));
+  await bridge.waitForIdle();
+
+  assert.deepEqual(order, ['card-finalized', 'file:result.html', 'file:notes.txt']);
+  assert.equal(delivered[0].chatId, 'oc_chat');
+  assert.deepEqual(delivered[0].options, {
+    replyTo: 'om_artifacts',
+    signal: abort.signal,
+  });
+  assert.equal(delivered[0].file.bytes.toString(), '<h1>result</h1>');
+  assert.equal(delivered[1].file.bytes.toString(), 'notes');
+  assert.equal(status.artifactsSent, 1);
+  assert.equal(status.artifactSendErrors, 1);
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /notes\.txt.*限流/);
+  assert.doesNotMatch(notices[0], /provider detail/);
+});
+
+test('Feishu tells users to check the chat before retrying an uncertain file delivery', async (t) => {
+  const artifact = await committedArtifact(t, 'uncertain.txt', 'uncertain result', 'uncertain');
+  const fixture = stateFixture([['p2p:ou_user', 'session-uncertain-artifact']]);
+  const notices = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => notices.push(text)),
+    channel: {
+      stream: async (_chatId, input) => {
+        await input.markdown({ setContent: async () => undefined });
+        return { messageId: 'om-uncertain-card' };
+      },
+      sendFile: async () => {
+        const error = new Error('private transport detail');
+        error.code = 'artifact-delivery-uncertain';
+        throw error;
+      },
+    },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '结果已生成';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  bridge.accept(event('om_uncertain_artifact', '生成并发送文件'));
+  await bridge.waitForIdle();
+
+  assert.deepEqual(notices, [
+    '结果文件「uncertain.txt」发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。',
+  ]);
+});
+
+test('Feishu delivers a file-only Turn with a neutral final card', async (t) => {
+  const artifact = await committedArtifact(t, 'file-only.txt', 'file only', 'file-only');
+  const fixture = stateFixture([['p2p:ou_user', 'session-file-only']]);
+  const cardContents = [];
+  const files = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async () => undefined),
+    channel: {
+      stream: async (_chatId, input) => {
+        await input.markdown({ setContent: async (content) => cardContents.push(content) });
+        return { messageId: 'om-file-only-card' };
+      },
+      sendFile: async (_chatId, file) => {
+        files.push(file.fileName);
+        return {
+          schemaVersion: 1,
+          deliveryId: file.deliveryKey,
+          presentation: 'feishu-file',
+          providerMessageIds: ['om-file-only'],
+          artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
+        };
+      },
+    },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  bridge.accept(event('om_file_only', '只发送结果文件'));
+  await bridge.waitForIdle();
+
+  assert.deepEqual(cardContents, ['结果文件已生成。']);
+  assert.deepEqual(files, ['file-only.txt']);
+});
+
+test('a CardKit finalization failure falls back to text and delivers each artifact once without a second prompt', async (t) => {
+  const artifact = await committedArtifact(t, 'fallback.txt', 'fallback result', 'fallback');
+  const fixture = stateFixture([['p2p:ou_user', 'session-fallback-artifact']]);
+  const sent = [];
+  const files = [];
+  let asks = 0;
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {
+      stream: async (_chatId, input) => {
+        await input.markdown({ setContent: async () => undefined });
+        throw new Error('card finalization failed');
+      },
+      sendFile: async (_chatId, file) => {
+        files.push(file.fileName);
+        return {
+          schemaVersion: 1,
+          deliveryId: file.deliveryKey,
+          presentation: 'feishu-file',
+          providerMessageIds: ['om-fallback-file'],
+          artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
+        };
+      },
+    },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        asks += 1;
+        await options.onArtifact(artifact);
+        return '回答已生成';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  bridge.accept(event('om_artifact_card_fallback', '生成并发送文件'));
+  await bridge.waitForIdle();
+
+  assert.equal(asks, 1);
+  assert.deepEqual(sent, ['回答已生成']);
+  assert.deepEqual(files, ['fallback.txt']);
+});
+
+test('Feishu still delivers a file-only result when CardKit and fallback text both fail', async (t) => {
+  const artifact = await committedArtifact(t, 'survives-text-failure.txt', 'file bytes', 'text-failure');
+  const fixture = stateFixture([['p2p:ou_user', 'session-text-failure']]);
+  const files = [];
+  let fallbackTextAttempts = 0;
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async () => {
+      fallbackTextAttempts += 1;
+      throw new Error('text transport unavailable');
+    }),
+    channel: {
+      stream: async (_chatId, input) => {
+        await input.markdown({ setContent: async () => undefined });
+        throw new Error('card finalization unavailable');
+      },
+      sendFile: async (_chatId, file) => {
+        files.push(file.fileName);
+        return {
+          schemaVersion: 1,
+          deliveryId: file.deliveryKey,
+          presentation: 'feishu-file',
+          providerMessageIds: ['om-file-after-text-failure'],
+          artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
+        };
+      },
+    },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  bridge.accept(event('om_file_after_text_failure', '只生成文件'));
+  await bridge.waitForIdle();
+
+  assert.deepEqual(files, ['survives-text-failure.txt']);
+  assert.equal(fallbackTextAttempts, 1, 'must not append a generic retry after file success');
+});
+
+test('Feishu returns the receipt after reaction finalization and one safe notice when text and file delivery fail', async (t) => {
+  for (const errorCode of ['artifact-invalid', 'artifact-unavailable']) {
+    await t.test(errorCode, async (subtest) => {
+      const artifact = await committedArtifact(subtest, `${errorCode}.txt`, 'file bytes', errorCode);
+      const attemptedTexts = [];
+      const visibleTexts = [];
+      const reactions = [];
+      const bridge = new FeishuHarnessBridge({
+        client: {
+          im: { v1: { message: { create: async (request) => {
+            const text = JSON.parse(request.data.content).text;
+            attemptedTexts.push(text);
+            if (text === '文字结果') throw new Error('text transport unavailable');
+            visibleTexts.push(text);
+            return { code: 0, data: {} };
+          } } } },
+        },
+        channel: {
+          addReaction: async (_messageId, emoji) => {
+            reactions.push(emoji);
+            return `reaction-${emoji}`;
+          },
+          removeReaction: async () => undefined,
+          sendFile: async () => {
+            const error = new Error('unsafe result file');
+            error.code = errorCode;
+            throw error;
+          },
+        },
+        harness: {
+          sessionExists: async () => true,
+          ask: async (_sessionId, _text, options) => {
+            await options.onArtifact(artifact);
+            return '文字结果';
+          },
+        },
+        state: stateFixture([['p2p:ou_user', `session-${errorCode}`]]).state,
+        status: bridgeStatus(),
+        allowedSenderOpenIds: new Set(['ou_user']),
+        logger: { info() {}, warn() {}, error() {} },
+      });
+
+      const receipt = await bridge.accept(event(`om-${errorCode}`, '生成并发送文件'));
+
+      assert.equal(attemptedTexts.length, 2, 'must not append a generic error after the safe notice');
+      assert.equal(visibleTexts.length, 1);
+      assert.match(visibleTexts[0], /暂时无法读取或准备发送.*仍可访问/);
+      assert.deepEqual(reactions, ['OnIt', 'DONE']);
+      assert.deepEqual(receipt, {
+        schemaVersion: 1,
+        deliveryId: artifact.deliveryKey,
+        presentation: 'text-fallback',
+        providerMessageIds: [],
+        artifacts: [{
+          artifactId: artifact.artifactId,
+          outcome: 'rejected',
+          reason: errorCode,
+        }],
+      });
+    });
+  }
+});
+
+test('Feishu keeps the generic error when no answer or file failure notice is visible', async (t) => {
+  const artifact = await committedArtifact(t, 'unavailable.txt', 'file bytes', 'no-visible-failure');
+  const attemptedTexts = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => {
+      attemptedTexts.push(text);
+      if (attemptedTexts.length < 3) throw new Error('text transport unavailable');
+    }),
+    channel: {
+      sendFile: async () => {
+        const error = new Error('file transport unavailable');
+        error.code = 'artifact-provider-failed';
+        throw error;
+      },
+    },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '文字结果';
+      },
+    },
+    state: stateFixture([['p2p:ou_user', 'session-no-visible-failure']]).state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  await bridge.accept(event('om-no-visible-failure', '生成并发送文件'));
+
+  assert.equal(attemptedTexts.length, 3);
+  assert.match(attemptedTexts.at(-1), /^处理失败，请稍后重试/);
+});
+
+test('Feishu does not repeat finalized card text when cancellation happens before file delivery', async (t) => {
+  const artifact = await committedArtifact(t, 'cancel-after-card.txt', 'file bytes', 'cancel-after-card');
+  const fixture = stateFixture([['p2p:ou_user', 'session-cancel-after-card']]);
+  const controller = new AbortController();
+  const fallbackTexts = [];
+  let files = 0;
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => fallbackTexts.push(text)),
+    channel: {
+      stream: async (_chatId, input) => {
+        await input.markdown({ setContent: async () => undefined });
+        controller.abort(new DOMException('runtime stopped', 'AbortError'));
+        return { messageId: 'om-final-card' };
+      },
+      sendFile: async () => {
+        files += 1;
+      },
+    },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '卡片已经完成';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    signal: controller.signal,
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  bridge.accept(event('om_cancel_after_card', '生成文件'));
+  await bridge.waitForIdle();
+
+  assert.equal(files, 0);
+  assert.deepEqual(fallbackTexts, []);
 });
 
 test('a stream finalization failure falls back to text without repeating the prompt', async () => {

@@ -14,6 +14,8 @@
  * without button callbacks.
  */
 
+import { t } from '../shared/i18n.mjs';
+
 export const MENU_PAGE_SIZE = 10;
 
 /** 预设下拉中「跟随默认」(null) 的哨兵值，供 initial_index 命中与回调识别。 */
@@ -87,7 +89,7 @@ function initialIndex(options, currentValue) {
 
 function safeTitle(value) {
   const title = String(value ?? '').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').replace(/\s+/gu, ' ').trim();
-  return title || '暂无标题';
+  return title || t('暂无标题');
 }
 
 function cardWith(headerText, elements) {
@@ -595,10 +597,10 @@ export function cardActionProbeCard(nonce) {
   if (typeof nonce !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) {
     throw new TypeError('A safe card-action probe nonce is required');
   }
-  return cardWith('🧪 验证卡片按钮', [
+  return cardWith(t('🧪 验证卡片按钮'), [
     {
       tag: 'div',
-      text: markdown('授权已提交。请点击下方按钮；机器人真实收到回调后才会判定修复成功。'),
+      text: markdown(t('授权已提交。请点击下方按钮；机器人真实收到回调后才会判定修复成功。')),
     },
     {
       tag: 'column_set',
@@ -609,7 +611,7 @@ export function cardActionProbeCard(nonce) {
         weight: 1,
         elements: [{
           tag: 'button',
-          text: plainText('完成验证'),
+          text: plainText(t('完成验证')),
           type: 'primary',
           width: 'fill',
           behaviors: [{
@@ -648,23 +650,29 @@ export function sessionListCard(workspace, sessions, page, total, watchedSession
     ],
   });
   const elements = [
-    { tag: 'div', text: markdown(`**工作区**：\`${workspace}\`\n共 **${total}** 个会话${total > MENU_PAGE_SIZE ? `（第 ${page + 1}/${pageCount} 页）` : ''}`) },
+    { tag: 'div', text: markdown(t('**工作区**：{workspace}\n共 **{total}** 个会话{paging}', {
+      workspace: `\`${workspace}\``,
+      total,
+      paging: total > MENU_PAGE_SIZE
+        ? t('（第 {page}/{pageCount} 页）', { page: page + 1, pageCount })
+        : '',
+    })) },
     ...slice.map((session, offset) => {
       // Page-local numbering: number replies resolve against this page.
-      const label = `${offset + 1}. ${safeTitle(session.title)}${session.archived === true ? '（已归档）' : ''}`;
+      const label = `${offset + 1}. ${safeTitle(session.title)}${session.archived === true ? t('（已归档）') : ''}`;
       const watching = watched(session.sessionId);
       return row(
-        buttonElement(watching ? '⭐ 取消关注' : '☆ 关注', watching ? `unwatch:${session.sessionId}` : `watch:${session.sessionId}`),
+        buttonElement(watching ? t('⭐ 取消关注') : t('☆ 关注'), watching ? `unwatch:${session.sessionId}` : `watch:${session.sessionId}`),
         buttonElement(label, `use:${session.sessionId}`),
       );
     }),
   ];
   if (page > 0) elements.push(button('◀ 上一页', `sessions:${page - 1}`));
-  if (page + 1 < pageCount) elements.push(button('下一页 ▶', `sessions:${page + 1}`));
+  if (page + 1 < pageCount) elements.push(button(t('下一页 ▶'), `sessions:${page + 1}`));
   elements.push(
     { tag: 'hr' },
-    buttonPair('🔙 返回菜单', 'back_to_menu', '🔍 关注列表', 'watchlist'),
-    { tag: 'div', text: markdown('回复数字（1~N）绑定本页会话。') },
+    buttonPair('🔙 返回菜单', 'back_to_menu', t('🔍 关注列表'), 'watchlist'),
+    { tag: 'div', text: markdown(t('回复数字（1~N）绑定本页会话。')) },
   );
   return cardWith('📂 会话列表', elements);
 }
@@ -675,19 +683,19 @@ export function sessionListCard(workspace, sessions, page, total, watchedSession
 export function workspaceListCard(paths, current) {
   const elements = paths.length === 0
     ? [
-        { tag: 'div', text: markdown('当前 Host 上没有已登记的工作区。') },
+        { tag: 'div', text: markdown(t('当前 Host 上没有已登记的工作区。')) },
         backButton(),
       ]
     : [
-        { tag: 'div', text: markdown('回复数字切换工作区，或点击按钮：') },
+        { tag: 'div', text: markdown(t('回复数字切换工作区，或点击按钮：')) },
         ...paths.map((path, index) => button(
-          `${index + 1}. ${path}${path === current ? '（当前）' : ''}`,
+          `${index + 1}. ${path}${path === current ? t('（当前）') : ''}`,
           `workspace:${path}`,
         )),
         { tag: 'hr' },
         backButton(),
       ];
-  return cardWith('🗂 工作区', elements);
+  return cardWith(t('🗂 工作区'), elements);
 }
 
 // ── Watch list card (multi-select add/remove + back button) ──────────────
@@ -706,7 +714,7 @@ function watchAddSelect(entries, availableSessions) {
   return {
     tag: 'multi_select_static',
     name: 'watch_add',
-    placeholder: { tag: 'plain_text', content: '勾选要关注的会话' },
+    placeholder: { tag: 'plain_text', content: t('勾选要关注的会话') },
     options,
     behaviors: [{ type: 'callback', value: { action: 'watch_add', kind: 'multi' } }],
   };
@@ -722,7 +730,7 @@ function watchRemoveSelect(entries) {
   return {
     tag: 'multi_select_static',
     name: 'watch_remove',
-    placeholder: { tag: 'plain_text', content: '勾选要取消关注的会话' },
+    placeholder: { tag: 'plain_text', content: t('勾选要取消关注的会话') },
     options,
     behaviors: [{ type: 'callback', value: { action: 'watch_remove', kind: 'multi' } }],
   };
@@ -736,19 +744,19 @@ export function watchListCard(entries, availableSessions) {
 
   const elements = [];
   if (watching.length === 0) {
-    elements.push({ tag: 'div', text: markdown('当前没有关注的会话。任务完成会自动推送结果。') });
+    elements.push({ tag: 'div', text: markdown(t('当前没有关注的会话。任务完成会自动推送结果。')) });
   } else {
-    elements.push({ tag: 'div', text: markdown(`当前关注 **${watching.length}** 个会话：`) });
+    elements.push({ tag: 'div', text: markdown(t('当前关注 **{count}** 个会话：', { count: watching.length })) });
   }
 
   if (addSelect) {
-    elements.push({ tag: 'hr' }, { tag: 'div', text: markdown('**➕ 添加关注**（多选下拉勾选）') }, addSelect);
+    elements.push({ tag: 'hr' }, { tag: 'div', text: markdown(t('**➕ 添加关注**（多选下拉勾选）')) }, addSelect);
   }
   if (removeSelect) {
-    elements.push({ tag: 'hr' }, { tag: 'div', text: markdown('**➖ 取消关注**（多选下拉勾选）') }, removeSelect);
+    elements.push({ tag: 'hr' }, { tag: 'div', text: markdown(t('**➖ 取消关注**（多选下拉勾选）')) }, removeSelect);
   }
-  elements.push({ tag: 'hr' }, buttonPair('📋 会话列表', 'sessions', '🔙 返回菜单', 'back_to_menu'));
-  return cardWith('👁 关注列表', elements);
+  elements.push({ tag: 'hr' }, buttonPair(t('📋 会话列表'), 'sessions', t('🔙 返回菜单'), 'back_to_menu'));
+  return cardWith(t('👁 关注列表'), elements);
 }
 
 // ── Completion push card ──────────────────────────────────────────────────
@@ -759,20 +767,20 @@ export function watchListCard(entries, availableSessions) {
  */
 export function completionCard(sessionId, title, reason) {
   const reasonText = reason === 'completed'
-    ? '已完成'
+    ? t('已完成')
     : reason === 'stopped'
-      ? '已停止'
+      ? t('已停止')
       : reason === 'aborted'
-        ? '已中止'
+        ? t('已中止')
         : reason === 'cancelled'
-          ? '已取消'
-          : '已结束';
-  return cardWith('✅ 任务完成', [
+          ? t('已取消')
+          : t('已结束');
+  return cardWith(t('✅ 任务完成'), [
     { tag: 'div', text: markdown(`**${safeTitle(title)}**\n\`${sessionId}\``) },
-    { tag: 'div', text: markdown(`**状态**：${reasonText}`) },
+    { tag: 'div', text: markdown(t('**状态**：{reason}', { reason: reasonText })) },
     { tag: 'hr' },
-    buttonPair('📋 会话列表', 'sessions', '🔙 返回菜单', 'back_to_menu'),
-    { tag: 'div', text: markdown('绑定该会话后可继续追问，输入文字即可。') },
+    buttonPair(t('📋 会话列表'), 'sessions', t('🔙 返回菜单'), 'back_to_menu'),
+    { tag: 'div', text: markdown(t('绑定该会话后可继续追问，输入文字即可。')) },
   ]);
 }
 

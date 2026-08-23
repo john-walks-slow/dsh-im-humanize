@@ -1,4 +1,5 @@
 import { ImagePromptError } from '../shared/image-prompt.mjs';
+import { t } from '../shared/i18n.mjs';
 
 const FEISHU_MISSING_MESSAGE_SCOPE_CODE = 99991672;
 const FEISHU_ERROR_BODY_LIMIT = 64 * 1024;
@@ -113,9 +114,34 @@ async function readBoundedStream(stream, { signal, maxBytes }) {
         throw new ImagePromptError(
           'image-too-large',
           `Feishu image exceeds ${maxBytes} bytes`,
-          '图片超过 5 MB，请压缩后重试。',
+          t('图片超过 5 MB，请压缩后重试。'),
         );
       }
+      chunks.push(data);
+    }
+    signal?.throwIfAborted();
+    return Buffer.concat(chunks, size);
+  } finally {
+    signal?.removeEventListener('abort', abort);
+  }
+}
+
+async function readStream(stream, { signal }) {
+  if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') {
+    throw new Error('Feishu file download returned no readable stream');
+  }
+  signal?.throwIfAborted();
+  const abort = () => stream.destroy?.(
+    signal.reason ?? new DOMException('Feishu file download aborted', 'AbortError'),
+  );
+  signal?.addEventListener('abort', abort, { once: true });
+  const chunks = [];
+  let size = 0;
+  try {
+    for await (const chunk of stream) {
+      signal?.throwIfAborted();
+      const data = Buffer.from(chunk);
+      size += data.length;
       chunks.push(data);
     }
     signal?.throwIfAborted();
@@ -196,7 +222,7 @@ async function feishuImageDownloadError(error, signal) {
   return new ImagePromptError(
     'feishu-image-permission-required',
     'Feishu image download requires the im:message:readonly tenant scope',
-    FEISHU_IMAGE_PERMISSION_MESSAGE,
+    t(FEISHU_IMAGE_PERMISSION_MESSAGE),
     { cause: error },
   );
 }
@@ -224,10 +250,30 @@ function feishuImageSource(event, client, key) {
         throw new ImagePromptError(
           'image-too-large',
           `Feishu image declares ${size} bytes; the limit is ${maxBytes}`,
-          '图片超过 5 MB，请压缩后重试。',
+          t('图片超过 5 MB，请压缩后重试。'),
         );
       }
       return readBoundedStream(resource?.getReadableStream?.(), { signal, maxBytes });
+    },
+  };
+}
+
+function feishuFileSource(event, client, file) {
+  const key = nonEmptyString(file?.file_key);
+  if (!key) return null;
+  return {
+    name: nonEmptyString(file?.file_name) ?? 'file',
+    async load({ signal } = {}) {
+      signal?.throwIfAborted();
+      const resource = await client?.im?.v1?.messageResource?.get?.({
+        path: {
+          message_id: event.message.message_id,
+          file_key: key,
+        },
+        params: { type: 'file' },
+      });
+      signal?.throwIfAborted();
+      return readStream(resource?.getReadableStream?.(), { signal });
     },
   };
 }
@@ -240,9 +286,11 @@ export function extractInboundMessage(event, client) {
     ? nonEmptyString(parsed?.image_key)
     : null;
   const imageKeys = standaloneImageKey ? [standaloneImageKey] : post?.imageKeys ?? [];
+  const file = messageType === 'file' ? feishuFileSource(event, client, parsed) : null;
   return {
     content: messageType === 'text' ? extractText(event) ?? '' : post?.text ?? '',
     images: imageKeys.map((key) => feishuImageSource(event, client, key)),
+    files: file ? [file] : [],
   };
 }
 

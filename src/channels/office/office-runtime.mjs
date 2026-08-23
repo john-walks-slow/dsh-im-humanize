@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { t } from '../shared/i18n.mjs';
 import { OfficeTransport } from './office-transport.mjs';
 import { OFFICE_PROTOCOL_VERSION } from './protocol.mjs';
 import { OfficeJobExecutor } from './office-job-executor.mjs';
@@ -9,12 +10,12 @@ const RETRY_DELAYS = Object.freeze([1_000, 3_000, 10_000, 30_000]);
 function safeConnectionError(error) {
   const code = typeof error?.code === 'string' ? error.code : 'office-connection-failed';
   const messages = {
-    'invalid-device-token': 'AI Office 拒绝了 Device Token。',
-    'office-hook-unavailable': 'AI Office Connector Hook 尚未就绪。',
-    'office-protocol-mismatch': 'AI Office Connector 协议版本不兼容。',
-    'office-transport-failed': '本机暂时无法访问 AI Office。',
+    'invalid-device-token': t('AI Office 拒绝了 Device Token。'),
+    'office-hook-unavailable': t('AI Office Connector Hook 尚未就绪。'),
+    'office-protocol-mismatch': t('AI Office Connector 协议版本不兼容。'),
+    'office-transport-failed': t('本机暂时无法访问 AI Office。'),
   };
-  return { code, message: messages[code] ?? 'AI Office 连接已中断。' };
+  return { code, message: messages[code] ?? t('AI Office 连接已中断。') };
 }
 
 export class OfficeRuntime {

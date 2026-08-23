@@ -1,4 +1,5 @@
 import { connectionTestMessage } from '../shared/connection-test.mjs';
+import { t } from '../shared/i18n.mjs';
 import { deriveSlackBotIdentity, maskSlackBotId } from './config-store.mjs';
 import { inspectSlackCredentials } from './slack-api.mjs';
 import { SLACK_DESCRIPTOR } from './slack-bridge.mjs';
@@ -60,7 +61,7 @@ export class SlackController {
         if (!resolved) {
           this.#errors.set(config.botId, safeError(
             'missing-token',
-            'Slack机器人凭据缺失，请移除后重新接入。',
+            t('Slack机器人凭据缺失，请移除后重新接入。'),
           ));
           return;
         }
@@ -70,7 +71,7 @@ export class SlackController {
         } catch (error) {
           this.#errors.set(config.botId, safeError(
             'connection-failed',
-            'Slack Socket Mode 连接未就绪，插件会自动重试。',
+            t('Slack Socket Mode 连接未就绪，插件会自动重试。'),
           ));
           this.#logger.warn?.(
             `[dsh-im:slack] bot ${config.botId} failed to initialize:`,
@@ -135,7 +136,7 @@ export class SlackController {
       } catch (error) {
         this.#errors.set(identity.botId, safeError(
           'connection-failed',
-          'Slack机器人已接入，Socket Mode 连接暂未就绪。',
+          t('Slack机器人已接入，Socket Mode 连接暂未就绪。'),
         ));
         this.#logger.warn?.(
           `[dsh-im:slack] bot ${identity.botId} credential connection failed:`,
@@ -159,7 +160,7 @@ export class SlackController {
       } catch (error) {
         this.#errors.set(botId, safeError(
           'connection-failed',
-          'Slack Socket Mode 连接仍未就绪，请检查两个 Token。',
+          t('Slack Socket Mode 连接仍未就绪，请检查两个 Token。'),
         ));
         throw error;
       } finally {
@@ -175,13 +176,13 @@ export class SlackController {
     return this.#withBotTransition(botId, async () => {
       const runtime = this.#runtimes.get(botId);
       if (!runtime?.status?.ready || typeof runtime.sendConnectionTest !== 'function') {
-        const error = new Error('Slack机器人尚未连接');
+        const error = new Error(t('Slack机器人尚未连接'));
         error.code = 'test-target-unavailable';
         throw error;
       }
       await runtime.sendConnectionTest(connectionTestMessage(
         `${config.name}（${maskSlackBotId(config.platformId)}）`,
-        'Slack机器人',
+        t('Slack机器人'),
       ));
       return { sent: true };
     });
@@ -243,9 +244,9 @@ export class SlackController {
         },
         health: {
           status: connected ? 'healthy' : state === 'error' ? 'error' : 'offline',
-          summary: connected ? `Slack${SLACK_DESCRIPTOR.connectionLabel}运行正常`
-            : state === 'error' ? 'Slack连接未就绪，插件会自动重试'
-              : 'Slack连接当前离线',
+          summary: connected ? t(`Slack${SLACK_DESCRIPTOR.connectionLabel}运行正常`)
+            : state === 'error' ? t('Slack连接未就绪，插件会自动重试')
+              : t('Slack连接当前离线'),
           lastCheckedAt: runtimeStatus?.lastCheckedAt ?? null,
           lastConnectedAt: runtimeStatus?.lastConnectedAt ?? null,
         },

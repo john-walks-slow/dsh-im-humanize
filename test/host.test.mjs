@@ -35,7 +35,12 @@ test('Host composes nine IM channels and the AI Office connector inside one plug
   await plugin.apply(ctx, config);
 
   assert.equal(name, 'dsh-im-host');
-  assert.deepEqual(inject, ['connection', 'credentials', 'webServer', 'typertGateway']);
+  assert.deepEqual(inject, [
+    'connection',
+    'credentials',
+    'webServer',
+    'typertGateway',
+  ]);
   assert.deepEqual(calls, [
     ['feishu', ctx, { ...config.feishu, rpcAuthority: 'trusted-host' }],
     ['weixin', ctx, { ...config.weixin, rpcAuthority: 'trusted-host' }],

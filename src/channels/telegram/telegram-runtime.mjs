@@ -1,6 +1,15 @@
+import { randomInt } from 'node:crypto';
+
 import { createEditableMessageStream, splitMessageText } from '../shared/editable-message-stream.mjs';
+import { createTextDeliveryBlock } from '../shared/semantic/delivery.mjs';
+import { t } from '../shared/i18n.mjs';
 import { COMMANDS_MENU_BUTTON, TelegramApi } from './telegram-api.mjs';
 import { createTelegramBridgeStatus, TelegramHarnessBridge } from './telegram-bridge.mjs';
+import {
+  splitTelegramRegularText,
+  splitTelegramRichMarkdown,
+  toTelegramRichMarkdown,
+} from './telegram-rich-message.mjs';
 import {
   TELEGRAM_ACCESS_MODES,
   normalizeTelegramAccessPolicy,
@@ -22,6 +31,13 @@ export const TELEGRAM_COMMAND_MENU = Object.freeze([
   { command: 'status', description: '检查连接状态' },
   { command: 'help', description: '显示帮助' },
 ]);
+
+export function telegramCommandMenu() {
+  return TELEGRAM_COMMAND_MENU.map((item) => ({
+    ...item,
+    description: t(item.description),
+  }));
+}
 
 function escaped(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -100,9 +116,27 @@ function telegramImageSource(message, loadFile) {
   };
 }
 
-export function normalizeTelegramUpdate(update, { botId, username, loadFile = async () => {
-  throw new Error('Telegram file downloader is unavailable');
-} }) {
+function telegramFileSource(message, loadFile) {
+  const file = message?.document;
+  if (!file || imageTypeForDocument(file)
+    || typeof file.file_id !== 'string' || !file.file_id) return null;
+  const mediaType = typeof file.mime_type === 'string' && file.mime_type
+    ? file.mime_type.toLowerCase() : undefined;
+  return {
+    name: typeof file.file_name === 'string' && file.file_name
+      ? file.file_name : String(file.file_unique_id ?? file.file_id),
+    ...(mediaType ? { mediaType } : {}),
+    size: fileSize(file.file_size),
+    load: ({ signal } = {}) => loadFile(file.file_id, { signal }),
+  };
+}
+
+export function normalizeTelegramUpdate(update, {
+  botId,
+  username,
+  loadFile = async () => { throw new Error('Telegram file downloader is unavailable'); },
+  loadFileStream = loadFile,
+}) {
   const message = update?.message;
   const chatId = message?.chat?.id;
   const senderId = message?.from?.id;
@@ -117,6 +151,7 @@ export function normalizeTelegramUpdate(update, { botId, username, loadFile = as
   const messageThreadId = Number.isSafeInteger(message.message_thread_id)
     ? message.message_thread_id : undefined;
   const image = telegramImageSource(message, loadFile);
+  const file = telegramFileSource(message, loadFileStream);
   return {
     messageId: String(update.update_id),
     senderId: String(senderId),
@@ -126,9 +161,11 @@ export function normalizeTelegramUpdate(update, { botId, username, loadFile = as
       ? String(chatId) : `${chatId}:${messageThreadId}`,
     content: withoutBotMention(message.text ?? message.caption ?? '', username),
     images: image ? [image] : [],
+    files: file ? [file] : [],
     addressed,
     replyTarget: {
       chatId,
+      chatType: message.chat.type,
       replyToMessageId: messageId,
       messageThreadId,
     },
@@ -146,28 +183,119 @@ export function telegramInboundAllowed(message, {
     && allowedPrivateUserIds.has(String(message.senderId));
 }
 
-class TelegramBotClient {
+function telegramMessageId(value) {
+  return Number.isSafeInteger(value?.message_id) ? String(value.message_id) : null;
+}
+
+function telegramFailure(error) {
+  const providerCode = Number(error?.providerCode);
+  const status = Number(error?.status);
+  const unknown = error?.deliveryOutcome === 'unknown'
+    || providerCode >= 500
+    || status >= 500
+    || ['telegram-timeout', 'telegram-aborted-after-dispatch', 'telegram-transport-error',
+      'telegram-response-invalid'].includes(error?.code);
+  return {
+    outcome: unknown ? 'unknown' : 'failed',
+    reason: typeof error?.code === 'string' && error.code
+      ? error.code
+      : unknown ? 'telegram-delivery-uncertain' : 'telegram-provider-rejected',
+  };
+}
+
+function deliveryResult(presentation, providerMessageIds, deliveryOutcome = 'sent', reason) {
+  return {
+    presentation,
+    providerMessageIds: [...new Set(providerMessageIds)],
+    deliveryOutcome,
+    ...(reason ? { reason } : {}),
+  };
+}
+
+class TelegramDeliveryStream {
+  #update;
+  #finish;
+  #fail;
+  #logger;
+  #providerMessageIds;
+  #closed = false;
+  #lastUpdate = null;
+
+  constructor({ update, finish, fail, providerMessageIds = [], presentation, logger }) {
+    this.#update = update;
+    this.#finish = finish;
+    this.#fail = fail;
+    this.#providerMessageIds = providerMessageIds;
+    this.presentation = presentation;
+    this.#logger = logger;
+  }
+
+  get providerMessageIds() {
+    return [...this.#providerMessageIds];
+  }
+
+  async update(value) {
+    if (this.#closed) return undefined;
+    const block = createTextDeliveryBlock(value);
+    const key = `${block.format}:${block.text}`;
+    if (key === this.#lastUpdate) return undefined;
+    this.#lastUpdate = key;
+    try {
+      return await this.#update(block);
+    } catch (error) {
+      this.#logger.warn?.('[dsh-im:telegram] rich stream update failed:', error);
+      return undefined;
+    }
+  }
+
+  async finish(value) {
+    if (this.#closed) throw new Error('Message stream is already closed');
+    this.#closed = true;
+    const result = await this.#finish(createTextDeliveryBlock(value));
+    this.#providerMessageIds.push(...(result?.providerMessageIds ?? []));
+    return result;
+  }
+
+  async fail(text) {
+    if (this.#closed) return undefined;
+    this.#closed = true;
+    const result = await this.#fail(createTextDeliveryBlock(text, 'plain'));
+    this.#providerMessageIds.push(...(result?.providerMessageIds ?? []));
+    return result;
+  }
+
+  cancel() {
+    this.#closed = true;
+  }
+}
+
+export class TelegramBotClient {
   #api;
   #signal;
+  #logger;
 
-  constructor({ api, signal }) {
+  constructor({ api, signal, logger = console }) {
     this.#api = api;
     this.#signal = signal;
+    this.#logger = logger;
   }
 
   async sendText(target, text) {
-    const chunks = splitMessageText(text, 4_000);
-    let result = null;
+    const chunks = splitTelegramRegularText(text);
+    const providerMessageIds = [];
     for (const [index, chunk] of chunks.entries()) {
-      result = await this.#api.sendMessage({
+      const result = await this.#api.sendMessage({
         chatId: target.chatId,
         text: chunk,
         replyToMessageId: index === 0 ? target.replyToMessageId : undefined,
         messageThreadId: target.messageThreadId,
         signal: this.#signal,
       });
+      if (Number.isSafeInteger(result?.message_id)) {
+        providerMessageIds.push(String(result.message_id));
+      }
     }
-    return result;
+    return { providerMessageIds };
   }
 
   sendTyping(target) {
@@ -175,6 +303,285 @@ class TelegramBotClient {
       chatId: target.chatId,
       messageThreadId: target.messageThreadId,
       signal: this.#signal,
+    });
+  }
+
+  sendFile(target, file) {
+    return this.#api.sendDocument({
+      chatId: target.chatId,
+      file,
+      replyToMessageId: target.replyToMessageId,
+      messageThreadId: target.messageThreadId,
+      signal: this.#signal,
+    });
+  }
+
+  sendImage(target, file) {
+    return this.#api.sendPhoto({
+      chatId: target.chatId,
+      file,
+      replyToMessageId: target.replyToMessageId,
+      messageThreadId: target.messageThreadId,
+      signal: this.#signal,
+    });
+  }
+
+  async #sendPlain(target, text, { placeholderMessageId } = {}) {
+    const chunks = splitTelegramRegularText(text);
+    const providerMessageIds = placeholderMessageId === undefined
+      ? []
+      : [String(placeholderMessageId)];
+    let firstUnsent = 0;
+    if (placeholderMessageId !== undefined) {
+      try {
+        await this.#api.editMessageText({
+          chatId: target.chatId,
+          messageId: placeholderMessageId,
+          text: chunks[0],
+          signal: this.#signal,
+        });
+        firstUnsent = 1;
+      } catch (error) {
+        const failure = telegramFailure(error);
+        if (failure.outcome === 'unknown') {
+          return deliveryResult('text-fallback', providerMessageIds, 'unknown', failure.reason);
+        }
+
+        const fallback = await this.#sendPlain(target, text);
+        const terminalText = fallback.deliveryOutcome === 'sent'
+          ? '回复已发送。'
+          : fallback.deliveryOutcome === 'unknown'
+            ? '回复发送结果未能确认。'
+            : '消息发送失败，请稍后重试。';
+        try {
+          await this.#api.editMessageText({
+            chatId: target.chatId,
+            messageId: placeholderMessageId,
+            text: terminalText,
+            signal: this.#signal,
+          });
+        } catch (terminalError) {
+          this.#logger.warn?.(
+            '[dsh-im:telegram] unable to replace the processing placeholder:',
+            terminalError,
+          );
+        }
+        return deliveryResult(
+          'text-fallback',
+          [...providerMessageIds, ...fallback.providerMessageIds],
+          fallback.deliveryOutcome,
+          fallback.reason,
+        );
+      }
+    }
+
+    for (let index = firstUnsent; index < chunks.length; index += 1) {
+      try {
+        const result = await this.#api.sendMessage({
+          chatId: target.chatId,
+          text: chunks[index],
+          replyToMessageId: index === 0 ? target.replyToMessageId : undefined,
+          messageThreadId: target.messageThreadId,
+          signal: this.#signal,
+        });
+        const id = telegramMessageId(result);
+        if (id) providerMessageIds.push(id);
+      } catch (error) {
+        const failure = telegramFailure(error);
+        return deliveryResult(
+          'text-fallback',
+          providerMessageIds,
+          failure.outcome,
+          failure.reason,
+        );
+      }
+    }
+    return deliveryResult('text-fallback', providerMessageIds);
+  }
+
+  async #sendRich(target, block) {
+    if (block.format === 'plain') return this.#sendPlain(target, block.text);
+
+    let chunks;
+    try {
+      chunks = splitTelegramRichMarkdown(block.text);
+    } catch {
+      return this.#sendPlain(target, block.text);
+    }
+    const providerMessageIds = [];
+    for (const [index, chunk] of chunks.entries()) {
+      try {
+        const result = await this.#api.sendRichMessage({
+          chatId: target.chatId,
+          richMessage: { markdown: chunk.markdown },
+          replyToMessageId: index === 0 ? target.replyToMessageId : undefined,
+          messageThreadId: target.messageThreadId,
+          signal: this.#signal,
+        });
+        const id = telegramMessageId(result);
+        if (id) providerMessageIds.push(id);
+      } catch (error) {
+        const failure = telegramFailure(error);
+        if (failure.outcome === 'unknown') {
+          return deliveryResult(
+            'telegram-rich-final',
+            providerMessageIds,
+            'unknown',
+            failure.reason,
+          );
+        }
+        const remaining = chunks.slice(index).map((part) => part.source).join('');
+        const fallback = await this.#sendPlain({
+          ...target,
+          replyToMessageId: index === 0 ? target.replyToMessageId : undefined,
+        }, remaining);
+        return deliveryResult(
+          fallback.presentation,
+          [...providerMessageIds, ...fallback.providerMessageIds],
+          fallback.deliveryOutcome,
+          fallback.reason,
+        );
+      }
+    }
+    return deliveryResult('telegram-rich-final', providerMessageIds);
+  }
+
+  async #editRich(target, messageId, block) {
+    if (block.format === 'plain') {
+      return this.#sendPlain(target, block.text, {
+        placeholderMessageId: messageId,
+      });
+    }
+
+    let chunks;
+    try {
+      chunks = splitTelegramRichMarkdown(block.text);
+    } catch {
+      return this.#sendPlain(target, block.text, { placeholderMessageId: messageId });
+    }
+    const providerMessageIds = [String(messageId)];
+    try {
+      await this.#api.editMessageText({
+        chatId: target.chatId,
+        messageId,
+        richMessage: { markdown: chunks[0].markdown },
+        signal: this.#signal,
+      });
+    } catch (error) {
+      const failure = telegramFailure(error);
+      if (failure.outcome === 'unknown') {
+        return deliveryResult(
+          'telegram-rich-final',
+          providerMessageIds,
+          'unknown',
+          failure.reason,
+        );
+      }
+      return this.#sendPlain(target, block.text, { placeholderMessageId: messageId });
+    }
+
+    for (const [offset, chunk] of chunks.slice(1).entries()) {
+      try {
+        const result = await this.#api.sendRichMessage({
+          chatId: target.chatId,
+          richMessage: { markdown: chunk.markdown },
+          messageThreadId: target.messageThreadId,
+          signal: this.#signal,
+        });
+        const id = telegramMessageId(result);
+        if (id) providerMessageIds.push(id);
+      } catch (error) {
+        const failure = telegramFailure(error);
+        if (failure.outcome === 'unknown') {
+          return deliveryResult(
+            'telegram-rich-final',
+            providerMessageIds,
+            'unknown',
+            failure.reason,
+          );
+        }
+        const remaining = chunks.slice(offset + 1).map((part) => part.source).join('');
+        const fallback = await this.#sendPlain({
+          ...target,
+          replyToMessageId: undefined,
+        }, remaining);
+        return deliveryResult(
+          fallback.presentation,
+          [...providerMessageIds, ...fallback.providerMessageIds],
+          fallback.deliveryOutcome,
+          fallback.reason,
+        );
+      }
+    }
+    return deliveryResult('telegram-rich-final', providerMessageIds);
+  }
+
+  sendDelivery(target, value) {
+    return this.#sendRich(target, createTextDeliveryBlock(value));
+  }
+
+  async openDeliveryStream(target) {
+    if (target.chatType === 'private') {
+      const draftId = randomInt(1, 2_147_483_647);
+      const updateDraft = async (block) => {
+        const richMessage = { markdown: toTelegramRichMarkdown(block.text) };
+        await this.#api.sendRichMessageDraft({
+          chatId: target.chatId,
+          draftId,
+          richMessage,
+          messageThreadId: target.messageThreadId,
+          signal: this.#signal,
+        });
+        return deliveryResult('telegram-rich-draft', []);
+      };
+      const stream = new TelegramDeliveryStream({
+        update: updateDraft,
+        finish: (block) => this.#sendRich(target, block),
+        fail: (block) => this.#sendPlain(target, block.text),
+        presentation: 'telegram-rich-draft',
+        logger: this.#logger,
+      });
+      await stream.update(createTextDeliveryBlock('正在处理…', 'plain'));
+      return stream;
+    }
+
+    const placeholder = await this.#api.sendMessage({
+      chatId: target.chatId,
+      text: '正在处理…',
+      replyToMessageId: target.replyToMessageId,
+      messageThreadId: target.messageThreadId,
+      signal: this.#signal,
+    });
+    const messageId = placeholder?.message_id;
+    if (!Number.isSafeInteger(messageId)) {
+      throw new Error('Telegram did not return a placeholder message id');
+    }
+    return new TelegramDeliveryStream({
+      update: async (block) => {
+        if (block.format === 'plain') {
+          await this.#api.editMessageText({
+            chatId: target.chatId,
+            messageId,
+            text: block.text,
+            signal: this.#signal,
+          });
+          return deliveryResult('text-fallback', [String(messageId)]);
+        }
+        await this.#api.editMessageText({
+          chatId: target.chatId,
+          messageId,
+          richMessage: { markdown: toTelegramRichMarkdown(block.text) },
+          signal: this.#signal,
+        });
+        return deliveryResult('telegram-rich-draft', [String(messageId)]);
+      },
+      finish: (block) => this.#editRich(target, messageId, block),
+      fail: (block) => this.#sendPlain(target, block.text, {
+        placeholderMessageId: messageId,
+      }),
+      providerMessageIds: [String(messageId)],
+      presentation: 'telegram-regular',
+      logger: this.#logger,
     });
   }
 
@@ -203,6 +610,7 @@ class TelegramBotClient {
         messageThreadId: target.messageThreadId,
         signal: this.#signal,
       }),
+      messageIdForResult: (message) => message?.message_id,
     });
     return stream.start();
   }
@@ -303,12 +711,12 @@ export class TelegramRuntime {
       }
       const webhook = await api.getWebhookInfo({ signal: controller.signal });
       if (typeof webhook?.url === 'string' && webhook.url) {
-        const error = new Error('该 Telegram 机器人已配置 Webhook，请先在原服务中移除 Webhook 后重试。');
+        const error = new Error(t('该 Telegram 机器人已配置 Webhook，请先在原服务中移除 Webhook 后重试。'));
         error.code = 'webhook-configured';
         throw error;
       }
       try {
-        await api.setMyCommands({ commands: TELEGRAM_COMMAND_MENU, signal: controller.signal });
+        await api.setMyCommands({ commands: telegramCommandMenu(), signal: controller.signal });
         await api.setChatMenuButton({ menuButton: COMMANDS_MENU_BUTTON, signal: controller.signal });
       } catch (error) {
         this.#logger.warn?.(
@@ -316,7 +724,11 @@ export class TelegramRuntime {
           error,
         );
       }
-      const client = new TelegramBotClient({ api, signal: controller.signal });
+      const client = new TelegramBotClient({
+        api,
+        signal: controller.signal,
+        logger: this.#logger,
+      });
       this.#bridge = new TelegramHarnessBridge({
         bot: client,
         harness: this.#harness,
@@ -367,6 +779,7 @@ export class TelegramRuntime {
           botId: this.#config.platformId,
           username: this.#config.username,
           loadFile: (fileId, options) => this.#api.downloadFile({ fileId, ...options }),
+          loadFileStream: (fileId, options) => this.#api.downloadFileStream({ fileId, ...options }),
         });
         if (message && telegramInboundAllowed(message, {
           accessMode: this.#accessMode,

@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   createWeixinApi,
   decryptWeixinImage,
+  extractWeixinFiles,
   extractWeixinText,
   normalizeWeixinApiBaseUrl,
   parseWeixinImageAesKey,
@@ -63,6 +64,42 @@ test('iLink image references download lazily from the canonical CDN and decrypt 
   );
   assert.equal(calls[0].init.method, 'GET');
   assert.equal(calls[0].init.redirect, 'manual');
+});
+
+test('iLink native file items download lazily and decrypt without image size or type rules', async () => {
+  const key = randomBytes(16);
+  const plaintext = Buffer.from('weixin-native-file');
+  const ciphertext = encryptImage(plaintext, key);
+  const calls = [];
+  const files = extractWeixinFiles({
+    item_list: [{
+      type: 4,
+      file_item: {
+        media: {
+          encrypt_query_param: 'native-file-ticket',
+          aes_key: Buffer.from(key.toString('hex')).toString('base64'),
+          encrypt_type: 1,
+        },
+        file_name: '微信报告.zip',
+        len: String(plaintext.length),
+      },
+    }],
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url: url.toString(), init });
+      return new Response(ciphertext);
+    },
+  });
+
+  assert.equal(files.length, 1);
+  assert.equal(files[0].name, '微信报告.zip');
+  assert.equal(files[0].size, plaintext.length);
+  assert.equal(calls.length, 0, 'file download stays lazy');
+  assert.deepEqual(await files[0].load({}), plaintext);
+  assert.deepEqual(calls, [{
+    url: 'https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=native-file-ticket',
+    init: { method: 'GET', signal: undefined, redirect: 'manual' },
+  }]);
 });
 
 test('Weixin image keys support both documented CDN encodings and reject unsafe URLs', () => {
@@ -167,8 +204,335 @@ test('sendText emits the iLink message envelope without reflecting the token in 
   assert.equal(body.msg.context_token, 'message-context');
   assert.equal(body.msg.item_list[0].text_item.text, 'Harness reply');
   assert.equal(body.base_info.channel_version, '2.4.6');
-  assert.equal(body.base_info.bot_agent, 'DeepSeekHarness/1.0.2');
+  assert.equal(body.base_info.bot_agent, 'DeepSeekHarness/1.1.0');
   assert.doesNotMatch(calls[0].init.body, /host-only-token/);
+});
+
+test('sendFile uses the iLink 2.4.6 encrypted CDN flow and sends a native file item', async () => {
+  const calls = [];
+  const api = createWeixinApi({
+    fetchImpl: async (url, init) => {
+      calls.push({ url: url.toString(), init });
+      if (url.pathname.endsWith('/getuploadurl')) {
+        return jsonResponse({
+          ret: 0,
+          upload_full_url: 'https://novac2c.cdn.weixin.qq.com/c2c/upload?ticket=one',
+        });
+      }
+      if (url.pathname === '/c2c/upload') {
+        return new Response(null, {
+          status: 200,
+          headers: { 'x-encrypted-param': 'download-ticket' },
+        });
+      }
+      return jsonResponse({ ret: 0 });
+    },
+  });
+  const plaintext = Buffer.from('weixin-native-file');
+  const result = await api.sendFile({
+    baseUrl: 'https://ilinkai.weixin.qq.com',
+    token: 'host-only-token',
+    toUserId: 'wx-user',
+    contextToken: 'message-context',
+    runId: 'run-1',
+    file: {
+      artifactId: 'artifact-one',
+      deliveryKey: 'session:turn:artifact-one',
+      fileName: 'result.txt',
+      mediaType: 'text/plain',
+      bytes: plaintext,
+    },
+  });
+
+  assert.equal(calls.length, 3);
+  const ticket = JSON.parse(calls[0].init.body);
+  assert.equal(ticket.media_type, 3);
+  assert.equal(ticket.to_user_id, 'wx-user');
+  assert.equal(ticket.rawsize, plaintext.length);
+  assert.equal(ticket.rawfilemd5, 'ae8e1f4207c0468828419884f7329cb8');
+  assert.equal(ticket.filesize, 32);
+  assert.equal(ticket.no_need_thumb, true);
+  assert.match(ticket.aeskey, /^[0-9a-f]{32}$/);
+
+  assert.equal(calls[1].init.headers.Authorization, undefined);
+  assert.equal(calls[1].init.headers['content-type'], 'application/octet-stream');
+  assert.equal(calls[1].init.body.byteLength, 32);
+  assert.equal(
+    decryptWeixinImage(calls[1].init.body, Buffer.from(ticket.aeskey, 'hex')).equals(plaintext),
+    true,
+  );
+
+  const sent = JSON.parse(calls[2].init.body).msg;
+  assert.equal(sent.context_token, 'message-context');
+  assert.equal(sent.run_id, 'run-1');
+  assert.match(sent.client_id, /^dsh-weixin-[0-9a-f]{32}$/);
+  assert.equal(result.messageId, sent.client_id);
+  assert.deepEqual(sent.item_list, [{
+    type: 4,
+    file_item: {
+      media: {
+        encrypt_query_param: 'download-ticket',
+        aes_key: Buffer.from(ticket.aeskey).toString('base64'),
+        encrypt_type: 1,
+      },
+      file_name: 'result.txt',
+      len: String(plaintext.length),
+    },
+  }]);
+});
+
+test('sendImage uses the encrypted CDN flow and sends a native image item', async () => {
+  const calls = [];
+  const api = createWeixinApi({
+    fetchImpl: async (url, init) => {
+      calls.push({ url: url.toString(), init });
+      if (url.pathname.endsWith('/getuploadurl')) {
+        return jsonResponse({
+          ret: 0,
+          upload_full_url: 'https://novac2c.cdn.weixin.qq.com/c2c/upload?ticket=image-one',
+        });
+      }
+      if (url.pathname === '/c2c/upload') {
+        return new Response(null, {
+          status: 200,
+          headers: { 'x-encrypted-param': 'download-image-ticket' },
+        });
+      }
+      return jsonResponse({ ret: 0 });
+    },
+  });
+  const plaintext = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x01, 0x02, 0x03,
+  ]);
+  const result = await api.sendImage({
+    baseUrl: 'https://ilinkai.weixin.qq.com',
+    token: 'host-only-token',
+    toUserId: 'wx-user',
+    contextToken: 'message-context',
+    runId: 'run-image',
+    file: {
+      artifactId: 'artifact-image',
+      deliveryKey: 'session:turn:artifact-image',
+      fileName: 'result.png',
+      mediaType: 'image/png',
+      bytes: plaintext,
+    },
+  });
+
+  assert.equal(calls.length, 3);
+  const ticket = JSON.parse(calls[0].init.body);
+  assert.equal(ticket.media_type, 1);
+  assert.equal(ticket.to_user_id, 'wx-user');
+  assert.equal(ticket.rawsize, plaintext.length);
+  assert.equal(ticket.filesize, 16);
+  assert.equal(ticket.no_need_thumb, true);
+  assert.match(ticket.aeskey, /^[0-9a-f]{32}$/);
+  assert.equal(
+    decryptWeixinImage(calls[1].init.body, Buffer.from(ticket.aeskey, 'hex')).equals(plaintext),
+    true,
+  );
+
+  const sent = JSON.parse(calls[2].init.body).msg;
+  assert.equal(sent.context_token, 'message-context');
+  assert.equal(sent.run_id, 'run-image');
+  assert.match(sent.client_id, /^dsh-weixin-[0-9a-f]{32}$/);
+  assert.equal(result.messageId, sent.client_id);
+  assert.deepEqual(sent.item_list, [{
+    type: 2,
+    image_item: {
+      media: {
+        encrypt_query_param: 'download-image-ticket',
+        aes_key: Buffer.from(ticket.aeskey).toString('base64'),
+        encrypt_type: 1,
+      },
+      mid_size: 16,
+    },
+  }]);
+});
+
+function weixinFileRequest(overrides = {}) {
+  return {
+    baseUrl: 'https://ilinkai.weixin.qq.com',
+    token: 'host-only-token',
+    toUserId: 'wx-user',
+    file: {
+      artifactId: 'artifact-error-case',
+      deliveryKey: 'session:turn:artifact-error-case',
+      fileName: 'result.txt',
+      mediaType: 'text/plain',
+      bytes: Buffer.from('weixin-error-case'),
+    },
+    ...overrides,
+  };
+}
+
+function weixinFileFetch(finalResponse) {
+  return async (url, init) => {
+    if (url.pathname.endsWith('/getuploadurl')) {
+      return jsonResponse({
+        ret: 0,
+        upload_full_url: 'https://novac2c.cdn.weixin.qq.com/c2c/upload?ticket=error-case',
+      });
+    }
+    if (url.pathname === '/c2c/upload') {
+      return new Response(null, {
+        status: 200,
+        headers: { 'x-encrypted-param': 'download-error-case' },
+      });
+    }
+    return finalResponse(url, init);
+  };
+}
+
+test('sendFile marks every ambiguous sendmessage result as uncertain', async (t) => {
+  const cases = [
+    {
+      name: 'network failure',
+      finalResponse: async () => { throw new TypeError('private socket detail'); },
+    },
+    {
+      name: 'timeout',
+      finalResponse: async () => {
+        throw new WeixinApiError('timeout', 'private timeout detail');
+      },
+    },
+    {
+      name: 'invalid JSON',
+      finalResponse: async () => new Response('{not-json', { status: 200 }),
+    },
+    {
+      name: 'HTTP 5xx',
+      finalResponse: async () => jsonResponse({ ret: -1 }, { status: 503 }),
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const api = createWeixinApi({
+        fetchImpl: weixinFileFetch(scenario.finalResponse),
+      });
+      await assert.rejects(
+        api.sendFile(weixinFileRequest()),
+        (error) => error.code === 'artifact-delivery-uncertain'
+          && !error.message.includes('private'),
+      );
+    });
+  }
+});
+
+test('sendImage preserves the uncertain final-delivery boundary', async () => {
+  const api = createWeixinApi({
+    fetchImpl: weixinFileFetch(async () => { throw new TypeError('private socket detail'); }),
+  });
+
+  await assert.rejects(
+    api.sendImage(weixinFileRequest({
+      file: {
+        artifactId: 'artifact-image-error',
+        deliveryKey: 'session:turn:artifact-image-error',
+        fileName: 'result.png',
+        mediaType: 'image/png',
+        bytes: Buffer.from('image-error-case'),
+      },
+    })),
+    (error) => error.code === 'artifact-delivery-uncertain'
+      && !error.message.includes('private'),
+  );
+});
+
+test('sendFile maps definitive sendmessage rejection statuses without treating them as uncertain', async (t) => {
+  const cases = [
+    { name: 'permission', status: 403, code: 'artifact-permission-required' },
+    { name: 'too large', status: 413, code: 'artifact-too-large' },
+    { name: 'rate limited', status: 429, code: 'artifact-rate-limited' },
+    { name: 'provider rejected', status: 400, code: 'artifact-provider-rejected' },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const api = createWeixinApi({
+        fetchImpl: weixinFileFetch(async () => jsonResponse(
+          { ret: scenario.status },
+          { status: scenario.status },
+        )),
+      });
+      await assert.rejects(
+        api.sendFile(weixinFileRequest()),
+        (error) => error.code === scenario.code,
+      );
+    });
+  }
+
+  const permissionApi = createWeixinApi({
+    fetchImpl: weixinFileFetch(async () => jsonResponse({ ret: 403 })),
+  });
+  await assert.rejects(
+    permissionApi.sendFile(weixinFileRequest()),
+    (error) => error.code === 'artifact-permission-required'
+      && error.providerCode === '403',
+  );
+
+  const api = createWeixinApi({
+    fetchImpl: weixinFileFetch(async () => jsonResponse({ ret: -2001 })),
+  });
+  await assert.rejects(
+    api.sendFile(weixinFileRequest()),
+    (error) => error.code === 'artifact-provider-rejected'
+      && error.providerCode === '-2001',
+  );
+});
+
+test('sendFile preserves caller abort and never marks a pre-send preparation failure uncertain', async () => {
+  let preparationCalls = 0;
+  const preparationApi = createWeixinApi({
+    fetchImpl: async () => {
+      preparationCalls += 1;
+      throw new TypeError('private upload preparation failure');
+    },
+  });
+  await assert.rejects(
+    preparationApi.sendFile(weixinFileRequest()),
+    (error) => error.code === 'artifact-provider-failed'
+      && error.code !== 'artifact-delivery-uncertain',
+  );
+  assert.equal(preparationCalls, 1);
+
+  const controller = new AbortController();
+  const reason = new Error('caller stopped the turn');
+  const abortApi = createWeixinApi({
+    fetchImpl: weixinFileFetch(async () => {
+      controller.abort(reason);
+      throw new DOMException('Aborted', 'AbortError');
+    }),
+  });
+  await assert.rejects(
+    abortApi.sendFile(weixinFileRequest({ signal: controller.signal })),
+    (error) => error === reason && error.code !== 'artifact-delivery-uncertain',
+  );
+});
+
+test('sendFile rejects a provider upload URL outside the canonical Weixin CDN', async () => {
+  let calls = 0;
+  const api = createWeixinApi({
+    fetchImpl: async () => {
+      calls += 1;
+      return jsonResponse({
+        ret: 0,
+        upload_full_url: 'https://attacker.example/c2c/upload?ticket=one',
+      });
+    },
+  });
+  await assert.rejects(
+    api.sendFile({
+      baseUrl: 'https://ilinkai.weixin.qq.com',
+      token: 'host-only-token',
+      toUserId: 'wx-user',
+      file: { fileName: 'result.txt', bytes: Buffer.from('safe') },
+    }),
+    (error) => error instanceof WeixinApiError && error.code === 'untrusted-upload-url',
+  );
+  assert.equal(calls, 1);
 });
 
 test('getUpdates converts its own long-poll timeout into an empty successful poll', async () => {

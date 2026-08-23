@@ -23,6 +23,7 @@ import {
   EMPTY_AGENT_PRESET_CATALOG,
 } from "../../agent-preset.js";
 import { useWorkspaceSnapshotFence } from "../../workspace-snapshot-fence.js";
+import { BotStatusMeta, ChannelListHeading } from "../../channel-card-meta.js";
 import { installFeishuStyles } from "./styles.js";
 
 export const name = "feishu-settings";
@@ -591,15 +592,15 @@ export function BotCard({
             h("h3", { id: titleId, title: bot.name }, bot.name),
             h("p", { title: bot.appIdMasked }, bot.appIdMasked ?? "应用标识已安全保存")),
         ),
-        h("div", { className: "bxf-healthPill dim-botHealth", "data-health": stateForDisplay },
-          h("span", { className: "bxf-dot dim-healthDot", "data-tone": tone }),
-          h("span", null, HEALTH_LABELS[stateForDisplay] ?? "状态未知")),
-      ),
-      h("dl", { className: "bxf-statusGrid dim-botMetrics" },
-        h("div", { className: "bxf-metric dim-botMetric" }, h("dt", null, "消息通道"),
-          h("dd", null, connected ? "长连接" : stateForDisplay === "connecting" ? "连接中" : "已断开")),
-        h("div", { className: "bxf-metric dim-botMetric" }, h("dt", null, "最近检查"),
-          h("dd", null, formatCheckedTime(health.lastCheckedAt))),
+        h(BotStatusMeta, {
+          className: "bxf-healthPill",
+          dotClassName: "bxf-dot",
+          tone,
+          stateLabel: HEALTH_LABELS[stateForDisplay] ?? "状态未知",
+          lastCheckedAt: health.lastCheckedAt,
+          formatCheckedTime,
+          healthState: stateForDisplay,
+        }),
       ),
       h(WorkspaceEditor, {
         workspace: connection.workspace,
@@ -669,8 +670,12 @@ export function BotCard({
 
 function BotList(props) {
   return h("section", { className: "bxf-listSection dim-listSection", "aria-labelledby": "bxf-bot-list-title" },
-    h("div", { className: "bxf-listHeading dim-listHeading" },
-      h("h3", { id: "bxf-bot-list-title" }, "已接入的机器人")),
+    h(ChannelListHeading, {
+      className: "bxf-listHeading",
+      id: "bxf-bot-list-title",
+      title: "已接入的机器人",
+      connectionLabel: "长连接",
+    }),
     h("ul", { className: "bxf-botList dim-botList", role: "list" },
       props.bots.map((bot) => h("li", { key: bot.botId },
         h(BotCard, {
