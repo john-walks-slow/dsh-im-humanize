@@ -869,7 +869,7 @@ test('HarnessClient delivers an existing file-only Turn directly', async (t) => 
 test('HarnessReplyTracker correlates the prompt and emits only answer text', () => {
   const tracker = new HarnessReplyTracker({ promptRpcId: 'prompt-1', afterSeq: 10 });
 
-  assert.deepEqual(tracker.consume([
+  assert.equal(tracker.consume([
     { event: { type: 'turn/start', seq: 11, data: { turn: 4 } } },
     { event: {
       type: 'user/message',
@@ -882,7 +882,7 @@ test('HarnessReplyTracker correlates the prompt and emits only answer text', () 
       data: { turn: 4, step: 1, chunk: { type: 'text-delta', index: 0, text: '忽略' } },
     } },
     { event: { type: 'turn/end', seq: 14, data: { turn: 4, reason: { kind: 'completed' } } } },
-  ]), []);
+  ]), null);
   assert.equal(tracker.finished, false);
 
   const first = tracker.consume([
@@ -903,7 +903,7 @@ test('HarnessReplyTracker correlates the prompt and emits only answer text', () 
       data: { turn: 5, step: 1, chunk: { type: 'text-delta', index: 1, text: '深圳' } },
     } },
   ]);
-  assert.deepEqual(first, [{ type: 'text', text: '深圳' }]);
+  assert.deepEqual(first, { type: 'text', text: '深圳' });
 
   const second = tracker.consume([
     { event: {
@@ -917,7 +917,7 @@ test('HarnessReplyTracker correlates the prompt and emits only answer text', () 
       data: { turn: 5, step: 1, chunk: { type: 'text-delta', index: 1, text: '明天有雨' } },
     } },
   ]);
-  assert.deepEqual(second, [{ type: 'text', text: '深圳明天有雨' }]);
+  assert.deepEqual(second, { type: 'text', text: '深圳明天有雨' });
 
   const final = tracker.consume([
     { event: {
@@ -934,7 +934,7 @@ test('HarnessReplyTracker correlates the prompt and emits only answer text', () 
     } },
     { event: { type: 'turn/end', seq: 21, data: { turn: 5, reason: { kind: 'completed' } } } },
   ]);
-  assert.deepEqual(final, [{ type: 'text', text: '深圳明天有阵雨。' }]);
+  assert.deepEqual(final, { type: 'text', text: '深圳明天有阵雨。' });
   assert.equal(tracker.finished, true);
   assert.equal(tracker.answer, '深圳明天有阵雨。');
   assert.deepEqual(tracker.reason, { kind: 'completed' });
@@ -947,16 +947,16 @@ test('HarnessReplyTracker emits tool progress without exposing tool results', ()
     { type: 'user/message', seq: 2, data: { source: { rpcId: 'prompt-tool' } } },
     { type: 'tool/call', seq: 3, data: { turn: 1, step: 1, name: 'web_search' } },
   ]);
-  assert.deepEqual(update, [{ type: 'tool', name: 'web_search' }]);
+  assert.deepEqual(update, { type: 'tool', name: 'web_search' });
 
   assert.deepEqual(tracker.consume([
     { type: 'tool/result', seq: 4, data: { turn: 1, step: 1, secret: 'not rendered' } },
-  ]), [{ type: 'status', text: '正在整理结果…', toolName: 'web_search' }]);
+  ]), { type: 'status', text: '正在整理结果…', toolName: 'web_search' });
 });
 
 test('HarnessReplyTracker keeps every frame of a batched turn in order', () => {
   const tracker = new HarnessReplyTracker({ promptRpcId: 'prompt-batch' });
-  const updates = tracker.consume([
+  const updates = tracker.consumeAll([
     { type: 'turn/start', seq: 1, data: { turn: 1 } },
     { type: 'user/message', seq: 2, data: { source: { rpcId: 'prompt-batch' } } },
     { type: 'assistant/chunk', seq: 3, data: { turn: 1, step: 0, chunk: { type: 'text-delta', index: 0, text: '先创建再观察：' } } },
