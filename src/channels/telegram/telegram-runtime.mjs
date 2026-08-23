@@ -100,9 +100,27 @@ function telegramImageSource(message, loadFile) {
   };
 }
 
-export function normalizeTelegramUpdate(update, { botId, username, loadFile = async () => {
-  throw new Error('Telegram file downloader is unavailable');
-} }) {
+function telegramFileSource(message, loadFile) {
+  const file = message?.document;
+  if (!file || imageTypeForDocument(file)
+    || typeof file.file_id !== 'string' || !file.file_id) return null;
+  const mediaType = typeof file.mime_type === 'string' && file.mime_type
+    ? file.mime_type.toLowerCase() : undefined;
+  return {
+    name: typeof file.file_name === 'string' && file.file_name
+      ? file.file_name : String(file.file_unique_id ?? file.file_id),
+    ...(mediaType ? { mediaType } : {}),
+    size: fileSize(file.file_size),
+    load: ({ signal } = {}) => loadFile(file.file_id, { signal }),
+  };
+}
+
+export function normalizeTelegramUpdate(update, {
+  botId,
+  username,
+  loadFile = async () => { throw new Error('Telegram file downloader is unavailable'); },
+  loadFileStream = loadFile,
+}) {
   const message = update?.message;
   const chatId = message?.chat?.id;
   const senderId = message?.from?.id;
@@ -117,6 +135,7 @@ export function normalizeTelegramUpdate(update, { botId, username, loadFile = as
   const messageThreadId = Number.isSafeInteger(message.message_thread_id)
     ? message.message_thread_id : undefined;
   const image = telegramImageSource(message, loadFile);
+  const file = telegramFileSource(message, loadFileStream);
   return {
     messageId: String(update.update_id),
     senderId: String(senderId),
@@ -126,6 +145,7 @@ export function normalizeTelegramUpdate(update, { botId, username, loadFile = as
       ? String(chatId) : `${chatId}:${messageThreadId}`,
     content: withoutBotMention(message.text ?? message.caption ?? '', username),
     images: image ? [image] : [],
+    files: file ? [file] : [],
     addressed,
     replyTarget: {
       chatId,
@@ -381,6 +401,7 @@ export class TelegramRuntime {
           botId: this.#config.platformId,
           username: this.#config.username,
           loadFile: (fileId, options) => this.#api.downloadFile({ fileId, ...options }),
+          loadFileStream: (fileId, options) => this.#api.downloadFileStream({ fileId, ...options }),
         });
         if (message && telegramInboundAllowed(message, {
           accessMode: this.#accessMode,

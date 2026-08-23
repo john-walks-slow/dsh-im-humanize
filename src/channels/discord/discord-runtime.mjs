@@ -1,4 +1,5 @@
 import { createEditableMessageStream, splitMessageText } from '../shared/editable-message-stream.mjs';
+import { fetchFileStream } from '../shared/file-download.mjs';
 import { fetchImageBuffer } from '../shared/image-prompt.mjs';
 import { DiscordApi } from './discord-api.mjs';
 import { createDiscordBridgeStatus, DiscordHarnessBridge } from './discord-bridge.mjs';
@@ -88,6 +89,25 @@ function discordImageSource(attachment, fetchImpl) {
   };
 }
 
+function discordFileSource(attachment, fetchImpl) {
+  if (attachmentMediaType(attachment) || typeof attachment?.url !== 'string' || !attachment.url) {
+    return null;
+  }
+  const mediaType = typeof attachment.content_type === 'string' && attachment.content_type
+    ? attachment.content_type.split(';', 1)[0].trim().toLowerCase() : undefined;
+  return {
+    name: typeof attachment.filename === 'string' && attachment.filename
+      ? attachment.filename : String(attachment.id ?? 'discord-file'),
+    ...(mediaType ? { mediaType } : {}),
+    size: attachmentSize(attachment.size),
+    load: ({ signal } = {}) => fetchFileStream(attachment.url, {
+      fetchImpl,
+      signal,
+      allowedHosts: DISCORD_IMAGE_HOSTS,
+    }),
+  };
+}
+
 export function normalizeDiscordMessage(message, botId, { fetchImpl = fetch } = {}) {
   if (!message?.id || !message?.channel_id || !message?.author?.id) return null;
   const direct = !message.guild_id;
@@ -102,6 +122,9 @@ export function normalizeDiscordMessage(message, botId, { fetchImpl = fetch } = 
     content: stripBotMention(message.content ?? '', botId),
     images: Array.isArray(message.attachments)
       ? message.attachments.map((attachment) => discordImageSource(attachment, fetchImpl)).filter(Boolean)
+      : [],
+    files: Array.isArray(message.attachments)
+      ? message.attachments.map((attachment) => discordFileSource(attachment, fetchImpl)).filter(Boolean)
       : [],
     addressed,
     replyTarget: {

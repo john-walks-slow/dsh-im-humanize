@@ -196,6 +196,47 @@ export function extractWeixinImages(message, { fetchImpl = fetch } = {}) {
   return images;
 }
 
+async function fetchWeixinFileCiphertext(url, { fetchImpl, signal }) {
+  const response = await fetchImpl(new URL(url), {
+    method: 'GET',
+    signal,
+    redirect: 'manual',
+  });
+  if (!response?.ok) {
+    await response?.body?.cancel?.().catch?.(() => undefined);
+    throw new WeixinApiError(
+      'file-download-failed',
+      `微信文件下载失败（HTTP ${response?.status ?? 'unknown'}）。`,
+      { status: response?.status },
+    );
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
+/** Convert native iLink file items into lazily downloaded, decrypted file references. */
+export function extractWeixinFiles(message, { fetchImpl = fetch } = {}) {
+  if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
+  const files = [];
+  for (const item of message?.item_list ?? []) {
+    const fileItem = item?.file_item;
+    if (!fileItem || typeof fileItem !== 'object') continue;
+    const declaredSize = Number(fileItem.len);
+    files.push({
+      name: nonEmptyString(fileItem.file_name) ?? (files.length === 0 ? 'file' : `file-${files.length + 1}`),
+      ...(Number.isFinite(declaredSize) && declaredSize >= 0 ? { size: declaredSize } : {}),
+      load: async ({ signal } = {}) => {
+        signal?.throwIfAborted();
+        const key = parseWeixinImageAesKey(fileItem);
+        const url = weixinImageDownloadUrl(fileItem.media);
+        const ciphertext = await fetchWeixinFileCiphertext(url, { fetchImpl, signal });
+        signal?.throwIfAborted();
+        return decryptWeixinImage(ciphertext, key);
+      },
+    });
+  }
+  return files;
+}
+
 function isWeixinHost(hostname) {
   const normalized = hostname.toLowerCase().replace(/\.$/, '');
   return normalized === 'weixin.qq.com' || normalized.endsWith('.weixin.qq.com');
@@ -419,6 +460,10 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
   return Object.freeze({
     inboundImages(message) {
       return extractWeixinImages(message, { fetchImpl });
+    },
+
+    inboundFiles(message) {
+      return extractWeixinFiles(message, { fetchImpl });
     },
 
     async beginLogin({ localTokens = [], botType = DEFAULT_BOT_TYPE, signal } = {}) {

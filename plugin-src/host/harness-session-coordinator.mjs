@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
+import {
+  InboundFileError,
+  stageInboundFiles,
+} from '../../src/channels/shared/inbound-file.mjs';
+
 function agentsFromContext(ctx) {
   if (typeof ctx?.get !== 'function') return undefined;
   let agents;
@@ -108,13 +113,30 @@ function createSessionMaintenanceExecutor(agents) {
   };
 }
 
+function createFileIngressExecutor(agents) {
+  return ({ sessionId, workspace, files, signal }) => {
+    const agent = agents.get(sessionId);
+    const attachedWorkspace = agent?.session?.header?.cwd;
+    const exactWorkspace = typeof attachedWorkspace === 'string' && attachedWorkspace
+      ? attachedWorkspace
+      : workspace;
+    if (typeof exactWorkspace !== 'string' || !exactWorkspace) {
+      throw new InboundFileError(
+        'inbound-file-workspace-unavailable',
+        'The Harness Session workspace is unavailable for inbound files.',
+      );
+    }
+    return stageInboundFiles({ files }, { workspace: exactWorkspace, signal });
+  };
+}
+
 /**
- * Build optional same-process Session executors without adding a hard Cordis
- * service injection. Fixtures and deployments without AgentRegistry preserve
- * the existing HTTP behavior.
+ * Build optional same-process Session executors. File ingress also works for
+ * cold Sessions by using the authoritative cwd returned by session.list;
+ * when an Agent is attached, its live Session header remains authoritative.
  */
 export function createHarnessSessionExecutors(ctx, provided = {}) {
-  const { controlExecutor, sessionMaintenanceExecutor } = provided;
+  const { controlExecutor, sessionMaintenanceExecutor, fileIngressExecutor } = provided;
   if (controlExecutor !== undefined && typeof controlExecutor !== 'function') {
     throw new TypeError('controlExecutor must be a function');
   }
@@ -122,13 +144,18 @@ export function createHarnessSessionExecutors(ctx, provided = {}) {
     && typeof sessionMaintenanceExecutor !== 'function') {
     throw new TypeError('sessionMaintenanceExecutor must be a function');
   }
+  if (fileIngressExecutor !== undefined && typeof fileIngressExecutor !== 'function') {
+    throw new TypeError('fileIngressExecutor must be a function');
+  }
 
-  const agents = controlExecutor && sessionMaintenanceExecutor
+  const agents = controlExecutor && sessionMaintenanceExecutor && fileIngressExecutor
     ? undefined
     : agentsFromContext(ctx);
   return {
     controlExecutor: controlExecutor ?? (agents ? createControlExecutor(agents) : undefined),
     sessionMaintenanceExecutor: sessionMaintenanceExecutor
       ?? (agents ? createSessionMaintenanceExecutor(agents) : undefined),
+    fileIngressExecutor: fileIngressExecutor
+      ?? createFileIngressExecutor(agents ?? { get: () => undefined }),
   };
 }

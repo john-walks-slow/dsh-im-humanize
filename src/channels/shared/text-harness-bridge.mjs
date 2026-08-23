@@ -24,6 +24,10 @@ import {
   promptContentForMessage,
 } from './image-prompt.mjs';
 import {
+  hasInboundFiles,
+  inboundFileUserMessage,
+} from './inbound-file.mjs';
+import {
   harnessAnswerForQuestion,
   harnessQuestionText,
   validHarnessQuestion,
@@ -50,6 +54,7 @@ function canClaimInteractionReply(message, pending, senderId) {
   return pending.actor === senderId
     && (message.kind !== 'group' || message.addressed === true)
     && !hasInboundImages(message)
+    && !hasInboundFiles(message)
     && Boolean(cleanText(message.content));
 }
 
@@ -171,7 +176,7 @@ export class TextHarnessBridge {
     const key = `${kind}:${conversationId}`;
     const pending = this.#pendingInteractions.get(key);
     const text = cleanText(normalized.content);
-    const commandRunner = isControlCommand(text)
+    const commandRunner = hasInboundFiles(normalized) ? null : isControlCommand(text)
       ? runControlCommand
       : (isModelCommand(text)
           ? runModelCommand
@@ -194,7 +199,7 @@ export class TextHarnessBridge {
       key,
       actor: senderId,
       messageId,
-      text: hasInboundImages(normalized) ? '' : normalized.content,
+      text: hasInboundImages(normalized) || hasInboundFiles(normalized) ? '' : normalized.content,
       addressed: normalized.kind !== 'group' || normalized.addressed === true,
       hasPendingQuestion: Boolean(pending),
       questionCompletion: pending?.submitting || pending?.claimedReplyMessageId
@@ -300,6 +305,7 @@ export class TextHarnessBridge {
         {
           signal: this.#signal,
           hasImages: hasInboundImages(message),
+          hasFiles: hasInboundFiles(message),
           pendingInteraction: this.#pendingInteractions.has(key)
             || this.#approvals.hasPending(key),
           control: { owner: this, key },
@@ -423,16 +429,17 @@ export class TextHarnessBridge {
         return;
       }
       const hasImages = hasInboundImages(message);
-      if (!text && !hasImages) {
-        await this.#bot.sendText(target, '目前支持文字和图片消息。');
+      const hasFiles = hasInboundFiles(message);
+      if (!text && !hasImages && !hasFiles) {
+        await this.#bot.sendText(target, '目前支持文字、图片和文件消息。');
         return;
       }
       const command = text.toLowerCase();
-      if (!hasImages && command === '/help') {
+      if (!hasImages && !hasFiles && command === '/help') {
         await this.#bot.sendText(target, [
           `${this.#descriptor.label}机器人已连接 DeepSeek Harness。`,
           '',
-          '直接发送文字或图片即可继续当前会话。',
+          '直接发送文字、图片或文件即可继续当前会话。',
           '/new  开启一个全新会话',
           '/compact  压缩当前会话的较早上下文',
           '/workspace 工作区绝对路径  切换工作区',
@@ -453,12 +460,12 @@ export class TextHarnessBridge {
         ].join('\n'));
         return;
       }
-      if (!hasImages && command === '/status') {
+      if (!hasImages && !hasFiles && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#bot.sendText(target, `${this.#descriptor.label}机器人与 DeepSeek Harness 连接正常。`);
         return;
       }
-      const workspaceCommand = !hasImages
+      const workspaceCommand = !hasImages && !hasFiles
         ? await runWorkspaceCommand(text, this.#harness, conversationKey)
         : null;
       if (workspaceCommand) {
@@ -467,12 +474,12 @@ export class TextHarnessBridge {
         }
         return;
       }
-      if (!hasImages && command === '/new') {
+      if (!hasImages && !hasFiles && command === '/new') {
         await this.#state.clearSession(conversationKey);
         await this.#bot.sendText(target, '已开启新会话。请发送你的问题。');
         return;
       }
-      const compactCommand = !hasImages
+      const compactCommand = !hasImages && !hasFiles
         ? await runCompactCommand(
             text,
             this.#harness,
@@ -527,6 +534,7 @@ export class TextHarnessBridge {
             requiresMention: message.kind === 'group',
           }),
           onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
+          files: message.files,
         },
       });
       const visibleAnswer = !cleanText(answer) && artifacts.length > 0
@@ -600,6 +608,18 @@ export class TextHarnessBridge {
         }
         return;
       }
+      const fileErrorMessage = inboundFileUserMessage(error);
+      if (fileErrorMessage) {
+        try {
+          await this.#bot.sendText(target, fileErrorMessage);
+        } catch (sendError) {
+          this.#logger.error?.(
+            `[dsh-im:${this.#descriptor.key}] failed to send the file error reply:`,
+            sendError,
+          );
+        }
+        return;
+      }
       this.#logger.error?.(`[dsh-im:${this.#descriptor.key}] failed to process a message:`, error);
       try {
         await this.#bot.sendText(target, '消息处理失败，请稍后重试。');
@@ -642,7 +662,7 @@ export class TextHarnessBridge {
 
     const target = message.replyTarget;
     const text = cleanText(message.content);
-    if (!text || hasInboundImages(message)) {
+    if (!text || hasInboundImages(message) || hasInboundFiles(message)) {
       try {
         await this.#bot.sendText(target, '请用文字回答当前问题。');
       } catch (error) {

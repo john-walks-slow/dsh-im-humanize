@@ -367,7 +367,7 @@ test('Discord normalizes DMs and only addressed server messages', () => {
   assert.equal(unmentionedReply.addressed, false);
 });
 
-test('Discord exposes image attachments through bounded CDN loaders', async () => {
+test('Discord keeps image attachments in images and exposes ordinary attachments as files', async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const calls = [];
   const message = normalizeDiscordMessage({
@@ -411,6 +411,19 @@ test('Discord exposes image attachments through bounded CDN loaders', async () =
   assert.deepEqual(await message.images[0].load({ maxBytes: 100 }), png);
   assert.equal(calls[0].url.hostname, 'cdn.discordapp.com');
   assert.equal(calls[0].options.redirect, 'manual');
+  assert.equal(message.files.length, 1);
+  assert.deepEqual({
+    name: message.files[0].name,
+    mediaType: message.files[0].mediaType,
+    size: message.files[0].size,
+  }, { name: 'notes.txt', mediaType: 'text/plain', size: 4 });
+  const controller = new AbortController();
+  const loadedFile = await message.files[0].load({ signal: controller.signal });
+  const fileChunks = [];
+  for await (const chunk of loadedFile.stream) fileChunks.push(Buffer.from(chunk));
+  assert.deepEqual(Buffer.concat(fileChunks), png);
+  assert.equal(calls[1].url.pathname.endsWith('/notes.txt'), true);
+  assert.equal(calls[1].options.signal, controller.signal);
 
   const unsafe = normalizeDiscordMessage({
     id: '111111111111111121',

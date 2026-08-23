@@ -1,4 +1,5 @@
 import {
+  extractWeixinFiles,
   extractWeixinImages,
   extractWeixinText,
   splitWeixinText,
@@ -31,6 +32,11 @@ import {
   imagePromptUserMessage,
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
+import {
+  hasInboundFiles,
+  inboundFileUserMessage,
+  prefetchInboundFiles,
+} from '../shared/inbound-file.mjs';
 import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
 import {
   materializeOutboundArtifact,
@@ -49,7 +55,7 @@ const GENERIC_PROCESSING_ERROR = '消息处理失败，请稍后重试。';
 const HELP_TEXT = [
   '微信已连接 DeepSeek Harness。',
   '',
-  '直接发送文字、图片或带文字识别结果的语音即可继续当前会话。',
+  '直接发送文字、图片、文件或带文字识别结果的语音即可继续当前会话。',
   '/new  开启一个全新会话',
   '/compact  压缩当前会话的较早上下文',
   '/workspace 工作区绝对路径  切换工作区',
@@ -77,15 +83,33 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+export function weixinInboundMessage(message, api) {
+  return {
+    content: extractWeixinText(message) ?? '',
+    images: typeof api?.inboundImages === 'function'
+      ? api.inboundImages(message)
+      : extractWeixinImages(message),
+    files: typeof api?.inboundFiles === 'function'
+      ? api.inboundFiles(message)
+      : extractWeixinFiles(message),
+  };
+}
+
 function hasWeixinImageItems(message) {
   return Array.isArray(message?.item_list)
     && message.item_list.some((item) => item?.image_item && typeof item.image_item === 'object');
+}
+
+function hasWeixinFileItems(message) {
+  return Array.isArray(message?.item_list)
+    && message.item_list.some((item) => item?.file_item && typeof item.file_item === 'object');
 }
 
 function canClaimInteractionReply(message, pending) {
   return pending.questions[pending.index]
     && nonEmptyString(message?.from_user_id) === pending.actor
     && !hasWeixinImageItems(message)
+    && !hasWeixinFileItems(message)
     && nonEmptyString(extractWeixinText(message));
 }
 
@@ -204,7 +228,7 @@ export class WeixinHarnessBridge {
     const runId = nonEmptyString(message?.run_id) ?? undefined;
     const pending = this.#pendingInteractions.get(key);
     const commandText = nonEmptyString(extractWeixinText(message)) ?? '';
-    const commandRunner = isControlCommand(commandText)
+    const commandRunner = hasWeixinFileItems(message) ? null : isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText)
           ? runModelCommand
@@ -238,7 +262,9 @@ export class WeixinHarnessBridge {
       key,
       actor: sender,
       messageId,
-      text: hasWeixinImageItems(message) ? '' : extractWeixinText(message),
+      text: hasWeixinImageItems(message) || hasWeixinFileItems(message)
+        ? ''
+        : extractWeixinText(message),
       addressed: true,
       hasPendingQuestion: Boolean(pending),
       questionCompletion: pending?.submitting || pending?.claimedReplyMessageId
@@ -290,10 +316,16 @@ export class WeixinHarnessBridge {
     releaseMessageId = true,
     alreadyRecorded = false,
   } = {}) {
+    const preparedMessage = message.from_user_id === this.#ownerUserId
+      ? prefetchInboundFiles(
+          weixinInboundMessage(message, this.#api),
+          { signal: this.#signal },
+        )
+      : undefined;
     const previous = this.#queues.get(key) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
-      .then(() => this.#process(message, key, { alreadyRecorded }))
+      .then(() => this.#process(message, key, { alreadyRecorded, preparedMessage }))
       .finally(() => {
         if (releaseMessageId) this.#acceptedMessageIds.delete(messageId);
         if (this.#queues.get(key) === current) this.#queues.delete(key);
@@ -331,6 +363,7 @@ export class WeixinHarnessBridge {
     const result = await runner(text, this.#harness, this.#state, key, {
       signal: this.#signal,
       hasImages: hasWeixinImageItems(message),
+      hasFiles: hasWeixinFileItems(message),
       pendingInteraction: this.#pendingInteractions.has(key)
         || this.#approvals.hasPending(key),
       control: { owner: this, key },
@@ -348,7 +381,7 @@ export class WeixinHarnessBridge {
     this.#status.lastMessageError = null;
   }
 
-  async #process(message, key, { alreadyRecorded = false } = {}) {
+  async #process(message, key, { alreadyRecorded = false, preparedMessage } = {}) {
     this.#signal?.throwIfAborted();
     const messageId = weixinMessageId(message);
     const sender = nonEmptyString(message?.from_user_id);
@@ -366,38 +399,36 @@ export class WeixinHarnessBridge {
 
     const contextToken = typeof message.context_token === 'string' ? message.context_token : undefined;
     const runId = typeof message.run_id === 'string' ? message.run_id : undefined;
-    const text = extractWeixinText(message) ?? '';
     try {
-      const images = typeof this.#api.inboundImages === 'function'
-        ? this.#api.inboundImages(message)
-        : extractWeixinImages(message);
-      const promptMessage = { content: text, images };
+      const promptMessage = preparedMessage ?? weixinInboundMessage(message, this.#api);
+      const text = promptMessage.content;
       const hasImages = hasInboundImages(promptMessage);
-      if (!text && !hasImages) {
-        await this.#send(sender, '目前支持文字、图片，以及微信已转成文字的语音消息。', contextToken, runId);
+      const hasFiles = hasInboundFiles(promptMessage);
+      if (!text && !hasImages && !hasFiles) {
+        await this.#send(sender, '目前支持文字、图片、文件，以及微信已转成文字的语音消息。', contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
 
       const command = text.trim().toLowerCase();
-      if (!hasImages && command === '/help') {
+      if (!hasImages && !hasFiles && command === '/help') {
         await this.#send(sender, HELP_TEXT, contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
-      if (!hasImages && command === '/status') {
+      if (!hasImages && !hasFiles && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#send(sender, '微信与 DeepSeek Harness 连接正常。', contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
-      if (!hasImages && command === '/new') {
+      if (!hasImages && !hasFiles && command === '/new') {
         await this.#state.clearSession(key);
         await this.#send(sender, '已开启新会话。请发送你的问题。', contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
-      const workspaceCommand = hasImages
+      const workspaceCommand = hasImages || hasFiles
         ? null
         : await runWorkspaceCommand(text, this.#harness, key);
       if (workspaceCommand) {
@@ -407,7 +438,7 @@ export class WeixinHarnessBridge {
         await this.#state.markSeen(messageId);
         return;
       }
-      const compactCommand = hasImages
+      const compactCommand = hasImages || hasFiles
         ? null
         : await runCompactCommand(
             text,
@@ -446,6 +477,7 @@ export class WeixinHarnessBridge {
               runId,
             }),
             onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
+            files: promptMessage.files,
           },
         }));
       } finally {
@@ -490,7 +522,9 @@ export class WeixinHarnessBridge {
       }
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);
-      const userMessage = imagePromptUserMessage(error) ?? GENERIC_PROCESSING_ERROR;
+      const userMessage = inboundFileUserMessage(error)
+        ?? imagePromptUserMessage(error)
+        ?? GENERIC_PROCESSING_ERROR;
       this.#status.lastMessageError = safeMessageError(error, userMessage);
       this.#logger.error?.('[dsh-weixin] failed to process an inbound message:', error);
       try {

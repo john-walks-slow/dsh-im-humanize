@@ -190,7 +190,7 @@ export async function createWhatsappWebSession({
           const timestamp = messageTimestampMs(message?.messageTimestamp);
           if (timestamp === null || timestamp < sessionStartedAt - APPEND_RECENT_GRACE_MS) continue;
         }
-        Promise.resolve(onMessage(message)).catch(() => {
+        Promise.resolve(onMessage(message, { socket: nextSocket })).catch(() => {
           logger.error?.('[dsh-im:whatsapp] failed to process an inbound WhatsApp message');
         });
       }

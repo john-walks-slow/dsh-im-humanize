@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   createDingtalkBridgeStatus,
+  dingtalkInboundMessage,
   DingtalkHarnessBridge,
 } from '../../../src/channels/dingtalk/dingtalk-bridge.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
@@ -121,6 +122,141 @@ async function committedArtifact(t, fileName, content) {
   t.after(() => releaseOutboundArtifact(artifact));
   return artifact;
 }
+
+test('DingTalk normalizes a native file callback into one lazy ordinary file', async () => {
+  const calls = [];
+  const bytes = Buffer.from('dingtalk-native-file');
+  const inbound = dingtalkInboundMessage({
+    msgtype: 'file',
+    robotCode: 'robot-from-callback',
+    content: JSON.stringify({
+      spaceId: 'space-one',
+      fileId: 'file-one',
+      fileName: '钉钉报告.zip',
+      downloadCode: 'opaque-file-code',
+    }),
+  }, {
+    api: {
+      downloadFile: async (request) => {
+        calls.push(request);
+        return bytes;
+      },
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+  });
+
+  assert.equal(inbound.content, '');
+  assert.deepEqual(inbound.images, []);
+  assert.equal(inbound.files.length, 1);
+  assert.equal(inbound.files[0].name, '钉钉报告.zip');
+  assert.equal(calls.length, 0, 'file download stays lazy');
+  assert.deepEqual(await inbound.files[0].load({}), bytes);
+  assert.deepEqual(calls, [{
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    robotCode: 'robot-from-callback',
+    downloadCode: 'opaque-file-code',
+    signal: undefined,
+  }]);
+});
+
+test('DingTalk bridge hands a native file source to the current Harness turn', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:staff-approved', 'session-native-file');
+  const bytes = Buffer.from('dingtalk-bridge-file');
+  const downloads = [];
+  const prompts = [];
+  const sent = [];
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      downloadFile: async (request) => {
+        downloads.push(request);
+        return bytes;
+      },
+      sendText: async (request) => sent.push(request.text),
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, prompt, options) => {
+        prompts.push({
+          sessionId,
+          prompt,
+          name: options.files[0].name,
+          bytes: await options.files[0].load({ signal: options.signal }),
+        });
+        return '文件已收到';
+      },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('dingtalk-native-file', '', {
+    msgtype: 'file',
+    text: undefined,
+    robotCode: 'robot-from-callback',
+    content: {
+      fileName: '钉钉报告.pdf',
+      downloadCode: 'native-file-code',
+    },
+  }));
+
+  assert.equal(downloads.length, 1);
+  assert.equal(downloads[0].downloadCode, 'native-file-code');
+  assert.deepEqual(prompts, [{
+    sessionId: 'session-native-file',
+    prompt: '',
+    name: '钉钉报告.pdf',
+    bytes,
+  }]);
+  assert.equal(sent.at(-1), '文件已收到');
+});
+
+test('DingTalk starts a native-file download before an earlier queued turn finishes', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:staff-approved', 'session-prefetch-file');
+  const firstTurn = deferred();
+  const bytes = Buffer.from('dingtalk-prefetched-file');
+  let asks = 0;
+  let downloads = 0;
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      downloadFile: async () => {
+        downloads += 1;
+        return bytes;
+      },
+      sendText: async () => {},
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _prompt, options) => {
+        asks += 1;
+        if (asks === 1) return firstTurn.promise;
+        assert.deepEqual(await options.files[0].load({ signal: options.signal }), bytes);
+        return '第二条完成';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const first = bridge.accept(message('dingtalk-prefetch-first', '先等待'));
+  await eventually(() => asks === 1);
+  const second = bridge.accept(message('dingtalk-prefetch-second', '', {
+    msgtype: 'file',
+    text: undefined,
+    robotCode: 'robot-from-callback',
+    content: { fileName: 'queued.bin', downloadCode: 'queued-file-code' },
+  }));
+
+  await eventually(() => downloads === 1, 'queued DingTalk file did not start downloading');
+  assert.equal(asks, 1, 'the second Harness turn must remain queued');
+  firstTurn.resolve('第一条完成');
+  await Promise.all([first, second]);
+});
 
 test('DingTalk remembers any private inbound session webhook for connection tests', async () => {
   const privateFixture = stateFixture();

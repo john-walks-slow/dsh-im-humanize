@@ -397,6 +397,78 @@ test('Enterprise WeChat preserves mixed-message text and image order', async () 
   ]);
 });
 
+test('Enterprise WeChat exposes native file callbacks through the SDK downloader without file limits', async () => {
+  const calls = [];
+  const bytes = Buffer.from('wecom-native-file');
+  const message = wecomInboundMessage(frame({
+    msgtype: 'file',
+    text: undefined,
+    file: {
+      url: 'https://wecom.example/encrypted-file',
+      aeskey: 'file-specific-key',
+    },
+  }), {
+    downloadFile: async (url, aeskey) => {
+      calls.push({ url, aeskey });
+      return { buffer: bytes, filename: '企业微信报告.pdf' };
+    },
+  });
+
+  assert.equal(message.content, '');
+  assert.deepEqual(message.images, []);
+  assert.equal(message.files.length, 1);
+  assert.equal(message.files[0].name, 'file');
+  assert.equal(calls.length, 0, 'file download stays lazy at normalization time');
+  assert.deepEqual(await message.files[0].load({}), {
+    data: bytes,
+    name: '企业微信报告.pdf',
+  });
+  assert.deepEqual(calls, [{
+    url: 'https://wecom.example/encrypted-file',
+    aeskey: 'file-specific-key',
+  }]);
+});
+
+test('Enterprise WeChat bridge hands its prefetched native file to the current Harness turn', async () => {
+  const transport = testClient();
+  const bytes = Buffer.from('wecom-bridge-file');
+  const downloads = [];
+  const prompts = [];
+  transport.client.downloadFile = async (url, aeskey) => {
+    downloads.push({ url, aeskey });
+    return { buffer: bytes, filename: '企微报告.docx' };
+  };
+  const bridge = new WecomHarnessBridge({
+    client: transport.client,
+    generateStreamId: () => 'file-stream',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, prompt, options) => {
+        const loaded = await options.files[0].load({ signal: options.signal });
+        prompts.push({ sessionId, prompt, name: options.files[0].name, loaded });
+        return '文件已收到';
+      },
+    },
+    state: state(),
+  });
+
+  await bridge.accept(frame({
+    msgid: 'wecom-native-file',
+    msgtype: 'file',
+    text: undefined,
+    file: { url: 'https://wecom.example/file', aeskey: 'file-key' },
+  }));
+
+  assert.deepEqual(downloads, [{ url: 'https://wecom.example/file', aeskey: 'file-key' }]);
+  assert.deepEqual(prompts, [{
+    sessionId: 'session-existing',
+    prompt: '',
+    name: 'file',
+    loaded: { data: bytes, name: '企微报告.docx' },
+  }]);
+  assert.equal(transport.streamed.at(-1).content, '文件已收到');
+});
+
 test('Enterprise WeChat starts image download before an earlier conversation turn finishes', async () => {
   const transport = testClient();
   const firstStarted = deferred();

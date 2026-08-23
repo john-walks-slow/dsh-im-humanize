@@ -27,6 +27,7 @@ import {
 import { WhatsappController } from '../../../src/channels/whatsapp/whatsapp-controller.mjs';
 import {
   WhatsappRuntime,
+  createWhatsappMediaDownloader,
   normalizeWhatsappMessage,
   whatsappInboundAllowed,
 } from '../../../src/channels/whatsapp/whatsapp-runtime.mjs';
@@ -255,15 +256,21 @@ test('WhatsApp Web session accepts recent append events without replaying stale 
   const root = await mkdtemp(join(tmpdir(), 'dsh-im-whatsapp-append-'));
   const events = new EventEmitter();
   const received = [];
+  const contexts = [];
+  const socket = {
+    ev: events,
+    updateMediaMessage: async () => {},
+    end: async () => {},
+    logout: async () => {},
+  };
   const session = await createWhatsappWebSession({
     authDir: root,
     onQr: () => {},
-    onMessage: async (message) => { received.push(message.key.id); },
-    makeSocket: () => ({
-      ev: events,
-      end: async () => {},
-      logout: async () => {},
-    }),
+    onMessage: async (message, context) => {
+      received.push(message.key.id);
+      contexts.push(context);
+    },
+    makeSocket: () => socket,
     loadAuthState: async () => ({
       state: {
         creds: {},
@@ -286,7 +293,31 @@ test('WhatsApp Web session accepts recent append events without replaying stale 
   });
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(received, ['recent', 'notify']);
+  assert.equal(contexts[0].socket, socket);
+  assert.equal(contexts[1].socket, socket);
   await session.close();
+});
+
+test('WhatsApp media downloader supplies Baileys reupload context', async () => {
+  const reuploaded = [];
+  const socket = {
+    updateMediaMessage: async (message) => {
+      reuploaded.push(message);
+      return { ...message, reuploaded: true };
+    },
+  };
+  let receivedContext;
+  const download = createWhatsappMediaDownloader({
+    socket,
+    logger: { info() {} },
+    download: async (_message, _type, _options, context) => {
+      receivedContext = context;
+      return context.reuploadRequest({ key: { id: 'expired-media' } });
+    },
+  });
+  assert.equal((await download({}, 'stream', {})).reuploaded, true);
+  assert.equal(typeof receivedContext.logger.info, 'function');
+  assert.deepEqual(reuploaded, [{ key: { id: 'expired-media' } }]);
 });
 
 test('WhatsApp normalizes direct and explicitly mentioned group messages', () => {
@@ -371,7 +402,7 @@ test('WhatsApp access modes allow self-chat, selected contacts, or the existing 
   }), true);
 });
 
-test('WhatsApp exposes image media through a bounded Baileys download stream', async () => {
+test('WhatsApp keeps native and document images as images and exposes ordinary documents as files', async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const calls = [];
   const controller = new AbortController();
@@ -441,9 +472,52 @@ test('WhatsApp exposes image media through a bounded Baileys download stream', a
         url: 'https://mmg.whatsapp.net/document',
       },
     },
-  }, ACCOUNT_JID);
+  }, ACCOUNT_JID, {
+    download: async (raw, type, options) => {
+      calls.push({ raw, type, options });
+      return {
+        async *[Symbol.asyncIterator]() { yield Buffer.from('document'); },
+      };
+    },
+  });
   assert.equal(document.images[0].name, 'diagram.webp');
   assert.equal(document.images[0].mediaType, 'image/webp');
+  assert.equal(document.images[0].size, 2_000);
+  assert.deepEqual(document.files, []);
+  const documentController = new AbortController();
+  assert.equal((await document.images[0].load({
+    signal: documentController.signal,
+    maxBytes: 5_000,
+  })).toString(), 'document');
+  assert.equal(calls[1].type, 'stream');
+  assert.equal(calls[1].options.options.signal instanceof AbortSignal, true);
+
+  const ordinaryDocument = normalizeWhatsappMessage({
+    key: { remoteJid: '16505550999@s.whatsapp.net', id: 'document-pdf-1', fromMe: false },
+    message: {
+      documentMessage: {
+        mimetype: 'application/pdf', fileName: 'report.pdf', fileLength: 4_000,
+        url: 'https://mmg.whatsapp.net/document-pdf',
+      },
+    },
+  }, ACCOUNT_JID, {
+    download: async (raw, type, options) => {
+      calls.push({ raw, type, options });
+      return {
+        async *[Symbol.asyncIterator]() { yield Buffer.from('pdf'); },
+      };
+    },
+  });
+  assert.deepEqual(ordinaryDocument.images, []);
+  assert.equal(ordinaryDocument.files[0].name, 'report.pdf');
+  assert.equal(ordinaryDocument.files[0].mediaType, 'application/pdf');
+  assert.equal(ordinaryDocument.files[0].size, 4_000);
+  const loadedDocument = await ordinaryDocument.files[0].load({ signal: documentController.signal });
+  const documentChunks = [];
+  for await (const chunk of loadedDocument.stream) documentChunks.push(Buffer.from(chunk));
+  assert.equal(Buffer.concat(documentChunks).toString(), 'pdf');
+  assert.equal(calls[2].type, 'stream');
+  assert.equal(calls[2].options.options.signal, documentController.signal);
 
   for (const [index, wrapper] of [
     'viewOnceMessage',

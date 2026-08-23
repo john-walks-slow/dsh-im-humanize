@@ -435,6 +435,48 @@ export function createDingtalkApi({
     return request;
   }
 
+  async function messageFileDownloadUrl({
+    clientId,
+    clientSecret,
+    robotCode,
+    downloadCode,
+    signal,
+    kind,
+  }) {
+    const botCode = nonEmptyString(robotCode);
+    const fileCode = nonEmptyString(downloadCode);
+    if (!botCode || !fileCode) throw new TypeError('robotCode and downloadCode are required');
+    const token = await accessToken({ clientId, clientSecret, signal });
+    let response;
+    try {
+      response = await requestJson(
+        fetchImpl,
+        endpoint(apiBase, 'v1.0/robot/messageFiles/download'),
+        {
+          body: { downloadCode: fileCode, robotCode: botCode },
+          headers: { 'x-acs-dingtalk-access-token': token },
+          signal,
+          action: `${kind === 'image' ? '图片' : '文件'}下载地址`,
+        },
+      );
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      throw new DingtalkApiError(
+        `${kind}-download-address-failed`,
+        `钉钉${kind === 'image' ? '图片' : '文件'}下载地址获取失败。`,
+        { cause: error, status: error?.status, providerCode: error?.providerCode },
+      );
+    }
+    const downloadUrl = nonEmptyString(response?.downloadUrl ?? response?.download_url);
+    if (!downloadUrl) {
+      throw new DingtalkApiError(
+        `invalid-${kind}-download`,
+        `钉钉服务没有返回${kind === 'image' ? '图片' : '文件'}下载地址。`,
+      );
+    }
+    return secureDingtalkDownloadUrl(downloadUrl);
+  }
+
   function acquireCardRequestSlot(signal) {
     const acquire = async () => {
       const waitMs = Math.max(0, nextCardRequestAt - now());
@@ -568,36 +610,16 @@ export function createDingtalkApi({
       signal,
       maxBytes,
     }) {
-      const botCode = nonEmptyString(robotCode);
-      const fileCode = nonEmptyString(downloadCode);
-      if (!botCode || !fileCode) throw new TypeError('robotCode and downloadCode are required');
-      const token = await accessToken({ clientId, clientSecret, signal });
-      let response;
+      const downloadUrl = await messageFileDownloadUrl({
+        clientId,
+        clientSecret,
+        robotCode,
+        downloadCode,
+        signal,
+        kind: 'image',
+      });
       try {
-        response = await requestJson(
-          fetchImpl,
-          endpoint(apiBase, 'v1.0/robot/messageFiles/download'),
-          {
-            body: { downloadCode: fileCode, robotCode: botCode },
-            headers: { 'x-acs-dingtalk-access-token': token },
-            signal,
-            action: '图片下载地址',
-          },
-        );
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        throw new DingtalkApiError(
-          'image-download-address-failed',
-          '钉钉图片下载地址获取失败。',
-          { cause: error, status: error?.status, providerCode: error?.providerCode },
-        );
-      }
-      const downloadUrl = nonEmptyString(response?.downloadUrl ?? response?.download_url);
-      if (!downloadUrl) {
-        throw new DingtalkApiError('invalid-image-download', '钉钉服务没有返回图片下载地址。');
-      }
-      try {
-        return await fetchImageBuffer(secureDingtalkDownloadUrl(downloadUrl), {
+        return await fetchImageBuffer(downloadUrl, {
           fetchImpl,
           signal,
           maxBytes,
@@ -607,6 +629,50 @@ export function createDingtalkApi({
         throw new DingtalkApiError(
           'image-content-download-failed',
           '钉钉图片内容下载失败。',
+          { cause: error },
+        );
+      }
+    },
+
+    async downloadFile({
+      clientId,
+      clientSecret,
+      robotCode,
+      downloadCode,
+      signal,
+    }) {
+      const downloadUrl = await messageFileDownloadUrl({
+        clientId,
+        clientSecret,
+        robotCode,
+        downloadCode,
+        signal,
+        kind: 'file',
+      });
+      if (downloadUrl.protocol !== 'https:') {
+        throw new DingtalkApiError('invalid-file-download', '钉钉服务返回了无效的文件下载地址。');
+      }
+      try {
+        const response = await fetchImpl(downloadUrl, {
+          method: 'GET',
+          redirect: 'follow',
+          signal,
+        });
+        if (!response?.ok) {
+          await response?.body?.cancel?.().catch?.(() => undefined);
+          throw new DingtalkApiError(
+            'file-content-download-failed',
+            `钉钉文件内容下载失败（HTTP ${response?.status ?? 'unknown'}）。`,
+            { status: response?.status },
+          );
+        }
+        return Buffer.from(await response.arrayBuffer());
+      } catch (error) {
+        if (signal?.aborted) throw abortError(signal);
+        if (error instanceof DingtalkApiError) throw error;
+        throw new DingtalkApiError(
+          'file-content-download-failed',
+          '钉钉文件内容下载失败。',
           { cause: error },
         );
       }

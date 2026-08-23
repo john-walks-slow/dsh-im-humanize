@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   createWeixinApi,
   decryptWeixinImage,
+  extractWeixinFiles,
   extractWeixinText,
   normalizeWeixinApiBaseUrl,
   parseWeixinImageAesKey,
@@ -63,6 +64,42 @@ test('iLink image references download lazily from the canonical CDN and decrypt 
   );
   assert.equal(calls[0].init.method, 'GET');
   assert.equal(calls[0].init.redirect, 'manual');
+});
+
+test('iLink native file items download lazily and decrypt without image size or type rules', async () => {
+  const key = randomBytes(16);
+  const plaintext = Buffer.from('weixin-native-file');
+  const ciphertext = encryptImage(plaintext, key);
+  const calls = [];
+  const files = extractWeixinFiles({
+    item_list: [{
+      type: 4,
+      file_item: {
+        media: {
+          encrypt_query_param: 'native-file-ticket',
+          aes_key: Buffer.from(key.toString('hex')).toString('base64'),
+          encrypt_type: 1,
+        },
+        file_name: '微信报告.zip',
+        len: String(plaintext.length),
+      },
+    }],
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url: url.toString(), init });
+      return new Response(ciphertext);
+    },
+  });
+
+  assert.equal(files.length, 1);
+  assert.equal(files[0].name, '微信报告.zip');
+  assert.equal(files[0].size, plaintext.length);
+  assert.equal(calls.length, 0, 'file download stays lazy');
+  assert.deepEqual(await files[0].load({}), plaintext);
+  assert.deepEqual(calls, [{
+    url: 'https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=native-file-ticket',
+    init: { method: 'GET', signal: undefined, redirect: 'manual' },
+  }]);
 });
 
 test('Weixin image keys support both documented CDN encodings and reject unsafe URLs', () => {

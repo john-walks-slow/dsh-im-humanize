@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -88,14 +91,16 @@ test('Host control executor refuses idle, replaced, closed, and foreign turns wi
 });
 
 test('Host executors preserve HTTP fallback when AgentRegistry or attachment is absent', async () => {
-  assert.deepEqual(createHarnessSessionExecutors({}), {
-    controlExecutor: undefined,
-    sessionMaintenanceExecutor: undefined,
+  const withoutRegistry = createHarnessSessionExecutors({});
+  assert.equal(withoutRegistry.controlExecutor, undefined);
+  assert.equal(withoutRegistry.sessionMaintenanceExecutor, undefined);
+  assert.equal(typeof withoutRegistry.fileIngressExecutor, 'function');
+  const inaccessibleRegistry = createHarnessSessionExecutors({
+    get() { throw new Error('not injected'); },
   });
-  assert.deepEqual(createHarnessSessionExecutors({ get() { throw new Error('not injected'); } }), {
-    controlExecutor: undefined,
-    sessionMaintenanceExecutor: undefined,
-  });
+  assert.equal(inaccessibleRegistry.controlExecutor, undefined);
+  assert.equal(inaccessibleRegistry.sessionMaintenanceExecutor, undefined);
+  assert.equal(typeof inaccessibleRegistry.fileIngressExecutor, 'function');
 
   const { controlExecutor, sessionMaintenanceExecutor } = createHarnessSessionExecutors(
     contextWith({ get: () => undefined }),
@@ -113,6 +118,63 @@ test('Host executors preserve HTTP fallback when AgentRegistry or attachment is 
     },
   }), 'fallback');
   assert.equal(operated, true);
+});
+
+test('Host file ingress stages bytes in the exact attached Session cwd', async (t) => {
+  const defaultWorkspace = await mkdtemp(join(tmpdir(), 'dsh-im-default-cwd-'));
+  const sessionWorkspace = await mkdtemp(join(tmpdir(), 'dsh-im-session-cwd-'));
+  t.after(() => Promise.all([
+    rm(defaultWorkspace, { recursive: true, force: true }),
+    rm(sessionWorkspace, { recursive: true, force: true }),
+  ]));
+  const agent = {
+    session: {
+      header: { id: 'session-exact-cwd', cwd: sessionWorkspace },
+      events: [],
+    },
+  };
+  const registry = {
+    get: (sessionId) => sessionId === 'session-exact-cwd' ? agent : undefined,
+  };
+  const { fileIngressExecutor } = createHarnessSessionExecutors(contextWith(registry));
+
+  const staged = await fileIngressExecutor({
+    sessionId: 'session-exact-cwd',
+    workspace: defaultWorkspace,
+    files: [{ name: 'attached.txt', data: Buffer.from('session bytes') }],
+  });
+
+  assert.equal(staged.files.length, 1);
+  assert.equal(staged.files[0].name, 'attached.txt');
+  assert.match(staged.files[0].path, /^\.dsh-im\/inbound\/turn-[^/]+\/01-attached\.txt$/);
+  assert.equal(
+    await readFile(resolve(sessionWorkspace, staged.files[0].path), 'utf8'),
+    'session bytes',
+  );
+  await assert.rejects(
+    readFile(resolve(defaultWorkspace, staged.files[0].path)),
+    /ENOENT/,
+    'the plugin/default workspace must not receive another Session attachment',
+  );
+  await staged.cleanup();
+});
+
+test('Host file ingress uses session.list cwd while the Session is still cold', async (t) => {
+  const sessionWorkspace = await mkdtemp(join(tmpdir(), 'dsh-im-cold-session-cwd-'));
+  t.after(() => rm(sessionWorkspace, { recursive: true, force: true }));
+  const { fileIngressExecutor } = createHarnessSessionExecutors({});
+
+  const staged = await fileIngressExecutor({
+    sessionId: 'session-cold',
+    workspace: sessionWorkspace,
+    files: [{ name: 'cold.txt', data: Buffer.from('cold session bytes') }],
+  });
+
+  assert.equal(
+    await readFile(resolve(sessionWorkspace, staged.files[0].path), 'utf8'),
+    'cold session bytes',
+  );
+  await staged.cleanup();
 });
 
 test('Host maintenance executor claims idle synchronously and reports busy with a stable code', async () => {

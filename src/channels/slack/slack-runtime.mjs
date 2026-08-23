@@ -43,10 +43,14 @@ function stripBotMention(value, botUserId) {
     .trim();
 }
 
+function slackFileUrl(file) {
+  return typeof file?.url_private_download === 'string' && file.url_private_download
+    ? file.url_private_download : file?.url_private;
+}
+
 function slackImageSource(file, loadFile) {
   const mediaType = typeof file?.mimetype === 'string' ? file.mimetype.toLowerCase() : '';
-  const url = typeof file?.url_private_download === 'string' && file.url_private_download
-    ? file.url_private_download : file?.url_private;
+  const url = slackFileUrl(file);
   if (!IMAGE_MEDIA_TYPES.has(mediaType) || typeof url !== 'string' || !url) return null;
   return {
     name: typeof file.name === 'string' ? file.name : undefined,
@@ -56,9 +60,50 @@ function slackImageSource(file, loadFile) {
   };
 }
 
-export function normalizeSlackEvent(payload, botUserId, { loadFile = async () => {
-  throw new Error('Slack file downloader is unavailable');
-} } = {}) {
+function slackFileSource(file, loadFile, loadFileInfo) {
+  const mediaType = typeof file?.mimetype === 'string' && file.mimetype
+    ? file.mimetype.toLowerCase() : undefined;
+  const url = slackFileUrl(file);
+  if (IMAGE_MEDIA_TYPES.has(mediaType)) return null;
+  const requiresInfo = file?.file_access === 'check_file_info'
+    && typeof file?.id === 'string' && file.id;
+  if ((typeof url !== 'string' || !url) && !requiresInfo) return null;
+  return {
+    name: typeof file?.name === 'string' && file.name
+      ? file.name : typeof file?.title === 'string' && file.title
+        ? file.title : requiresInfo ? file.id : 'slack-file',
+    ...(mediaType ? { mediaType } : {}),
+    size: Number.isSafeInteger(file?.size) && file.size >= 0 ? file.size : undefined,
+    load: async ({ signal } = {}) => {
+      if (!requiresInfo) return loadFile(url, { signal });
+      const resolved = await loadFileInfo(file.id, { signal });
+      const resolvedUrl = slackFileUrl(resolved);
+      if (typeof resolvedUrl !== 'string' || !resolvedUrl) {
+        throw new Error('Slack files.info returned no downloadable URL');
+      }
+      const loaded = await loadFile(resolvedUrl, { signal });
+      const name = typeof resolved?.name === 'string' && resolved.name
+        ? resolved.name : typeof resolved?.title === 'string' && resolved.title
+          ? resolved.title : file.id;
+      const resolvedMediaType = typeof resolved?.mimetype === 'string' && resolved.mimetype
+        ? resolved.mimetype.toLowerCase() : undefined;
+      if (Buffer.isBuffer(loaded) || loaded instanceof Uint8Array) {
+        return { data: loaded, name, ...(resolvedMediaType ? { mediaType: resolvedMediaType } : {}) };
+      }
+      return {
+        ...loaded,
+        name,
+        ...(resolvedMediaType ? { mediaType: resolvedMediaType } : {}),
+      };
+    },
+  };
+}
+
+export function normalizeSlackEvent(payload, botUserId, {
+  loadFile = async () => { throw new Error('Slack file downloader is unavailable'); },
+  loadFileStream = loadFile,
+  loadFileInfo = async () => { throw new Error('Slack file metadata loader is unavailable'); },
+} = {}) {
   const event = payload?.event;
   if (!event || !payload?.event_id || !event.channel || !event.user || !event.ts) return null;
   const direct = event.type === 'message' && event.channel_type === 'im';
@@ -75,6 +120,9 @@ export function normalizeSlackEvent(payload, botUserId, { loadFile = async () =>
     content: stripBotMention(event.text ?? '', botUserId),
     images: Array.isArray(event.files)
       ? event.files.map((file) => slackImageSource(file, loadFile)).filter(Boolean)
+      : [],
+    files: Array.isArray(event.files)
+      ? event.files.map((file) => slackFileSource(file, loadFileStream, loadFileInfo)).filter(Boolean)
       : [],
     addressed: direct || mentioned,
     replyTarget: {
@@ -436,6 +484,8 @@ export class SlackRuntime {
           && packet.payload.api_app_id !== this.#appId) return;
         const message = normalizeSlackEvent(packet.payload, this.#config.platformId.split(':')[1], {
           loadFile: (url, options) => this.#api.downloadFile({ url, ...options }),
+          loadFileStream: (url, options) => this.#api.downloadFileStream({ url, ...options }),
+          loadFileInfo: (fileId, options) => this.#api.fileInfo({ fileId, ...options }),
         });
         const bridge = this.#bridge;
         if (message && bridge) {

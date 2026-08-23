@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { createWeixinBridgeStatus, WeixinHarnessBridge } from '../../../src/channels/weixin/weixin-bridge.mjs';
+import {
+  createWeixinBridgeStatus,
+  weixinInboundMessage,
+  WeixinHarnessBridge,
+} from '../../../src/channels/weixin/weixin-bridge.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
 import {
   OUTBOUND_ARTIFACT_TOOL,
@@ -77,6 +81,125 @@ const PNG_BYTES = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
   0x01, 0x02, 0x03,
 ]);
+
+test('Weixin bridge normalization keeps native file items separate from images', async () => {
+  const bytes = Buffer.from('weixin-file');
+  const source = { name: '微信文档.docx', load: async () => bytes };
+  const calls = [];
+  const inbound = weixinInboundMessage(message('weixin-file', '', {
+    item_list: [{ type: 4, file_item: { file_name: '微信文档.docx', media: {} } }],
+  }), {
+    inboundImages: () => [],
+    inboundFiles: (value) => {
+      calls.push(value);
+      return [source];
+    },
+  });
+
+  assert.equal(inbound.content, '');
+  assert.deepEqual(inbound.images, []);
+  assert.deepEqual(inbound.files, [source]);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(await inbound.files[0].load({}), bytes);
+});
+
+test('Weixin bridge hands a native file source to the current Harness turn', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-native-file');
+  const bytes = Buffer.from('weixin-bridge-file');
+  const prompts = [];
+  const sent = [];
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      inboundImages: () => [],
+      inboundFiles: () => [{ name: '微信报告.zip', load: async () => bytes }],
+      sendText: async ({ text }) => sent.push(text),
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com',
+    token: 'token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, prompt, options) => {
+        prompts.push({
+          sessionId,
+          prompt,
+          name: options.files[0].name,
+          bytes: await options.files[0].load({ signal: options.signal }),
+        });
+        return '文件已收到';
+      },
+    },
+    state: fixture.state,
+    status: createWeixinBridgeStatus(),
+  });
+
+  await bridge.accept(message('weixin-native-file-turn', '', {
+    item_list: [{
+      type: 4,
+      file_item: { file_name: '微信报告.zip', media: {} },
+    }],
+  }));
+
+  assert.deepEqual(prompts, [{
+    sessionId: 'session-native-file',
+    prompt: '',
+    name: '微信报告.zip',
+    bytes,
+  }]);
+  assert.deepEqual(sent, ['文件已收到']);
+});
+
+test('Weixin starts a native-file download before an earlier queued turn finishes', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-prefetch-file');
+  const firstTurn = deferred();
+  const bytes = Buffer.from('weixin-prefetched-file');
+  let asks = 0;
+  let downloads = 0;
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      inboundImages: () => [],
+      inboundFiles: (value) => value.item_list?.some((item) => item.file_item)
+        ? [{
+            name: 'queued.bin',
+            load: async () => {
+              downloads += 1;
+              return bytes;
+            },
+          }]
+        : [],
+      sendText: async () => {},
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com',
+    token: 'token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _prompt, options) => {
+        asks += 1;
+        if (asks === 1) return firstTurn.promise;
+        assert.deepEqual(await options.files[0].load({ signal: options.signal }), bytes);
+        return '第二条完成';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const first = bridge.accept(message('weixin-prefetch-first', '先等待'));
+  await eventually(() => asks === 1);
+  const second = bridge.accept(message('weixin-prefetch-second', '', {
+    item_list: [{
+      type: 4,
+      file_item: { file_name: 'queued.bin', media: {} },
+    }],
+  }));
+
+  await eventually(() => downloads === 1, 'queued Weixin file did not start downloading');
+  assert.equal(asks, 1, 'the second Harness turn must remain queued');
+  firstTurn.resolve('第一条完成');
+  await Promise.all([first, second]);
+});
 
 async function committedArtifact(t, fileName, content) {
   const workspace = await mkdtemp(join(tmpdir(), 'dsh-im-weixin-artifact-'));
