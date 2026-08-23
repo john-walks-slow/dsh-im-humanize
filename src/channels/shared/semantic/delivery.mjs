@@ -1,6 +1,8 @@
 export const DELIVERY_RECEIPT_SCHEMA_VERSION = 1;
 
 const ARTIFACT_OUTCOMES = new Set(['sent', 'rejected', 'failed', 'unknown']);
+const DELIVERY_OUTCOMES = new Set(['sent', 'failed', 'unknown']);
+const TEXT_FORMATS = new Set(['plain', 'markdown']);
 const REJECTED_ARTIFACT_ERRORS = new Set([
   'artifact-changed',
   'artifact-context-required',
@@ -52,6 +54,24 @@ function requiredString(value, name) {
   return value;
 }
 
+export function createTextDeliveryBlock(value, format = 'plain') {
+  const block = typeof value === 'string'
+    ? { kind: 'text', text: value, format }
+    : value;
+  if (!block || typeof block !== 'object' || Array.isArray(block)
+    || block.kind !== 'text' || typeof block.text !== 'string' || !block.text.trim()) {
+    throw new TypeError('text delivery block must contain non-empty text');
+  }
+  if (!TEXT_FORMATS.has(block.format)) {
+    throw new TypeError('text delivery format must be plain or markdown');
+  }
+  return Object.freeze({
+    kind: 'text',
+    text: block.text,
+    format: block.format,
+  });
+}
+
 function providerIds(values) {
   if (!Array.isArray(values)) throw new TypeError('providerMessageIds must be an array');
   const ids = [];
@@ -98,12 +118,22 @@ export function createDeliveryReceipt({
   presentation,
   providerMessageIds = [],
   artifacts = [],
+  deliveryOutcome,
+  reason,
 }) {
+  if (deliveryOutcome !== undefined && !DELIVERY_OUTCOMES.has(deliveryOutcome)) {
+    throw new TypeError('deliveryOutcome must be sent, failed, or unknown');
+  }
+  const normalizedReason = reason === undefined
+    ? undefined
+    : requiredString(reason, 'delivery reason');
   return Object.freeze({
     schemaVersion: DELIVERY_RECEIPT_SCHEMA_VERSION,
     deliveryId: requiredString(deliveryId, 'deliveryId'),
     presentation: requiredString(presentation, 'presentation'),
     providerMessageIds: providerIds(providerMessageIds),
+    ...(deliveryOutcome === undefined ? {} : { deliveryOutcome }),
+    ...(normalizedReason === undefined ? {} : { reason: normalizedReason }),
     artifacts: artifactResults(artifacts),
   });
 }
@@ -137,11 +167,17 @@ export function mergeDeliveryReceipts({ deliveryId, presentation, receipts }) {
   }
   const messageIds = [];
   const artifacts = new Map();
+  let deliveryOutcome;
+  let reason;
   for (const receipt of receipts) {
     if (!receipt || receipt.schemaVersion !== DELIVERY_RECEIPT_SCHEMA_VERSION) {
       throw new TypeError('receipt must use DeliveryReceipt schema version 1');
     }
     messageIds.push(...(receipt.providerMessageIds ?? []));
+    if (deliveryOutcome === undefined && receipt.deliveryOutcome !== undefined) {
+      deliveryOutcome = receipt.deliveryOutcome;
+      reason = receipt.reason;
+    }
     for (const artifact of receipt.artifacts ?? []) {
       artifacts.set(artifact.artifactId, artifact);
     }
@@ -150,6 +186,8 @@ export function mergeDeliveryReceipts({ deliveryId, presentation, receipts }) {
     deliveryId,
     presentation,
     providerMessageIds: messageIds,
+    deliveryOutcome,
+    reason,
     artifacts: [...artifacts.values()],
   });
 }

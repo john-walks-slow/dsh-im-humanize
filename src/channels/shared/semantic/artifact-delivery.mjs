@@ -76,7 +76,7 @@ export async function deliverOutboundArtifacts({
   logger,
 }) {
   const receipts = baseReceipt ? [baseReceipt] : [];
-  let userVisible = Boolean(baseReceipt);
+  let userVisible = Boolean(baseReceipt) && baseReceipt.deliveryOutcome !== 'failed';
   let failureNoticeVisible = false;
   let artifactsSent = 0;
   let artifactSendErrors = 0;
