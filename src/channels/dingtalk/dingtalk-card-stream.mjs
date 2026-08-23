@@ -1,3 +1,5 @@
+import { t } from '../shared/i18n.mjs';
+
 const DEFAULT_UPDATE_INTERVAL_MS = 500;
 const FAILURE_TEXT = '消息处理失败，请稍后重试。';
 
@@ -100,7 +102,7 @@ export function createDingTalkCardStream({
     if (!cleanupPromise) {
       cleanupPromise = api.failAiCard({
         ...cardRequest,
-        text: FAILURE_TEXT,
+        text: t(FAILURE_TEXT),
         signal: AbortSignal.timeout(5_000),
       }).then(
         () => true,

@@ -9,6 +9,7 @@ import { apply as applyWecom } from './channels/wecom/index.mjs';
 import { apply as applyWeixin } from './channels/weixin/index.mjs';
 import { apply as applyWhatsapp } from './channels/whatsapp/index.mjs';
 import { installOutboundArtifactTool } from '../../src/channels/shared/semantic/artifact.mjs';
+import { setImHostLanguage } from '../../src/channels/shared/i18n.mjs';
 
 export const name = 'dsh-im-host';
 export const inject = [
@@ -40,6 +41,7 @@ export function createImHostPlugin(internals = {}) {
     name,
     inject,
     async apply(ctx, config = {}) {
+      setImHostLanguage(config.language ?? process.env.DSH_IM_LANGUAGE);
       if (typeof ctx?.inject === 'function') {
         ctx.inject(['tools', 'systemPrompt'], (artifactCtx) => {
           installOutboundArtifactTool(artifactCtx);

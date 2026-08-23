@@ -36,35 +36,38 @@ import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.m
 import {
   createDeliveryReceipt,
 } from '../shared/semantic/delivery.mjs';
+import { t } from '../shared/i18n.mjs';
 
 const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
 
-const HELP_TEXT = [
-  '企业微信机器人已连接 DeepSeek Harness。',
-  '',
-  '直接发送文字、图片或文件即可继续当前会话。',
-  '/new  开启一个全新会话',
-  '/compact  压缩当前会话的较早上下文',
-  '/workspace 工作区绝对路径  切换工作区',
-  '/workspacelist  列出工作区绝对路径',
-  '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
-  '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
-  '/models  按序号列出所有可用模型',
-  '/model [序号或完整模型ID]  查看或切换当前会话模型',
-  '示例：先发 /models，再发 /model 2',
-  '/presetlist  按序号列出可用 Agent Preset',
-  '/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset',
-  '纯数字 ID：/preset id:<ID>',
-  '/preset --default  跟随 Host 默认',
-  '/stop  停止当前任务',
-  '/steer 补充指令  纠偏当前任务',
-  '/status  检查连接状态',
-  '/help  显示本帮助',
-].join('\n');
+// Built lazily: t() must run after setImHostLanguage, not at import time.
+function helpText() {
+  return [
+    t('企业微信机器人已连接 DeepSeek Harness。'),
+    '',
+    t('直接发送文字、图片或文件即可继续当前会话。'),
+    t('/new  开启一个全新会话'),
+    t('/compact  压缩当前会话的较早上下文'),
+    t('/workspace 工作区绝对路径  切换工作区'),
+    t('/workspacelist  列出工作区绝对路径'),
+    t('/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题'),
+    t('/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话'),
+    t('/models  按序号列出所有可用模型'),
+    t('/model [序号或完整模型ID]  查看或切换当前会话模型'),
+    t('示例：先发 /models，再发 /model 2'),
+    t('/presetlist  按序号列出可用 Agent Preset'),
+    t('/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset'),
+    t('纯数字 ID：/preset id:<ID>'),
+    t('/preset --default  跟随 Host 默认'),
+    t('/stop  停止当前任务'),
+    t('/steer 补充指令  纠偏当前任务'),
+    t('/status  检查连接状态'),
+    t('/help  显示本帮助'),
+  ].join('\n');
+}
 const MAX_REPLY_BYTES = 18_000;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_PREFETCHED_IMAGES = 4;
-const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -137,7 +140,7 @@ function imageSource(client, image) {
         throw new ImagePromptError(
           'image-too-large',
           `Enterprise WeChat image exceeds ${maxBytes} bytes`,
-          '图片超过 5 MB，请压缩后重试。',
+          t('图片超过 5 MB，请压缩后重试。'),
         );
       }
       return { data, name: result?.filename };
@@ -219,7 +222,7 @@ function prefetchInboundImages(message, signal) {
             throw new ImagePromptError(
               'image-too-large',
               `Enterprise WeChat image exceeds ${maxBytes} bytes`,
-              '图片超过 5 MB，请压缩后重试。',
+              t('图片超过 5 MB，请压缩后重试。'),
             );
           }
           return result;
@@ -238,7 +241,7 @@ function imageQueueFullMessage(message) {
         throw new ImagePromptError(
           'image-queue-full',
           `Enterprise WeChat already has ${MAX_PREFETCHED_IMAGES} prefetched images`,
-          '当前待处理图片较多，请稍后重新发送。',
+          t('当前待处理图片较多，请稍后重新发送。'),
         );
       },
     })),
@@ -272,7 +275,7 @@ function splitUtf8(text, maxBytes = MAX_REPLY_BYTES) {
 
 function progressText(update) {
   if (update?.type === 'text') return update.text;
-  if (update?.type === 'tool') return `正在使用${update.name}…`;
+  if (update?.type === 'tool') return t('正在使用{name}…', { name: update.name });
   return update?.text;
 }
 
@@ -280,23 +283,23 @@ function artifactFailureText(fileName, error) {
   const name = String(fileName ?? '结果文件').replace(/[\r\n]+/g, ' ').trim() || '结果文件';
   switch (error?.code) {
     case 'artifact-delivery-uncertain':
-      return `结果文件「${name}」的发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。`;
+      return t('结果文件「{name}」的发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。', { name });
     case 'artifact-permission-required':
-      return `结果文件「${name}」已生成，但企业微信智能机器人缺少素材上传或文件消息能力，请检查机器人权限。`;
+      return t('结果文件「{name}」已生成，但企业微信智能机器人缺少素材上传或文件消息能力，请检查机器人权限。', { name });
     case 'artifact-too-large':
-      return `结果文件「${name}」超过当前企业微信机器人可发送的文件大小，未发送。`;
+      return t('结果文件「{name}」超过当前企业微信机器人可发送的文件大小，未发送。', { name });
     case 'artifact-empty':
-      return `结果文件「${name}」为空，企业微信不允许发送空文件。`;
+      return t('结果文件「{name}」为空，企业微信不允许发送空文件。', { name });
     case 'artifact-changed':
     case 'artifact-invalid':
     case 'artifact-unavailable':
-      return `结果文件「${name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。`;
+      return t('结果文件「{name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。', { name });
     case 'artifact-rate-limited':
-      return `结果文件「${name}」暂时被企业微信限流，未能发送，请稍后重试。`;
+      return t('结果文件「{name}」暂时被企业微信限流，未能发送，请稍后重试。', { name });
     case 'artifact-provider-rejected':
-      return `结果文件「${name}」已生成，但企业微信拒绝了该文件或文件消息。`;
+      return t('结果文件「{name}」已生成，但企业微信拒绝了该文件或文件消息。', { name });
     default:
-      return `结果文件「${name}」已生成，但暂时未能通过企业微信发送，请稍后重试。`;
+      return t('结果文件「{name}」已生成，但暂时未能通过企业微信发送，请稍后重试。', { name });
   }
 }
 
@@ -415,7 +418,7 @@ function sendWecomFile(client, chatId, file, options) {
 
 function answerTextForDelivery(answer, artifacts) {
   if (typeof answer === 'string' && answer.trim()) return answer;
-  return artifacts.length > 0 ? '结果文件已生成。' : '任务已完成，但没有生成可显示的文本。';
+  return artifacts.length > 0 ? t('结果文件已生成。') : t('任务已完成，但没有生成可显示的文本。');
 }
 
 function providerMessageId(result) {
@@ -535,7 +538,7 @@ export class WecomHarnessBridge {
         if (error?.code === 'turn-stopped' || this.#signal?.aborted) return;
         this.#status.lastError = error?.message ?? String(error);
         this.#logger.error?.('[dsh-im:wecom] failed to process a command');
-        return this.#sendImmediate(frame, chatId, '消息处理失败，请稍后重试。')
+        return this.#sendImmediate(frame, chatId, t('消息处理失败，请稍后重试。'))
           .catch(() => undefined);
       }).finally(() => {
         this.#acceptedMessageIds.delete(messageId);
@@ -763,25 +766,25 @@ export class WecomHarnessBridge {
     let streamStarted = false;
     try {
       if (!text && !hasImages && !hasFiles) {
-        await this.#sendImmediate(frame, chatId, '目前支持文字、图片、文件和语音转写消息。');
+        await this.#sendImmediate(frame, chatId, t('目前支持文字、图片、文件和语音转写消息。'));
         await this.#state.markSeen(messageId);
         return;
       }
       const command = text.toLowerCase();
       if (!hasImages && !hasFiles && command === '/help') {
-        await this.#sendImmediate(frame, chatId, HELP_TEXT);
+        await this.#sendImmediate(frame, chatId, helpText());
         await this.#state.markSeen(messageId);
         return;
       }
       if (!hasImages && !hasFiles && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
-        await this.#sendImmediate(frame, chatId, '企业微信机器人与 DeepSeek Harness 连接正常。');
+        await this.#sendImmediate(frame, chatId, t('企业微信机器人与 DeepSeek Harness 连接正常。'));
         await this.#state.markSeen(messageId);
         return;
       }
       if (!hasImages && !hasFiles && command === '/new') {
         await this.#state.clearSession(key);
-        await this.#sendImmediate(frame, chatId, '已开启新会话。请发送你的问题。');
+        await this.#sendImmediate(frame, chatId, t('已开启新会话。请发送你的问题。'));
         await this.#state.markSeen(messageId);
         return;
       }
@@ -812,7 +815,7 @@ export class WecomHarnessBridge {
 
       streamId = this.#generateReqId('stream');
       try {
-        await this.#client.replyStream(frame, streamId, '正在思考中…', false);
+        await this.#client.replyStream(frame, streamId, t('正在思考中…'), false);
         streamStarted = true;
       } catch (error) {
         this.#logger.warn?.('[dsh-im:wecom] unable to start a stream; using an active reply:', error);
@@ -911,7 +914,7 @@ export class WecomHarnessBridge {
     } catch (error) {
       if (error?.code === 'turn-stopped') {
         if (streamStarted && streamId) {
-          await this.#client.replyStream(frame, streamId, '已停止。', true)
+          await this.#client.replyStream(frame, streamId, t('已停止。'), true)
             .catch(() => undefined);
         }
         await this.#state.markSeen(messageId);
@@ -922,7 +925,7 @@ export class WecomHarnessBridge {
       this.#logger.error?.('[dsh-im:wecom] failed to process an inbound message');
       const errorText = inboundFileUserMessage(error)
         ?? imagePromptUserMessage(error)
-        ?? '消息处理失败，请稍后重试。';
+        ?? t('消息处理失败，请稍后重试。');
       try {
         if (streamStarted && streamId) {
           await this.#client.replyStream(frame, streamId, errorText, true);
@@ -958,7 +961,7 @@ export class WecomHarnessBridge {
 
     const text = nonEmptyString(interactionReplyText(frame));
     if (!text) {
-      await this.#sendImmediate(frame, chatId, '请用文字回答当前问题。')
+      await this.#sendImmediate(frame, chatId, t('请用文字回答当前问题。'))
         .catch(() => undefined);
       return;
     }
@@ -966,7 +969,7 @@ export class WecomHarnessBridge {
     const pending = this.#pendingInteractions.get(key);
     if (!pending || pending !== expected || pending.submitting) {
       if (claimed && (!pending || pending !== expected)) {
-        await this.#sendImmediate(frame, chatId, INTERACTION_RESOLVED_TEXT)
+        await this.#sendImmediate(frame, chatId, t('这个问题已在其他客户端处理，无需再次回答。'))
           .catch(() => undefined);
         return;
       }
@@ -987,7 +990,7 @@ export class WecomHarnessBridge {
       try {
         await this.#presentInteraction(pending);
       } catch {
-        this.#status.lastError = '企业微信交互问题发送失败。';
+        this.#status.lastError = t('企业微信交互问题发送失败。');
         this.#logger.error?.('[dsh-im:wecom] failed to retry an interaction question');
         pending.interaction.reconnect?.();
         return;
@@ -995,7 +998,7 @@ export class WecomHarnessBridge {
       const presentedPending = this.#pendingInteractions.get(key);
       if (!presentedPending || presentedPending !== expected || presentedPending.submitting) {
         if (claimed && (!presentedPending || presentedPending !== expected)) {
-          await this.#sendImmediate(frame, chatId, INTERACTION_RESOLVED_TEXT)
+          await this.#sendImmediate(frame, chatId, t('这个问题已在其他客户端处理，无需再次回答。'))
             .catch(() => undefined);
           return;
         }
@@ -1018,7 +1021,7 @@ export class WecomHarnessBridge {
       try {
         await this.#presentInteraction(pending);
       } catch {
-        this.#status.lastError = '企业微信交互问题发送失败。';
+        this.#status.lastError = t('企业微信交互问题发送失败。');
         this.#logger.error?.('[dsh-im:wecom] failed to send the next interaction question');
         pending.interaction.reconnect?.();
       }
@@ -1042,7 +1045,7 @@ export class WecomHarnessBridge {
         if (this.#pendingInteractions.get(key) === pending) {
           this.#clearPendingInteraction(key, pending.interactionId);
         }
-        await this.#sendImmediate(frame, chatId, INTERACTION_RESOLVED_TEXT)
+        await this.#sendImmediate(frame, chatId, t('这个问题已在其他客户端处理，无需再次回答。'))
           .catch(() => undefined);
         return;
       }
@@ -1050,9 +1053,9 @@ export class WecomHarnessBridge {
       pending.submitting = false;
       pending.answers.pop();
       pending.index -= 1;
-      this.#status.lastError = '回答提交失败。';
+      this.#status.lastError = t('回答提交失败。');
       this.#logger.error?.('[dsh-im:wecom] failed to answer a Harness interaction');
-      await this.#sendImmediate(frame, chatId, '回答提交失败，请重新发送当前问题的答案。')
+      await this.#sendImmediate(frame, chatId, t('回答提交失败，请重新发送当前问题的答案。'))
         .catch(() => undefined);
     }
   }
@@ -1097,7 +1100,7 @@ export class WecomHarnessBridge {
       });
       await this.#sendActive(
         chatId,
-        '检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。',
+        t('检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。'),
       ).catch(() => undefined);
       return;
     }
@@ -1185,7 +1188,7 @@ export class WecomHarnessBridge {
     await this.#state.markSeen(messageId);
     this.#status.messagesReceived += 1;
     this.#status.lastMessageAt = new Date().toISOString();
-    await this.#sendImmediate(frame, chatId, INTERACTION_RESOLVED_TEXT).catch(() => undefined);
+    await this.#sendImmediate(frame, chatId, t('这个问题已在其他客户端处理，无需再次回答。')).catch(() => undefined);
   }
 
   #takePendingInteraction(key, interactionId) {

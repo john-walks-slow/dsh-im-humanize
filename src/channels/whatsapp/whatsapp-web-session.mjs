@@ -7,6 +7,8 @@ import makeWASocket, {
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
 
+import { t } from '../shared/i18n.mjs';
+
 const SILENT_LOGGER = Object.freeze({
   level: 'silent',
   trace() {},
@@ -57,7 +59,7 @@ function normalizeIdentity(socket, authState) {
   return {
     accountJid,
     name: typeof source?.name === 'string' && source.name.trim()
-      ? source.name.trim().slice(0, 100) : 'WhatsApp机器人',
+      ? source.name.trim().slice(0, 100) : t('WhatsApp机器人'),
   };
 }
 

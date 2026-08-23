@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { t } from '../shared/i18n.mjs';
 
 const DEFAULT_BASE_URL = 'https://discord.com/api/v10/';
 const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
@@ -275,7 +276,7 @@ export async function inspectDiscordToken(token, options = {}) {
   if (!bot?.id || bot?.bot !== true) throw new Error('Discord token does not belong to a bot');
   return {
     platformId: String(bot.id),
-    name: cleanString(bot.global_name) ?? cleanString(bot.username) ?? 'Discord机器人',
+    name: cleanString(bot.global_name) ?? cleanString(bot.username) ?? t('Discord机器人'),
     username: cleanString(bot.username),
   };
 }

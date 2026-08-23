@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+import { t } from '../shared/i18n.mjs';
+
 const EMPTY_DOCUMENT = Object.freeze({ version: 1, bots: Object.freeze([]) });
 
 function cleanString(value) {
@@ -30,7 +32,7 @@ export function deriveQqBotIdentity(appId) {
 
 export function maskQqAppId(appId) {
   const value = cleanString(appId) ?? '';
-  if (value.length <= 10) return value ? `${value.slice(0, 3)}•••` : 'QQ机器人';
+  if (value.length <= 10) return value ? `${value.slice(0, 3)}•••` : t('QQ机器人');
   return `${value.slice(0, 6)}••••${value.slice(-4)}`;
 }
 

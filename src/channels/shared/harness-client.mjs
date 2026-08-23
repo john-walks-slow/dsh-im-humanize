@@ -8,6 +8,7 @@ import {
   InboundFileError,
 } from './inbound-file.mjs';
 import { outboundArtifactRegistry } from './semantic/artifact.mjs';
+import { t } from './i18n.mjs';
 
 // Every channel plugin runs in the same Host process. Sharing ownership by
 // Harness origin prevents two channel-specific clients bound to one Session
@@ -438,7 +439,7 @@ export class HarnessReplyTracker {
       }
 
       if (event.type === 'tool/call') {
-        const name = nonEmptyText(event.data?.name) ?? '工具';
+        const name = nonEmptyText(event.data?.name) ?? t('工具');
         const callId = nonEmptyText(event.data?.callId)
           ?? nonEmptyText(event.data?.subCallId);
         if (callId) this.#toolNames.set(callId, name);
@@ -453,7 +454,7 @@ export class HarnessReplyTracker {
         const error = toolResultErrorText(event.data?.error);
         pushUpdate({
           type: 'status',
-          text: '正在整理结果…',
+          text: t('正在整理结果…'),
           ...(toolName ? { toolName } : {}),
           ...(error ? { error } : {}),
         });

@@ -1,5 +1,6 @@
 import { fetchFileStream } from '../shared/file-download.mjs';
 import { fetchImageBuffer, ImagePromptError } from '../shared/image-prompt.mjs';
+import { t } from '../shared/i18n.mjs';
 
 const DEFAULT_BASE_URL = 'https://slack.com/api/';
 const SLACK_FILE_HOST = 'files.slack.com';
@@ -430,7 +431,7 @@ export class SlackApi {
         throw new ImagePromptError(
           'slack-file-access-required',
           'Slack redirected a private file request to the workspace because file access was not granted',
-          'Slack 未授权机器人读取该文件。请为应用添加 files:read 后重新安装，再重新发送图片。',
+          t('Slack 未授权机器人读取该文件。请为应用添加 files:read 后重新安装，再重新发送图片。'),
         );
       }
       return response;
@@ -505,19 +506,19 @@ export class SlackApi {
 
 export async function inspectSlackCredentials({ botToken, appToken }, options = {}) {
   if (!validSlackBotToken(botToken)) {
-    const error = new TypeError('Slack Bot Token 必须以 xoxb- 开头。');
+    const error = new TypeError(t('Slack Bot Token 必须以 xoxb- 开头。'));
     error.code = 'slack-invalid-bot-token';
     throw error;
   }
   if (!validSlackAppToken(appToken)) {
-    const error = new TypeError('Slack App Token 必须以 xapp- 开头。');
+    const error = new TypeError(t('Slack App Token 必须以 xapp- 开头。'));
     error.code = 'slack-invalid-app-token';
     throw error;
   }
   const api = new SlackApi({ botToken, appToken, ...options });
   const [identity, connection] = await Promise.all([api.authTest(), api.openConnection()]);
   if (!identity?.team_id || !identity?.user_id || !identity?.bot_id) {
-    throw new Error('Slack Bot Token 没有返回完整的机器人身份。');
+    throw new Error(t('Slack Bot Token 没有返回完整的机器人身份。'));
   }
   let socketUrl;
   try {
@@ -526,7 +527,7 @@ export async function inspectSlackCredentials({ botToken, appToken }, options = 
     socketUrl = null;
   }
   if (!socketUrl || socketUrl.protocol !== 'wss:') {
-    const error = new Error('Slack App Token 无法创建 Socket Mode 连接，请确认已启用 Socket Mode 和 connections:write。');
+    const error = new Error(t('Slack App Token 无法创建 Socket Mode 连接，请确认已启用 Socket Mode 和 connections:write。'));
     error.code = 'slack-socket-mode';
     throw error;
   }

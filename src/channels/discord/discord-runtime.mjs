@@ -1,6 +1,7 @@
 import { createEditableMessageStream, splitMessageText } from '../shared/editable-message-stream.mjs';
 import { fetchFileStream } from '../shared/file-download.mjs';
 import { fetchImageBuffer } from '../shared/image-prompt.mjs';
+import { t } from '../shared/i18n.mjs';
 import { DiscordApi } from './discord-api.mjs';
 import { createDiscordBridgeStatus, DiscordHarnessBridge } from './discord-bridge.mjs';
 
@@ -40,12 +41,12 @@ function eventData(event) {
 
 function gatewayCloseError(code) {
   if (code === 4004) {
-    const error = new Error('Discord Bot Token 无效，请重新填写。');
+    const error = new Error(t('Discord Bot Token 无效，请重新填写。'));
     error.code = 'discord-401';
     return error;
   }
   if (code === 4013 || code === 4014) {
-    const error = new Error('Discord Gateway Intents 配置不正确，请检查 Developer Portal 的 Bot 设置。');
+    const error = new Error(t('Discord Gateway Intents 配置不正确，请检查 Developer Portal 的 Bot 设置。'));
     error.code = 'discord-intents';
     return error;
   }

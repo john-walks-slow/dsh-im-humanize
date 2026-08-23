@@ -7,6 +7,7 @@ import {
 } from '@whiskeysockets/baileys';
 
 import { splitMessageText } from '../shared/editable-message-stream.mjs';
+import { t } from '../shared/i18n.mjs';
 import { ImagePromptError } from '../shared/image-prompt.mjs';
 import { trackOutboundArtifactProviderPromise } from '../shared/semantic/artifact.mjs';
 import { createWhatsappBridgeStatus, WhatsappHarnessBridge } from './whatsapp-bridge.mjs';
@@ -107,7 +108,7 @@ async function downloadWhatsappImage(message, download, {
       throw new ImagePromptError(
         'image-download-failed',
         `WhatsApp image download timed out after ${IMAGE_DOWNLOAD_TIMEOUT_MS} ms`,
-        '图片下载失败，请重新发送后再试。',
+        t('图片下载失败，请重新发送后再试。'),
       );
     }
     throw error;
@@ -126,7 +127,7 @@ async function downloadWhatsappImage(message, download, {
         throw new ImagePromptError(
           'image-too-large',
           `WhatsApp image exceeded ${maxBytes} bytes`,
-          '图片超过 5 MB，请压缩后重试。',
+          t('图片超过 5 MB，请压缩后重试。'),
         );
       }
       chunks.push(data);
@@ -137,7 +138,7 @@ async function downloadWhatsappImage(message, download, {
       throw new ImagePromptError(
         'image-download-failed',
         `WhatsApp image stream timed out after ${IMAGE_DOWNLOAD_TIMEOUT_MS} ms`,
-        '图片下载失败，请重新发送后再试。',
+        t('图片下载失败，请重新发送后再试。'),
       );
     }
     throw error;
@@ -640,7 +641,7 @@ export class WhatsappRuntime {
 
   async sendConnectionTest(text) {
     if (!this.#status.ready || !this.#client) {
-      const error = new Error('WhatsApp机器人尚未连接');
+      const error = new Error(t('WhatsApp机器人尚未连接'));
       error.code = 'test-target-unavailable';
       throw error;
     }

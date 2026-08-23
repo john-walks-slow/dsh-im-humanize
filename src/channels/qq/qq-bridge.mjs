@@ -40,8 +40,11 @@ import {
   providerMessageIdsFor,
 } from '../shared/semantic/delivery.mjs';
 import { sendMarkdownReply } from './markdown-reply.mjs';
+import { t } from '../shared/i18n.mjs';
 
-const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
+function interactionResolvedText() {
+  return t('这个问题已在其他客户端处理，无需再次回答。');
+}
 const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
 
 export const QQ_IMAGE_HOSTS = Object.freeze([
@@ -55,28 +58,30 @@ export const QQ_IMAGE_HOSTS = Object.freeze([
 
 const QQ_IMAGE_FILENAME = /\.(?:gif|jpe?g|png|webp)$/i;
 
-const HELP_TEXT = [
-  'QQ 机器人已连接 DeepSeek Harness。',
-  '',
-  '直接发送文字、图片或文件即可继续当前会话。',
-  '/new  开启一个全新会话',
-  '/compact  压缩当前会话的较早上下文',
-  '/workspace 工作区绝对路径  切换工作区',
-  '/workspacelist  列出工作区绝对路径',
-  '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
-  '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
-  '/models  按序号列出所有可用模型',
-  '/model [序号或完整模型ID]  查看或切换当前会话模型',
-  '示例：先发 /models，再发 /model 2',
-  '/presetlist  按序号列出可用 Agent Preset',
-  '/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset',
-  '纯数字 ID：/preset id:<ID>',
-  '/preset --default  跟随 Host 默认',
-  '/stop  停止当前任务',
-  '/steer 补充指令  纠偏当前任务',
-  '/status  检查连接状态',
-  '/help  显示本帮助',
-].join('\n');
+function helpText() {
+  return [
+    t('QQ 机器人已连接 DeepSeek Harness。'),
+    '',
+    t('直接发送文字、图片或文件即可继续当前会话。'),
+    t('/new  开启一个全新会话'),
+    t('/compact  压缩当前会话的较早上下文'),
+    t('/workspace 工作区绝对路径  切换工作区'),
+    t('/workspacelist  列出工作区绝对路径'),
+    t('/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题'),
+    t('/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话'),
+    t('/models  按序号列出所有可用模型'),
+    t('/model [序号或完整模型ID]  查看或切换当前会话模型'),
+    t('示例：先发 /models，再发 /model 2'),
+    t('/presetlist  按序号列出可用 Agent Preset'),
+    t('/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset'),
+    t('纯数字 ID：/preset id:<ID>'),
+    t('/preset --default  跟随 Host 默认'),
+    t('/stop  停止当前任务'),
+    t('/steer 补充指令  纠偏当前任务'),
+    t('/status  检查连接状态'),
+    t('/help  显示本帮助'),
+  ].join('\n');
+}
 
 function conversationKey(message) {
   return `${message.kind}:${message.kind === 'group' ? message.groupOpenid : message.senderId}`;
@@ -167,35 +172,35 @@ function nonEmptyString(value) {
 }
 
 function artifactFailureText(fileName, error) {
-  const name = String(fileName ?? '结果文件').replace(/[\r\n]+/g, ' ').trim() || '结果文件';
+  const name = String(fileName ?? t('结果文件')).replace(/[\r\n]+/g, ' ').trim() || t('结果文件');
   if (error?.name === 'UploadDailyLimitExceededError') {
-    return `结果文件「${name}」已生成，但 QQ 今日文件上传额度已用完，请稍后重试。`;
+    return t('结果文件「{name}」已生成，但 QQ 今日文件上传额度已用完，请稍后重试。', { name });
   }
   switch (error?.code) {
     case 'artifact-delivery-uncertain':
-      return `结果文件「${name}」的发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。`;
+      return t('结果文件「{name}」的发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。', { name });
     case 'artifact-permission-required':
-      return `结果文件「${name}」已生成，但当前 QQ 机器人没有文件消息权限。`;
+      return t('结果文件「{name}」已生成，但当前 QQ 机器人没有文件消息权限。', { name });
     case 'artifact-too-large':
-      return `结果文件「${name}」超过当前 QQ 机器人可发送的文件大小，未发送。`;
+      return t('结果文件「{name}」超过当前 QQ 机器人可发送的文件大小，未发送。', { name });
     case 'artifact-empty':
-      return `结果文件「${name}」为空，QQ 不允许发送空文件。`;
+      return t('结果文件「{name}」为空，QQ 不允许发送空文件。', { name });
     case 'artifact-changed':
     case 'artifact-invalid':
     case 'artifact-unavailable':
-      return `结果文件「${name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。`;
+      return t('结果文件「{name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。', { name });
     case 'artifact-rate-limited':
-      return `结果文件「${name}」暂时被 QQ 限流，未能发送，请稍后重试。`;
+      return t('结果文件「{name}」暂时被 QQ 限流，未能发送，请稍后重试。', { name });
     case 'artifact-provider-rejected':
-      return `结果文件「${name}」已生成，但 QQ 拒绝了该文件或文件消息。`;
+      return t('结果文件「{name}」已生成，但 QQ 拒绝了该文件或文件消息。', { name });
     default:
-      return `结果文件「${name}」已生成，但暂时未能通过 QQ 发送，请稍后重试。`;
+      return t('结果文件「{name}」已生成，但暂时未能通过 QQ 发送，请稍后重试。', { name });
   }
 }
 
 function answerTextForDelivery(answer, artifacts) {
   if (typeof answer === 'string' && answer.trim()) return answer;
-  return artifacts.length > 0 ? '结果文件已生成。' : answer;
+  return artifacts.length > 0 ? t('结果文件已生成。') : answer;
 }
 
 function qqArtifactError(error, { dispatched = false } = {}) {
@@ -420,7 +425,7 @@ export class QqHarnessBridge {
         if (error?.code === 'turn-stopped' || this.#signal?.aborted) return;
         this.#status.lastError = error?.message ?? String(error);
         this.#logger.error?.('[dsh-im:qq] failed to process a command:', error);
-        return this.#bot.sendText(message.replyTarget, '消息处理失败，请稍后重试。')
+        return this.#bot.sendText(message.replyTarget, t('消息处理失败，请稍后重试。'))
           .catch(() => undefined);
       }).finally(() => {
         this.#acceptedMessageIds.delete(messageId);
@@ -609,25 +614,25 @@ export class QqHarnessBridge {
     let stream = null;
     try {
       if (!text && !hasImages && !hasFiles) {
-        await this.#bot.sendText(target, '目前支持文字、图片和文件消息。');
+        await this.#bot.sendText(target, t('目前支持文字、图片和文件消息。'));
         await this.#state.markSeen(messageId);
         return;
       }
       const command = text.toLowerCase();
       if (!hasImages && !hasFiles && command === '/help') {
-        await this.#bot.sendText(target, HELP_TEXT);
+        await this.#bot.sendText(target, helpText());
         await this.#state.markSeen(messageId);
         return;
       }
       if (!hasImages && !hasFiles && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
-        await this.#bot.sendText(target, 'QQ 机器人与 DeepSeek Harness 连接正常。');
+        await this.#bot.sendText(target, t('QQ 机器人与 DeepSeek Harness 连接正常。'));
         await this.#state.markSeen(messageId);
         return;
       }
       if (!hasImages && !hasFiles && command === '/new') {
         await this.#state.clearSession(key);
-        await this.#bot.sendText(target, '已开启新会话。请发送你的问题。');
+        await this.#bot.sendText(target, t('已开启新会话。请发送你的问题。'));
         await this.#state.markSeen(messageId);
         return;
       }
@@ -771,7 +776,7 @@ export class QqHarnessBridge {
           this.#logger.warn?.('[dsh-im:qq] unable to cancel a stopped QQ stream:', streamError);
         }
         try {
-          await this.#bot.sendText(target, '已停止。');
+          await this.#bot.sendText(target, t('已停止。'));
         } catch (sendError) {
           this.#logger.warn?.('[dsh-im:qq] unable to announce a stopped QQ turn:', sendError);
         }
@@ -791,7 +796,7 @@ export class QqHarnessBridge {
           target,
           inboundFileUserMessage(error)
             ?? imagePromptUserMessage(error)
-            ?? '消息处理失败，请稍后重试。',
+            ?? t('消息处理失败，请稍后重试。'),
         );
         await this.#state.markSeen(messageId);
       } catch (sendError) {
@@ -818,14 +823,14 @@ export class QqHarnessBridge {
     if (message.kind === 'group' && message.rawEventType !== 'GROUP_AT_MESSAGE_CREATE') return;
     const text = nonEmptyString(safeText(message));
     if (!text || hasQqImageAttachments(message) || hasQqFileAttachments(message)) {
-      await this.#bot.sendText(message.replyTarget, '请用文字回答当前问题。');
+      await this.#bot.sendText(message.replyTarget, t('请用文字回答当前问题。'));
       return;
     }
 
     const pending = this.#pendingInteractions.get(key);
     if (!pending || pending !== expected || pending.submitting) {
       if (claimed && (!pending || pending !== expected)) {
-        await this.#bot.sendText(message.replyTarget, INTERACTION_RESOLVED_TEXT);
+        await this.#bot.sendText(message.replyTarget, interactionResolvedText());
         return;
       }
       return this.#enqueueMessage(message, messageId, key, {
@@ -838,7 +843,7 @@ export class QqHarnessBridge {
       try {
         await this.#presentInteraction(pending);
       } catch {
-        this.#status.lastError = 'QQ 交互问题发送失败。';
+        this.#status.lastError = t('QQ 交互问题发送失败。');
         this.#logger.error?.('[dsh-im:qq] failed to retry an interaction question');
         pending.interaction.reconnect?.();
         return;
@@ -846,7 +851,7 @@ export class QqHarnessBridge {
       const presentedPending = this.#pendingInteractions.get(key);
       if (!presentedPending || presentedPending !== expected || presentedPending.submitting) {
         if (claimed && (!presentedPending || presentedPending !== expected)) {
-          await this.#bot.sendText(message.replyTarget, INTERACTION_RESOLVED_TEXT)
+          await this.#bot.sendText(message.replyTarget, interactionResolvedText())
             .catch(() => undefined);
           return;
         }
@@ -869,7 +874,7 @@ export class QqHarnessBridge {
       try {
         await this.#presentInteraction(pending);
       } catch {
-        this.#status.lastError = 'QQ 交互问题发送失败。';
+        this.#status.lastError = t('QQ 交互问题发送失败。');
         this.#logger.error?.('[dsh-im:qq] failed to send the next interaction question');
         pending.interaction.reconnect?.();
       }
@@ -891,16 +896,16 @@ export class QqHarnessBridge {
       if (this.#signal?.aborted) return;
       if (error?.code === 'interaction-not-pending') {
         this.#clearPendingInteraction(key, pending.interactionId);
-        await this.#bot.sendText(pending.target, INTERACTION_RESOLVED_TEXT).catch(() => undefined);
+        await this.#bot.sendText(pending.target, interactionResolvedText()).catch(() => undefined);
         return;
       }
       if (this.#pendingInteractions.get(key) !== pending) return;
       pending.submitting = false;
       pending.answers.pop();
       pending.index -= 1;
-      this.#status.lastError = '回答提交失败。';
+      this.#status.lastError = t('回答提交失败。');
       this.#logger.error?.('[dsh-im:qq] failed to answer a Harness interaction');
-      await this.#bot.sendText(pending.target, '回答提交失败，请重新发送当前问题的答案。')
+      await this.#bot.sendText(pending.target, t('回答提交失败，请重新发送当前问题的答案。'))
         .catch(() => undefined);
     }
   }
@@ -945,7 +950,7 @@ export class QqHarnessBridge {
       });
       await this.#bot.sendText(
         target,
-        '检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。',
+        t('检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。'),
       ).catch(() => undefined);
       return;
     }
@@ -1030,7 +1035,7 @@ export class QqHarnessBridge {
     await this.#state.markSeen(messageId);
     this.#status.messagesReceived += 1;
     this.#status.lastMessageAt = new Date().toISOString();
-    await this.#bot.sendText(message.replyTarget, INTERACTION_RESOLVED_TEXT).catch(() => undefined);
+    await this.#bot.sendText(message.replyTarget, interactionResolvedText()).catch(() => undefined);
   }
 
   #takePendingInteraction(key, interactionId) {
@@ -1072,7 +1077,7 @@ export class QqHarnessBridge {
     if (!this.#state.hasSeen(messageId)) {
       await this.#state.markSeen(messageId).catch(() => undefined);
     }
-    await this.#bot.sendText(message.replyTarget, '消息处理失败，请稍后重试。')
+    await this.#bot.sendText(message.replyTarget, t('消息处理失败，请稍后重试。'))
       .catch(() => undefined);
   }
 }

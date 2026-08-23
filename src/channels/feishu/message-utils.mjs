@@ -1,4 +1,5 @@
 import { ImagePromptError } from '../shared/image-prompt.mjs';
+import { t } from '../shared/i18n.mjs';
 
 const FEISHU_MISSING_MESSAGE_SCOPE_CODE = 99991672;
 const FEISHU_ERROR_BODY_LIMIT = 64 * 1024;
@@ -113,7 +114,7 @@ async function readBoundedStream(stream, { signal, maxBytes }) {
         throw new ImagePromptError(
           'image-too-large',
           `Feishu image exceeds ${maxBytes} bytes`,
-          '图片超过 5 MB，请压缩后重试。',
+          t('图片超过 5 MB，请压缩后重试。'),
         );
       }
       chunks.push(data);
@@ -221,7 +222,7 @@ async function feishuImageDownloadError(error, signal) {
   return new ImagePromptError(
     'feishu-image-permission-required',
     'Feishu image download requires the im:message:readonly tenant scope',
-    FEISHU_IMAGE_PERMISSION_MESSAGE,
+    t(FEISHU_IMAGE_PERMISSION_MESSAGE),
     { cause: error },
   );
 }
@@ -249,7 +250,7 @@ function feishuImageSource(event, client, key) {
         throw new ImagePromptError(
           'image-too-large',
           `Feishu image declares ${size} bytes; the limit is ${maxBytes}`,
-          '图片超过 5 MB，请压缩后重试。',
+          t('图片超过 5 MB，请压缩后重试。'),
         );
       }
       return readBoundedStream(resource?.getReadableStream?.(), { signal, maxBytes });

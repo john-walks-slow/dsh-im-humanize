@@ -1,4 +1,5 @@
 import { splitMessageText } from '../shared/editable-message-stream.mjs';
+import { t } from '../shared/i18n.mjs';
 import { SlackApi } from './slack-api.mjs';
 import { createSlackBridgeStatus, SlackHarnessBridge } from './slack-bridge.mjs';
 
@@ -217,7 +218,7 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
       await inFlight?.catch(() => undefined);
 
       const chunks = splitMessageText(text, SLACK_MESSAGE_LIMIT);
-      const first = chunks[0] ?? '处理完成。';
+      const first = chunks[0] ?? t('处理完成。');
       if (!broken && first.startsWith(appended)) {
         await appendInChunks(api, target, ts, first.slice(appended.length), signal);
         await api.stopStream({ channelId: target.channelId, ts, signal });

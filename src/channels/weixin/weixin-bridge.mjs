@@ -43,31 +43,32 @@ import {
   createDeliveryReceipt,
   providerMessageIdsFor,
 } from '../shared/semantic/delivery.mjs';
+import { t } from '../shared/i18n.mjs';
 
-const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
-const GENERIC_PROCESSING_ERROR = '消息处理失败，请稍后重试。';
+const INTERACTION_RESOLVED_TEXT = () => t('这个问题已在其他客户端处理，无需再次回答。');
+const GENERIC_PROCESSING_ERROR = () => t('消息处理失败，请稍后重试。');
 
-const HELP_TEXT = [
-  '微信已连接 DeepSeek Harness。',
+const HELP_TEXT = () => [
+  t('微信已连接 DeepSeek Harness。'),
   '',
-  '直接发送文字、图片、文件或带文字识别结果的语音即可继续当前会话。',
-  '/new  开启一个全新会话',
-  '/compact  压缩当前会话的较早上下文',
-  '/workspace 工作区绝对路径  切换工作区',
-  '/workspacelist  列出工作区绝对路径',
-  '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
-  '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
-  '/models  按序号列出所有可用模型',
-  '/model [序号或完整模型ID]  查看或切换当前会话模型',
-  '示例：先发 /models，再发 /model 2',
-  '/presetlist  按序号列出可用 Agent Preset',
-  '/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset',
-  '纯数字 ID：/preset id:<ID>',
-  '/preset --default  跟随 Host 默认',
-  '/stop  停止当前任务',
-  '/steer 补充指令  纠偏当前任务',
-  '/status  检查连接状态',
-  '/help  显示本帮助',
+  t('直接发送文字、图片、文件或带文字识别结果的语音即可继续当前会话。'),
+  t('/new  开启一个全新会话'),
+  t('/compact  压缩当前会话的较早上下文'),
+  t('/workspace 工作区绝对路径  切换工作区'),
+  t('/workspacelist  列出工作区绝对路径'),
+  t('/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题'),
+  t('/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话'),
+  t('/models  按序号列出所有可用模型'),
+  t('/model [序号或完整模型ID]  查看或切换当前会话模型'),
+  t('示例：先发 /models，再发 /model 2'),
+  t('/presetlist  按序号列出可用 Agent Preset'),
+  t('/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset'),
+  t('纯数字 ID：/preset id:<ID>'),
+  t('/preset --default  跟随 Host 默认'),
+  t('/stop  停止当前任务'),
+  t('/steer 补充指令  纠偏当前任务'),
+  t('/status  检查连接状态'),
+  t('/help  显示本帮助'),
 ].join('\n');
 
 function conversationKey(userId) {
@@ -108,7 +109,7 @@ function canClaimInteractionReply(message, pending) {
     && nonEmptyString(extractWeixinText(message));
 }
 
-function safeMessageError(error, userMessage = GENERIC_PROCESSING_ERROR) {
+function safeMessageError(error, userMessage = GENERIC_PROCESSING_ERROR()) {
   const diagnostic = imagePromptDiagnostic(error);
   return {
     code: diagnostic?.code ?? 'message-processing-failed',
@@ -119,24 +120,24 @@ function safeMessageError(error, userMessage = GENERIC_PROCESSING_ERROR) {
 }
 
 function artifactFailureText(fileName, error) {
-  const name = String(fileName ?? '结果文件').replace(/[\r\n]+/g, ' ').trim() || '结果文件';
+  const name = String(fileName ?? t('结果文件')).replace(/[\r\n]+/g, ' ').trim() || t('结果文件');
   switch (error?.code) {
     case 'artifact-delivery-uncertain':
-      return `结果文件「${name}」发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。`;
+      return t('结果文件「{name}」发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。', { name });
     case 'artifact-permission-required':
-      return `结果文件「${name}」已生成，但微信机器人当前没有文件消息发送权限，请检查机器人文件消息能力。`;
+      return t('结果文件「{name}」已生成，但微信机器人当前没有文件消息发送权限，请检查机器人文件消息能力。', { name });
     case 'artifact-too-large':
-      return `结果文件「${name}」超过当前微信会话可发送的文件大小，未发送。`;
+      return t('结果文件「{name}」超过当前微信会话可发送的文件大小，未发送。', { name });
     case 'artifact-rate-limited':
-      return `结果文件「${name}」暂时被微信限流，未能发送，请稍后重试。`;
+      return t('结果文件「{name}」暂时被微信限流，未能发送，请稍后重试。', { name });
     case 'artifact-provider-rejected':
-      return `结果文件「${name}」已生成，但微信拒绝了该文件消息。`;
+      return t('结果文件「{name}」已生成，但微信拒绝了该文件消息。', { name });
     case 'artifact-invalid':
     case 'artifact-changed':
     case 'artifact-unavailable':
-      return `结果文件「${name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。`;
+      return t('结果文件「{name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。', { name });
     default:
-      return `结果文件「${name}」已生成，但暂时未能通过微信发送，请稍后重试。`;
+      return t('结果文件「{name}」已生成，但暂时未能通过微信发送，请稍后重试。', { name });
   }
 }
 
@@ -244,7 +245,7 @@ export class WeixinHarnessBridge {
         this.#status.lastError = error?.message ?? String(error);
         this.#status.lastMessageError = safeMessageError(error);
         this.#logger.error?.('[dsh-weixin] failed to process a command:', error);
-        return this.#send(sender, GENERIC_PROCESSING_ERROR, contextToken, runId)
+        return this.#send(sender, GENERIC_PROCESSING_ERROR(), contextToken, runId)
           .catch(() => undefined);
       }).finally(() => {
         this.#acceptedMessageIds.delete(messageId);
@@ -400,26 +401,26 @@ export class WeixinHarnessBridge {
       const hasImages = hasInboundImages(promptMessage);
       const hasFiles = hasInboundFiles(promptMessage);
       if (!text && !hasImages && !hasFiles) {
-        await this.#send(sender, '目前支持文字、图片、文件，以及微信已转成文字的语音消息。', contextToken, runId);
+        await this.#send(sender, t('目前支持文字、图片、文件，以及微信已转成文字的语音消息。'), contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
 
       const command = text.trim().toLowerCase();
       if (!hasImages && !hasFiles && command === '/help') {
-        await this.#send(sender, HELP_TEXT, contextToken, runId);
+        await this.#send(sender, HELP_TEXT(), contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
       if (!hasImages && !hasFiles && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
-        await this.#send(sender, '微信与 DeepSeek Harness 连接正常。', contextToken, runId);
+        await this.#send(sender, t('微信与 DeepSeek Harness 连接正常。'), contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
       if (!hasImages && !hasFiles && command === '/new') {
         await this.#state.clearSession(key);
-        await this.#send(sender, '已开启新会话。请发送你的问题。', contextToken, runId);
+        await this.#send(sender, t('已开启新会话。请发送你的问题。'), contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
@@ -483,7 +484,7 @@ export class WeixinHarnessBridge {
       }
       const answerText = typeof answer === 'string' && answer.trim()
         ? answer
-        : artifacts.length > 0 ? '结果文件已生成。' : answer;
+        : artifacts.length > 0 ? t('结果文件已生成。') : answer;
       let textDeliveryError = null;
       let textReceipt = null;
       try {
@@ -519,7 +520,7 @@ export class WeixinHarnessBridge {
       this.#status.lastError = error?.message ?? String(error);
       const userMessage = inboundFileUserMessage(error)
         ?? imagePromptUserMessage(error)
-        ?? GENERIC_PROCESSING_ERROR;
+        ?? GENERIC_PROCESSING_ERROR();
       this.#status.lastMessageError = safeMessageError(error, userMessage);
       this.#logger.error?.('[dsh-weixin] failed to process an inbound message:', error);
       try {
@@ -557,7 +558,7 @@ export class WeixinHarnessBridge {
     if (!text || hasWeixinImageItems(message)) {
       await this.#send(
         expected.actor,
-        '请用文字回答当前问题。',
+        t('请用文字回答当前问题。'),
         contextToken,
         runId,
       );
@@ -569,7 +570,7 @@ export class WeixinHarnessBridge {
       if (claimed && (!pending || pending !== expected)) {
         await this.#send(
           expected.actor,
-          INTERACTION_RESOLVED_TEXT,
+          INTERACTION_RESOLVED_TEXT(),
           contextToken,
           runId,
         );
@@ -586,7 +587,7 @@ export class WeixinHarnessBridge {
       try {
         await this.#presentInteraction(pending);
       } catch {
-        this.#status.lastError = '微信交互问题发送失败。';
+        this.#status.lastError = t('微信交互问题发送失败。');
         this.#logger.error?.('[dsh-weixin] failed to retry an interaction question');
         pending.interaction.reconnect?.();
         return;
@@ -596,7 +597,7 @@ export class WeixinHarnessBridge {
         if (claimed && (!presentedPending || presentedPending !== expected)) {
           await this.#send(
             expected.actor,
-            INTERACTION_RESOLVED_TEXT,
+            INTERACTION_RESOLVED_TEXT(),
             contextToken,
             runId,
           ).catch(() => undefined);
@@ -621,7 +622,7 @@ export class WeixinHarnessBridge {
       try {
         await this.#presentInteraction(pending);
       } catch {
-        this.#status.lastError = '微信交互问题发送失败。';
+        this.#status.lastError = t('微信交互问题发送失败。');
         this.#logger.error?.('[dsh-weixin] failed to send the next interaction question');
         pending.interaction.reconnect?.();
       }
@@ -646,7 +647,7 @@ export class WeixinHarnessBridge {
         this.#clearPendingInteraction(key, pending.interactionId);
         await this.#send(
           pending.actor,
-          INTERACTION_RESOLVED_TEXT,
+          INTERACTION_RESOLVED_TEXT(),
           pending.contextToken,
           pending.runId,
         ).catch(() => undefined);
@@ -656,11 +657,11 @@ export class WeixinHarnessBridge {
       pending.submitting = false;
       pending.answers.pop();
       pending.index -= 1;
-      this.#status.lastError = '回答提交失败。';
+      this.#status.lastError = t('回答提交失败。');
       this.#logger.error?.('[dsh-weixin] failed to answer a Harness interaction');
       await this.#send(
         pending.actor,
-        '回答提交失败，请重新发送当前问题的答案。',
+        t('回答提交失败，请重新发送当前问题的答案。'),
         pending.contextToken,
         pending.runId,
       ).catch(() => undefined);
@@ -706,7 +707,7 @@ export class WeixinHarnessBridge {
       });
       await this.#send(
         actor,
-        '检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。',
+        t('检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。'),
         contextToken,
         runId,
       ).catch(() => undefined);
@@ -792,7 +793,7 @@ export class WeixinHarnessBridge {
     this.#status.lastMessageAt = new Date().toISOString();
     await this.#send(
       nonEmptyString(message?.from_user_id),
-      INTERACTION_RESOLVED_TEXT,
+      INTERACTION_RESOLVED_TEXT(),
       nonEmptyString(message?.context_token) ?? undefined,
       nonEmptyString(message?.run_id) ?? undefined,
     ).catch(() => undefined);
@@ -840,7 +841,7 @@ export class WeixinHarnessBridge {
     }
     await this.#send(
       nonEmptyString(message?.from_user_id),
-      GENERIC_PROCESSING_ERROR,
+      GENERIC_PROCESSING_ERROR(),
       nonEmptyString(message?.context_token) ?? undefined,
       nonEmptyString(message?.run_id) ?? undefined,
     ).catch(() => undefined);

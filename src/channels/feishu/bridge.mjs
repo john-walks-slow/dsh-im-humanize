@@ -51,13 +51,15 @@ import {
   watchListCard,
   workspaceListCard,
 } from './feishu-cards.mjs';
+import { t } from '../shared/i18n.mjs';
 import { MAX_WATCHES_PER_KEY } from './state-store.mjs';
 import {
   FEISHU_GROUP_RESPONSE_MODES,
   normalizeFeishuGroupResponseMode,
 } from './group-response-mode.mjs';
 
-const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
+// Lazily evaluated: t() must run after setImHostLanguage, not at import time.
+const INTERACTION_RESOLVED_TEXT = () => t('这个问题已在其他客户端处理，无需再次回答。');
 const RESOLVED_REPLY_TTL_MS = 30 * 60_000;
 
 const MENU_COMMAND = /^\/m(?:enu)?$/i;
@@ -87,34 +89,37 @@ const REPAIR_URL_HOSTS = new Set([
   'open.larksuite.com',
 ]);
 
-const HELP_TEXT = [
-  '北汇星河 AIOS 已连接 DeepSeek Harness。',
-  '',
-  '直接发送文字、图片或文件即可继续当前会话。',
-  '/new  开启一个全新会话',
-  '/compact  压缩当前会话的较早上下文',
-  '/workspace 工作区绝对路径  切换工作区',
-  '/workspacelist  列出工作区绝对路径',
-  '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
-  '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
-  '/models  按序号列出所有可用模型',
-  '/model [序号或完整模型ID]  查看或切换当前会话模型',
-  '示例：先发 /models，再发 /model 2',
-  '/presetlist  按序号列出可用 Agent Preset',
-  '/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset',
-  '纯数字 ID：/preset id:<ID>',
-  '/preset --default  跟随 Host 默认',
-  '/stop  停止当前任务',
-  '/steer 补充指令  纠偏当前任务',
-  '/status  检查连接状态',
-  '/repair  修复卡片按钮回调',
-  '/m（或 /menu）  打开交互卡片菜单',
-  '/watch [Session ID 或序号]  关注会话，任务完成自动推送',
-  '/unwatch [Session ID 或序号]  取消关注',
-  '/watchlist  查看关注列表',
-  '/archived on|off  会话列表是否包含归档会话',
-  '/help  显示本帮助',
-].join('\n');
+// Built lazily: t() must run after setImHostLanguage, not at import time.
+function helpText() {
+  return [
+    t('北汇星河 AIOS 已连接 DeepSeek Harness。'),
+    '',
+    t('直接发送文字、图片或文件即可继续当前会话。'),
+    t('/new  开启一个全新会话'),
+    t('/compact  压缩当前会话的较早上下文'),
+    t('/workspace 工作区绝对路径  切换工作区'),
+    t('/workspacelist  列出工作区绝对路径'),
+    t('/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题'),
+    t('/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话'),
+    t('/models  按序号列出所有可用模型'),
+    t('/model [序号或完整模型ID]  查看或切换当前会话模型'),
+    t('示例：先发 /models，再发 /model 2'),
+    t('/presetlist  按序号列出可用 Agent Preset'),
+    t('/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset'),
+    t('纯数字 ID：/preset id:<ID>'),
+    t('/preset --default  跟随 Host 默认'),
+    t('/stop  停止当前任务'),
+    t('/steer 补充指令  纠偏当前任务'),
+    t('/status  检查连接状态'),
+    t('/repair  修复卡片按钮回调'),
+    t('/m（或 /menu）  打开交互卡片菜单'),
+    t('/watch [Session ID 或序号]  关注会话，任务完成自动推送'),
+    t('/unwatch [Session ID 或序号]  取消关注'),
+    t('/watchlist  查看关注列表'),
+    t('/archived on|off  会话列表是否包含归档会话'),
+    t('/help  显示本帮助'),
+  ].join('\n');
+}
 
 const ARCHIVED_COMMAND = /^\/archived(?:\s+(on|off))?$/i;
 
@@ -122,43 +127,43 @@ const ARCHIVED_COMMAND = /^\/archived(?:\s+(on|off))?$/i;
 function safeErrorText(error) {
   switch (error?.code) {
     case 'workspace-not-absolute':
-      return '工作区必须是绝对路径。';
+      return t('工作区必须是绝对路径。');
     case 'workspace-not-found':
-      return '工作区路径不存在。';
+      return t('工作区路径不存在。');
     case 'workspace-not-directory':
-      return '工作区路径必须指向一个目录。';
+      return t('工作区路径必须指向一个目录。');
     case 'workspace-bot-not-found':
-      return '机器人正在移除或已重新接入，无法操作原会话的工作区。';
+      return t('机器人正在移除或已重新接入，无法操作原会话的工作区。');
     default:
-      return '操作失败，请稍后重试。';
+      return t('操作失败，请稍后重试。');
   }
 }
 
 function artifactFailureText(fileName, error) {
-  const name = String(fileName ?? '结果文件').replace(/[\r\n]+/g, ' ').trim() || '结果文件';
+  const name = String(fileName ?? t('结果文件')).replace(/[\r\n]+/g, ' ').trim() || t('结果文件');
   switch (error?.code) {
     case 'artifact-permission-required':
-      return `结果文件「${name}」已生成，但机器人缺少飞书文件上传权限。请为应用添加 im:resource 并完成必要审批后重试。`;
+      return t('结果文件「{name}」已生成，但机器人缺少飞书文件上传权限。请为应用添加 im:resource 并完成必要审批后重试。', { name });
     case 'artifact-too-large':
-      return `结果文件「${name}」超过飞书 30 MB 上限，未发送。`;
+      return t('结果文件「{name}」超过飞书 30 MB 上限，未发送。', { name });
     case 'artifact-empty':
-      return `结果文件「${name}」为空，飞书不允许发送空文件。`;
+      return t('结果文件「{name}」为空，飞书不允许发送空文件。', { name });
     case 'artifact-changed':
     case 'artifact-invalid':
     case 'artifact-unavailable':
-      return `结果文件「${name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。`;
+      return t('结果文件「{name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。', { name });
     case 'artifact-rate-limited':
-      return `结果文件「${name}」暂时被飞书限流，未能发送，请稍后重试。`;
+      return t('结果文件「{name}」暂时被飞书限流，未能发送，请稍后重试。', { name });
     case 'artifact-delivery-uncertain':
-      return `结果文件「${name}」发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。`;
+      return t('结果文件「{name}」发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。', { name });
     default:
-      return `结果文件「${name}」已生成，但暂时未能发送，请稍后重试。`;
+      return t('结果文件「{name}」已生成，但暂时未能发送，请稍后重试。', { name });
   }
 }
 
 function answerTextForDelivery(answer, artifacts) {
   if (typeof answer === 'string' && answer.trim()) return answer;
-  return artifacts.length > 0 ? '结果文件已生成。' : answer;
+  return artifacts.length > 0 ? t('结果文件已生成。') : answer;
 }
 
 function nonEmptyString(value) {
@@ -611,7 +616,7 @@ export class FeishuHarnessBridge {
       event.message.chat_id,
       inboundFileUserMessage(error)
         ?? imagePromptUserMessage(error)
-        ?? '处理失败，请稍后重试。如果问题持续，请在 DeepSeek Harness 的飞书插件页面检查连接状态。',
+        ?? t('处理失败，请稍后重试。如果问题持续，请在 DeepSeek Harness 的飞书插件页面检查连接状态。'),
     ).catch(() => undefined);
   }
 
@@ -675,7 +680,7 @@ export class FeishuHarnessBridge {
     const hasFiles = hasInboundFiles(message);
     const commandText = event.message.message_type === 'text' && !hasImages && !hasFiles ? text : null;
     if (!text && !hasImages && !hasFiles) {
-      await this.#send(event.message.chat_id, '目前支持文字、图片和文件消息。');
+      await this.#send(event.message.chat_id, t('目前支持文字、图片和文件消息。'));
       return;
     }
 
@@ -684,7 +689,7 @@ export class FeishuHarnessBridge {
       return;
     }
     if (commandText === '/help') {
-      await this.#send(event.message.chat_id, HELP_TEXT);
+      await this.#send(event.message.chat_id, helpText());
       return;
     }
     if (MENU_COMMAND.test(commandText)) {
@@ -694,12 +699,12 @@ export class FeishuHarnessBridge {
     }
     if (commandText === '/new') {
       await this.#state.clearSession(key);
-      await this.#send(event.message.chat_id, '已开启全新 Harness 会话。');
+      await this.#send(event.message.chat_id, t('已开启全新 Harness 会话。'));
       return;
     }
     if (commandText === '/status') {
       await this.#harness.ensureRunning({ signal: this.#signal });
-      await this.#send(event.message.chat_id, '飞书机器人与 DeepSeek Harness 连接正常。');
+      await this.#send(event.message.chat_id, t('飞书机器人与 DeepSeek Harness 连接正常。'));
       return;
     }
     if (SESSION_LIST_PREFIX.test(commandText)) {
@@ -729,7 +734,7 @@ export class FeishuHarnessBridge {
       const match = ARCHIVED_COMMAND.exec(commandText);
       const value = match[1]?.toLowerCase();
       if (value !== 'on' && value !== 'off') {
-        await this.#send(event.message.chat_id, '用法：/archived on（包含归档会话）或 /archived off（隐藏归档会话）');
+        await this.#send(event.message.chat_id, t('用法：/archived on（包含归档会话）或 /archived off（隐藏归档会话）'));
         return;
       }
       if (typeof this.#state?.setIncludeArchivedSessions === 'function') {
@@ -737,7 +742,7 @@ export class FeishuHarnessBridge {
       }
       await this.#send(
         event.message.chat_id,
-        value === 'on' ? '已开启：会话列表包含归档会话。' : '已关闭：会话列表隐藏归档会话。',
+        value === 'on' ? t('已开启：会话列表包含归档会话。') : t('已关闭：会话列表隐藏归档会话。'),
       );
       return;
     }
@@ -794,7 +799,7 @@ export class FeishuHarnessBridge {
   // and number replies because callback buttons are the capability being fixed.
   async #handleRepairCommand(event, commandText) {
     if (event?.message?.chat_type !== 'p2p') {
-      await this.#send(event.message.chat_id, '为避免授权链接暴露，请私聊机器人发送 /repair。');
+      await this.#send(event.message.chat_id, t('为避免授权链接暴露，请私聊机器人发送 /repair。'));
       return;
     }
     const actorOpenId = strictSenderOpenId(event);
@@ -802,19 +807,19 @@ export class FeishuHarnessBridge {
       await this.#send(
         event.message.chat_id,
         this.#repairOwnerOpenIds.size === 0
-          ? '当前机器人没有可验证的接入者身份，不能从聊天发起修复；请先在插件页设置管理员。'
-          : '此操作只能由机器人接入者在私聊中发起，未进行任何修改。',
+          ? t('当前机器人没有可验证的接入者身份，不能从聊天发起修复；请先在插件页设置管理员。')
+          : t('此操作只能由机器人接入者在私聊中发起，未进行任何修改。'),
       );
       return;
     }
     if (!this.#repair) {
-      await this.#send(event.message.chat_id, '当前 Host 版本暂不支持聊天内修复，请先更新插件。');
+      await this.#send(event.message.chat_id, t('当前 Host 版本暂不支持聊天内修复，请先更新插件。'));
       return;
     }
 
     const parsed = REPAIR_COMMAND.exec(commandText);
     if (!parsed) {
-      await this.#send(event.message.chat_id, '用法：/repair、/repair qr、/repair status、/repair cancel 或 /repair verify');
+      await this.#send(event.message.chat_id, t('用法：/repair、/repair qr、/repair status、/repair cancel 或 /repair verify'));
       return;
     }
     const operation = parsed[1]?.toLowerCase() ?? 'start';
@@ -828,12 +833,12 @@ export class FeishuHarnessBridge {
     if (!attempt) {
       await this.#send(
         chatId,
-        '当前 Runtime 没有可恢复的修复任务记录（机器人可能刚完成密钥更新并重启）。本命令不会启动新的授权；请查看机器人发送的验证结果，确认上一次任务已结束后再发送 /repair。',
+        t('当前 Runtime 没有可恢复的修复任务记录（机器人可能刚完成密钥更新并重启）。本命令不会启动新的授权；请查看机器人发送的验证结果，确认上一次任务已结束后再发送 /repair。'),
       );
       return;
     }
     if (attempt.actorOpenId !== actorOpenId) {
-      await this.#send(chatId, '另一位管理员正在修复该机器人，本次不会显示其授权信息。');
+      await this.#send(chatId, t('另一位管理员正在修复该机器人，本次不会显示其授权信息。'));
       return;
     }
     if (operation === 'cancel') {
@@ -843,7 +848,7 @@ export class FeishuHarnessBridge {
         snapshot = repairSnapshot(result, { botId: this.#botId });
         attempt.snapshot = snapshot;
       } catch {
-        await this.#send(chatId, '暂时无法取消修复任务，请稍后重试。');
+        await this.#send(chatId, t('暂时无法取消修复任务，请稍后重试。'));
         return;
       }
       if (snapshot.state === 'cancelled') {
@@ -858,7 +863,7 @@ export class FeishuHarnessBridge {
     try {
       snapshot = await this.#refreshRepairAttempt(attempt);
     } catch {
-      await this.#send(chatId, '暂时无法查询修复状态，请稍后重试。');
+      await this.#send(chatId, t('暂时无法查询修复状态，请稍后重试。'));
       return;
     }
     if (operation === 'qr') {
@@ -887,7 +892,7 @@ export class FeishuHarnessBridge {
     const previous = this.#repairAttempt;
     if (previous && REPAIR_ACTIVE_STATES.has(previous.snapshot.state)) {
       if (previous.actorOpenId !== actorOpenId) {
-        await this.#send(chatId, '另一位管理员正在修复该机器人，本次不会显示其授权信息。');
+        await this.#send(chatId, t('另一位管理员正在修复该机器人，本次不会显示其授权信息。'));
         return;
       }
       try {
@@ -897,7 +902,7 @@ export class FeishuHarnessBridge {
           return;
         }
       } catch {
-        await this.#send(chatId, '暂时无法查询修复状态，请稍后重试。');
+        await this.#send(chatId, t('暂时无法查询修复状态，请稍后重试。'));
         return;
       }
     }
@@ -911,7 +916,7 @@ export class FeishuHarnessBridge {
       }), { botId: this.#botId });
       snapshot = await this.#waitForRepairLink(snapshot, { actorOpenId, chatId });
     } catch {
-      await this.#send(chatId, '修复流程暂时失败，现有机器人连接不受影响；请稍后发送 /repair 重试。');
+      await this.#send(chatId, t('修复流程暂时失败，现有机器人连接不受影响；请稍后发送 /repair 重试。'));
       return;
     }
     const attempt = {
@@ -932,7 +937,7 @@ export class FeishuHarnessBridge {
       } catch {
         attempt.stopped = true;
         await this.#repair.cancel(this.#repairArgs(attempt)).catch(() => undefined);
-        await this.#send(chatId, '飞书返回了无法安全验证的授权链接，已中止本次修复。');
+        await this.#send(chatId, t('飞书返回了无法安全验证的授权链接，已中止本次修复。'));
         return;
       }
     }
@@ -945,7 +950,7 @@ export class FeishuHarnessBridge {
     }
     if (!attempt.verificationUrl) {
       attempt.stopped = true;
-      await this.#send(chatId, '飞书未返回授权链接，已中止本次修复。');
+      await this.#send(chatId, t('飞书未返回授权链接，已中止本次修复。'));
       return;
     }
     await this.#sendRepairLink(chatId, attempt.verificationUrl, snapshot);
@@ -1000,7 +1005,7 @@ export class FeishuHarnessBridge {
           attempt.announcedSaving = true;
           await this.#send(
             attempt.chatId,
-            '授权已确认，正在发送并等待测试按钮回调；收到真实回调后才会完成。',
+            t('授权已确认，正在发送并等待测试按钮回调；收到真实回调后才会完成。'),
           );
         }
         if (REPAIR_TERMINAL_STATES.has(snapshot.state)) {
@@ -1021,7 +1026,7 @@ export class FeishuHarnessBridge {
       this.#logger.warn?.('[dsh-feishu] callback repair status monitoring failed');
       await this.#send(
         attempt.chatId,
-        '修复状态查询中断，现有机器人连接不受影响；发送 /repair status 重试查询。',
+        t('修复状态查询中断，现有机器人连接不受影响；发送 /repair status 重试查询。'),
       ).catch(() => undefined);
     });
   }
@@ -1030,16 +1035,16 @@ export class FeishuHarnessBridge {
     const remaining = snapshot.remainingSeconds
       ?? (snapshot.expiresAt ? Math.max(0, Math.ceil((snapshot.expiresAt - Date.now()) / 1000)) : null);
     const expiry = remaining === null
-      ? '链接为短期有效'
-      : `链接约 ${Math.max(1, Math.ceil(remaining / 60))} 分钟后过期`;
+      ? t('链接为短期有效')
+      : t('链接约 {minutes} 分钟后过期', { minutes: Math.max(1, Math.ceil(remaining / 60)) });
     await this.#send(chatId, [
-      existing ? '已有一个修复任务在等待授权。' : '🔧 准备修复卡片按钮。',
-      '本次只会增量添加 card.action.trigger。请核对确认页只显示这一项；若出现其他权限或事件，请取消。',
+      existing ? t('已有一个修复任务在等待授权。') : t('🔧 准备修复卡片按钮。'),
+      t('本次只会增量添加 card.action.trigger。请核对确认页只显示这一项；若出现其他权限或事件，请取消。'),
       '',
-      '当前设备直接打开：',
+      t('当前设备直接打开：'),
       url,
       '',
-      `若要用另一台设备扫码，发送 /repair qr。${expiry}。`,
+      t('若要用另一台设备扫码，发送 /repair qr。{expiry}。', { expiry }),
     ].join('\n'));
   }
 
@@ -1055,9 +1060,12 @@ export class FeishuHarnessBridge {
       if (!imageKey) throw new Error('Feishu QR upload returned no image key');
       const remaining = snapshot.remainingSeconds
         ?? (snapshot.expiresAt ? Math.max(0, Math.ceil((snapshot.expiresAt - Date.now()) / 1000)) : null);
+      const remainingText = remaining === null
+        ? ''
+        : t('（剩余约 {minutes} 分钟）', { minutes: Math.max(1, Math.ceil(remaining / 60)) });
       await this.#send(
         chatId,
-        `请用另一台设备扫码完成授权${remaining === null ? '' : `（剩余约 ${Math.max(1, Math.ceil(remaining / 60))} 分钟）`}。`,
+        t('请用另一台设备扫码完成授权{remaining}。', { remaining: remainingText }),
       );
       const response = await this.#client.im.v1.message.create({
         params: { receive_id_type: 'chat_id' },
@@ -1069,40 +1077,40 @@ export class FeishuHarnessBridge {
       });
       if (response?.code && response.code !== 0) throw new Error('Feishu QR message send failed');
     } catch {
-      await this.#send(chatId, `二维码暂时无法发送，请直接打开授权链接：\n${url}`);
+      await this.#send(chatId, t('二维码暂时无法发送，请直接打开授权链接：\n{url}', { url }));
     }
   }
 
   #repairStatusText(snapshot, { verificationFocused = false } = {}) {
     if (snapshot.state === 'succeeded') {
-      return '✅ 修复完成：已实测收到 card.action.trigger，菜单按钮现在可用。';
+      return t('✅ 修复完成：已实测收到 card.action.trigger，菜单按钮现在可用。');
     }
     if (snapshot.state === 'expired' || snapshot.error?.code === 'expired_token') {
-      return '授权链接已过期；平台未返回成功结果，无法确认已修复。发送 /repair 生成新链接。';
+      return t('授权链接已过期；平台未返回成功结果，无法确认已修复。发送 /repair 生成新链接。');
     }
     if (snapshot.state === 'cancelled' || snapshot.error?.code === 'abort') {
-      return '已取消本次修复授权，未确认完成修复。';
+      return t('已取消本次修复授权，未确认完成修复。');
     }
     if (snapshot.error?.code === 'access_denied') {
-      return '你已取消或拒绝授权，没有确认修复；发送 /repair 可重试。';
+      return t('你已取消或拒绝授权，没有确认修复；发送 /repair 可重试。');
     }
     if (snapshot.error?.code === 'card_action_probe_timeout'
       || snapshot.error?.code === 'card-action-probe-timeout') {
-      return '授权已提交，但未收到测试按钮回调。可能尚未点击或配置仍在传播；稍后发送 /repair verify 查询，不要盲目重复授权。';
+      return t('授权已提交，但未收到测试按钮回调。可能尚未点击或配置仍在传播；稍后发送 /repair verify 查询，不要盲目重复授权。');
     }
     if (snapshot.state === 'error') {
-      return '修复流程暂时失败，现有机器人连接不受影响；发送 /repair 可重试。';
+      return t('修复流程暂时失败，现有机器人连接不受影响；发送 /repair 可重试。');
     }
     if (snapshot.state === 'saving') {
-      return '授权已确认，正在等待专用测试按钮的真实回调；回调到达前不会宣告成功。';
+      return t('授权已确认，正在等待专用测试按钮的真实回调；回调到达前不会宣告成功。');
     }
     if (verificationFocused) {
-      return '授权尚未完成，暂时不能验证卡片按钮。请先打开授权链接并确认。';
+      return t('授权尚未完成，暂时不能验证卡片按钮。请先打开授权链接并确认。');
     }
     const remaining = snapshot.remainingSeconds === null
       ? ''
-      : `，剩余约 ${Math.max(1, Math.ceil(snapshot.remainingSeconds / 60))} 分钟`;
-    return `修复任务正在等待授权${remaining}。发送 /repair qr 可获取二维码，/repair cancel 可取消。`;
+      : t('，剩余约 {minutes} 分钟', { minutes: Math.max(1, Math.ceil(snapshot.remainingSeconds / 60)) });
+    return t('修复任务正在等待授权{remaining}。发送 /repair qr 可获取二维码，/repair cancel 可取消。', { remaining });
   }
 
   /**
@@ -1134,7 +1142,7 @@ export class FeishuHarnessBridge {
       // restart) or never came from us: nudge instead of staying silent.
       const chatId = nonEmptyString(event?.context?.open_chat_id);
       if (chatId) {
-        this.#send(chatId, '这个菜单已过期，请回复 /m 重新打开。').catch(() => undefined);
+        this.#send(chatId, t('这个菜单已过期，请回复 /m 重新打开。')).catch(() => undefined);
       }
       return Promise.resolve();
     }
@@ -1161,12 +1169,12 @@ export class FeishuHarnessBridge {
     }
     if (action === 'new') {
       await this.#state.clearSession(key);
-      await this.#send(chatId, '已开启全新 Harness 会话。');
+      await this.#send(chatId, t('已开启全新 Harness 会话。'));
       return;
     }
     if (action === 'status') {
       await this.#harness.ensureRunning({ signal: this.#signal });
-      await this.#send(chatId, '飞书机器人与 DeepSeek Harness 连接正常。');
+      await this.#send(chatId, t('飞书机器人与 DeepSeek Harness 连接正常。'));
       return;
     }
     if (action === 'help') {
@@ -1213,7 +1221,7 @@ export class FeishuHarnessBridge {
     if (menu.kind === 'menu') {
       const action = ['sessions', 'workspaces', 'new', 'status', 'help', 'repair', 'watchlist'][number - 1];
       if (!action) {
-        await this.#send(chatId, '菜单没有这个编号，回复 /m 重新打开。');
+        await this.#send(chatId, t('菜单没有这个编号，回复 /m 重新打开。'));
         return;
       }
       if (action === 'repair') {
@@ -1226,7 +1234,7 @@ export class FeishuHarnessBridge {
     if (menu.kind === 'sessions') {
       const session = menu.sessions[number - 1];
       if (!session?.sessionId) {
-        await this.#send(chatId, `本页只有 ${menu.sessions.length} 个会话，回复 /sessionlist 重新查看。`);
+        await this.#send(chatId, t('本页只有 {count} 个会话，回复 /sessionlist 重新查看。', { count: menu.sessions.length }));
         return;
       }
       // The number label sits on the session (bind) button of the row.
@@ -1236,7 +1244,7 @@ export class FeishuHarnessBridge {
     if (menu.kind === 'workspaces') {
       const workspace = menu.paths[number - 1];
       if (!workspace) {
-        await this.#send(chatId, `只有 ${menu.paths.length} 个工作区，回复 /workspacelist 重新查看。`);
+        await this.#send(chatId, t('只有 {count} 个工作区，回复 /workspacelist 重新查看。', { count: menu.paths.length }));
         return;
       }
       await this.#handleCardAction(`workspace:${workspace}`, { chatId, key });
@@ -1245,7 +1253,7 @@ export class FeishuHarnessBridge {
     if (menu.kind === 'watches') {
       const entry = menu.entries[number - 1];
       if (!entry?.sessionId) {
-        await this.#send(chatId, `关注列表只有 ${menu.entries.length} 个会话。`);
+        await this.#send(chatId, t('关注列表只有 {count} 个会话。', { count: menu.entries.length }));
         return;
       }
       await this.#handleCardAction(`unwatch:${entry.sessionId}`, { chatId, key });
@@ -1271,7 +1279,7 @@ export class FeishuHarnessBridge {
       const sessions = this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : []);
       const workspace = listed?.workspace ?? resolved.workspace;
       if (sessions.length === 0) {
-        await this.#send(chatId, `工作区：${workspace}\n该工作区暂无会话。`);
+        await this.#send(chatId, t('工作区：{workspace}\n该工作区暂无会话。', { workspace }));
         return;
       }
       const pageCount = Math.ceil(sessions.length / MENU_PAGE_SIZE);
@@ -1296,7 +1304,7 @@ export class FeishuHarnessBridge {
       );
     } catch (error) {
       this.#logger.warn?.('[dsh-feishu] session list failed:', error.message);
-      await this.#send(chatId, '暂时无法获取会话列表，请稍后重试。');
+      await this.#send(chatId, t('暂时无法获取会话列表，请稍后重试。'));
     }
   }
 
@@ -1307,26 +1315,26 @@ export class FeishuHarnessBridge {
       await this.#sendCard(chatId, workspaceListCard(paths, current), { key });
     } catch (error) {
       this.#logger.warn?.('[dsh-feishu] workspace list failed:', error.message);
-      await this.#send(chatId, '暂时无法获取工作区列表，请稍后重试。');
+      await this.#send(chatId, t('暂时无法获取工作区列表，请稍后重试。'));
     }
   }
 
   async #bindSession(key, chatId, sessionId) {
     try {
       const bound = await this.#harness.bindWorkspaceSession(key, sessionId);
-      const title = String(bound?.title ?? '').replace(/\s+/gu, ' ').trim() || '暂无标题';
-      await this.#send(chatId, `已绑定会话「${title}」\nID：${bound?.sessionId ?? sessionId}`);
+      const title = String(bound?.title ?? '').replace(/\s+/gu, ' ').trim() || t('暂无标题');
+      await this.#send(chatId, t('已绑定会话「{title}」\nID：{id}', { title, id: bound?.sessionId ?? sessionId }));
     } catch (error) {
-      await this.#send(chatId, `绑定失败：${safeErrorText(error)}`);
+      await this.#send(chatId, t('绑定失败：{message}', { message: safeErrorText(error) }));
     }
   }
 
   async #switchWorkspace(key, chatId, workspace) {
     try {
       const current = await this.#harness.switchWorkspace(workspace);
-      await this.#send(chatId, `工作区已切换为：${current}`);
+      await this.#send(chatId, t('工作区已切换为：{workspace}', { workspace: current }));
     } catch (error) {
-      await this.#send(chatId, `切换失败：${safeErrorText(error)}`);
+      await this.#send(chatId, t('切换失败：{message}', { message: safeErrorText(error) }));
     }
   }
 
@@ -1398,7 +1406,7 @@ export class FeishuHarnessBridge {
    */
   async #resolveWatchTarget(target) {
     if (typeof target !== 'string' || target === '') {
-      return { error: '用法：/watch <Session ID 或当前工作区序号>' };
+      return { error: t('用法：/watch <Session ID 或当前工作区序号>') };
     }
     const numeric = /^\d{1,4}$/.test(target) ? Number(target) : null;
     const currentPath = typeof this.#harness?.currentWorkspace === 'function'
@@ -1409,13 +1417,13 @@ export class FeishuHarnessBridge {
       return Array.isArray(listed?.sessions) ? listed.sessions : [];
     };
     if (numeric !== null) {
-      if (!currentPath) return { error: '当前机器人没有可用的工作区，无法按序号解析会话。' };
+      if (!currentPath) return { error: t('当前机器人没有可用的工作区，无法按序号解析会话。') };
       const sessions = this.#visibleSessions(await listSessions(currentPath));
       const session = sessions[numeric - 1];
       if (!session?.sessionId) {
-        return { error: `当前工作区只有 ${sessions.length} 个会话。` };
+        return { error: t('当前工作区只有 {count} 个会话。', { count: sessions.length }) };
       }
-      return { sessionId: session.sessionId, title: session.title ?? '暂无标题' };
+      return { sessionId: session.sessionId, title: session.title ?? t('暂无标题') };
     }
     const extraPaths = typeof this.#harness?.listWorkspaces === 'function'
       ? (await this.#harness.listWorkspaces()).filter((path) => path !== currentPath)
@@ -1424,9 +1432,9 @@ export class FeishuHarnessBridge {
     for (const workspace of paths) {
       const sessions = await listSessions(workspace);
       const session = sessions.find((candidate) => candidate.sessionId === target);
-      if (session) return { sessionId: target, title: session.title ?? '暂无标题' };
+      if (session) return { sessionId: target, title: session.title ?? t('暂无标题') };
     }
-    return { error: '没有找到这个会话，请用 /sessionlist 查看可用会话。' };
+    return { error: t('没有找到这个会话，请用 /sessionlist 查看可用会话。') };
   }
 
   async #latestSessionSeq(sessionId) {
@@ -1443,14 +1451,14 @@ export class FeishuHarnessBridge {
   async #runWatch(key, chatId, target) {
     this.#ensureEventWatcher();
     if (typeof this.#state?.setWatch !== 'function') {
-      await this.#send(chatId, '当前状态存储不支持关注。');
+      await this.#send(chatId, t('当前状态存储不支持关注。'));
       return;
     }
     let resolved;
     try {
       resolved = await this.#resolveWatchTarget(target);
     } catch (error) {
-      await this.#send(chatId, `无法解析会话：${safeErrorText(error)}`);
+      await this.#send(chatId, t('无法解析会话：{message}', { message: safeErrorText(error) }));
       return;
     }
     if (resolved.error) {
@@ -1460,7 +1468,7 @@ export class FeishuHarnessBridge {
     const existing = this.#state.watchEntries?.(key) ?? [];
     const existingEntry = existing.find((entry) => entry.sessionId === resolved.sessionId);
     if (!existingEntry && existing.length >= MAX_WATCHES_PER_KEY) {
-      await this.#send(chatId, `每个聊天最多关注 ${MAX_WATCHES_PER_KEY} 个会话。`);
+      await this.#send(chatId, t('每个聊天最多关注 {count} 个会话。', { count: MAX_WATCHES_PER_KEY }));
       return;
     }
     try {
@@ -1473,10 +1481,10 @@ export class FeishuHarnessBridge {
         chatId,
         lastSeq,
       });
-      await this.#send(chatId, `已关注会话「${String(resolved.title).replace(/\s+/gu, ' ')}」，任务完成会推送结果。`);
+      await this.#send(chatId, t('已关注会话「{title}」，任务完成会推送结果。', { title: String(resolved.title).replace(/\s+/gu, ' ') }));
       await this.#queueEventTask(() => this.#compensateSession(resolved.sessionId));
     } catch (error) {
-      await this.#send(chatId, `关注失败：${safeErrorText(error)}`);
+      await this.#send(chatId, t('关注失败：{message}', { message: safeErrorText(error) }));
     }
   }
 
@@ -1487,15 +1495,15 @@ export class FeishuHarnessBridge {
       ? entries[Number(target) - 1]
       : entries.find((candidate) => candidate.sessionId === target);
     if (!entry) {
-      await this.#send(chatId, '关注列表里没有这个会话，回复 /watchlist 查看。');
+      await this.#send(chatId, t('关注列表里没有这个会话，回复 /watchlist 查看。'));
       return;
     }
     try {
       await this.#state.removeWatch(key, entry.sessionId);
       this.#failedWatchSeqs.delete(`${key}\0${entry.sessionId}`);
-      await this.#send(chatId, `已取消关注「${String(entry.title ?? '').replace(/\s+/gu, ' ')}」。`);
+      await this.#send(chatId, t('已取消关注「{title}」。', { title: String(entry.title ?? '').replace(/\s+/gu, ' ') }));
     } catch (error) {
-      await this.#send(chatId, `取消失败：${safeErrorText(error)}`);
+      await this.#send(chatId, t('取消失败：{message}', { message: safeErrorText(error) }));
     }
   }
 
@@ -1877,18 +1885,18 @@ export class FeishuHarnessBridge {
 
     const text = extractText(event);
     if (!text) {
-      await this.#send(event.message.chat_id, '请用文字回答当前问题。');
+      await this.#send(event.message.chat_id, t('请用文字回答当前问题。'));
       return;
     }
 
     const pending = this.#pendingInteractions.get(key);
     if (!pending || pending !== expected || pending.submitting) {
       if (this.#isResolvedQuestionReply(event, key)) {
-        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT).catch(() => undefined);
+        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT()).catch(() => undefined);
         return;
       }
       if (claimed && (!pending || pending !== expected)) {
-        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT);
+        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT());
         return;
       }
       return this.#enqueueMessage(event, messageId, key, processingReaction, {
@@ -1946,7 +1954,7 @@ export class FeishuHarnessBridge {
       if (error?.code === 'interaction-not-pending') {
         this.#rememberResolvedInteraction(key, pending);
         this.#clearPendingInteraction(key, pending.interactionId);
-        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT).catch(() => undefined);
+        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT()).catch(() => undefined);
         return;
       }
       pending.submitting = false;
@@ -1954,7 +1962,7 @@ export class FeishuHarnessBridge {
       pending.index -= 1;
       this.#status.lastError = '回答提交失败。';
       this.#logger.error?.('[dsh-feishu] failed to answer a Harness interaction');
-      await this.#send(event.message.chat_id, '回答提交失败，请重新发送当前问题的答案。')
+      await this.#send(event.message.chat_id, t('回答提交失败，请重新发送当前问题的答案。'))
         .catch(() => undefined);
     }
   }
@@ -1999,7 +2007,7 @@ export class FeishuHarnessBridge {
       });
       await this.#send(
         chatId,
-        '检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。',
+        t('检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。'),
       ).catch(() => undefined);
       return;
     }
@@ -2101,7 +2109,7 @@ export class FeishuHarnessBridge {
     await this.#state.markSeen(messageId);
     this.#status.lastMessageAt = new Date().toISOString();
     this.#status.messagesReceived += 1;
-    await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT).catch(() => undefined);
+    await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT()).catch(() => undefined);
   }
 
   #takePendingInteraction(key, interactionId) {
@@ -2141,10 +2149,10 @@ export class FeishuHarnessBridge {
   #progressText(update) {
     if (update.type === 'text' && update.text) return update.text;
     if (update.type === 'tool') {
-      if (update.name === 'web_search') return '_正在搜索网络并整理信息…_';
-      return `_正在使用 ${update.name || '工具'}…_`;
+      if (update.name === 'web_search') return t('_正在搜索网络并整理信息…_');
+      return t('_正在使用 {name}…_', { name: update.name || t('工具') });
     }
-    return `_${update.text || '正在处理…'}_`;
+    return t('_{text}_', { text: update.text || t('正在处理…') });
   }
 
   async #addReaction(messageId, emojiType) {

@@ -1,11 +1,13 @@
 // QQ markdown 回复投递：长文尽量按结构边界切分，以 msg_type=2 发送，
 // 平台拒绝 markdown 时逐条回退纯文本。
 
+import { t } from '../shared/i18n.mjs';
+
 const DEFAULT_CHUNK_LIMIT = 4_500;
 const CODE_FENCE_OPEN = /^```/;
 const GFM_TABLE_LINE = /^\|.+\|$/;
 const PASSIVE_REPLY_LIMIT = Object.freeze({ c2c: 4, group: 5 });
-const PARTIAL_REPLY_NOTICE = '回答较长，后续内容未能通过 QQ 完整发送，请回复“继续”。';
+const PARTIAL_REPLY_NOTICE = () => t('回答较长，后续内容未能通过 QQ 完整发送，请回复“继续”。');
 
 function safeSliceIndex(value, limit) {
   let index = Math.min(limit, value.length);
@@ -141,7 +143,7 @@ export async function sendMarkdownReply(bot, target, text, { logger } = {}) {
     if (partialNoticeSent || !target?.msgId) return;
     partialNoticeSent = true;
     try {
-      results.push(await bot.sendText(target, PARTIAL_REPLY_NOTICE));
+      results.push(await bot.sendText(target, PARTIAL_REPLY_NOTICE()));
     } catch (error) {
       logger?.warn?.('[dsh-im:qq] unable to send partial reply notice:', error);
     }
