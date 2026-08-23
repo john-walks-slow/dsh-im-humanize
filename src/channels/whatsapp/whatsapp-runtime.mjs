@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   areJidsSameUser,
   downloadMediaMessage,
@@ -6,12 +8,14 @@ import {
 
 import { splitMessageText } from '../shared/editable-message-stream.mjs';
 import { ImagePromptError } from '../shared/image-prompt.mjs';
+import { trackOutboundArtifactProviderPromise } from '../shared/semantic/artifact.mjs';
 import { createWhatsappBridgeStatus, WhatsappHarnessBridge } from './whatsapp-bridge.mjs';
 import { createWhatsappWebSession } from './whatsapp-web-session.mjs';
 
 const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 const DEFAULT_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const IMAGE_DOWNLOAD_TIMEOUT_MS = 15_000;
+const WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS = 120_000;
 const MESSAGE_WRAPPER_KEYS = [
   'ephemeralMessage',
   'viewOnceMessage',
@@ -225,27 +229,114 @@ class RecentWhatsappOutboundIds {
   }
 }
 
-class WhatsappBotClient {
+function abortReason(signal) {
+  return signal?.reason ?? new DOMException('The operation was aborted.', 'AbortError');
+}
+
+function waitWithSignal(promise, signal) {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback(value);
+    };
+    const onAbort = () => finish(reject, abortReason(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
+function uncertainArtifactDelivery(error) {
+  if (error?.code === 'artifact-delivery-uncertain') return error;
+  const uncertain = new Error('WhatsApp could not confirm result file delivery.');
+  uncertain.code = 'artifact-delivery-uncertain';
+  uncertain.cause = error;
+  return uncertain;
+}
+
+export class WhatsappBotClient {
   #socket;
   #outboundIds;
+  #signal;
+  #mediaUploadTimeoutMs;
   #typingTimers = new Map();
 
-  constructor(socket, outboundIds) {
+  constructor(socket, outboundIds, {
+    signal,
+    mediaUploadTimeoutMs = WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS,
+  } = {}) {
     this.#socket = socket;
     this.#outboundIds = outboundIds;
+    this.#signal = signal;
+    this.#mediaUploadTimeoutMs = mediaUploadTimeoutMs;
   }
 
   async sendText(target, text) {
     await this.#stopTyping(target.jid);
-    let result = null;
+    const providerMessageIds = [];
     for (const [index, chunk] of splitMessageText(text, 4_000).entries()) {
-      result = await this.#socket.sendMessage(
+      const result = await this.#socket.sendMessage(
         target.jid,
         { text: chunk },
         index === 0 && target.quoted ? { quoted: target.quoted } : undefined,
       );
       this.#outboundIds.remember(result?.key?.id);
+      if (typeof result?.key?.id === 'string' && result.key.id) {
+        providerMessageIds.push(result.key.id);
+      }
     }
+    return { providerMessageIds };
+  }
+
+  async sendFile(target, file) {
+    this.#signal?.throwIfAborted();
+    await this.#stopTyping(target.jid);
+    this.#signal?.throwIfAborted();
+    const deliverySeed = typeof file.deliveryKey === 'string' && file.deliveryKey
+      ? file.deliveryKey
+      : file.artifactId;
+    const messageId = typeof deliverySeed === 'string' && deliverySeed
+      ? createHash('sha256').update(deliverySeed).digest('hex').slice(0, 20).toUpperCase()
+      : undefined;
+    const options = {
+      ...(target.quoted ? { quoted: target.quoted } : {}),
+      ...(messageId ? { messageId } : {}),
+      mediaUploadTimeoutMs: this.#mediaUploadTimeoutMs,
+    };
+    // Baileys can emit a self-chat echo before sendMessage settles. Reserve the
+    // deterministic id before dispatch so that echo cannot re-enter the bridge.
+    this.#outboundIds.remember(messageId);
+    let result;
+    try {
+      const pending = this.#socket.sendMessage(
+        target.jid,
+        {
+          document: file.bytes,
+          mimetype: file.mediaType ?? 'application/octet-stream',
+          fileName: file.fileName,
+        },
+        options,
+      );
+      trackOutboundArtifactProviderPromise(file, pending);
+      const timeout = AbortSignal.timeout(this.#mediaUploadTimeoutMs);
+      const waitSignal = this.#signal
+        ? AbortSignal.any([this.#signal, timeout])
+        : timeout;
+      result = await waitWithSignal(pending, waitSignal);
+    } catch (error) {
+      if (this.#signal?.aborted) throw abortReason(this.#signal);
+      throw uncertainArtifactDelivery(error);
+    }
+    this.#signal?.throwIfAborted();
+    this.#outboundIds.remember(result?.key?.id);
     return result;
   }
 
@@ -298,6 +389,7 @@ export class WhatsappRuntime {
   #logger;
   #replyTimeoutMs;
   #connectTimeoutMs;
+  #mediaUploadTimeoutMs;
   #createSession;
   #status = createWhatsappRuntimeStatus();
   #abortController = null;
@@ -314,6 +406,7 @@ export class WhatsappRuntime {
     logger = console,
     replyTimeoutMs = 600_000,
     connectTimeoutMs = 30_000,
+    mediaUploadTimeoutMs = WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS,
     createSession = createWhatsappWebSession,
   }) {
     if (!config || !authDir || !harness || !state || typeof createSession !== 'function') {
@@ -326,6 +419,13 @@ export class WhatsappRuntime {
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#connectTimeoutMs = connectTimeoutMs;
+    if (!Number.isSafeInteger(mediaUploadTimeoutMs) || mediaUploadTimeoutMs <= 0) {
+      throw new TypeError('mediaUploadTimeoutMs must be a positive safe integer');
+    }
+    this.#mediaUploadTimeoutMs = Math.min(
+      mediaUploadTimeoutMs,
+      WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS,
+    );
     this.#createSession = createSession;
   }
 
@@ -390,7 +490,10 @@ export class WhatsappRuntime {
       if (!areJidsSameUser(identity.accountJid, this.#config.accountJid)) {
         throw new Error('WhatsApp linked account does not match the saved bot');
       }
-      const client = new WhatsappBotClient(session.socket, outboundIds);
+      const client = new WhatsappBotClient(session.socket, outboundIds, {
+        signal: controller.signal,
+        mediaUploadTimeoutMs: this.#mediaUploadTimeoutMs,
+      });
       this.#client = client;
       this.#bridge = new WhatsappHarnessBridge({
         bot: client,

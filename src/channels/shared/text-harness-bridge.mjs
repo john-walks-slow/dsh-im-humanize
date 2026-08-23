@@ -28,8 +28,19 @@ import {
   harnessQuestionText,
   validHarnessQuestion,
 } from './harness-question.mjs';
+import {
+  materializeOutboundArtifact,
+  releaseOutboundArtifact,
+} from './semantic/artifact.mjs';
+import {
+  createArtifactFailureReceipt,
+  createDeliveryReceipt,
+  mergeDeliveryReceipts,
+  providerMessageIdsFor,
+} from './semantic/delivery.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
+const FILE_ONLY_COMPLETION_TEXT = '任务已完成。';
 
 function cleanText(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -40,6 +51,42 @@ function canClaimInteractionReply(message, pending, senderId) {
     && (message.kind !== 'group' || message.addressed === true)
     && !hasInboundImages(message)
     && Boolean(cleanText(message.content));
+}
+
+function artifactFailureText(fileName, error, descriptor) {
+  const name = String(fileName ?? '结果文件')
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
+    .slice(0, 255) || '结果文件';
+  switch (error?.code) {
+    case 'artifact-delivery-uncertain':
+      return `结果文件「${name}」的发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。`;
+    case 'artifact-permission-required':
+      if (descriptor?.key === 'slack') {
+        return `结果文件「${name}」已生成，但 Slack 应用缺少 files:write 权限。请更新 Manifest、重新安装应用并重新连接机器人后重试。`;
+      }
+      if (descriptor?.key === 'discord') {
+        return `结果文件「${name}」已生成，但机器人缺少 Discord 的 Send Messages、Attach Files 或 Read Message History 权限。`;
+      }
+      if (descriptor?.key === 'telegram') {
+        return `结果文件「${name}」已生成，但 Telegram 不允许机器人在当前聊天发送文档，请检查聊天权限。`;
+      }
+      return `结果文件「${name}」已生成，但当前机器人没有文件发送权限，请检查渠道权限。`;
+    case 'artifact-too-large':
+      return `结果文件「${name}」超过当前渠道大小上限，未发送。`;
+    case 'artifact-empty':
+      return `结果文件「${name}」为空，未发送。`;
+    case 'artifact-invalid':
+    case 'artifact-changed':
+    case 'artifact-unavailable':
+      return `结果文件「${name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。`;
+    case 'artifact-rate-limited':
+      return `结果文件「${name}」暂时被当前渠道限流，未能发送，请稍后重试。`;
+    case 'artifact-provider-rejected':
+      return `结果文件「${name}」已生成，但当前渠道拒绝了该文件或文件消息。`;
+    default:
+      return `结果文件「${name}」已生成，但当前渠道暂时未能发送，请稍后重试。`;
+  }
 }
 
 export function createTextBridgeStatus() {
@@ -285,6 +332,76 @@ export class TextHarnessBridge {
     });
   }
 
+  async #deliverArtifacts(target, replyTo, artifacts = [], baseReceipt) {
+    const receipts = baseReceipt ? [baseReceipt] : [];
+    let userVisible = Boolean(baseReceipt);
+    for (const artifact of artifacts) {
+      this.#signal?.throwIfAborted();
+      try {
+        if (typeof this.#bot.sendFile !== 'function') {
+          const unavailable = new Error('Native file delivery is unavailable');
+          unavailable.code = 'artifact-provider-unavailable';
+          throw unavailable;
+        }
+        const file = await materializeOutboundArtifact(artifact, {
+          signal: this.#signal,
+        });
+        this.#signal?.throwIfAborted();
+        const result = await this.#bot.sendFile(target, file);
+        receipts.push(createDeliveryReceipt({
+          deliveryId: file.deliveryKey,
+          presentation: `${this.#descriptor.key}-file`,
+          providerMessageIds: providerMessageIdsFor(result),
+          artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
+        }));
+        userVisible = true;
+        this.#status.artifactsSent = (this.#status.artifactsSent ?? 0) + 1;
+      } catch (error) {
+        if (this.#signal?.aborted) throw error;
+        this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0) + 1;
+        this.#logger.warn?.(
+          `[dsh-im:${this.#descriptor.key}] result file delivery failed (${error?.code ?? 'unknown'})`,
+        );
+        let providerMessageIds = [];
+        let noticeSent = false;
+        try {
+          const notice = await this.#bot.sendText(
+            target,
+            artifactFailureText(artifact?.fileName, error, this.#descriptor),
+          );
+          providerMessageIds = providerMessageIdsFor(notice);
+          noticeSent = true;
+        } catch {
+          this.#logger.warn?.(
+            `[dsh-im:${this.#descriptor.key}] unable to send the safe result-file failure notice`,
+          );
+        }
+        const failureReceipt = createArtifactFailureReceipt({
+          artifactId: artifact?.artifactId ?? 'unknown',
+          deliveryId: artifact?.deliveryKey ?? artifact?.artifactId ?? 'unknown',
+          error,
+          providerMessageIds,
+        });
+        receipts.push(failureReceipt);
+        if (noticeSent || failureReceipt.artifacts[0]?.outcome === 'unknown') userVisible = true;
+      } finally {
+        releaseOutboundArtifact(artifact);
+      }
+    }
+    const receipt = receipts.length === 0
+      ? null
+      : receipts.length === 1
+        ? receipts[0]
+        : mergeDeliveryReceipts({
+            deliveryId: replyTo,
+            presentation: baseReceipt
+              ? `${this.#descriptor.key}-text-and-files`
+              : `${this.#descriptor.key}-files`,
+            receipts,
+          });
+    return { receipt, userVisible };
+  }
+
   async #process(message, messageId, senderId, conversationKey, {
     alreadyRecorded = false,
   } = {}) {
@@ -386,7 +503,7 @@ export class TextHarnessBridge {
       const content = hasImages
         ? await promptContentForMessage(message, { signal: this.#signal })
         : undefined;
-      const { answer } = await askInWorkspaceSession({
+      const { answer, artifacts = [] } = await askInWorkspaceSession({
         harness: this.#harness,
         state: this.#state,
         key: conversationKey,
@@ -412,10 +529,23 @@ export class TextHarnessBridge {
           onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
         },
       });
+      const visibleAnswer = !cleanText(answer) && artifacts.length > 0
+        ? FILE_ONLY_COMPLETION_TEXT
+        : answer;
+      let textDeliveryError = null;
+      let textReceipt = null;
       if (stream) {
         try {
-          await stream.finish(answer);
+          const result = await stream.finish(visibleAnswer);
           streamFinished = true;
+          textReceipt = createDeliveryReceipt({
+            deliveryId: messageId,
+            presentation: `${this.#descriptor.key}-stream`,
+            providerMessageIds: [
+              ...providerMessageIdsFor(stream),
+              ...providerMessageIdsFor(result),
+            ],
+          });
         } catch (error) {
           stream.cancel?.();
           this.#logger.warn?.(
@@ -424,10 +554,26 @@ export class TextHarnessBridge {
           );
         }
       }
-      if (!streamFinished) await this.#bot.sendText(target, answer);
+      if (!streamFinished) {
+        try {
+          const result = await this.#bot.sendText(target, visibleAnswer);
+          textReceipt = createDeliveryReceipt({
+            deliveryId: messageId,
+            presentation: `${this.#descriptor.key}-text`,
+            providerMessageIds: providerMessageIdsFor(result),
+          });
+        } catch (error) {
+          textDeliveryError = error;
+        }
+      }
+      // A failed final text must not discard an already registered result file.
+      // Settle the independent attachment path before surfacing the text error.
+      const delivery = await this.#deliverArtifacts(target, messageId, artifacts, textReceipt);
+      if (textDeliveryError && !delivery.userVisible) throw textDeliveryError;
       this.#status.messagesReplied += 1;
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
+      return delivery.receipt;
     } catch (error) {
       if (error?.code === 'turn-stopped') {
         if (stream) {

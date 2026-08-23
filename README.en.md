@@ -59,6 +59,24 @@ Other IM platforms can be added through the same channel-adapter structure.
 
 All nine built-in channels can send JPEG, PNG, and WebP images, plus GIFs sent as image files, with optional captions to Harness. Each image is limited to 5 MB, and images in one message are limited to 20 MB in total.
 
+### Result-file delivery
+
+All nine built-in channels can return any file readable by Harness as a native channel attachment. Existing files and files created by the current task can both be sent directly. The capability is available to every connected bot by default, with no switch or per-bot allowlist, while existing text, image, streaming, command, and Session behavior remains unchanged.
+
+After the model calls the file-return tool, the plugin hands the specified file to the channel's native attachment API. The plugin adds no rules for file origin, creation time, workspace boundary, extension, content, count, size, or lifetime; the file only needs to exist and be readable. A channel may still reject delivery according to its own permissions, quota, file capability, or account tier, and the plugin reports that provider result.
+
+| Channel | Platform requirements |
+| --- | --- |
+| WeChat | The current binding protocol and conversation must support native file messages; the WeChat API response determines the actual range. |
+| Feishu | Feishu's file-upload API requires a non-empty file no larger than the platform's 30 MB limit. The app needs the `im:resource` tenant scope (**Read and upload images or other files**). Apps created through the built-in QR flow request it by default; existing or manually connected apps still need it added and approved. The Feishu developer console currently has no separate `im:resource:upload` scope. |
+| DingTalk | The app needs `qyapi_base`, and the bot must support file messages. The current OAPI and bot capability determine the accepted formats and sizes. |
+| WeCom | The app needs media-upload and file-message capability; the WeCom API response determines the actual range. |
+| QQ | The bot needs file-message capability and remains subject to QQ's daily upload quota; the bot reports when the quota is exhausted. |
+| Slack | The Bot Token needs `files:write`; the Workspace's current policy determines the actual size limit. After changing scopes, re-authorize/reinstall the App and reconnect the bot. |
+| Telegram | The bot must be allowed to send documents in the current chat; the Bot API response determines the actual range. |
+| Discord | The bot needs **Send Messages**, **Attach Files**, and **Read Message History**. The current account and server capability determine the actual attachment allowance. |
+| WhatsApp | The linked session must support Document Messages; the WhatsApp/Baileys response determines the actual range. |
+
 ## AI Office Connector
 
 The **AI Office** page lets the local Harness connect outward to a public Office. The machine needs no public IP, forwarded port, or WebSocket server. The Device Token is written only to the Harness credential provider; the ordinary config file contains only the device ID, Office origin, workspace aliases, and instruction-preset aliases. Office selects aliases and never receives local absolute paths.

@@ -184,3 +184,45 @@ test('QQ runtime aborts an in-flight Harness interaction when stopped', async ()
   await runtime.stop();
   assert.equal(askSignal.aborted, true);
 });
+
+test('QQ runtime enables result-file delivery without per-bot configuration', async () => {
+  const bot = new FakeBot();
+  const finished = deferred();
+  let onArtifact;
+  const runtime = new QqRuntime({
+    config: { botId: 'qq_bot', appId: 'app', ownerUserOpenid: 'owner' },
+    appSecret: 'secret',
+    harness: {
+      ensureRunning: async () => true,
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        onArtifact = options.onArtifact;
+        return '完成';
+      },
+    },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => finished.resolve(),
+      sessionFor: () => 'session-existing',
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+    createBot: () => bot,
+    typingMiddleware: () => 'typing',
+    connectTimeoutMs: 100,
+  });
+
+  await runtime.start();
+  bot.emit('message', {}, {
+    kind: 'c2c',
+    rawEventType: 'C2C_MESSAGE_CREATE',
+    senderId: 'owner',
+    senderIsBot: false,
+    content: '生成文件',
+    messageId: 'qq-artifact-gate',
+    replyTarget: { scope: 'c2c', targetId: 'owner', msgId: 'qq-artifact-gate' },
+  });
+  await finished.promise;
+  assert.equal(typeof onArtifact, 'function');
+  await runtime.stop();
+});

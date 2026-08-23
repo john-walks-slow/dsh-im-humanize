@@ -116,6 +116,162 @@ test('Discord API retries one rate-limited message request', async () => {
   assert.equal(attempts, 2);
 });
 
+test('Discord API uploads a result file as a native attachment and preserves the reply', async () => {
+  let request;
+  const api = new DiscordApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return jsonResponse({ id: '987654321012345679', attachments: [{ id: '1' }] });
+    },
+  });
+  const result = await api.createFileMessage({
+    channelId: '123456789012345678',
+    replyToMessageId: '123456789012345679',
+    file: {
+      artifactId: 'artifact-discord-one',
+      deliveryKey: 'session:turn:artifact-discord-one',
+      fileName: 'result.html',
+      mediaType: 'text/html',
+      bytes: Buffer.from('<p>discord-result</p>'),
+    },
+  });
+
+  assert.equal(result.id, '987654321012345679');
+  assert.match(request.url.pathname, /channels\/123456789012345678\/messages$/);
+  assert.equal(request.options.headers['content-type'], undefined);
+  assert.ok(request.options.body instanceof FormData);
+  const payload = JSON.parse(request.options.body.get('payload_json'));
+  assert.deepEqual(payload.attachments, [{ id: 0, filename: 'result.html' }]);
+  assert.match(payload.nonce, /^[0-9a-f]{25}$/);
+  assert.equal(payload.enforce_nonce, true);
+  assert.equal(payload.message_reference.message_id, '123456789012345679');
+  assert.deepEqual(payload.allowed_mentions, { parse: [], replied_user: false });
+  const attachment = request.options.body.get('files[0]');
+  assert.equal(attachment.name, 'result.html');
+  assert.equal(attachment.type, 'text/html');
+  assert.equal(Buffer.from(await attachment.arrayBuffer()).toString(), '<p>discord-result</p>');
+});
+
+test('Discord attachment retry reuses one FormData body and one stable nonce', async () => {
+  const bodies = [];
+  const nonces = [];
+  let attempts = 0;
+  const api = new DiscordApi({
+    token: TOKEN,
+    fetchImpl: async (_url, options) => {
+      attempts += 1;
+      bodies.push(options.body);
+      nonces.push(JSON.parse(options.body.get('payload_json')).nonce);
+      return attempts === 1
+        ? jsonResponse({ code: 20028, message: 'rate limited', retry_after: 0.001 }, 429)
+        : jsonResponse({ id: '987654321012345680', attachments: [{ id: '1' }] });
+    },
+  });
+  const result = await api.createFileMessage({
+    channelId: '123456789012345678',
+    file: {
+      deliveryKey: 'session:turn:artifact-retry',
+      fileName: 'result.txt',
+      bytes: Buffer.from('retry-safe'),
+    },
+  });
+
+  assert.equal(result.id, '987654321012345680');
+  assert.equal(attempts, 2);
+  assert.equal(bodies[0], bodies[1]);
+  assert.equal(nonces[0], nonces[1]);
+  assert.match(nonces[0], /^[0-9a-f]{25}$/);
+});
+
+test('Discord attachment errors retain provider details and use stable artifact reasons', async () => {
+  const cases = [{
+    body: { code: 50013, message: 'Missing Permissions' },
+    status: 403,
+    code: 'artifact-permission-required',
+  }, {
+    body: { code: 40005, message: 'Request entity too large' },
+    status: 413,
+    code: 'artifact-too-large',
+  }, {
+    body: { code: 20028, message: 'rate limited', retry_after: 0.001 },
+    status: 429,
+    code: 'artifact-rate-limited',
+    retryAfter: 0.001,
+  }, {
+    body: { code: 50035, message: 'Invalid Form Body' },
+    status: 400,
+    code: 'artifact-provider-rejected',
+  }, {
+    body: { code: 0, message: 'Internal Server Error' },
+    status: 500,
+    code: 'artifact-delivery-uncertain',
+  }];
+
+  for (const entry of cases) {
+    const api = new DiscordApi({
+      token: TOKEN,
+      fetchImpl: async () => jsonResponse(entry.body, entry.status),
+    });
+    await assert.rejects(() => api.createFileMessage({
+      channelId: '123456789012345678',
+      file: { fileName: 'result.bin', bytes: Buffer.from('result') },
+    }), (error) => {
+      assert.equal(error.code, entry.code);
+      assert.equal(error.providerCode, entry.body.code);
+      assert.equal(error.status, entry.status);
+      assert.equal(error.retry_after, entry.retryAfter);
+      assert.equal(error.retryAfter, entry.retryAfter);
+      return true;
+    });
+  }
+});
+
+test('Discord attachment delivery marks post-dispatch failures uncertain but preserves caller aborts', async () => {
+  for (const fetchImpl of [
+    async () => { throw new TypeError('socket reset'); },
+    async () => new Response('not-json', { status: 200 }),
+  ]) {
+    const api = new DiscordApi({ token: TOKEN, fetchImpl });
+    await assert.rejects(() => api.createFileMessage({
+      channelId: '123456789012345678',
+      file: { fileName: 'result.bin', bytes: Buffer.from('result') },
+    }), (error) => error.code === 'artifact-delivery-uncertain');
+  }
+
+  const timeoutApi = new DiscordApi({
+    token: TOKEN,
+    fileUploadTimeoutMs: 10,
+    fetchImpl: async (_url, { signal }) => new Promise((resolve, reject) => {
+      if (signal.aborted) reject(signal.reason);
+      else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }),
+  });
+  await assert.rejects(() => timeoutApi.createFileMessage({
+    channelId: '123456789012345678',
+    file: { fileName: 'result.bin', bytes: Buffer.from('result') },
+  }), (error) => error.code === 'artifact-delivery-uncertain'
+    && error.cause?.name === 'TimeoutError');
+
+  const caller = new AbortController();
+  const reason = new DOMException('caller stopped', 'AbortError');
+  caller.abort(reason);
+  let calls = 0;
+  const cancelledApi = new DiscordApi({
+    token: TOKEN,
+    fetchImpl: async () => {
+      calls += 1;
+      return jsonResponse({ id: '987654321012345680' });
+    },
+  });
+  await assert.rejects(() => cancelledApi.createFileMessage({
+    channelId: '123456789012345678',
+    file: { fileName: 'result.bin', bytes: Buffer.from('result') },
+    signal: caller.signal,
+  }), (error) => error === reason && error.code !== 'artifact-delivery-uncertain');
+  assert.equal(calls, 0);
+});
+
 test('Discord controller persists a credential reference and exposes only masked identity', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-im-discord-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

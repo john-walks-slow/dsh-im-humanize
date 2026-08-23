@@ -27,6 +27,18 @@ import {
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
 import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
+import {
+  materializeOutboundArtifact,
+  releaseOutboundArtifact,
+  trackOutboundArtifactProviderPromise,
+} from '../shared/semantic/artifact.mjs';
+import {
+  createArtifactFailureReceipt,
+  createDeliveryReceipt,
+  mergeDeliveryReceipts,
+} from '../shared/semantic/delivery.mjs';
+
+const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
 
 const HELP_TEXT = [
   '企业微信机器人已连接 DeepSeek Harness。',
@@ -212,6 +224,88 @@ function progressText(update) {
   return update?.text;
 }
 
+function artifactFailureText(fileName, error) {
+  const name = String(fileName ?? '结果文件').replace(/[\r\n]+/g, ' ').trim() || '结果文件';
+  switch (error?.code) {
+    case 'artifact-delivery-uncertain':
+      return `结果文件「${name}」的发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。`;
+    case 'artifact-permission-required':
+      return `结果文件「${name}」已生成，但企业微信智能机器人缺少素材上传或文件消息能力，请检查机器人权限。`;
+    case 'artifact-too-large':
+      return `结果文件「${name}」超过当前企业微信机器人可发送的文件大小，未发送。`;
+    case 'artifact-empty':
+      return `结果文件「${name}」为空，企业微信不允许发送空文件。`;
+    case 'artifact-changed':
+    case 'artifact-invalid':
+    case 'artifact-unavailable':
+      return `结果文件「${name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。`;
+    case 'artifact-rate-limited':
+      return `结果文件「${name}」暂时被企业微信限流，未能发送，请稍后重试。`;
+    case 'artifact-provider-rejected':
+      return `结果文件「${name}」已生成，但企业微信拒绝了该文件或文件消息。`;
+    default:
+      return `结果文件「${name}」已生成，但暂时未能通过企业微信发送，请稍后重试。`;
+  }
+}
+
+function abortReason(signal) {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new DOMException('The operation was aborted', 'AbortError');
+}
+
+function waitWithSignal(promise, signal) {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback(value);
+    };
+    const onAbort = () => finish(reject, abortReason(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
+function wecomArtifactError(error, { dispatched = false } = {}) {
+  if (error?.code?.startsWith?.('artifact-')) return error;
+  const status = Number(error?.httpStatus ?? error?.status ?? error?.response?.status);
+  const providerCode = Number(error?.providerCode ?? error?.errcode ?? error?.body?.errcode);
+  const wrapped = new Error('Enterprise WeChat file delivery failed', { cause: error });
+  if (status === 401 || status === 403 || providerCode === 48002) {
+    wrapped.code = 'artifact-permission-required';
+  } else if (status === 413) {
+    wrapped.code = 'artifact-too-large';
+  } else if (status === 429 || providerCode === 45009) {
+    wrapped.code = 'artifact-rate-limited';
+  } else if (Number.isFinite(providerCode) && providerCode !== 0) {
+    wrapped.code = 'artifact-provider-rejected';
+  } else {
+    wrapped.code = dispatched ? 'artifact-delivery-uncertain' : 'artifact-provider-failed';
+  }
+  if (Number.isFinite(status)) wrapped.status = status;
+  if (Number.isFinite(providerCode)) wrapped.providerCode = providerCode;
+  return wrapped;
+}
+
+function answerTextForDelivery(answer, artifacts) {
+  if (typeof answer === 'string' && answer.trim()) return answer;
+  return artifacts.length > 0 ? '结果文件已生成。' : '任务已完成，但没有生成可显示的文本。';
+}
+
+function providerMessageId(result) {
+  return nonEmptyString(result?.body?.msgid)
+    ?? nonEmptyString(result?.body?.message_id);
+}
+
 function canClaimInteractionReply(frame, pending) {
   return pending.questions[pending.index]
     && nonEmptyString(bodyOf(frame).from?.userid) === pending.actor
@@ -223,6 +317,8 @@ export function createWecomBridgeStatus() {
     messagesReceived: 0,
     messagesReplied: 0,
     messagesRejected: 0,
+    artifactsSent: 0,
+    artifactSendErrors: 0,
     lastMessageAt: null,
     lastReplyAt: null,
     lastRejectedAt: null,
@@ -239,6 +335,7 @@ export class WecomHarnessBridge {
   #replyTimeoutMs;
   #generateReqId;
   #signal;
+  #fileUploadTimeoutMs;
   #queues = new Map();
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
@@ -256,12 +353,16 @@ export class WecomHarnessBridge {
     logger = console,
     replyTimeoutMs = 600_000,
     generateStreamId = generateReqId,
+    fileUploadTimeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS,
     signal,
   }) {
     if (!client || typeof client.replyStream !== 'function' || typeof client.sendMessage !== 'function') {
       throw new TypeError('Enterprise WeChat client is required');
     }
     if (!harness || !state) throw new TypeError('Harness client and state store are required');
+    if (!Number.isInteger(fileUploadTimeoutMs) || fileUploadTimeoutMs < 1) {
+      throw new TypeError('fileUploadTimeoutMs must be a positive integer');
+    }
     this.#client = client;
     this.#harness = harness;
     this.#state = state;
@@ -269,6 +370,7 @@ export class WecomHarnessBridge {
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#generateReqId = generateStreamId;
+    this.#fileUploadTimeoutMs = Math.min(fileUploadTimeoutMs, DEFAULT_FILE_UPLOAD_TIMEOUT_MS);
     this.#signal = signal;
     this.#approvals = new HarnessApprovalQueue({ label: 'wecom', logger });
   }
@@ -458,10 +560,17 @@ export class WecomHarnessBridge {
   }
 
   async #sendActive(chatId, text) {
+    const providerMessageIds = [];
     for (const chunk of splitUtf8(text)) {
       this.#signal?.throwIfAborted();
-      await this.#client.sendMessage(chatId, { msgtype: 'markdown', markdown: { content: chunk } });
+      const result = await this.#client.sendMessage(
+        chatId,
+        { msgtype: 'markdown', markdown: { content: chunk } },
+      );
+      const messageId = providerMessageId(result);
+      if (messageId) providerMessageIds.push(messageId);
     }
+    return providerMessageIds;
   }
 
   async #sendImmediate(frame, chatId, text) {
@@ -476,6 +585,105 @@ export class WecomHarnessBridge {
     } catch {
       await this.#sendActive(chatId, text);
     }
+  }
+
+  async #deliverArtifacts(chatId, replyTo, artifacts = [], baseReceipt = null) {
+    if (artifacts.length === 0) {
+      return { receipt: baseReceipt, failureNoticeVisible: false };
+    }
+    const receipts = baseReceipt ? [baseReceipt] : [];
+    let failureNoticeVisible = false;
+    for (const artifact of artifacts) {
+      this.#signal?.throwIfAborted();
+      try {
+        if (typeof this.#client.uploadMedia !== 'function'
+          || typeof this.#client.sendMediaMessage !== 'function') {
+          const unavailable = new Error('Enterprise WeChat file delivery is unavailable');
+          unavailable.code = 'artifact-provider-unavailable';
+          throw unavailable;
+        }
+        const file = await materializeOutboundArtifact(artifact, {
+          signal: this.#signal,
+        });
+        this.#signal?.throwIfAborted();
+        const timeout = AbortSignal.timeout(this.#fileUploadTimeoutMs);
+        const waitSignal = this.#signal ? AbortSignal.any([this.#signal, timeout]) : timeout;
+        let uploaded;
+        try {
+          const pending = this.#client.uploadMedia(file.bytes, {
+            type: 'file',
+            filename: file.fileName,
+          });
+          trackOutboundArtifactProviderPromise(file, pending);
+          uploaded = await waitWithSignal(pending, waitSignal);
+        } catch (error) {
+          if (this.#signal?.aborted) throw abortReason(this.#signal);
+          throw wecomArtifactError(error);
+        }
+        this.#signal?.throwIfAborted();
+        const mediaId = nonEmptyString(uploaded?.media_id);
+        if (!mediaId) {
+          const rejected = new Error('Enterprise WeChat upload returned no media id');
+          rejected.code = 'artifact-provider-rejected';
+          throw rejected;
+        }
+        let sent;
+        try {
+          const pending = this.#client.sendMediaMessage(chatId, 'file', mediaId);
+          trackOutboundArtifactProviderPromise(file, pending);
+          sent = await waitWithSignal(pending, waitSignal);
+        } catch (error) {
+          if (this.#signal?.aborted) throw abortReason(this.#signal);
+          throw wecomArtifactError(error, { dispatched: true });
+        }
+        this.#signal?.throwIfAborted();
+        const providerCode = Number(sent?.body?.errcode ?? sent?.errcode);
+        if (Number.isFinite(providerCode) && providerCode !== 0) {
+          throw wecomArtifactError({ providerCode });
+        }
+        const messageId = providerMessageId(sent);
+        receipts.push(createDeliveryReceipt({
+          deliveryId: file.deliveryKey,
+          presentation: 'wecom-file',
+          providerMessageIds: messageId ? [messageId] : [],
+          artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
+        }));
+        this.#status.artifactsSent = (this.#status.artifactsSent ?? 0) + 1;
+      } catch (error) {
+        if (this.#signal?.aborted) throw error;
+        this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0) + 1;
+        this.#logger.warn?.(
+          `[dsh-im:wecom] result file delivery failed (${error?.code ?? 'unknown'})`,
+        );
+        let providerMessageIds = [];
+        try {
+          providerMessageIds = await this.#sendActive(
+            chatId,
+            artifactFailureText(artifact?.fileName, error),
+          );
+          failureNoticeVisible = true;
+        } catch (noticeError) {
+          if (this.#signal?.aborted) throw noticeError;
+          this.#logger.warn?.('[dsh-im:wecom] unable to send the safe result-file failure notice');
+        }
+        receipts.push(createArtifactFailureReceipt({
+          artifactId: artifact?.artifactId ?? 'unknown',
+          deliveryId: artifact?.deliveryKey ?? artifact?.artifactId ?? 'unknown',
+          error,
+          providerMessageIds,
+        }));
+      } finally {
+        releaseOutboundArtifact(artifact);
+      }
+    }
+    return {
+      receipt: mergeDeliveryReceipts({
+        deliveryId: replyTo,
+        presentation: baseReceipt ? 'wecom-text-and-files' : 'wecom-files',
+        receipts,
+      }),
+      failureNoticeVisible,
+    };
   }
 
   async #process(frame, { alreadyRecorded = false, preparedMessage } = {}) {
@@ -556,7 +764,7 @@ export class WecomHarnessBridge {
       const content = hasImages
         ? await promptContentForMessage(message, { signal: this.#signal })
         : undefined;
-      const { answer } = await askInWorkspaceSession({
+      const { answer, artifacts = [] } = await askInWorkspaceSession({
         harness: this.#harness,
         state: this.#state,
         key,
@@ -584,24 +792,64 @@ export class WecomHarnessBridge {
         },
       });
 
-      const chunks = splitUtf8(answer || '任务已完成，但没有生成可显示的文本。');
+      this.#signal?.throwIfAborted();
+      const displayAnswer = answerTextForDelivery(answer, artifacts);
+      const chunks = splitUtf8(displayAnswer);
       let finalSent = false;
-      if (streamStarted && chunks.length > 0) {
-        try {
-          await this.#client.replyStream(frame, streamId, chunks[0], true);
-          for (const chunk of chunks.slice(1)) {
-            await this.#client.sendMessage(chatId, { msgtype: 'markdown', markdown: { content: chunk } });
+      let textReceipt = null;
+      let textSendError = null;
+      try {
+        if (streamStarted && chunks.length > 0) {
+          try {
+            const providerMessageIds = [];
+            const streamed = await this.#client.replyStream(frame, streamId, chunks[0], true);
+            const streamedMessageId = providerMessageId(streamed);
+            if (streamedMessageId) providerMessageIds.push(streamedMessageId);
+            for (const chunk of chunks.slice(1)) {
+              const sent = await this.#client.sendMessage(
+                chatId,
+                { msgtype: 'markdown', markdown: { content: chunk } },
+              );
+              const messageId = providerMessageId(sent);
+              if (messageId) providerMessageIds.push(messageId);
+            }
+            finalSent = true;
+            textReceipt = createDeliveryReceipt({
+              deliveryId: messageId,
+              presentation: 'wecom-text',
+              providerMessageIds,
+            });
+          } catch (error) {
+            this.#logger.warn?.('[dsh-im:wecom] stream finalization failed; using an active reply:', error);
           }
-          finalSent = true;
-        } catch (error) {
-          this.#logger.warn?.('[dsh-im:wecom] stream finalization failed; using an active reply:', error);
         }
+        if (!finalSent) {
+          const providerMessageIds = await this.#sendActive(chatId, displayAnswer);
+          textReceipt = createDeliveryReceipt({
+            deliveryId: messageId,
+            presentation: 'wecom-text',
+            providerMessageIds,
+          });
+        }
+      } catch (error) {
+        textSendError = error;
+        this.#logger.warn?.(
+          '[dsh-im:wecom] final text delivery failed; continuing with result files:',
+          error,
+        );
       }
-      if (!finalSent) await this.#sendActive(chatId, answer);
+      const delivery = await this.#deliverArtifacts(chatId, messageId, artifacts, textReceipt);
+      const artifactDispatched = delivery.receipt?.artifacts?.some(
+        ({ outcome }) => outcome === 'sent' || outcome === 'unknown',
+      );
+      if (textSendError && !artifactDispatched && !delivery.failureNoticeVisible) {
+        throw textSendError;
+      }
       await this.#state.markSeen(messageId);
       this.#status.messagesReplied += 1;
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
+      return delivery.receipt;
     } catch (error) {
       if (error?.code === 'turn-stopped') {
         if (streamStarted && streamId) {

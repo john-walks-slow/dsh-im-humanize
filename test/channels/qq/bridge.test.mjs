@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { QqHarnessBridge } from '../../../src/channels/qq/qq-bridge.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
+import {
+  OUTBOUND_ARTIFACT_TOOL,
+  OutboundArtifactRegistry,
+  createOutboundArtifactTool,
+} from '../../../src/channels/shared/semantic/artifact.mjs';
 
 function deferred() {
   let resolve;
@@ -50,6 +58,37 @@ function message(overrides = {}) {
     replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: 'msg-1' },
     ...overrides,
   };
+}
+
+async function committedArtifact(t, fileName, content, suffix) {
+  const workspace = await mkdtemp(join(tmpdir(), `dsh-im-qq-artifact-${suffix}-`));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  let nextId = 0;
+  const registry = new OutboundArtifactRegistry({ uuid: () => `${suffix}-${++nextId}` });
+  t.after(() => registry.clear());
+  const rpcId = `rpc-${suffix}`;
+  const agent = {
+    session: {
+      header: { id: `session-${suffix}`, cwd: workspace },
+      events: [
+        { type: 'turn/start', data: { turn: 1 } },
+        { type: 'user/message', data: { turn: 1, source: { rpcId } } },
+      ],
+    },
+  };
+  const tool = createOutboundArtifactTool({ registry });
+  const exec = {
+    name: OUTBOUND_ARTIFACT_TOOL,
+    callId: `call-${suffix}`,
+    rootCallId: `call-${suffix}`,
+    token: Symbol(`call-${suffix}`),
+    agent,
+  };
+  await writeFile(join(workspace, fileName), content);
+  await tool.definition.execute({ path: fileName }, exec);
+  tool.onResult(exec, { isError: false });
+  const [artifact] = registry.take(agent.session.header.id, 1);
+  return artifact;
 }
 
 const PNG_BYTES = Buffer.from([
@@ -1418,4 +1457,312 @@ test('QQ propagates the stop signal and cancels its pending question on abort', 
   });
   assert.notEqual(cancellationSignal, controller.signal);
   assert.equal(cancellationSignal.aborted, false);
+});
+
+test('QQ sends registered files after text with the native SDK and continues after one file fails', async (t) => {
+  const first = await committedArtifact(t, 'first.txt', 'first bytes', 'partial-first');
+  const second = await committedArtifact(t, 'second.html', '<h1>second</h1>', 'partial-second');
+  const order = [];
+  const sentTexts = [];
+  const files = [];
+  const status = {
+    messagesReceived: 0,
+    messagesReplied: 0,
+    messagesRejected: 0,
+    artifactsSent: 0,
+    artifactSendErrors: 0,
+    lastMessageAt: null,
+    lastReplyAt: null,
+    lastRejectedAt: null,
+    lastError: null,
+  };
+  const target = { scope: 'c2c', targetId: 'owner-openid', msgId: 'qq-artifact-partial' };
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (replyTarget, text) => {
+        sentTexts.push({ replyTarget, text });
+        order.push(`text:${text}`);
+        return { id: `text-${sentTexts.length}` };
+      },
+      sendFile: async (replyTarget, source, options) => {
+        files.push({ replyTarget, source, options });
+        order.push(`file:${options.fileName}`);
+        if (options.fileName === 'first.txt') {
+          const error = new Error('private quota detail');
+          error.name = 'UploadDailyLimitExceededError';
+          throw error;
+        }
+        return { message: { id: 'qq-file-2' } };
+      },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(first);
+        await options.onArtifact(second);
+        return '文件处理完成。';
+      },
+    },
+    state: stateFixture([['c2c:owner-openid', 'session-artifacts']]).state,
+    status,
+    logger: { warn() {}, error() {} },
+  });
+
+  await bridge.accept(message({
+    messageId: 'qq-artifact-partial',
+    replyTarget: target,
+  }));
+
+  assert.deepEqual(order.map((entry) => entry.split(':', 1)[0]), [
+    'text', 'file', 'text', 'file',
+  ]);
+  assert.equal(files[0].replyTarget, target);
+  assert.equal(files[0].source.buffer.toString(), 'first bytes');
+  assert.equal(files[0].options.fileName, 'first.txt');
+  assert.equal(typeof files[0].options.onProgress, 'function');
+  assert.equal(files[1].source.buffer.toString(), '<h1>second</h1>');
+  assert.equal(files[1].options.fileName, 'second.html');
+  assert.match(sentTexts[1].text, /first\.txt.*上传额度/);
+  assert.doesNotMatch(sentTexts[1].text, /private quota detail/);
+  assert.equal(status.artifactsSent, 1);
+  assert.equal(status.artifactSendErrors, 1);
+});
+
+test('QQ still delivers registered files when every final text delivery attempt fails', async (t) => {
+  const artifact = await committedArtifact(t, 'survives-text-failure.txt', 'file bytes', 'text-failure');
+  const files = [];
+  let textAttempts = 0;
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async () => {
+        textAttempts += 1;
+        throw new Error('text transport unavailable');
+      },
+      sendFile: async (_target, source, options) => {
+        files.push({ bytes: Buffer.from(source.buffer), fileName: options.fileName });
+        return { message: { id: 'qq-file-after-text-failure' } };
+      },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '文字结果';
+      },
+    },
+    state: stateFixture([['c2c:owner-openid', 'session-text-failure']]).state,
+    logger: { warn() {}, error() {} },
+  });
+
+  await bridge.accept(message({ messageId: 'qq-text-failure' }));
+
+  assert.deepEqual(files, [{ bytes: Buffer.from('file bytes'), fileName: 'survives-text-failure.txt' }]);
+  assert.equal(textAttempts, 1, 'must not send a generic retry notice after the file succeeds');
+});
+
+test('QQ returns the authoritative receipt and sends one safe notice when text and file delivery fail', async (t) => {
+  const artifact = await committedArtifact(t, 'mismatch.txt', 'file bytes', 'all-fail');
+  const attemptedTexts = [];
+  const visibleTexts = [];
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => {
+        attemptedTexts.push(text);
+        if (text === '文字结果') throw new Error('text transport unavailable');
+        visibleTexts.push(text);
+        return undefined;
+      },
+      sendFile: async () => {
+        const error = new Error('mismatched file signature');
+        error.code = 'artifact-invalid';
+        throw error;
+      },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '文字结果';
+      },
+    },
+    state: stateFixture([['c2c:owner-openid', 'session-all-fail']]).state,
+    logger: { warn() {}, error() {} },
+  });
+
+  const receipt = await bridge.accept(message({ messageId: 'qq-all-fail' }));
+
+  assert.equal(attemptedTexts.length, 2, 'must not append a generic error after the safe notice');
+  assert.equal(visibleTexts.length, 1);
+  assert.match(visibleTexts[0], /暂时无法读取或准备发送.*仍可访问/);
+  assert.deepEqual(receipt, {
+    schemaVersion: 1,
+    deliveryId: 'qq-all-fail',
+    presentation: 'qq-files',
+    providerMessageIds: [],
+    artifacts: [{
+      artifactId: artifact.artifactId,
+      outcome: 'rejected',
+      reason: 'artifact-invalid',
+    }],
+  });
+});
+
+test('QQ keeps the generic error when neither the answer nor the file failure notice is visible', async (t) => {
+  const artifact = await committedArtifact(t, 'unavailable.txt', 'file bytes', 'no-visible-failure');
+  const attemptedTexts = [];
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => {
+        attemptedTexts.push(text);
+        if (attemptedTexts.length < 3) throw new Error('text transport unavailable');
+        return { id: 'qq-generic-error' };
+      },
+      sendFile: async () => {
+        const error = new Error('file transport unavailable');
+        error.code = 'artifact-provider-failed';
+        throw error;
+      },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '文字结果';
+      },
+    },
+    state: stateFixture([['c2c:owner-openid', 'session-no-visible-failure']]).state,
+    logger: { warn() {}, error() {} },
+  });
+
+  await bridge.accept(message({ messageId: 'qq-no-visible-failure' }));
+
+  assert.equal(attemptedTexts.length, 3);
+  assert.equal(attemptedTexts.at(-1), '消息处理失败，请稍后重试。');
+});
+
+test('QQ reports an unacknowledged native file send as uncertain instead of inviting a blind retry', async (t) => {
+  const artifact = await committedArtifact(t, 'uncertain.txt', 'file bytes', 'uncertain');
+  const texts = [];
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => texts.push(text),
+      sendFile: async () => new Promise(() => {}),
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '文件已生成。';
+      },
+    },
+    state: stateFixture([['c2c:owner-openid', 'session-uncertain']]).state,
+    fileUploadTimeoutMs: 20,
+    logger: { warn() {}, error() {} },
+  });
+
+  await bridge.accept(message({ messageId: 'qq-uncertain-file' }));
+
+  assert.match(texts[1], /发送结果未能确认.*先检查聊天内是否已收到.*不要立即重试/);
+});
+
+test('QQ runtime cancellation interrupts an in-flight file send and skips later files and notices', async (t) => {
+  const first = await committedArtifact(t, 'first.txt', 'first', 'abort-first');
+  const second = await committedArtifact(t, 'second.txt', 'second', 'abort-second');
+  const started = deferred();
+  const controller = new AbortController();
+  const texts = [];
+  const files = [];
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => texts.push(text),
+      sendFile: async (_target, _source, options) => {
+        files.push(options.fileName);
+        started.resolve();
+        return new Promise(() => {});
+      },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(first);
+        await options.onArtifact(second);
+        return '文件如下。';
+      },
+    },
+    state: stateFixture([['c2c:owner-openid', 'session-abort-files']]).state,
+    signal: controller.signal,
+    logger: { warn() {}, error() {} },
+  });
+
+  const processing = bridge.accept(message({ messageId: 'qq-abort-file' }));
+  await started.promise;
+  controller.abort(new DOMException('runtime stopped', 'AbortError'));
+  await Promise.race([
+    processing,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('QQ abort timed out')), 500)),
+  ]);
+
+  assert.deepEqual(files, ['first.txt']);
+  assert.equal(texts.some((text) => text.includes('发送结果未能确认')), false);
+  assert.equal(texts.some((text) => text === '消息处理失败，请稍后重试。'), false);
+});
+
+test('QQ uses a neutral final text for a file-only Turn', async (t) => {
+  const artifact = await committedArtifact(t, 'only.txt', 'only bytes', 'file-only');
+  const texts = [];
+  const files = [];
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => texts.push(text),
+      sendFile: async (_target, source, options) => {
+        files.push({ bytes: Buffer.from(source.buffer), fileName: options.fileName });
+        return { message: { id: 'qq-file-only' } };
+      },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '';
+      },
+    },
+    state: stateFixture([['c2c:owner-openid', 'session-file-only']]).state,
+  });
+
+  await bridge.accept(message({ messageId: 'qq-file-only' }));
+
+  assert.deepEqual(texts, ['结果文件已生成。']);
+  assert.deepEqual(files, [{ bytes: Buffer.from('only bytes'), fileName: 'only.txt' }]);
+});
+
+test('QQ cancellation prevents SDK sendFile', async (t) => {
+  let fileCalls = 0;
+  const artifact = await committedArtifact(t, 'cancelled.txt', 'cancelled bytes', 'cancelled');
+  const controller = new AbortController();
+  const cancelledBridge = new QqHarnessBridge({
+    bot: {
+      sendText: async () => {},
+      sendFile: async () => { fileCalls += 1; },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        controller.abort(new DOMException('stopped', 'AbortError'));
+        return '停止前的回答';
+      },
+    },
+    state: stateFixture([['c2c:owner-openid', 'session-cancelled']]).state,
+    signal: controller.signal,
+  });
+  await cancelledBridge.accept(message({ messageId: 'qq-artifact-cancelled' }));
+  assert.equal(fileCalls, 0);
 });

@@ -2,6 +2,7 @@ import { fetchImageBuffer } from '../shared/image-prompt.mjs';
 
 const DEFAULT_BASE_URL = 'https://api.telegram.org/';
 const TELEGRAM_FILE_HOSTS = Object.freeze(['api.telegram.org']);
+const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
 
 function cleanString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -10,6 +11,58 @@ function cleanString(value) {
 function requestSignal(signal, timeoutMs) {
   const timeout = AbortSignal.timeout(timeoutMs);
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+function abortReason(signal) {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new DOMException('The operation was aborted', 'AbortError');
+}
+
+function positiveTimeout(value, name) {
+  if (!Number.isInteger(value) || value < 1) throw new TypeError(`${name} must be a positive integer`);
+  return value;
+}
+
+function preserveProviderMetadata(target, source) {
+  if (source?.providerCode !== undefined) target.providerCode = source.providerCode;
+  if (source?.retry_after !== undefined) {
+    target.retry_after = source.retry_after;
+    target.retryAfter = source.retry_after;
+  }
+  if (Number.isInteger(source?.status)) target.status = source.status;
+  return target;
+}
+
+function telegramArtifactProviderError(cause) {
+  const providerCode = Number(cause?.providerCode);
+  const status = Number(cause?.status);
+  const message = cleanString(cause?.message) ?? '';
+  let code = 'artifact-provider-rejected';
+  let summary = 'Telegram rejected the document.';
+  if (providerCode === 401 || providerCode === 403 || status === 401 || status === 403) {
+    code = 'artifact-permission-required';
+    summary = 'Telegram denied permission to send the document.';
+  } else if (providerCode === 413 || status === 413
+    || /(?:file|request|entity).{0,20}(?:too (?:big|large)|size limit)|too (?:big|large)/i.test(message)) {
+    code = 'artifact-too-large';
+    summary = 'The document exceeds Telegram\'s size limit.';
+  } else if (providerCode === 429 || status === 429) {
+    code = 'artifact-rate-limited';
+    summary = 'Telegram rate-limited document delivery.';
+  } else if (providerCode >= 500 || status >= 500) {
+    code = 'artifact-delivery-uncertain';
+    summary = 'Telegram document delivery result is uncertain.';
+  }
+  const error = new Error(summary, { cause });
+  error.code = code;
+  return preserveProviderMetadata(error, cause);
+}
+
+function uncertainTelegramDelivery(cause) {
+  const error = new Error('Telegram document delivery result is uncertain', { cause });
+  error.code = 'artifact-delivery-uncertain';
+  return preserveProviderMetadata(error, cause);
 }
 
 export function validTelegramToken(value) {
@@ -32,13 +85,20 @@ export class TelegramApi {
   #token;
   #fetch;
   #baseUrl;
+  #fileUploadTimeoutMs;
 
-  constructor({ token, fetchImpl = fetch, baseUrl = DEFAULT_BASE_URL }) {
+  constructor({
+    token,
+    fetchImpl = fetch,
+    baseUrl = DEFAULT_BASE_URL,
+    fileUploadTimeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS,
+  }) {
     if (!validTelegramToken(token)) throw new TypeError('Telegram Bot Token is invalid');
     if (typeof fetchImpl !== 'function') throw new TypeError('TelegramApi requires fetch');
     this.#token = token.trim();
     this.#fetch = fetchImpl;
     this.#baseUrl = new URL(baseUrl);
+    this.#fileUploadTimeoutMs = positiveTimeout(fileUploadTimeoutMs, 'fileUploadTimeoutMs');
   }
 
   async getMe(options = {}) {
@@ -108,6 +168,43 @@ export class TelegramApi {
     }, { signal });
   }
 
+  async sendDocument({ chatId, file, replyToMessageId, messageThreadId, signal }) {
+    if (!file || typeof file !== 'object'
+      || typeof file.fileName !== 'string' || !file.fileName
+      || !Buffer.isBuffer(file.bytes)) {
+      throw new TypeError('A Telegram document is required');
+    }
+    const payload = new FormData();
+    payload.append('chat_id', String(chatId));
+    payload.append(
+      'document',
+      new Blob([file.bytes], { type: file.mediaType ?? 'application/octet-stream' }),
+      file.fileName,
+    );
+    if (replyToMessageId) {
+      payload.append('reply_parameters', JSON.stringify({
+        message_id: replyToMessageId,
+        allow_sending_without_reply: true,
+      }));
+    }
+    if (messageThreadId) payload.append('message_thread_id', String(messageThreadId));
+    if (signal?.aborted) throw abortReason(signal);
+    const uploadSignal = requestSignal(signal, this.#fileUploadTimeoutMs);
+    try {
+      return await this.#call('sendDocument', payload, {
+        signal: uploadSignal,
+        timeoutMs: this.#fileUploadTimeoutMs,
+        multipart: true,
+      });
+    } catch (error) {
+      if (signal?.aborted) throw abortReason(signal);
+      if (error?.code?.startsWith?.('telegram-')) {
+        throw telegramArtifactProviderError(error);
+      }
+      throw uncertainTelegramDelivery(error);
+    }
+  }
+
   async editMessageText({ chatId, messageId, text, signal }) {
     return this.#call('editMessageText', {
       chat_id: chatId,
@@ -144,15 +241,15 @@ export class TelegramApi {
     return this.#call('setChatMenuButton', { menu_button: menuButton }, { signal });
   }
 
-  async #call(method, payload, { signal, timeoutMs = 15_000 } = {}) {
+  async #call(method, payload, { signal, timeoutMs = 15_000, multipart = false } = {}) {
     const url = new URL(this.#baseUrl);
     url.pathname = `${url.pathname.replace(/\/$/, '')}/bot${this.#token}/${method}`;
     let response;
     try {
       response = await this.#fetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
+        ...(multipart ? {} : { headers: { 'content-type': 'application/json' } }),
+        body: multipart ? payload : JSON.stringify(payload),
         signal: requestSignal(signal, timeoutMs),
         redirect: 'error',
       });
@@ -164,12 +261,21 @@ export class TelegramApi {
     try {
       body = await response.json();
     } catch {
-      throw new Error(`Telegram ${method} returned invalid JSON`);
+      const error = new Error(`Telegram ${method} returned invalid JSON`);
+      error.status = response?.status;
+      throw error;
     }
     if (!response.ok || body?.ok !== true) {
       const description = cleanString(body?.description);
       const error = new Error(description ?? `Telegram ${method} failed`);
       error.code = Number.isInteger(body?.error_code) ? `telegram-${body.error_code}` : 'telegram-api-error';
+      error.status = response.status;
+      if (Number.isInteger(body?.error_code)) error.providerCode = body.error_code;
+      const retryAfter = Number(body?.parameters?.retry_after);
+      if (Number.isFinite(retryAfter) && retryAfter >= 0) {
+        error.retry_after = retryAfter;
+        error.retryAfter = retryAfter;
+      }
       throw error;
     }
     return body.result;

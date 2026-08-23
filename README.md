@@ -62,6 +62,24 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 九个内置渠道均支持把 JPEG、PNG、WebP 图片，以及以图片文件方式发送的 GIF，连同可选文字说明发送给 Harness；单张图片上限为 5 MB，单条消息中的图片总大小上限为 20 MB。
 
+### 结果文件回传
+
+九个内置渠道均已实现把 Harness 可读取的文件作为渠道原生附件回传。已有文件和当前任务新生成的文件都可以直接发送；该能力对所有已连接机器人默认可用，无需开关或机器人白名单，原有文字、图片、流式回复、命令和会话行为保持不变。
+
+模型调用文件回传工具后，插件把指定文件交给当前渠道的原生附件接口。插件不额外设置文件来源、创建时间、工作区边界、扩展名、内容、数量、大小或有效期规则；文件只需真实存在且可读取。渠道平台仍可能依据自身权限、配额、文件能力或账号等级拒绝发送，插件会按平台返回结果提示。
+
+| 渠道 | 平台要求 |
+| --- | --- |
+| 微信 | 当前绑定协议和会话需支持原生文件消息，实际可发送范围以微信接口返回为准。 |
+| 飞书 | 飞书文件上传接口要求文件非空且不超过平台 30 MB；应用需有租户权限 `im:resource`（“读取与上传图片或文件资源”）。内置扫码流程新建应用时默认申请该权限；已有或手动绑定的应用仍需在开发者后台添加并完成必要审批。飞书开发者后台当前没有单独的 `im:resource:upload` 权限。 |
+| 钉钉 | 应用需开通 `qyapi_base`，机器人需具备文件消息能力；实际格式和大小以当前 OAPI 与机器人能力返回为准。 |
+| 企业微信 | 应用需具备素材上传和文件消息能力，实际可发送范围以企业微信接口返回为准。 |
+| QQ | 机器人需具备文件消息能力，并受 QQ 当日文件上传配额约束；额度耗尽时会明确提示稍后重试。 |
+| Slack | Bot Token 需有 `files:write`；实际大小上限由 Workspace 当前策略决定。已有 App 新增或变更 Scope 后，必须重新授权/安装 App 并重新连接机器人。 |
+| Telegram | 机器人必须能在当前聊天发送文档，实际可发送范围以 Bot API 返回为准。 |
+| Discord | 机器人需有 **Send Messages**、**Attach Files** 和 **Read Message History** 权限；实际附件额度由当前账号与服务器能力决定。 |
+| WhatsApp | 当前绑定会话需支持 Document Message，实际可发送范围以 WhatsApp/Baileys 返回为准。 |
+
 ## AI Office Connector
 
 「AI Office」页让本机 Harness 主动连接公网 Office，本机无需公网 IP、端口转发或 WebSocket 服务。Device Token 只写入 Harness 凭据存储；普通配置文件仅保存设备 ID、Office Origin、工作区 alias 和 Instruction Preset alias。Office 只能选择 alias，不会收到本机绝对路径。

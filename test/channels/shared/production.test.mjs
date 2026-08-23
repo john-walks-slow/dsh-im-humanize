@@ -4,29 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import {
-  createProductionController,
-  normalizeTelegramAllowedUsers,
-} from '../../../plugin-src/host/channels/telegram/production.mjs';
+import { createTokenProductionController } from '../../../plugin-src/host/channels/shared/production.mjs';
 
-test('Telegram per-bot policy normalizes and validates private-message allowlists', () => {
-  assert.deepEqual(normalizeTelegramAllowedUsers(undefined), []);
-  assert.deepEqual(
-    normalizeTelegramAllowedUsers([6087707998, '1202499116', '6087707998']),
-    ['6087707998', '1202499116'],
-  );
-  assert.throws(
-    () => normalizeTelegramAllowedUsers('6087707998'),
-    /must be an array/,
-  );
-  assert.throws(
-    () => normalizeTelegramAllowedUsers([0, '-100123', 'username']),
-    /invalid Telegram User ID/,
-  );
-});
-
-test('Telegram production has no per-bot result-file Gate', async (t) => {
-  const dataDir = await mkdtemp(join(tmpdir(), 'dsh-telegram-production-artifacts-'));
+test('token-channel production has no per-bot result-file Gate', async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'dsh-token-production-artifacts-'));
   t.after(() => rm(dataDir, { recursive: true, force: true }));
   const runtimes = [];
   let controllerOptions;
@@ -54,7 +35,7 @@ test('Telegram production has no per-bot result-file Gate', async (t) => {
     async close() {},
   };
 
-  const production = await createProductionController({
+  const production = await createTokenProductionController({
     credentials: {},
     webServer: { port: 3080 },
     logger: () => ({ error() {}, warn() {}, info() {}, debug() {} }),
@@ -65,13 +46,27 @@ test('Telegram production has no per-bot result-file Gate', async (t) => {
     Controller,
     Runtime,
     createConnectionSupervisor: () => supervisor,
+  }, {
+    channel: 'test-token',
+    ConfigStore,
+    StateStore,
+    HarnessClient: Harness,
+    Controller,
+    Runtime,
+  });
+
+  await controllerOptions.createRuntime({
+    botId: 'bot_enabled',
+    config: { botId: 'bot_enabled' },
+    token: 'host-only',
   });
   await controllerOptions.createRuntime({
-    botId: 'telegram_default',
-    config: { botId: 'telegram_default' },
+    botId: 'bot_disabled',
+    config: { botId: 'bot_disabled' },
     token: 'host-only',
   });
 
   assert.equal(Object.hasOwn(runtimes[0], 'outboundArtifactsEnabled'), false);
+  assert.equal(Object.hasOwn(runtimes[1], 'outboundArtifactsEnabled'), false);
   await production.close();
 });

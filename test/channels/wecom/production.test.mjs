@@ -4,29 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import {
-  createProductionController,
-  normalizeTelegramAllowedUsers,
-} from '../../../plugin-src/host/channels/telegram/production.mjs';
+import { createProductionController } from '../../../plugin-src/host/channels/wecom/production.mjs';
 
-test('Telegram per-bot policy normalizes and validates private-message allowlists', () => {
-  assert.deepEqual(normalizeTelegramAllowedUsers(undefined), []);
-  assert.deepEqual(
-    normalizeTelegramAllowedUsers([6087707998, '1202499116', '6087707998']),
-    ['6087707998', '1202499116'],
-  );
-  assert.throws(
-    () => normalizeTelegramAllowedUsers('6087707998'),
-    /must be an array/,
-  );
-  assert.throws(
-    () => normalizeTelegramAllowedUsers([0, '-100123', 'username']),
-    /invalid Telegram User ID/,
-  );
-});
-
-test('Telegram production has no per-bot result-file Gate', async (t) => {
-  const dataDir = await mkdtemp(join(tmpdir(), 'dsh-telegram-production-artifacts-'));
+test('Enterprise WeChat production has no per-bot result-file Gate', async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'dsh-wecom-production-artifacts-'));
   t.after(() => rm(dataDir, { recursive: true, force: true }));
   const runtimes = [];
   let controllerOptions;
@@ -42,12 +23,18 @@ test('Telegram production has no per-bot result-file Gate', async (t) => {
     stopManagedProcess() {}
   }
   class Runtime {
-    constructor(options) { runtimes.push(options); }
+    constructor(options) {
+      this.options = options;
+      runtimes.push(options);
+    }
   }
   class Controller {
-    constructor(options) { controllerOptions = options; }
+    constructor(options) {
+      controllerOptions = options;
+    }
     async close() {}
   }
+  class QrAuth {}
   const supervisor = {
     ready: Promise.resolve(),
     start() { return this; },
@@ -64,14 +51,22 @@ test('Telegram production has no per-bot result-file Gate', async (t) => {
     HarnessClient: Harness,
     Controller,
     Runtime,
+    QrAuth,
     createConnectionSupervisor: () => supervisor,
   });
+
   await controllerOptions.createRuntime({
-    botId: 'telegram_default',
-    config: { botId: 'telegram_default' },
-    token: 'host-only',
+    botId: 'wecom_enabled',
+    config: { botId: 'wecom_enabled', remoteBotId: 'remote-enabled' },
+    secret: 'host-only',
+  });
+  await controllerOptions.createRuntime({
+    botId: 'wecom_disabled',
+    config: { botId: 'wecom_disabled', remoteBotId: 'remote-disabled' },
+    secret: 'host-only',
   });
 
   assert.equal(Object.hasOwn(runtimes[0], 'outboundArtifactsEnabled'), false);
+  assert.equal(Object.hasOwn(runtimes[1], 'outboundArtifactsEnabled'), false);
   await production.close();
 });

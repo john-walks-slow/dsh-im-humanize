@@ -32,6 +32,16 @@ import {
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
 import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
+import {
+  materializeOutboundArtifact,
+  releaseOutboundArtifact,
+} from '../shared/semantic/artifact.mjs';
+import {
+  createArtifactFailureReceipt,
+  createDeliveryReceipt,
+  mergeDeliveryReceipts,
+  providerMessageIdsFor,
+} from '../shared/semantic/delivery.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
 const GENERIC_PROCESSING_ERROR = '消息处理失败，请稍后重试。';
@@ -87,6 +97,28 @@ function safeMessageError(error, userMessage = GENERIC_PROCESSING_ERROR) {
     message: diagnostic?.userMessage ?? userMessage,
     at: Date.now(),
   };
+}
+
+function artifactFailureText(fileName, error) {
+  const name = String(fileName ?? '结果文件').replace(/[\r\n]+/g, ' ').trim() || '结果文件';
+  switch (error?.code) {
+    case 'artifact-delivery-uncertain':
+      return `结果文件「${name}」发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。`;
+    case 'artifact-permission-required':
+      return `结果文件「${name}」已生成，但微信机器人当前没有文件消息发送权限，请检查机器人文件消息能力。`;
+    case 'artifact-too-large':
+      return `结果文件「${name}」超过当前微信会话可发送的文件大小，未发送。`;
+    case 'artifact-rate-limited':
+      return `结果文件「${name}」暂时被微信限流，未能发送，请稍后重试。`;
+    case 'artifact-provider-rejected':
+      return `结果文件「${name}」已生成，但微信拒绝了该文件消息。`;
+    case 'artifact-invalid':
+    case 'artifact-changed':
+    case 'artifact-unavailable':
+      return `结果文件「${name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。`;
+    default:
+      return `结果文件「${name}」已生成，但暂时未能通过微信发送，请稍后重试。`;
+  }
 }
 
 export function createWeixinBridgeStatus() {
@@ -394,8 +426,9 @@ export class WeixinHarnessBridge {
         ? await promptContentForMessage(promptMessage, { signal: this.#signal })
         : undefined;
       let answer;
+      let artifacts = [];
       try {
-        ({ answer } = await askInWorkspaceSession({
+        ({ answer, artifacts = [] } = await askInWorkspaceSession({
           harness: this.#harness,
           state: this.#state,
           key,
@@ -421,12 +454,35 @@ export class WeixinHarnessBridge {
           this.#approvals.closeRoute(key),
         ]);
       }
-      await this.#send(sender, answer, contextToken, runId);
+      const answerText = typeof answer === 'string' && answer.trim()
+        ? answer
+        : artifacts.length > 0 ? '结果文件已生成。' : answer;
+      let textDeliveryError = null;
+      let textReceipt = null;
+      try {
+        textReceipt = createDeliveryReceipt({
+          deliveryId: messageId,
+          presentation: 'weixin-text',
+          providerMessageIds: await this.#send(sender, answerText, contextToken, runId),
+        });
+      } catch (error) {
+        textDeliveryError = error;
+      }
+      const delivery = await this.#deliverArtifacts(
+        sender,
+        messageId,
+        artifacts,
+        contextToken,
+        runId,
+        textReceipt,
+      );
+      if (textDeliveryError && !delivery.userVisible) throw textDeliveryError;
       await this.#state.markSeen(messageId);
       this.#status.messagesReplied += 1;
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
       this.#status.lastMessageError = null;
+      return delivery.receipt;
     } catch (error) {
       if (error?.code === 'turn-stopped') {
         await this.#state.markSeen(messageId);
@@ -762,15 +818,90 @@ export class WeixinHarnessBridge {
   }
 
   async #send(toUserId, text, contextToken, runId) {
+    const providerMessageIds = [];
     for (const chunk of splitWeixinText(text, this.#maxMessageChars)) {
-      await this.#api.sendText({
+      const result = await this.#api.sendText({
         baseUrl: this.#baseUrl,
         token: this.#token,
         toUserId,
         text: chunk,
         contextToken,
         runId,
+        signal: this.#signal,
       });
+      providerMessageIds.push(...providerMessageIdsFor(result));
     }
+    return providerMessageIds;
+  }
+
+  async #deliverArtifacts(toUserId, replyTo, artifacts, contextToken, runId, baseReceipt) {
+    const receipts = baseReceipt ? [baseReceipt] : [];
+    let userVisible = Boolean(baseReceipt);
+    for (const artifact of artifacts) {
+      this.#signal?.throwIfAborted();
+      try {
+        if (typeof this.#api.sendFile !== 'function') {
+          const unavailable = new Error('Weixin file delivery is unavailable');
+          unavailable.code = 'artifact-provider-unavailable';
+          throw unavailable;
+        }
+        const file = await materializeOutboundArtifact(artifact, {
+          signal: this.#signal,
+        });
+        const result = await this.#api.sendFile({
+          baseUrl: this.#baseUrl,
+          token: this.#token,
+          toUserId,
+          file,
+          contextToken,
+          runId,
+          signal: this.#signal,
+        });
+        receipts.push(createDeliveryReceipt({
+          deliveryId: file.deliveryKey,
+          presentation: 'weixin-file',
+          providerMessageIds: providerMessageIdsFor(result),
+          artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
+        }));
+        userVisible = true;
+        this.#status.artifactsSent = (this.#status.artifactsSent ?? 0) + 1;
+      } catch (error) {
+        if (this.#signal?.aborted) throw error;
+        this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0) + 1;
+        this.#logger.warn?.(
+          `[dsh-weixin] result file delivery failed (${error?.code ?? 'unknown'})`,
+        );
+        let noticeSent = false;
+        const providerMessageIds = await this.#send(
+          toUserId,
+          artifactFailureText(artifact?.fileName, error),
+          contextToken,
+          runId,
+        ).then((ids) => {
+          noticeSent = true;
+          return ids;
+        }).catch(() => []);
+        const failureReceipt = createArtifactFailureReceipt({
+          artifactId: artifact?.artifactId ?? 'unknown',
+          deliveryId: artifact?.deliveryKey ?? artifact?.artifactId ?? 'unknown',
+          error,
+          providerMessageIds,
+        });
+        receipts.push(failureReceipt);
+        if (noticeSent || failureReceipt.artifacts[0]?.outcome === 'unknown') userVisible = true;
+      } finally {
+        releaseOutboundArtifact(artifact);
+      }
+    }
+    const receipt = receipts.length === 0
+      ? null
+      : receipts.length === 1
+        ? receipts[0]
+        : mergeDeliveryReceipts({
+            deliveryId: replyTo,
+            presentation: baseReceipt ? 'weixin-text-and-files' : 'weixin-files',
+            receipts,
+          });
+    return { receipt, userVisible };
   }
 }

@@ -146,7 +146,7 @@ export function telegramInboundAllowed(message, {
     && allowedPrivateUserIds.has(String(message.senderId));
 }
 
-class TelegramBotClient {
+export class TelegramBotClient {
   #api;
   #signal;
 
@@ -157,22 +157,35 @@ class TelegramBotClient {
 
   async sendText(target, text) {
     const chunks = splitMessageText(text, 4_000);
-    let result = null;
+    const providerMessageIds = [];
     for (const [index, chunk] of chunks.entries()) {
-      result = await this.#api.sendMessage({
+      const result = await this.#api.sendMessage({
         chatId: target.chatId,
         text: chunk,
         replyToMessageId: index === 0 ? target.replyToMessageId : undefined,
         messageThreadId: target.messageThreadId,
         signal: this.#signal,
       });
+      if (Number.isSafeInteger(result?.message_id)) {
+        providerMessageIds.push(String(result.message_id));
+      }
     }
-    return result;
+    return { providerMessageIds };
   }
 
   sendTyping(target) {
     return this.#api.sendChatAction({
       chatId: target.chatId,
+      messageThreadId: target.messageThreadId,
+      signal: this.#signal,
+    });
+  }
+
+  sendFile(target, file) {
+    return this.#api.sendDocument({
+      chatId: target.chatId,
+      file,
+      replyToMessageId: target.replyToMessageId,
       messageThreadId: target.messageThreadId,
       signal: this.#signal,
     });
@@ -203,6 +216,7 @@ class TelegramBotClient {
         messageThreadId: target.messageThreadId,
         signal: this.#signal,
       }),
+      messageIdForResult: (message) => message?.message_id,
     });
     return stream.start();
   }

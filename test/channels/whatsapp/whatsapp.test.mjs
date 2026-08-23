@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, stat } from 'node:fs/promises';
+import {
+  mkdtemp,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { DisconnectReason } from '@whiskeysockets/baileys';
 
+import {
+  OUTBOUND_ARTIFACT_TOOL,
+  OutboundArtifactRegistry,
+  createOutboundArtifactTool,
+} from '../../../src/channels/shared/semantic/artifact.mjs';
 import {
   WhatsappConfigStore,
   deriveWhatsappBotId,
@@ -24,6 +35,87 @@ import {
 
 const ACCOUNT_JID = '16505550123@s.whatsapp.net';
 const AUTH_DIRECTORY = '7fe8c17e-4fb7-4c5b-a9dc-c36525575dd1';
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function within(promise, timeoutMs, message) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function committedArtifact(t, {
+  suffix,
+  fileName = 'result.txt',
+  content = 'WhatsApp result file',
+} = {}) {
+  const workspace = await mkdtemp(join(tmpdir(), `dsh-im-whatsapp-artifact-${suffix}-`));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const sessionId = `session-whatsapp-artifact-${suffix}`;
+  const rpcId = `rpc-whatsapp-artifact-${suffix}`;
+  let nextId = 0;
+  const ids = [];
+  const registry = new OutboundArtifactRegistry({
+    uuid: () => {
+      const id = `${suffix}-${++nextId}`;
+      ids.push(id);
+      return id;
+    },
+  });
+  t.after(() => registry.clear());
+  const agent = {
+    session: {
+      header: { id: sessionId, cwd: workspace },
+      events: [
+        { type: 'turn/start', data: { turn: 1 } },
+        { type: 'user/message', data: { turn: 1, source: { rpcId } } },
+      ],
+    },
+  };
+  await writeFile(join(workspace, fileName), content);
+  const tool = createOutboundArtifactTool({ registry });
+  const exec = {
+    name: OUTBOUND_ARTIFACT_TOOL,
+    callId: `call-${suffix}`,
+    rootCallId: `call-${suffix}`,
+    token: Symbol(`call-${suffix}`),
+    agent,
+  };
+  await tool.definition.execute({ path: fileName }, exec);
+  tool.onResult(exec, { isError: false });
+  return {
+    artifact: registry.take(sessionId, 1)[0],
+    deliveryKey: ids[1],
+  };
+}
+
+function artifactState(sessionId = 'session-whatsapp-artifact') {
+  const seen = new Set();
+  return {
+    hasSeen: (messageId) => seen.has(messageId),
+    markSeen: async (messageId) => { seen.add(messageId); },
+    sessionFor: () => sessionId,
+    sessionExists: async () => true,
+    setSession: async () => {},
+    clearSession: async () => {},
+  };
+}
 
 function linkedConfig(overrides = {}) {
   return {
@@ -374,6 +466,265 @@ test('WhatsApp runtime connects a linked device and replies through Harness', as
   assert.ok(calls.some((call) => call[0] === 'presence' && call[1] === 'composing'));
   assert.ok(calls.some((call) => call[0] === 'message' && call[2].text === 'Harness answer'));
   await runtime.stop();
+});
+
+test('WhatsApp runtime sends result files with native metadata, quote, stable id, and upload timeout', async (t) => {
+  const { artifact, deliveryKey } = await committedArtifact(t, {
+    suffix: 'native-file',
+    fileName: 'report.txt',
+    content: 'native WhatsApp artifact',
+  });
+  let callbacks;
+  const calls = [];
+  const socket = {
+    sendPresenceUpdate: async () => {},
+    readMessages: async () => {},
+    sendMessage: async (jid, content, options) => {
+      calls.push({ jid, content, options });
+      return { key: { id: content.document ? 'file-message-1' : 'text-message-1' } };
+    },
+  };
+  const runtime = new WhatsappRuntime({
+    config: linkedConfig(),
+    authDir: '/tmp/test-whatsapp-native-file',
+    harness: {
+      ensureRunning: async () => {},
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        assert.equal(typeof options.onArtifact, 'function');
+        await options.onArtifact(artifact);
+        return '结果文件如下。';
+      },
+    },
+    state: artifactState(),
+    createSession: async (options) => {
+      callbacks = options;
+      return {
+        socket,
+        ready: Promise.resolve({ accountJid: ACCOUNT_JID, name: 'Harness WhatsApp' }),
+        close: async () => {},
+        logout: async () => {},
+      };
+    },
+  });
+  t.after(() => runtime.stop());
+  await runtime.start();
+  const inbound = {
+    key: { remoteJid: '16505550999@s.whatsapp.net', id: 'native-file-1', fromMe: false },
+    message: { conversation: '生成结果文件' },
+  };
+
+  await callbacks.onMessage(inbound);
+
+  const textCall = calls.find((call) => call.content.text === '结果文件如下。');
+  const fileCall = calls.find((call) => call.content.document);
+  assert.ok(textCall);
+  assert.ok(fileCall);
+  assert.equal(fileCall.jid, '16505550999@s.whatsapp.net');
+  assert.equal(fileCall.content.document.toString(), 'native WhatsApp artifact');
+  assert.equal(fileCall.content.mimetype, 'text/plain');
+  assert.equal(fileCall.content.fileName, 'report.txt');
+  assert.equal(fileCall.options.quoted, inbound);
+  assert.equal(fileCall.options.mediaUploadTimeoutMs, 120_000);
+  assert.equal(
+    fileCall.options.messageId,
+    createHash('sha256').update(deliveryKey).digest('hex').slice(0, 20).toUpperCase(),
+  );
+  assert.equal(fileCall.options.messageId.length, 20);
+  assert.equal(calls.indexOf(textCall) < calls.indexOf(fileCall), true);
+});
+
+test('WhatsApp suppresses a self-chat file echo that arrives before the provider ACK', async (t) => {
+  const { artifact } = await committedArtifact(t, {
+    suffix: 'early-self-file-echo',
+    fileName: 'self-report.txt',
+    content: 'self chat artifact',
+  });
+  let callbacks;
+  let echoTask;
+  let askCount = 0;
+  const sent = [];
+  const socket = {
+    sendPresenceUpdate: async () => {},
+    readMessages: async () => {},
+    sendMessage: async (jid, content, options = {}) => {
+      sent.push({ jid, content, options });
+      if (content.document) {
+        echoTask = callbacks.onMessage({
+          key: { remoteJid: ACCOUNT_JID, id: options.messageId, fromMe: true },
+          message: {
+            documentMessage: {
+              fileName: content.fileName,
+              mimetype: content.mimetype,
+            },
+          },
+        });
+        return { key: { id: options.messageId } };
+      }
+      return { key: { id: `text-${sent.length}` } };
+    },
+  };
+  const runtime = new WhatsappRuntime({
+    config: linkedConfig(),
+    authDir: '/tmp/test-whatsapp-early-self-file-echo',
+    harness: {
+      ensureRunning: async () => {},
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        askCount += 1;
+        await options.onArtifact(artifact);
+        return '结果文件如下。';
+      },
+    },
+    state: artifactState('session-whatsapp-early-self-file-echo'),
+    createSession: async (options) => {
+      callbacks = options;
+      return {
+        socket,
+        ready: Promise.resolve({ accountJid: ACCOUNT_JID, name: 'Harness WhatsApp' }),
+        close: async () => {},
+        logout: async () => {},
+      };
+    },
+  });
+  t.after(() => runtime.stop());
+  await runtime.start();
+
+  await callbacks.onMessage({
+    key: { remoteJid: ACCOUNT_JID, id: 'self-file-request-1', fromMe: true },
+    message: { conversation: '生成结果文件' },
+  });
+  await echoTask;
+
+  assert.equal(askCount, 1);
+  assert.equal(sent.filter(({ content }) => content.document).length, 1);
+  assert.equal(sent.some(({ content }) => content.text === '目前支持文字和图片消息。'), false);
+});
+
+test('WhatsApp runtime treats a lost file-send response as uncertain delivery', async (t) => {
+  const { artifact } = await committedArtifact(t, {
+    suffix: 'uncertain-file',
+    fileName: 'uncertain.txt',
+  });
+  let callbacks;
+  const warnings = [];
+  const sent = [];
+  const socket = {
+    sendPresenceUpdate: async () => {},
+    readMessages: async () => {},
+    sendMessage: async (_jid, content) => {
+      sent.push(content);
+      if (content.document) return new Promise(() => {});
+      return { key: { id: `text-${sent.length}` } };
+    },
+  };
+  const runtime = new WhatsappRuntime({
+    config: linkedConfig(),
+    authDir: '/tmp/test-whatsapp-uncertain-file',
+    harness: {
+      ensureRunning: async () => {},
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '已生成文件。';
+      },
+    },
+    state: artifactState('session-whatsapp-uncertain'),
+    logger: {
+      warn: (...args) => warnings.push(args.join(' ')),
+      error() {},
+    },
+    mediaUploadTimeoutMs: 20,
+    createSession: async (options) => {
+      callbacks = options;
+      return {
+        socket,
+        ready: Promise.resolve({ accountJid: ACCOUNT_JID, name: 'Harness WhatsApp' }),
+        close: async () => {},
+        logout: async () => {},
+      };
+    },
+  });
+  t.after(() => runtime.stop());
+  await runtime.start();
+
+  await callbacks.onMessage({
+    key: { remoteJid: '16505550999@s.whatsapp.net', id: 'uncertain-file-1', fromMe: false },
+    message: { conversation: '生成文件' },
+  });
+
+  assert.equal(sent.filter((content) => content.document).length, 1);
+  assert.equal(warnings.some((warning) => warning.includes('artifact-delivery-uncertain')), true);
+  assert.equal(sent.some((content) => content.text?.includes('发送结果未能确认')), true);
+});
+
+test('stopping WhatsApp aborts a pending upload without another file or failure notice', async (t) => {
+  const first = await committedArtifact(t, {
+    suffix: 'cancel-first',
+    fileName: 'first.txt',
+  });
+  const second = await committedArtifact(t, {
+    suffix: 'cancel-second',
+    fileName: 'second.txt',
+  });
+  let callbacks;
+  const uploadStarted = deferred();
+  const uploadResponse = deferred();
+  const sent = [];
+  const socket = {
+    sendPresenceUpdate: async () => {},
+    readMessages: async () => {},
+    sendMessage: async (_jid, content) => {
+      sent.push(content);
+      if (content.document) {
+        uploadStarted.resolve();
+        return uploadResponse.promise;
+      }
+      return { key: { id: `text-${sent.length}` } };
+    },
+  };
+  const runtime = new WhatsappRuntime({
+    config: linkedConfig(),
+    authDir: '/tmp/test-whatsapp-cancel-upload',
+    harness: {
+      ensureRunning: async () => {},
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(first.artifact);
+        await options.onArtifact(second.artifact);
+        return '结果文件如下。';
+      },
+    },
+    state: artifactState('session-whatsapp-cancel'),
+    logger: { warn() {}, error() {} },
+    createSession: async (options) => {
+      callbacks = options;
+      return {
+        socket,
+        ready: Promise.resolve({ accountJid: ACCOUNT_JID, name: 'Harness WhatsApp' }),
+        close: async () => {},
+        logout: async () => {},
+      };
+    },
+  });
+  await runtime.start();
+  const processing = callbacks.onMessage({
+    key: { remoteJid: '16505550999@s.whatsapp.net', id: 'cancel-upload-1', fromMe: false },
+    message: { conversation: '生成两个文件' },
+  });
+  await uploadStarted.promise;
+
+  await within(runtime.stop(), 500, 'WhatsApp runtime did not stop a pending upload promptly');
+  await within(processing, 500, 'WhatsApp message processing remained blocked after stop');
+  uploadResponse.resolve({ key: { id: 'late-provider-response' } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(
+    sent.filter((content) => content.document).map((content) => content.fileName),
+    ['first.txt'],
+  );
+  assert.equal(sent.some((content) => content.text?.includes('暂时未能发送')), false);
+  assert.equal(sent.some((content) => content.text === '消息处理失败，请稍后重试。'), false);
 });
 
 test('WhatsApp runtime answers self-chat without processing its own reply echo', async () => {

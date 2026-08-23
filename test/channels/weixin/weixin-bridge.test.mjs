@@ -1,8 +1,17 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { createWeixinBridgeStatus, WeixinHarnessBridge } from '../../../src/channels/weixin/weixin-bridge.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
+import {
+  OUTBOUND_ARTIFACT_TOOL,
+  OutboundArtifactRegistry,
+  createOutboundArtifactTool,
+  releaseOutboundArtifact,
+} from '../../../src/channels/shared/semantic/artifact.mjs';
 
 function deferred() {
   let resolve;
@@ -69,6 +78,36 @@ const PNG_BYTES = Buffer.from([
   0x01, 0x02, 0x03,
 ]);
 
+async function committedArtifact(t, fileName, content) {
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-im-weixin-artifact-'));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const registry = new OutboundArtifactRegistry({ uuid: () => 'weixin-artifact-one' });
+  t.after(() => registry.clear());
+  const agent = {
+    session: {
+      header: { id: 'artifact-session', cwd: workspace },
+      events: [
+        { type: 'turn/start', data: { turn: 1 } },
+        { type: 'user/message', data: { turn: 1, source: { rpcId: 'artifact-rpc' } } },
+      ],
+    },
+  };
+  await writeFile(join(workspace, fileName), content);
+  const tool = createOutboundArtifactTool({ registry });
+  const exec = {
+    name: OUTBOUND_ARTIFACT_TOOL,
+    callId: 'weixin-artifact-call',
+    rootCallId: 'weixin-artifact-call',
+    token: Symbol('weixin-artifact-call'),
+    agent,
+  };
+  await tool.definition.execute({ path: fileName }, exec);
+  tool.onResult(exec, { isError: false });
+  const artifact = registry.take('artifact-session', 1)[0];
+  t.after(() => releaseOutboundArtifact(artifact));
+  return artifact;
+}
+
 test('Weixin remembers any authorized private inbound as a connection-test target', async () => {
   const fixture = stateFixture();
   const sent = [];
@@ -96,6 +135,144 @@ test('Weixin remembers any authorized private inbound as a connection-test targe
   });
   await rejectedBridge.accept(message('help-other', '/help', { from_user_id: 'other-user' }));
   assert.equal(connectionTestTarget(rejectedFixture.state), null);
+});
+
+test('Weixin returns a registered result file with native context after its existing text path', async (t) => {
+  const artifact = await committedArtifact(t, 'result.txt', 'weixin-result');
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-artifact');
+  const order = [];
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      inboundImages: () => [],
+      sendText: async ({ text }) => {
+        order.push(`text:${text}`);
+        return { messageId: 'weixin-text-one' };
+      },
+      sendFile: async (request) => {
+        order.push(`file:${request.file.fileName}`);
+        assert.equal(request.toUserId, 'owner-user');
+        assert.equal(request.contextToken, 'context-weixin-artifact');
+        assert.equal(request.runId, 'run-artifact');
+        assert.equal(request.file.bytes.toString(), 'weixin-result');
+        return { messageId: 'weixin-file-one' };
+      },
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const receipt = await bridge.accept(message(
+    'weixin-artifact',
+    '生成文件',
+    { run_id: 'run-artifact' },
+  ));
+
+  assert.deepEqual(order, ['text:结果文件已生成。', 'file:result.txt']);
+  assert.equal(bridge.status.artifactsSent, 1);
+  assert.deepEqual(receipt, {
+    schemaVersion: 1,
+    deliveryId: 'weixin-artifact',
+    presentation: 'weixin-text-and-files',
+    providerMessageIds: ['weixin-text-one', 'weixin-file-one'],
+    artifacts: [{ artifactId: 'weixin-artifact-one', outcome: 'sent' }],
+  });
+});
+
+test('Weixin still attempts a registered file when the final text transport fails', async (t) => {
+  const artifact = await committedArtifact(t, 'weixin-text-failed.txt', 'weixin-file');
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-artifact-text-failed');
+  const files = [];
+  let textAttempts = 0;
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      inboundImages: () => [],
+      sendText: async () => {
+        textAttempts += 1;
+        throw new Error('private text failure');
+      },
+      sendFile: async ({ file }) => {
+        files.push(file.fileName);
+        return { messageId: 'weixin-file-after-text-failure' };
+      },
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '文字回答';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const receipt = await bridge.accept(message('weixin-artifact-text-failed', '生成文件'));
+
+  assert.deepEqual(files, ['weixin-text-failed.txt']);
+  assert.equal(textAttempts, 1, 'must not send a generic retry notice after the file succeeds');
+  assert.equal(bridge.status.artifactsSent, 1);
+  assert.deepEqual(receipt.providerMessageIds, ['weixin-file-after-text-failure']);
+  assert.deepEqual(receipt.artifacts, [{ artifactId: 'weixin-artifact-one', outcome: 'sent' }]);
+});
+
+test('Weixin tells users to inspect the chat instead of retrying an uncertain file delivery', async (t) => {
+  const artifact = await committedArtifact(t, 'weixin-uncertain.txt', 'weixin-file');
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-artifact-uncertain');
+  const sent = [];
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      inboundImages: () => [],
+      sendText: async ({ text }) => {
+        sent.push(text);
+        return { messageId: `weixin-text-${sent.length}` };
+      },
+      sendFile: async () => {
+        const error = new Error('private provider transport detail');
+        error.code = 'artifact-delivery-uncertain';
+        throw error;
+      },
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '';
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+  });
+
+  const receipt = await bridge.accept(message('weixin-artifact-uncertain', '生成文件'));
+
+  assert.equal(
+    sent.at(-1),
+    '结果文件「weixin-uncertain.txt」发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。',
+  );
+  assert.doesNotMatch(sent.join('\n'), /private provider transport detail/);
+  assert.equal(bridge.status.artifactSendErrors, 1);
+  assert.deepEqual(receipt.artifacts, [{
+    artifactId: 'weixin-artifact-one',
+    outcome: 'unknown',
+    reason: 'artifact-delivery-uncertain',
+  }]);
 });
 
 test('Weixin sends image-only messages to Harness as structured content', async () => {

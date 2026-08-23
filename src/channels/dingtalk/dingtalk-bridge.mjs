@@ -30,6 +30,16 @@ import {
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
 import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
+import {
+  materializeOutboundArtifact,
+  releaseOutboundArtifact,
+} from '../shared/semantic/artifact.mjs';
+import {
+  createArtifactFailureReceipt,
+  createDeliveryReceipt,
+  mergeDeliveryReceipts,
+  providerMessageIdsFor,
+} from '../shared/semantic/delivery.mjs';
 
 const CARD_INITIAL_TEXT = '已连接 DeepSeek Harness，正在思考…';
 const CARD_ERROR_TEXT = '消息处理失败，请稍后重试。';
@@ -60,6 +70,13 @@ const HELP_TEXT = [
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function dingtalkFileProviderIds(result) {
+  const ids = providerMessageIdsFor(result);
+  const processQueryKey = nonEmptyString(result?.processQueryKey);
+  if (processQueryKey && !ids.includes(processQueryKey)) ids.push(processQueryKey);
+  return ids;
 }
 
 function safeErrorDiagnostic(error) {
@@ -193,6 +210,40 @@ function cardTarget(message, sender) {
     return { type: 'group', openConversationId: nonEmptyString(message?.conversationId) };
   }
   return { type: 'user', userId: sender };
+}
+
+function fileTarget(message, sender, clientId) {
+  const robotCode = nonEmptyString(message?.robotCode) ?? clientId;
+  if (String(message?.conversationType) === '2') {
+    return {
+      type: 'group',
+      openConversationId: nonEmptyString(message?.conversationId),
+      robotCode,
+    };
+  }
+  return { type: 'user', userId: sender, robotCode };
+}
+
+function artifactFailureText(fileName, error) {
+  const name = String(fileName ?? '结果文件').replace(/[\r\n]+/g, ' ').trim() || '结果文件';
+  switch (error?.code) {
+    case 'artifact-delivery-uncertain':
+      return `结果文件「${name}」发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。`;
+    case 'artifact-permission-required':
+      return `结果文件「${name}」已生成，但钉钉应用或机器人缺少文件消息权限。请开通应用 qyapi_base 权限，并确认机器人具备文件消息发送能力。`;
+    case 'artifact-too-large':
+      return `结果文件「${name}」超过当前钉钉机器人可发送的文件大小，未发送。`;
+    case 'artifact-rate-limited':
+      return `结果文件「${name}」暂时被钉钉限流，未能发送，请稍后重试。`;
+    case 'artifact-provider-rejected':
+      return `结果文件「${name}」已生成，但钉钉拒绝了该文件消息，请检查文件类型和机器人文件消息配置。`;
+    case 'artifact-invalid':
+    case 'artifact-changed':
+    case 'artifact-unavailable':
+      return `结果文件「${name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。`;
+    default:
+      return `结果文件「${name}」已生成，但暂时未能通过钉钉发送，请稍后重试。`;
+  }
 }
 
 function progressText(update) {
@@ -596,7 +647,7 @@ export class DingtalkHarnessBridge {
         });
         cardStarted = await cardStream.start(CARD_INITIAL_TEXT);
       }
-      const { answer } = await askInWorkspaceSession({
+      const { answer, artifacts = [] } = await askInWorkspaceSession({
         harness: this.#harness,
         state: this.#state,
         key,
@@ -619,11 +670,41 @@ export class DingtalkHarnessBridge {
           onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
         },
       });
-      const streamed = cardStarted && await cardStream.finish(answer);
-      if (!streamed) await this.#send(sessionWebhook, answer);
+      const answerText = typeof answer === 'string' && answer.trim()
+        ? answer
+        : artifacts.length > 0 ? '结果文件已生成。' : answer;
+      let textDeliveryError = null;
+      let textReceipt = null;
+      let streamed = false;
+      try {
+        streamed = cardStarted && await cardStream.finish(answerText);
+        if (streamed) {
+          textReceipt = createDeliveryReceipt({
+            deliveryId: messageId,
+            presentation: 'dingtalk-card',
+          });
+        } else {
+          textReceipt = createDeliveryReceipt({
+            deliveryId: messageId,
+            presentation: 'dingtalk-text',
+            providerMessageIds: await this.#send(sessionWebhook, answerText),
+          });
+        }
+      } catch (error) {
+        textDeliveryError = error;
+      }
+      const delivery = await this.#deliverArtifacts(
+        fileTarget(message, sender, this.#clientId),
+        sessionWebhook,
+        messageId,
+        artifacts,
+        textReceipt,
+      );
+      if (textDeliveryError && !delivery.userVisible) throw textDeliveryError;
       increment(this.#status, 'messagesReplied');
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
+      return delivery.receipt;
     } catch (error) {
       if (error?.code === 'turn-stopped') {
         if (cardStarted) await cardStream.finish('已停止。').catch(() => undefined);
@@ -940,16 +1021,86 @@ export class DingtalkHarnessBridge {
   }
 
   async #send(sessionWebhook, text) {
+    const providerMessageIds = [];
     for (const chunk of splitDingtalkText(text, this.#maxMessageChars)) {
       this.#signal?.throwIfAborted();
-      await this.#api.sendText({
+      const result = await this.#api.sendText({
         clientId: this.#clientId,
         clientSecret: this.#clientSecret,
         sessionWebhook,
         text: chunk,
         signal: this.#signal,
       });
+      providerMessageIds.push(...providerMessageIdsFor(result));
     }
+    return providerMessageIds;
+  }
+
+  async #deliverArtifacts(target, sessionWebhook, replyTo, artifacts, baseReceipt) {
+    const receipts = baseReceipt ? [baseReceipt] : [];
+    let userVisible = Boolean(baseReceipt);
+    for (const artifact of artifacts) {
+      this.#signal?.throwIfAborted();
+      try {
+        if (typeof this.#api.sendFile !== 'function') {
+          const unavailable = new Error('DingTalk file delivery is unavailable');
+          unavailable.code = 'artifact-provider-unavailable';
+          throw unavailable;
+        }
+        const file = await materializeOutboundArtifact(artifact, {
+          signal: this.#signal,
+        });
+        const result = await this.#api.sendFile({
+          clientId: this.#clientId,
+          clientSecret: this.#clientSecret,
+          target,
+          file,
+          signal: this.#signal,
+        });
+        receipts.push(createDeliveryReceipt({
+          deliveryId: file.deliveryKey,
+          presentation: 'dingtalk-file',
+          providerMessageIds: dingtalkFileProviderIds(result),
+          artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
+        }));
+        userVisible = true;
+        this.#status.artifactsSent = (this.#status.artifactsSent ?? 0) + 1;
+      } catch (error) {
+        if (this.#signal?.aborted) throw error;
+        this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0) + 1;
+        this.#logger.warn?.(
+          `[dsh-dingtalk] result file delivery failed (${error?.code ?? 'unknown'})`,
+        );
+        let noticeSent = false;
+        const providerMessageIds = await this.#send(
+          sessionWebhook,
+          artifactFailureText(artifact?.fileName, error),
+        ).then((ids) => {
+          noticeSent = true;
+          return ids;
+        }).catch(() => []);
+        const failureReceipt = createArtifactFailureReceipt({
+          artifactId: artifact?.artifactId ?? 'unknown',
+          deliveryId: artifact?.deliveryKey ?? artifact?.artifactId ?? 'unknown',
+          error,
+          providerMessageIds,
+        });
+        receipts.push(failureReceipt);
+        if (noticeSent || failureReceipt.artifacts[0]?.outcome === 'unknown') userVisible = true;
+      } finally {
+        releaseOutboundArtifact(artifact);
+      }
+    }
+    const receipt = receipts.length === 0
+      ? null
+      : receipts.length === 1
+        ? receipts[0]
+        : mergeDeliveryReceipts({
+            deliveryId: replyTo,
+            presentation: baseReceipt ? 'dingtalk-text-and-files' : 'dingtalk-files',
+            receipts,
+          });
+    return { receipt, userVisible };
   }
 }
 

@@ -26,8 +26,20 @@ import {
   imagePromptUserMessage,
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
+import {
+  materializeOutboundArtifact,
+  releaseOutboundArtifact,
+  trackOutboundArtifactProviderPromise,
+} from '../shared/semantic/artifact.mjs';
+import {
+  createArtifactFailureReceipt,
+  createDeliveryReceipt,
+  mergeDeliveryReceipts,
+  providerMessageIdsFor,
+} from '../shared/semantic/delivery.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
+const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
 
 export const QQ_IMAGE_HOSTS = Object.freeze([
   '.myqcloud.com',
@@ -120,6 +132,82 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function artifactFailureText(fileName, error) {
+  const name = String(fileName ?? '结果文件').replace(/[\r\n]+/g, ' ').trim() || '结果文件';
+  if (error?.name === 'UploadDailyLimitExceededError') {
+    return `结果文件「${name}」已生成，但 QQ 今日文件上传额度已用完，请稍后重试。`;
+  }
+  switch (error?.code) {
+    case 'artifact-delivery-uncertain':
+      return `结果文件「${name}」的发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。`;
+    case 'artifact-permission-required':
+      return `结果文件「${name}」已生成，但当前 QQ 机器人没有文件消息权限。`;
+    case 'artifact-too-large':
+      return `结果文件「${name}」超过当前 QQ 机器人可发送的文件大小，未发送。`;
+    case 'artifact-empty':
+      return `结果文件「${name}」为空，QQ 不允许发送空文件。`;
+    case 'artifact-changed':
+    case 'artifact-invalid':
+    case 'artifact-unavailable':
+      return `结果文件「${name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。`;
+    case 'artifact-rate-limited':
+      return `结果文件「${name}」暂时被 QQ 限流，未能发送，请稍后重试。`;
+    case 'artifact-provider-rejected':
+      return `结果文件「${name}」已生成，但 QQ 拒绝了该文件或文件消息。`;
+    default:
+      return `结果文件「${name}」已生成，但暂时未能通过 QQ 发送，请稍后重试。`;
+  }
+}
+
+function answerTextForDelivery(answer, artifacts) {
+  if (typeof answer === 'string' && answer.trim()) return answer;
+  return artifacts.length > 0 ? '结果文件已生成。' : answer;
+}
+
+function qqArtifactError(error, { dispatched = false } = {}) {
+  if (error?.code?.startsWith?.('artifact-') || error?.name === 'UploadDailyLimitExceededError') {
+    return error;
+  }
+  const status = Number(error?.httpStatus);
+  const wrapped = new Error('QQ file delivery failed', { cause: error });
+  if (status === 401 || status === 403) wrapped.code = 'artifact-permission-required';
+  else if (status === 413) wrapped.code = 'artifact-too-large';
+  else if (status === 429) wrapped.code = 'artifact-rate-limited';
+  else if (status === 400 || status === 404) {
+    wrapped.code = 'artifact-provider-rejected';
+  } else {
+    wrapped.code = dispatched ? 'artifact-delivery-uncertain' : 'artifact-provider-failed';
+  }
+  return wrapped;
+}
+
+function abortReason(signal) {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new DOMException('The operation was aborted', 'AbortError');
+}
+
+function waitWithSignal(promise, signal) {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback(value);
+    };
+    const onAbort = () => finish(reject, abortReason(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
 function canClaimInteractionReply(message, pending) {
   return pending.questions[pending.index]
     && nonEmptyString(message?.senderId) === pending.actor
@@ -133,6 +221,8 @@ export function createQqBridgeStatus() {
     messagesReceived: 0,
     messagesReplied: 0,
     messagesRejected: 0,
+    artifactsSent: 0,
+    artifactSendErrors: 0,
     lastMessageAt: null,
     lastReplyAt: null,
     lastRejectedAt: null,
@@ -150,6 +240,7 @@ export class QqHarnessBridge {
   #replyTimeoutMs;
   #signal;
   #fetchImpl;
+  #fileUploadTimeoutMs;
   #queues = new Map();
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
@@ -168,11 +259,15 @@ export class QqHarnessBridge {
     replyTimeoutMs = 600_000,
     signal,
     fetchImpl = fetch,
+    fileUploadTimeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS,
   }) {
     if (!bot || typeof bot.sendText !== 'function') throw new TypeError('QQ bot client is required');
     if (!ownerUserOpenid) throw new TypeError('QQ scanner identity is required');
     if (!harness || !state) throw new TypeError('Harness client and state store are required');
     if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
+    if (!Number.isInteger(fileUploadTimeoutMs) || fileUploadTimeoutMs < 1) {
+      throw new TypeError('fileUploadTimeoutMs must be a positive integer');
+    }
     this.#bot = bot;
     this.#ownerUserOpenid = ownerUserOpenid;
     this.#harness = harness;
@@ -182,6 +277,7 @@ export class QqHarnessBridge {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#signal = signal;
     this.#fetchImpl = fetchImpl;
+    this.#fileUploadTimeoutMs = Math.min(fileUploadTimeoutMs, DEFAULT_FILE_UPLOAD_TIMEOUT_MS);
     this.#approvals = new HarnessApprovalQueue({ label: 'qq', logger });
   }
 
@@ -343,6 +439,87 @@ export class QqHarnessBridge {
     this.#status.lastError = null;
   }
 
+  async #deliverArtifacts(target, replyTo, artifacts = [], baseReceipt = null) {
+    if (artifacts.length === 0) {
+      return { receipt: baseReceipt, failureNoticeVisible: false };
+    }
+    const receipts = baseReceipt ? [baseReceipt] : [];
+    let failureNoticeVisible = false;
+    for (const artifact of artifacts) {
+      this.#signal?.throwIfAborted();
+      try {
+        if (typeof this.#bot.sendFile !== 'function') {
+          const unavailable = new Error('QQ file delivery is unavailable');
+          unavailable.code = 'artifact-provider-unavailable';
+          throw unavailable;
+        }
+        const file = await materializeOutboundArtifact(artifact, {
+          signal: this.#signal,
+        });
+        this.#signal?.throwIfAborted();
+        let result;
+        try {
+          const timeout = AbortSignal.timeout(this.#fileUploadTimeoutMs);
+          const waitSignal = this.#signal ? AbortSignal.any([this.#signal, timeout]) : timeout;
+          const pending = this.#bot.sendFile(
+            target,
+            { buffer: file.bytes },
+            {
+              fileName: file.fileName,
+              onProgress: () => this.#signal?.throwIfAborted(),
+            },
+          );
+          trackOutboundArtifactProviderPromise(file, pending);
+          result = await waitWithSignal(pending, waitSignal);
+        } catch (error) {
+          if (this.#signal?.aborted) throw abortReason(this.#signal);
+          throw qqArtifactError(error, { dispatched: true });
+        }
+        this.#signal?.throwIfAborted();
+        const messageId = nonEmptyString(result?.message?.id);
+        receipts.push(createDeliveryReceipt({
+          deliveryId: file.deliveryKey,
+          presentation: 'qq-file',
+          providerMessageIds: messageId ? [messageId] : [],
+          artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
+        }));
+        this.#status.artifactsSent = (this.#status.artifactsSent ?? 0) + 1;
+      } catch (rawError) {
+        if (this.#signal?.aborted) throw rawError;
+        const error = qqArtifactError(rawError);
+        this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0) + 1;
+        this.#logger.warn?.(
+          `[dsh-im:qq] result file delivery failed (${error?.code ?? error?.name ?? 'unknown'})`,
+        );
+        let providerMessageIds = [];
+        try {
+          const notice = await this.#bot.sendText(target, artifactFailureText(artifact?.fileName, error));
+          failureNoticeVisible = true;
+          providerMessageIds = providerMessageIdsFor(notice);
+        } catch (noticeError) {
+          if (this.#signal?.aborted) throw noticeError;
+          this.#logger.warn?.('[dsh-im:qq] unable to send the safe result-file failure notice');
+        }
+        receipts.push(createArtifactFailureReceipt({
+          artifactId: artifact?.artifactId ?? 'unknown',
+          deliveryId: artifact?.deliveryKey ?? artifact?.artifactId ?? 'unknown',
+          error,
+          providerMessageIds,
+        }));
+      } finally {
+        releaseOutboundArtifact(artifact);
+      }
+    }
+    return {
+      receipt: mergeDeliveryReceipts({
+        deliveryId: replyTo,
+        presentation: baseReceipt ? 'qq-text-and-files' : 'qq-files',
+        receipts,
+      }),
+      failureNoticeVisible,
+    };
+  }
+
   async #process(message, key, { alreadyRecorded = false } = {}) {
     if (this.#signal?.aborted) return;
     const messageId = nonEmptyString(message?.messageId);
@@ -427,8 +604,9 @@ export class QqHarnessBridge {
         }
       }
       let answer;
+      let artifacts = [];
       try {
-        ({ answer } = await askInWorkspaceSession({
+        ({ answer, artifacts = [] } = await askInWorkspaceSession({
           harness: this.#harness,
           state: this.#state,
           key,
@@ -462,21 +640,50 @@ export class QqHarnessBridge {
           this.#approvals.closeRoute(key),
         ]);
       }
-      if (stream) {
-        try {
-          await stream.update(answer);
-          await stream.complete();
-          streamFinished = true;
-        } catch (error) {
-          stream.cancel?.();
-          this.#logger.warn?.('[dsh-im:qq] QQ stream finalization failed; using a text reply:', error);
+      this.#signal?.throwIfAborted();
+      const displayAnswer = answerTextForDelivery(answer, artifacts);
+      let textReceipt = null;
+      let textSendError = null;
+      try {
+        if (stream) {
+          try {
+            await stream.update(displayAnswer);
+            await stream.complete();
+            streamFinished = true;
+            textReceipt = createDeliveryReceipt({
+              deliveryId: messageId,
+              presentation: 'qq-text',
+              providerMessageIds: providerMessageIdsFor(stream),
+            });
+          } catch (error) {
+            stream.cancel?.();
+            this.#logger.warn?.('[dsh-im:qq] QQ stream finalization failed; using a text reply:', error);
+          }
         }
+        if (!streamFinished) {
+          const sent = await this.#bot.sendText(target, displayAnswer);
+          textReceipt = createDeliveryReceipt({
+            deliveryId: messageId,
+            presentation: 'qq-text',
+            providerMessageIds: providerMessageIdsFor(sent),
+          });
+        }
+      } catch (error) {
+        textSendError = error;
+        this.#logger.warn?.('[dsh-im:qq] final text delivery failed; continuing with result files:', error);
       }
-      if (!streamFinished) await this.#bot.sendText(target, answer);
+      const delivery = await this.#deliverArtifacts(target, messageId, artifacts, textReceipt);
+      const artifactDispatched = delivery.receipt?.artifacts?.some(
+        ({ outcome }) => outcome === 'sent' || outcome === 'unknown',
+      );
+      if (textSendError && !artifactDispatched && !delivery.failureNoticeVisible) {
+        throw textSendError;
+      }
       await this.#state.markSeen(messageId);
       this.#status.messagesReplied += 1;
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
+      return delivery.receipt;
     } catch (error) {
       if (error?.code === 'turn-stopped') {
         if (stream) {

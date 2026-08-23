@@ -112,7 +112,7 @@ export function normalizeDiscordMessage(message, botId, { fetchImpl = fetch } = 
   };
 }
 
-class DiscordBotClient {
+export class DiscordBotClient {
   #api;
   #signal;
 
@@ -123,20 +123,30 @@ class DiscordBotClient {
 
   async sendText(target, text) {
     const chunks = splitMessageText(text, 1_900);
-    let result = null;
+    const providerMessageIds = [];
     for (const [index, chunk] of chunks.entries()) {
-      result = await this.#api.createMessage({
+      const result = await this.#api.createMessage({
         channelId: target.channelId,
         content: chunk,
         replyToMessageId: index === 0 ? target.replyToMessageId : undefined,
         signal: this.#signal,
       });
+      if (typeof result?.id === 'string' && result.id) providerMessageIds.push(result.id);
     }
-    return result;
+    return { providerMessageIds };
   }
 
   sendTyping(target) {
     return this.#api.sendTyping({ channelId: target.channelId, signal: this.#signal });
+  }
+
+  sendFile(target, file) {
+    return this.#api.createFileMessage({
+      channelId: target.channelId,
+      file,
+      replyToMessageId: target.replyToMessageId,
+      signal: this.#signal,
+    });
   }
 
   async openStream(target) {
@@ -162,6 +172,7 @@ class DiscordBotClient {
         content,
         signal: this.#signal,
       }),
+      messageIdForResult: (message) => message?.id,
     });
     return stream.start();
   }

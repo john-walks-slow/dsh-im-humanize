@@ -1,9 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   HarnessClient,
   HarnessReplyTracker,
 } from '../../../src/channels/feishu/harness-client.mjs';
+import {
+  OUTBOUND_ARTIFACT_TOOL,
+  createOutboundArtifactTool,
+  materializeOutboundArtifact,
+  outboundArtifactRegistry,
+  releaseOutboundArtifact,
+} from '../../../src/channels/shared/semantic/artifact.mjs';
 
 function deferred() {
   let resolve;
@@ -580,6 +590,124 @@ test('HarnessClient reads the nested workspace.create response used by DSH rc.6'
 
   assert.equal(await client.workspaceId(), 'workspace-new');
   assert.deepEqual(methods, ['workspace.list', 'workspace.create']);
+});
+
+test('HarnessClient asks do not control file-return tool availability', async () => {
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/dsh-feishu-workspace',
+  });
+  client.ensureRunning = async () => undefined;
+  let promptRpcId;
+  let prompted = false;
+  const agent = {
+    session: {
+      header: { id: 'session-artifact-availability', cwd: '/tmp/dsh-feishu-workspace' },
+      events: [],
+    },
+  };
+  client.rpc = async (method, _payload, _timeoutMs, options) => {
+    if (method === 'session.history' && !prompted) return { events: [] };
+    if (method === 'session.prompt') {
+      prompted = true;
+      promptRpcId = options.rpcId;
+      agent.session.events = [
+        { type: 'turn/start', data: { turn: 1 } },
+        { type: 'user/message', data: { turn: 1, source: { rpcId: promptRpcId } } },
+      ];
+      return {};
+    }
+    return {
+      events: [
+        { event: { type: 'turn/start', seq: 1, data: { turn: 1 } } },
+        {
+          event: {
+            type: 'user/message',
+            seq: 2,
+            data: { turn: 1, source: { rpcId: promptRpcId } },
+          },
+        },
+        {
+          event: {
+            type: 'assistant/message',
+            seq: 3,
+            data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'done' }] } },
+          },
+        },
+        { event: { type: 'turn/end', seq: 4, data: { turn: 1, reason: { kind: 'completed' } } } },
+      ],
+    };
+  };
+
+  assert.equal(await client.ask('session-artifact-availability', 'create a file', {
+    onArtifact: async () => undefined,
+  }), 'done');
+});
+
+test('HarnessClient delivers an existing file-only Turn directly', async (t) => {
+  outboundArtifactRegistry.clear();
+  t.after(() => outboundArtifactRegistry.clear());
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-im-file-only-'));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace,
+  });
+  client.ensureRunning = async () => undefined;
+  const tool = createOutboundArtifactTool({ registry: outboundArtifactRegistry });
+  const delivered = [];
+  await writeFile(join(workspace, 'file-only.txt'), 'file only');
+  let promptRpcId;
+  let prompted = false;
+  const agent = {
+    session: {
+      header: { id: 'session-file-only', cwd: workspace },
+      events: [],
+    },
+  };
+  client.rpc = async (method, _payload, _timeoutMs, options) => {
+    if (method === 'session.history' && !prompted) return { events: [] };
+    if (method === 'session.prompt') {
+      prompted = true;
+      promptRpcId = options.rpcId;
+      agent.session.events = [
+        { type: 'turn/start', data: { turn: 2 } },
+        { type: 'user/message', data: { turn: 2, source: { rpcId: promptRpcId } } },
+      ];
+      const exec = {
+        name: OUTBOUND_ARTIFACT_TOOL,
+        callId: 'file-only-call',
+        token: Symbol('file-only-call'),
+        agent,
+        signal: new AbortController().signal,
+      };
+      await tool.definition.execute({ path: 'file-only.txt' }, exec);
+      tool.onResult(exec, { isError: false });
+      return {};
+    }
+    return {
+      events: [
+        { event: { type: 'turn/start', seq: 1, data: { turn: 2 } } },
+        {
+          event: {
+            type: 'user/message',
+            seq: 2,
+            data: { turn: 2, source: { rpcId: promptRpcId } },
+          },
+        },
+        { event: { type: 'turn/end', seq: 3, data: { turn: 2, reason: { kind: 'completed' } } } },
+      ],
+    };
+  };
+
+  const answer = await client.ask('session-file-only', 'create and return a file', {
+    onArtifact: async (artifact) => delivered.push(artifact),
+  });
+  assert.equal(answer, '');
+  assert.equal(delivered.length, 1);
+  const file = await materializeOutboundArtifact(delivered[0]);
+  assert.equal(file.bytes.toString(), 'file only');
+  releaseOutboundArtifact(delivered[0]);
 });
 
 test('HarnessReplyTracker correlates the prompt and emits only answer text', () => {

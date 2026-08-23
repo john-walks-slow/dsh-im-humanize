@@ -200,6 +200,136 @@ test('Telegram API registers the command menu and commands-type menu button', as
   await assert.rejects(() => api.setChatMenuButton({ menuButton: 'commands' }), /menu button is invalid/);
 });
 
+test('Telegram API uploads a result file as a native document in the same topic and reply chain', async () => {
+  let request;
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return jsonResponse({ ok: true, result: { message_id: 901 } });
+    },
+  });
+  const result = await api.sendDocument({
+    chatId: -100123,
+    replyToMessageId: 44,
+    messageThreadId: 55,
+    file: {
+      fileName: 'result.txt',
+      mediaType: 'text/plain',
+      bytes: Buffer.from('telegram-result'),
+    },
+  });
+
+  assert.equal(result.message_id, 901);
+  assert.match(request.url.pathname, /sendDocument$/);
+  assert.equal(request.options.method, 'POST');
+  assert.equal(request.options.headers, undefined);
+  assert.ok(request.options.body instanceof FormData);
+  assert.equal(request.options.body.get('chat_id'), '-100123');
+  assert.equal(request.options.body.get('message_thread_id'), '55');
+  assert.deepEqual(JSON.parse(request.options.body.get('reply_parameters')), {
+    message_id: 44,
+    allow_sending_without_reply: true,
+  });
+  const document = request.options.body.get('document');
+  assert.equal(document.name, 'result.txt');
+  assert.equal(document.type, 'text/plain');
+  assert.equal(Buffer.from(await document.arrayBuffer()).toString(), 'telegram-result');
+});
+
+test('Telegram document errors retain provider details and use stable artifact reasons', async () => {
+  const cases = [{
+    body: { ok: false, error_code: 403, description: 'Forbidden: bot was blocked' },
+    status: 403,
+    code: 'artifact-permission-required',
+  }, {
+    body: { ok: false, error_code: 400, description: 'Bad Request: file is too big' },
+    status: 400,
+    code: 'artifact-too-large',
+  }, {
+    body: {
+      ok: false,
+      error_code: 429,
+      description: 'Too Many Requests',
+      parameters: { retry_after: 7 },
+    },
+    status: 429,
+    code: 'artifact-rate-limited',
+    retryAfter: 7,
+  }, {
+    body: { ok: false, error_code: 400, description: 'Bad Request: unsupported document' },
+    status: 400,
+    code: 'artifact-provider-rejected',
+  }, {
+    body: { ok: false, error_code: 500, description: 'Internal Server Error' },
+    status: 500,
+    code: 'artifact-delivery-uncertain',
+  }];
+
+  for (const entry of cases) {
+    const api = new TelegramApi({
+      token: TOKEN,
+      fetchImpl: async () => jsonResponse(entry.body, entry.status),
+    });
+    await assert.rejects(() => api.sendDocument({
+      chatId: 123,
+      file: { fileName: 'result.bin', bytes: Buffer.from('result') },
+    }), (error) => {
+      assert.equal(error.code, entry.code);
+      assert.equal(error.providerCode, entry.body.error_code);
+      assert.equal(error.status, entry.status);
+      assert.equal(error.retry_after, entry.retryAfter);
+      assert.equal(error.retryAfter, entry.retryAfter);
+      return true;
+    });
+  }
+});
+
+test('Telegram document delivery marks post-dispatch failures uncertain but preserves caller aborts', async () => {
+  for (const fetchImpl of [
+    async () => { throw new TypeError('socket reset'); },
+    async () => new Response('not-json', { status: 200 }),
+  ]) {
+    const api = new TelegramApi({ token: TOKEN, fetchImpl });
+    await assert.rejects(() => api.sendDocument({
+      chatId: 123,
+      file: { fileName: 'result.bin', bytes: Buffer.from('result') },
+    }), (error) => error.code === 'artifact-delivery-uncertain');
+  }
+
+  const timeoutApi = new TelegramApi({
+    token: TOKEN,
+    fileUploadTimeoutMs: 10,
+    fetchImpl: async (_url, { signal }) => new Promise((resolve, reject) => {
+      if (signal.aborted) reject(signal.reason);
+      else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }),
+  });
+  await assert.rejects(() => timeoutApi.sendDocument({
+    chatId: 123,
+    file: { fileName: 'result.bin', bytes: Buffer.from('result') },
+  }), (error) => error.code === 'artifact-delivery-uncertain'
+    && error.cause?.name === 'TimeoutError');
+
+  const caller = new AbortController();
+  const reason = new DOMException('caller stopped', 'AbortError');
+  caller.abort(reason);
+  let calls = 0;
+  const cancelledApi = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async () => {
+      calls += 1;
+      return jsonResponse({ ok: true, result: {} });
+    },
+  });
+  await assert.rejects(() => cancelledApi.sendDocument({
+    chatId: 123,
+    file: { fileName: 'result.bin', bytes: Buffer.from('result') },
+    signal: caller.signal,
+  }), (error) => error === reason && error.code !== 'artifact-delivery-uncertain');
+  assert.equal(calls, 0);
+});
+
 test('Telegram config and controller store only a credential reference in bot data', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-im-telegram-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

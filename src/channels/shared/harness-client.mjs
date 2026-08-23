@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 
 import { adoptRegisteredWorkspaceSession } from './harness-session-binding.mjs';
+import { outboundArtifactRegistry } from './semantic/artifact.mjs';
 
 // Every channel plugin runs in the same Host process. Sharing ownership by
 // Harness origin prevents two channel-specific clients bound to one Session
@@ -1025,6 +1026,7 @@ export class HarnessClient {
     const timeoutMs = options.timeoutMs ?? 600_000;
     const signal = options.signal;
     const onUpdate = typeof options.onUpdate === 'function' ? options.onUpdate : null;
+    const onArtifact = typeof options.onArtifact === 'function' ? options.onArtifact : null;
     const onInteraction = typeof options.onInteraction === 'function'
       ? options.onInteraction
       : undefined;
@@ -1071,11 +1073,34 @@ export class HarnessClient {
         }
       : null;
     let interactionTask = null;
+    let artifactsDelivered = false;
+    let deliveredArtifactCount = 0;
+
+    const deliverArtifacts = async () => {
+      if (!onArtifact || artifactsDelivered || tracker.turn === null) {
+        return deliveredArtifactCount;
+      }
+      artifactsDelivered = true;
+      const artifacts = outboundArtifactRegistry.take(sessionId, tracker.turn, { signal });
+      for (const artifact of artifacts) {
+        try {
+          await onArtifact(artifact);
+          deliveredArtifactCount += 1;
+        } catch (error) {
+          outboundArtifactRegistry.release(artifact);
+          console.warn(`[${this.#logPrefix}] ignored an artifact handoff failure:`, error.message);
+        }
+      }
+      return deliveredArtifactCount;
+    };
 
     if (ownership) {
       this.#registerInteractionOwnership(sessionId, ownership);
       this.#registerControlOwnership(ownership);
     }
+    // This is resource ownership, not a feature Gate: it lets the Host retain
+    // this Turn's snapshots until the channel has polled and claimed them.
+    const closeArtifactConsumer = outboundArtifactRegistry.openConsumer(sessionId, promptRpcId);
 
     try {
       if (interactionSignal) {
@@ -1134,7 +1159,15 @@ export class HarnessClient {
             }
           }
           if (!tracker.finished) continue;
-          if (tracker.answer) return tracker.answer;
+          // An accepted /stop revokes attachment delivery even when Harness
+          // preserved a useful partial text answer for the existing UX.
+          const artifactCount = ownership?.stopRequested
+            ? 0
+            : await deliverArtifacts();
+          if (tracker.answer) {
+            return tracker.answer;
+          }
+          if (artifactCount > 0) return '';
           if (ownership?.stopRequested) throw turnStoppedError();
           throw new Error(
             `Harness turn ended without a text reply${tracker.reason ? ` (${JSON.stringify(tracker.reason)})` : ''}`,
@@ -1145,15 +1178,19 @@ export class HarnessClient {
         // Once cancellation was accepted, transport/poll failures and timeouts
         // describe the convergence of that stop, not an unrelated ask failure.
         if (!ownership?.stopRequested) throw error;
-        if (tracker.answer) return tracker.answer;
+        if (tracker.answer) {
+          return tracker.answer;
+        }
         if (error?.code === 'turn-stopped') throw error;
         throw turnStoppedError();
       }
     } finally {
+      closeArtifactConsumer();
       if (ownership) {
         this.#unregisterControlOwnership(ownership);
         this.#unregisterInteractionOwnership(sessionId, ownership);
       }
+      if (tracker.turn !== null) outboundArtifactRegistry.discard(sessionId, tracker.turn);
       interactionController?.abort(new DOMException('Harness turn finished', 'AbortError'));
       if (interactionTask) await interactionTask.catch(() => undefined);
     }

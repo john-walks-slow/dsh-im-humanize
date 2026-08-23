@@ -1,4 +1,10 @@
-import { createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+  randomUUID,
+} from 'node:crypto';
 
 import { fetchImageBuffer } from '../shared/image-prompt.mjs';
 
@@ -13,6 +19,7 @@ const ILINK_APP_ID = 'bot';
 const ILINK_CLIENT_VERSION = (2 << 16) | (4 << 8) | 6;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
+const WEIXIN_CDN_UPLOAD_RETRIES = 3;
 const LOGIN_STATUSES = new Set([
   'wait',
   'scaned',
@@ -30,11 +37,76 @@ export class WeixinApiError extends Error {
     this.name = 'WeixinApiError';
     this.code = code;
     this.status = options.status;
+    this.providerCode = options.providerCode;
   }
 }
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function safeProviderCode(value) {
+  const code = value === undefined || value === null ? null : String(value).trim();
+  return code && /^-?[A-Za-z0-9_.:-]{1,160}$/.test(code) ? code : undefined;
+}
+
+function preserveArtifactMetadata(target, source) {
+  if (Number.isInteger(source?.status)) target.status = source.status;
+  if (source?.providerCode !== undefined) target.providerCode = source.providerCode;
+  return target;
+}
+
+function weixinArtifactError(cause, { fallback = 'artifact-provider-rejected' } = {}) {
+  if (cause?.code?.startsWith?.('artifact-')) return cause;
+  const status = Number(cause?.status);
+  const providerCode = safeProviderCode(cause?.providerCode);
+  const providerText = providerCode ?? '';
+  let code = fallback;
+  let message = 'Weixin could not prepare the file for delivery.';
+  if (status === 401 || status === 403 || providerCode === '401' || providerCode === '403'
+    || /(?:permission|forbidden|unauthor|access.?denied)/i.test(providerText)) {
+    code = 'artifact-permission-required';
+    message = 'Weixin denied permission to send the file.';
+  } else if (status === 413 || providerCode === '413'
+    || /(?:too.?large|size.?limit)/i.test(providerText)) {
+    code = 'artifact-too-large';
+    message = 'The file exceeds Weixin\'s size limit.';
+  } else if (status === 429 || providerCode === '429'
+    || /(?:rate.?limit|too.?many)/i.test(providerText)) {
+    code = 'artifact-rate-limited';
+    message = 'Weixin rate-limited file delivery.';
+  } else if (fallback === 'artifact-provider-rejected') {
+    message = 'Weixin rejected the file message.';
+  }
+  const error = new Error(message, { cause });
+  error.code = code;
+  return preserveArtifactMetadata(error, cause);
+}
+
+function uncertainWeixinDelivery(cause) {
+  const error = new Error('Weixin file delivery result is uncertain', { cause });
+  error.code = 'artifact-delivery-uncertain';
+  return preserveArtifactMetadata(error, cause);
+}
+
+function rejectedProviderResponse(value) {
+  if (!value || typeof value !== 'object') return null;
+  for (const field of ['ret', 'errcode']) {
+    if (value[field] !== undefined && value[field] !== 0 && value[field] !== '0') {
+      return safeProviderCode(value[field]) ?? 'rejected';
+    }
+  }
+  return null;
+}
+
+function classifyWeixinFinalDeliveryError(error, signal) {
+  if (signal?.aborted) throw abortError(signal);
+  const status = Number(error?.status);
+  if (error?.code === 'network-error' || error?.code === 'timeout'
+    || error?.code === 'invalid-response' || (status >= 500 && status < 600)) {
+    return uncertainWeixinDelivery(error);
+  }
+  return weixinArtifactError(error);
 }
 
 function strictBase64(value) {
@@ -186,6 +258,89 @@ function baseInfo() {
     channel_version: WEIXIN_PROTOCOL_VERSION,
     bot_agent: 'DeepSeekHarness/1.0.2',
   };
+}
+
+function aesEcbPaddedSize(size) {
+  return Math.ceil((size + 1) / 16) * 16;
+}
+
+function trustedWeixinCdnUploadUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new WeixinApiError('invalid-upload-url', '微信服务返回了无效的文件上传地址。');
+  }
+  if (url.protocol !== 'https:' || url.hostname !== WEIXIN_CDN_HOST
+    || (url.port && url.port !== '443') || url.pathname !== '/c2c/upload'
+    || url.username || url.password) {
+    throw new WeixinApiError('untrusted-upload-url', '微信服务返回了不受信任的文件上传地址。');
+  }
+  url.hash = '';
+  return url;
+}
+
+function weixinCdnUploadUrl(response, fileKey) {
+  const fullUrl = nonEmptyString(response?.upload_full_url);
+  if (fullUrl) return trustedWeixinCdnUploadUrl(fullUrl);
+  const uploadParam = nonEmptyString(response?.upload_param);
+  if (!uploadParam) {
+    throw new WeixinApiError('missing-upload-url', '微信服务没有返回文件上传地址。');
+  }
+  const url = new URL(`${WEIXIN_CDN_BASE_URL}/upload`);
+  url.searchParams.set('encrypted_query_param', uploadParam);
+  url.searchParams.set('filekey', fileKey);
+  return trustedWeixinCdnUploadUrl(url);
+}
+
+function encryptWeixinUpload(bytes, key) {
+  const cipher = createCipheriv('aes-128-ecb', key, null);
+  return Buffer.concat([cipher.update(bytes), cipher.final()]);
+}
+
+async function uploadWeixinCdn(fetchImpl, url, ciphertext, { signal } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= WEIXIN_CDN_UPLOAD_RETRIES; attempt += 1) {
+    signal?.throwIfAborted();
+    try {
+      const response = await fetchImpl(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: ciphertext,
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(60_000)])
+          : AbortSignal.timeout(60_000),
+        redirect: 'error',
+      });
+      if (response.status >= 400 && response.status < 500) {
+        throw new WeixinApiError(
+          'upload-rejected',
+          `微信文件上传被拒绝（HTTP ${response.status}）。`,
+          { status: response.status },
+        );
+      }
+      if (response.status !== 200) {
+        throw new WeixinApiError(
+          'upload-failed',
+          `微信文件上传失败（HTTP ${response.status}）。`,
+          { status: response.status },
+        );
+      }
+      const downloadParam = nonEmptyString(response.headers.get('x-encrypted-param'));
+      await response.body?.cancel?.().catch(() => undefined);
+      if (!downloadParam) {
+        throw new WeixinApiError('invalid-upload-response', '微信文件上传响应缺少下载参数。');
+      }
+      return downloadParam;
+    } catch (error) {
+      if (signal?.aborted) throw abortError(signal);
+      if (error instanceof WeixinApiError
+        && (error.code === 'upload-rejected' || error.status < 500)) throw error;
+      lastError = error;
+    }
+  }
+  if (lastError instanceof WeixinApiError) throw lastError;
+  throw new WeixinApiError('upload-failed', '微信文件上传失败。', { cause: lastError });
 }
 
 function abortError(signal) {
@@ -347,6 +502,117 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
         throw new WeixinApiError('send-rejected', '微信服务拒绝了回复消息。');
       }
       return true;
+    },
+
+    async sendFile({ baseUrl, token, toUserId, file, contextToken, runId, signal }) {
+      const recipient = nonEmptyString(toUserId);
+      if (!recipient || !file || typeof file !== 'object'
+        || typeof file.fileName !== 'string' || !file.fileName
+        || !Buffer.isBuffer(file.bytes)) {
+        throw new TypeError('toUserId and a file are required');
+      }
+      signal?.throwIfAborted();
+      const fileKey = randomBytes(16).toString('hex');
+      const aesKey = randomBytes(16);
+      const rawMd5 = createHash('md5').update(file.bytes).digest('hex');
+      let upload;
+      try {
+        upload = await requestJson(fetchImpl, {
+          method: 'POST',
+          baseUrl,
+          endpoint: 'ilink/bot/getuploadurl',
+          token,
+          signal,
+          body: {
+            filekey: fileKey,
+            media_type: 3,
+            to_user_id: recipient,
+            rawsize: file.bytes.byteLength,
+            rawfilemd5: rawMd5,
+            filesize: aesEcbPaddedSize(file.bytes.byteLength),
+            no_need_thumb: true,
+            aeskey: aesKey.toString('hex'),
+            base_info: baseInfo(),
+          },
+        });
+      } catch (error) {
+        if (signal?.aborted) throw abortError(signal);
+        const status = Number(error?.status);
+        const fallback = error?.code === 'http-error' && status >= 400 && status < 500
+          ? 'artifact-provider-rejected'
+          : 'artifact-provider-failed';
+        throw weixinArtifactError(error, { fallback });
+      }
+      const uploadRejection = rejectedProviderResponse(upload);
+      if (uploadRejection) {
+        throw weixinArtifactError(new WeixinApiError(
+          'upload-url-rejected',
+          '微信服务拒绝了文件上传请求。',
+          { providerCode: uploadRejection },
+        ));
+      }
+      const uploadUrl = weixinCdnUploadUrl(upload, fileKey);
+      const ciphertext = encryptWeixinUpload(file.bytes, aesKey);
+      let downloadParam;
+      try {
+        downloadParam = await uploadWeixinCdn(fetchImpl, uploadUrl, ciphertext, { signal });
+      } catch (error) {
+        if (signal?.aborted) throw abortError(signal);
+        const status = Number(error?.status);
+        const fallback = error?.code === 'upload-rejected' || (status >= 400 && status < 500)
+          ? 'artifact-provider-rejected'
+          : 'artifact-provider-failed';
+        throw weixinArtifactError(error, { fallback });
+      }
+      signal?.throwIfAborted();
+      const deliverySeed = nonEmptyString(file.deliveryKey) ?? nonEmptyString(file.artifactId)
+        ?? randomUUID();
+      const clientId = `dsh-weixin-${createHash('sha256').update(deliverySeed).digest('hex').slice(0, 32)}`;
+      let response;
+      try {
+        response = await requestJson(fetchImpl, {
+          method: 'POST',
+          baseUrl,
+          endpoint: 'ilink/bot/sendmessage',
+          token,
+          signal,
+          body: {
+            msg: {
+              from_user_id: '',
+              to_user_id: recipient,
+              client_id: clientId,
+              message_type: 2,
+              message_state: 2,
+              item_list: [{
+                type: 4,
+                file_item: {
+                  media: {
+                    encrypt_query_param: downloadParam,
+                    aes_key: Buffer.from(aesKey.toString('hex')).toString('base64'),
+                    encrypt_type: 1,
+                  },
+                  file_name: file.fileName,
+                  len: String(file.bytes.byteLength),
+                },
+              }],
+              ...(nonEmptyString(contextToken) ? { context_token: contextToken.trim() } : {}),
+              ...(nonEmptyString(runId) ? { run_id: runId.trim() } : {}),
+            },
+            base_info: baseInfo(),
+          },
+        });
+      } catch (error) {
+        throw classifyWeixinFinalDeliveryError(error, signal);
+      }
+      const sendRejection = rejectedProviderResponse(response);
+      if (sendRejection) {
+        throw weixinArtifactError(new WeixinApiError(
+          'send-rejected',
+          '微信服务拒绝了文件消息。',
+          { providerCode: sendRejection },
+        ));
+      }
+      return { messageId: clientId };
     },
 
     async notifyStart({ baseUrl, token, signal }) {

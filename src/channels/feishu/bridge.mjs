@@ -35,6 +35,15 @@ import {
 import { runWorkspaceCommand, resolveSessionListWorkspace, workspacePathSnapshot } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 import {
+  materializeOutboundArtifact,
+  releaseOutboundArtifact,
+} from '../shared/semantic/artifact.mjs';
+import {
+  createArtifactFailureReceipt,
+  createDeliveryReceipt,
+  mergeDeliveryReceipts,
+} from '../shared/semantic/delivery.mjs';
+import {
   MENU_PAGE_SIZE,
   completionCard,
   menuCard,
@@ -124,6 +133,33 @@ function safeErrorText(error) {
     default:
       return '操作失败，请稍后重试。';
   }
+}
+
+function artifactFailureText(fileName, error) {
+  const name = String(fileName ?? '结果文件').replace(/[\r\n]+/g, ' ').trim() || '结果文件';
+  switch (error?.code) {
+    case 'artifact-permission-required':
+      return `结果文件「${name}」已生成，但机器人缺少飞书文件上传权限。请为应用添加 im:resource 并完成必要审批后重试。`;
+    case 'artifact-too-large':
+      return `结果文件「${name}」超过飞书 30 MB 上限，未发送。`;
+    case 'artifact-empty':
+      return `结果文件「${name}」为空，飞书不允许发送空文件。`;
+    case 'artifact-changed':
+    case 'artifact-invalid':
+    case 'artifact-unavailable':
+      return `结果文件「${name}」暂时无法读取或准备发送，请确认文件仍可访问后重试。`;
+    case 'artifact-rate-limited':
+      return `结果文件「${name}」暂时被飞书限流，未能发送，请稍后重试。`;
+    case 'artifact-delivery-uncertain':
+      return `结果文件「${name}」发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。`;
+    default:
+      return `结果文件「${name}」已生成，但暂时未能发送，请稍后重试。`;
+  }
+}
+
+function answerTextForDelivery(answer, artifacts) {
+  if (typeof answer === 'string' && answer.trim()) return answer;
+  return artifacts.length > 0 ? '结果文件已生成。' : answer;
 }
 
 function nonEmptyString(value) {
@@ -540,7 +576,10 @@ export class FeishuHarnessBridge {
       .then(() => this.#handle(event, key, { alreadyRecorded }));
     const settled = finalize
       ? work
-        .then(() => this.#finishReaction(messageId, processingReaction, 'DONE'))
+        .then(async (receipt) => {
+          await this.#finishReaction(messageId, processingReaction, 'DONE');
+          return receipt;
+        })
         .catch((error) => this.#handleMessageFailure(
           event,
           messageId,
@@ -736,10 +775,11 @@ export class FeishuHarnessBridge {
 
     this.#logger.info?.(`[dsh-feishu] processing ${event.message.chat_type} message ${messageId}`);
     try {
-      await this.#answerWithStream(event, key, message);
+      const receipt = await this.#answerWithStream(event, key, message);
       this.#status.messagesReplied += 1;
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
+      return receipt;
     } finally {
       await this.#cancelPendingInteraction(key);
       await this.#approvals.closeRoute(key);
@@ -1578,6 +1618,81 @@ export class FeishuHarnessBridge {
     };
   }
 
+  async #sendAnswerText(chatId, answer, { deliveryId, presentation }) {
+    const providerMessageIds = [];
+    for (const chunk of splitText(answer)) {
+      this.#signal?.throwIfAborted();
+      const messageId = await this.#send(chatId, chunk);
+      if (messageId) providerMessageIds.push(messageId);
+    }
+    return createDeliveryReceipt({
+      deliveryId,
+      presentation,
+      providerMessageIds,
+    });
+  }
+
+  async #deliverArtifacts(chatId, replyTo, artifacts = [], baseReceipt) {
+    const receipts = baseReceipt ? [baseReceipt] : [];
+    let failureNoticeVisible = false;
+    for (const artifact of artifacts) {
+      this.#signal?.throwIfAborted();
+      try {
+        if (typeof this.#channel?.sendFile !== 'function') {
+          const unavailable = new Error('Feishu file delivery is unavailable');
+          unavailable.code = 'artifact-provider-unavailable';
+          throw unavailable;
+        }
+        const file = await materializeOutboundArtifact(artifact, {
+          signal: this.#signal,
+        });
+        receipts.push(await this.#channel.sendFile(chatId, file, {
+          replyTo,
+          signal: this.#signal,
+        }));
+        this.#status.artifactsSent = (this.#status.artifactsSent ?? 0) + 1;
+      } catch (error) {
+        if (this.#signal?.aborted) throw error;
+        this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0) + 1;
+        this.#logger.warn?.(
+          `[dsh-feishu] result file delivery failed (${error?.code ?? 'unknown'})`,
+        );
+        let noticeMessageId = null;
+        try {
+          noticeMessageId = await this.#send(chatId, artifactFailureText(artifact?.fileName, error));
+          failureNoticeVisible = true;
+        } catch {
+          this.#logger.warn?.('[dsh-feishu] unable to send the safe result-file failure notice');
+        }
+        receipts.push(createArtifactFailureReceipt({
+          artifactId: artifact?.artifactId ?? 'unknown',
+          deliveryId: artifact?.deliveryKey ?? artifact?.artifactId ?? 'unknown',
+          error,
+          providerMessageIds: noticeMessageId ? [noticeMessageId] : [],
+        }));
+      } finally {
+        releaseOutboundArtifact(artifact);
+      }
+    }
+    if (receipts.length === 0) {
+      return {
+        receipt: createDeliveryReceipt({
+          deliveryId: replyTo,
+          presentation: 'feishu-files',
+        }),
+        failureNoticeVisible,
+      };
+    }
+    const receipt = receipts.length === 1
+      ? receipts[0]
+      : mergeDeliveryReceipts({
+          deliveryId: baseReceipt?.deliveryId ?? artifacts[0]?.deliveryKey ?? replyTo,
+          presentation: baseReceipt ? 'feishu-text-and-files' : 'feishu-files',
+          receipts,
+        });
+    return { receipt, failureNoticeVisible };
+  }
+
   async #answerWithStream(event, key, message) {
     const chatId = event.message.chat_id;
     const messageId = event.message.message_id;
@@ -1586,7 +1701,7 @@ export class FeishuHarnessBridge {
       ? await promptContentForMessage(message, { signal: this.#signal })
       : undefined;
     if (!this.#channel?.stream) {
-      const { answer } = await askInWorkspaceSession({
+      const { answer, artifacts = [] } = await askInWorkspaceSession({
         harness: this.#harness,
         state: this.#state,
         key,
@@ -1596,15 +1711,41 @@ export class FeishuHarnessBridge {
         existsOptions: { signal: this.#signal },
         askOptions: this.#interactionAskOptions(event, key),
       });
-      for (const chunk of splitText(answer)) await this.#send(chatId, chunk);
+      let textReceipt;
+      let textSendError = null;
+      try {
+        textReceipt = await this.#sendAnswerText(
+          chatId,
+          answerTextForDelivery(answer, artifacts),
+          {
+            deliveryId: messageId,
+            presentation: 'feishu-text',
+          },
+        );
+      } catch (error) {
+        textSendError = error;
+        this.#logger.warn?.(
+          '[dsh-feishu] final text delivery failed; continuing with result files:',
+          error,
+        );
+      }
+      const delivery = await this.#deliverArtifacts(chatId, messageId, artifacts, textReceipt);
+      const artifactDispatched = delivery.receipt.artifacts.some(
+        ({ outcome }) => outcome === 'sent' || outcome === 'unknown',
+      );
+      if (textSendError && !artifactDispatched && !delivery.failureNoticeVisible) {
+        throw textSendError;
+      }
       this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
-      return;
+      return delivery.receipt;
     }
 
     let promptStarted = false;
     let completedAnswer = '';
+    let completedArtifacts = [];
+    let stream;
     try {
-      await this.#channel.stream(chatId, {
+      stream = await this.#channel.stream(chatId, {
         markdown: async (controller) => {
           promptStarted = true;
           const askOptions = {
@@ -1614,7 +1755,7 @@ export class FeishuHarnessBridge {
               this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
             },
           };
-          ({ answer: completedAnswer } = await askInWorkspaceSession({
+          const completed = await askInWorkspaceSession({
             harness: this.#harness,
             state: this.#state,
             key,
@@ -1623,26 +1764,56 @@ export class FeishuHarnessBridge {
             createOptions: { signal: this.#signal },
             existsOptions: { signal: this.#signal },
             askOptions,
-          }));
-          await controller.setContent(completedAnswer);
+          });
+          completedAnswer = completed.answer;
+          completedArtifacts = completed.artifacts ?? [];
+          await controller.setContent(answerTextForDelivery(completedAnswer, completedArtifacts));
         },
       }, { replyTo: messageId });
-      this.#status.streamResponses = (this.#status.streamResponses ?? 0) + 1;
     } catch (error) {
       this.#status.streamErrors = (this.#status.streamErrors ?? 0) + 1;
-      if (completedAnswer) {
+      if (completedAnswer || completedArtifacts.length > 0) {
         this.#logger.warn?.(
           '[dsh-feishu] native stream failed after generation; sending final text:',
           error.message,
         );
-        for (const chunk of splitText(completedAnswer)) await this.#send(chatId, chunk);
+        let textReceipt;
+        let textSendError = null;
+        try {
+          textReceipt = await this.#sendAnswerText(
+            chatId,
+            answerTextForDelivery(completedAnswer, completedArtifacts),
+            {
+              deliveryId: messageId,
+              presentation: 'feishu-text-fallback',
+            },
+          );
+        } catch (fallbackError) {
+          textSendError = fallbackError;
+          this.#logger.warn?.(
+            '[dsh-feishu] fallback text delivery failed; continuing with result files:',
+            fallbackError,
+          );
+        }
+        const delivery = await this.#deliverArtifacts(
+          chatId,
+          messageId,
+          completedArtifacts,
+          textReceipt,
+        );
+        const artifactDispatched = delivery.receipt.artifacts.some(
+          ({ outcome }) => outcome === 'sent' || outcome === 'unknown',
+        );
+        if (textSendError && !artifactDispatched && !delivery.failureNoticeVisible) {
+          throw textSendError;
+        }
         this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
-        return;
+        return delivery.receipt;
       }
       if (promptStarted) throw error;
 
       this.#logger.warn?.('[dsh-feishu] native stream unavailable; using text fallback:', error.message);
-      const { answer } = await askInWorkspaceSession({
+      const { answer, artifacts = [] } = await askInWorkspaceSession({
         harness: this.#harness,
         state: this.#state,
         key,
@@ -1652,9 +1823,46 @@ export class FeishuHarnessBridge {
         existsOptions: { signal: this.#signal },
         askOptions: this.#interactionAskOptions(event, key),
       });
-      for (const chunk of splitText(answer)) await this.#send(chatId, chunk);
+      let textReceipt;
+      let textSendError = null;
+      try {
+        textReceipt = await this.#sendAnswerText(
+          chatId,
+          answerTextForDelivery(answer, artifacts),
+          {
+            deliveryId: messageId,
+            presentation: 'feishu-text-fallback',
+          },
+        );
+      } catch (fallbackError) {
+        textSendError = fallbackError;
+        this.#logger.warn?.(
+          '[dsh-feishu] fallback text delivery failed; continuing with result files:',
+          fallbackError,
+        );
+      }
+      const delivery = await this.#deliverArtifacts(chatId, messageId, artifacts, textReceipt);
+      const artifactDispatched = delivery.receipt.artifacts.some(
+        ({ outcome }) => outcome === 'sent' || outcome === 'unknown',
+      );
+      if (textSendError && !artifactDispatched && !delivery.failureNoticeVisible) {
+        throw textSendError;
+      }
       this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
+      return delivery.receipt;
     }
+    const delivery = await this.#deliverArtifacts(
+      chatId,
+      messageId,
+      completedArtifacts,
+      createDeliveryReceipt({
+        deliveryId: messageId,
+        presentation: 'feishu-cardkit',
+        providerMessageIds: stream?.messageId ? [stream.messageId] : [],
+      }),
+    );
+    this.#status.streamResponses = (this.#status.streamResponses ?? 0) + 1;
+    return delivery.receipt;
   }
 
   async #processInteractionReply(event, messageId, key, expected, processingReaction) {

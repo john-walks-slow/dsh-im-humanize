@@ -21,9 +21,11 @@ export function createEditableMessageStream({
   create,
   edit,
   sendRemainder,
+  messageIdForResult = () => null,
   logger = console,
 }) {
   let messageId;
+  const providerMessageIds = [];
   let pending = null;
   let timer = null;
   let inFlight = null;
@@ -49,8 +51,17 @@ export function createEditableMessageStream({
   };
 
   return {
+    get messageId() {
+      return messageId;
+    },
+    get providerMessageIds() {
+      return [...providerMessageIds];
+    },
     async start() {
       messageId = await create(initialText);
+      if ((typeof messageId === 'string' && messageId.trim()) || Number.isSafeInteger(messageId)) {
+        providerMessageIds.push(String(messageId));
+      }
       return this;
     },
     update(text) {
@@ -69,7 +80,13 @@ export function createEditableMessageStream({
       const first = chunks[0] ?? '处理完成。';
       if (first !== lastSent) await edit(messageId, first);
       lastSent = first;
-      for (const chunk of chunks.slice(1)) await sendRemainder(chunk);
+      for (const chunk of chunks.slice(1)) {
+        const result = await sendRemainder(chunk);
+        const id = messageIdForResult(result);
+        if ((typeof id === 'string' && id.trim()) || Number.isSafeInteger(id)) {
+          providerMessageIds.push(String(id));
+        }
+      }
     },
     cancel() {
       closed = true;

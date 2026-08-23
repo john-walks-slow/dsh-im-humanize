@@ -120,6 +120,7 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
   let inFlight = null;
   let broken = false;
   let closed = false;
+  const providerMessageIds = [ts];
 
   const appendLatest = async (text) => {
     const next = splitMessageText(text, SLACK_MESSAGE_LIMIT)[0] ?? '';
@@ -150,6 +151,10 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
   };
 
   return {
+    messageId: ts,
+    get providerMessageIds() {
+      return [...providerMessageIds];
+    },
     update(text) {
       if (closed || broken || typeof text !== 'string' || !text.trim() || isToolProgress(text)) return;
       pending = text;
@@ -173,12 +178,13 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
         await api.updateMessage({ channelId: target.channelId, ts, text: first, signal });
       }
       for (const chunk of chunks.slice(1)) {
-        await api.postMessage({
+        const result = await api.postMessage({
           channelId: target.channelId,
           threadTs: target.threadTs,
           text: chunk,
           signal,
         });
+        if (typeof result?.ts === 'string' && result.ts) providerMessageIds.push(result.ts);
       }
     },
     cancel() {
@@ -191,7 +197,7 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
   };
 }
 
-class SlackBotClient {
+export class SlackBotClient {
   #api;
   #signal;
   #logger;
@@ -204,16 +210,17 @@ class SlackBotClient {
 
   async sendText(target, text) {
     const chunks = splitMessageText(text, SLACK_MESSAGE_LIMIT);
-    let result = null;
+    const providerMessageIds = [];
     for (const chunk of chunks) {
-      result = await this.#api.postMessage({
+      const result = await this.#api.postMessage({
         channelId: target.channelId,
         threadTs: target.threadTs,
         text: chunk,
         signal: this.#signal,
       });
+      if (typeof result?.ts === 'string' && result.ts) providerMessageIds.push(result.ts);
     }
-    return result;
+    return { providerMessageIds };
   }
 
   openStream(target) {
@@ -222,6 +229,15 @@ class SlackBotClient {
       target,
       signal: this.#signal,
       logger: this.#logger,
+    });
+  }
+
+  sendFile(target, file) {
+    return this.#api.uploadFile({
+      channelId: target.channelId,
+      threadTs: target.threadTs,
+      file,
+      signal: this.#signal,
     });
   }
 }

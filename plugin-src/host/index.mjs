@@ -8,9 +8,15 @@ import { apply as applyTelegram } from './channels/telegram/index.mjs';
 import { apply as applyWecom } from './channels/wecom/index.mjs';
 import { apply as applyWeixin } from './channels/weixin/index.mjs';
 import { apply as applyWhatsapp } from './channels/whatsapp/index.mjs';
+import { installOutboundArtifactTool } from '../../src/channels/shared/semantic/artifact.mjs';
 
 export const name = 'dsh-im-host';
-export const inject = ['connection', 'credentials', 'webServer', 'typertGateway'];
+export const inject = [
+  'connection',
+  'credentials',
+  'webServer',
+  'typertGateway',
+];
 
 function channelConfig(config, name) {
   const channel = config[name] ?? {};
@@ -34,6 +40,13 @@ export function createImHostPlugin(internals = {}) {
     name,
     inject,
     async apply(ctx, config = {}) {
+      if (typeof ctx?.inject === 'function') {
+        ctx.inject(['tools', 'systemPrompt'], (artifactCtx) => {
+          installOutboundArtifactTool(artifactCtx);
+        });
+      } else {
+        installOutboundArtifactTool(ctx);
+      }
       await startFeishu(ctx, channelConfig(config, 'feishu'));
       await startWeixin(ctx, channelConfig(config, 'weixin'));
       await startDingtalk(ctx, channelConfig(config, 'dingtalk'));
