@@ -170,9 +170,15 @@ test('Slack, Telegram, and Discord stream receipts retain the initial and remain
     key: 'telegram-stream',
     bot: telegram,
     answer: 'T'.repeat(4_001),
-    replyTarget: { chatId: 42, replyToMessageId: 7, messageThreadId: 8 },
+    replyTarget: {
+      chatId: 42,
+      chatType: 'supergroup',
+      replyToMessageId: 7,
+      messageThreadId: 8,
+    },
   });
-  assert.deepEqual(telegramReceipt.providerMessageIds, ['301', '302']);
+  assert.deepEqual(telegramReceipt.providerMessageIds, ['301']);
+  assert.equal(telegramReceipt.presentation, 'telegram-rich-final');
 
   let discordId = 0;
   const discord = new DiscordBotClient({

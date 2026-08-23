@@ -952,6 +952,7 @@ test('Telegram normalizes private messages and requires an explicit group addres
   }, { botId: '123456789', username: 'HarnessBot' });
   assert.equal(privateMessage.kind, 'direct');
   assert.equal(privateMessage.addressed, true);
+  assert.equal(privateMessage.replyTarget.chatType, 'private');
   assert.deepEqual(privateMessage.connectionTestTarget, { chatId: 88, messageThreadId: undefined });
 
   const groupMessage = normalizeTelegramUpdate({
@@ -967,6 +968,7 @@ test('Telegram normalizes private messages and requires an explicit group addres
   assert.equal(groupMessage.kind, 'group');
   assert.equal(groupMessage.addressed, true);
   assert.equal(groupMessage.content, 'run this');
+  assert.equal(groupMessage.replyTarget.chatType, 'supergroup');
 
   const topicOne = normalizeTelegramUpdate({
     update_id: 12,
@@ -1380,6 +1382,8 @@ test('Telegram runtime enforces the selected bot private allowlist', async () =>
   const fakeApi = {
     getMe: async () => ({ id: 123456789, is_bot: true }),
     getWebhookInfo: async () => ({ url: '' }),
+    setMyCommands: async () => true,
+    setChatMenuButton: async () => true,
     getUpdates: async ({ timeout, signal }) => {
       if (timeout === 0) return [];
       if (!delivered) {
@@ -1391,6 +1395,8 @@ test('Telegram runtime enforces the selected bot private allowlist', async () =>
       });
     },
     sendChatAction: async () => true,
+    sendRichMessageDraft: async () => true,
+    sendRichMessage: async () => ({ message_id: nextMessageId++ }),
     sendMessage: async () => ({ message_id: nextMessageId++ }),
     editMessageText: async () => true,
   };
@@ -1489,6 +1495,13 @@ test('Telegram runtime keeps polling while a Harness question waits for its answ
       const messageId = nextOutboundMessageId;
       nextOutboundMessageId += 1;
       if (text.includes('请选择测试环境')) questionSent.resolve();
+      return { message_id: messageId };
+    },
+    sendRichMessageDraft: async () => true,
+    sendRichMessage: async ({ richMessage }) => {
+      if (richMessage.markdown === '已选择生产环境') finalReplySent.resolve();
+      const messageId = nextOutboundMessageId;
+      nextOutboundMessageId += 1;
       return { message_id: messageId };
     },
     editMessageText: async ({ text }) => {

@@ -35,6 +35,25 @@ function preserveProviderMetadata(target, source) {
   return target;
 }
 
+function inputRichMessage(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('A Telegram rich message is required');
+  }
+  const formats = ['markdown', 'html', 'blocks'].filter((key) => value[key] !== undefined);
+  if (formats.length !== 1) {
+    throw new TypeError('A Telegram rich message requires exactly one format');
+  }
+  const selected = formats[0];
+  if ((selected === 'markdown' || selected === 'html')
+    && (typeof value[selected] !== 'string' || !value[selected].trim())) {
+    throw new TypeError('Telegram rich message text is invalid');
+  }
+  if (selected === 'blocks' && !Array.isArray(value.blocks)) {
+    throw new TypeError('Telegram rich message blocks are invalid');
+  }
+  return value;
+}
+
 function telegramArtifactProviderError(cause, mediaLabel = 'document') {
   const providerCode = Number(cause?.providerCode);
   const status = Number(cause?.status);
@@ -183,6 +202,35 @@ export class TelegramApi {
     }, { signal });
   }
 
+  async sendRichMessage({
+    chatId,
+    richMessage,
+    replyToMessageId,
+    messageThreadId,
+    signal,
+  }) {
+    return this.#call('sendRichMessage', {
+      chat_id: chatId,
+      rich_message: inputRichMessage(richMessage),
+      ...(replyToMessageId ? {
+        reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true },
+      } : {}),
+      ...(messageThreadId ? { message_thread_id: messageThreadId } : {}),
+    }, { signal });
+  }
+
+  async sendRichMessageDraft({ chatId, draftId, richMessage, messageThreadId, signal }) {
+    if (!Number.isSafeInteger(draftId) || draftId === 0) {
+      throw new TypeError('Telegram rich message draft id must be a non-zero integer');
+    }
+    return this.#call('sendRichMessageDraft', {
+      chat_id: chatId,
+      draft_id: draftId,
+      rich_message: inputRichMessage(richMessage),
+      ...(messageThreadId ? { message_thread_id: messageThreadId } : {}),
+    }, { signal });
+  }
+
   async sendDocument({ chatId, file, replyToMessageId, messageThreadId, signal }) {
     return this.#sendArtifact('sendDocument', 'document', 'document', {
       chatId,
@@ -239,6 +287,9 @@ export class TelegramApi {
       });
     } catch (error) {
       if (signal?.aborted) throw abortReason(signal);
+      if (error?.deliveryOutcome === 'unknown') {
+        throw uncertainTelegramDelivery(error?.cause ?? error, mediaLabel);
+      }
       if (error?.code?.startsWith?.('telegram-')) {
         throw telegramArtifactProviderError(error, mediaLabel);
       }
@@ -246,12 +297,17 @@ export class TelegramApi {
     }
   }
 
-  async editMessageText({ chatId, messageId, text, signal }) {
+  async editMessageText({ chatId, messageId, text, richMessage, signal }) {
+    if ((text === undefined) === (richMessage === undefined)) {
+      throw new TypeError('Telegram message edit requires exactly one of text or richMessage');
+    }
     return this.#call('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
-      text,
-      link_preview_options: { is_disabled: true },
+      ...(text === undefined ? { rich_message: inputRichMessage(richMessage) } : {
+        text,
+        link_preview_options: { is_disabled: true },
+      }),
     }, { signal });
   }
 
@@ -283,6 +339,7 @@ export class TelegramApi {
   }
 
   async #call(method, payload, { signal, timeoutMs = 15_000, multipart = false } = {}) {
+    if (signal?.aborted) throw abortReason(signal);
     const url = new URL(this.#baseUrl);
     url.pathname = `${url.pathname.replace(/\/$/, '')}/bot${this.#token}/${method}`;
     let response;
@@ -295,8 +352,14 @@ export class TelegramApi {
         redirect: 'error',
       });
     } catch (error) {
-      if (error?.name === 'AbortError' || error?.name === 'TimeoutError') throw error;
-      throw new Error(`Telegram ${method} transport failed`);
+      const transport = new Error(`Telegram ${method} transport failed`, { cause: error });
+      transport.code = error?.name === 'TimeoutError'
+        ? 'telegram-timeout'
+        : error?.name === 'AbortError'
+          ? 'telegram-aborted-after-dispatch'
+          : 'telegram-transport-error';
+      transport.deliveryOutcome = 'unknown';
+      throw transport;
     }
     let body;
     try {
@@ -304,6 +367,8 @@ export class TelegramApi {
     } catch {
       const error = new Error(`Telegram ${method} returned invalid JSON`);
       error.status = response?.status;
+      error.code = 'telegram-response-invalid';
+      error.deliveryOutcome = 'unknown';
       throw error;
     }
     if (!response.ok || body?.ok !== true) {
