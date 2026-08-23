@@ -31,15 +31,10 @@ import {
   inboundFileUserMessage,
 } from '../shared/inbound-file.mjs';
 import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
+import { trackOutboundArtifactProviderPromise } from '../shared/semantic/artifact.mjs';
+import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
 import {
-  materializeOutboundArtifact,
-  releaseOutboundArtifact,
-  trackOutboundArtifactProviderPromise,
-} from '../shared/semantic/artifact.mjs';
-import {
-  createArtifactFailureReceipt,
   createDeliveryReceipt,
-  mergeDeliveryReceipts,
 } from '../shared/semantic/delivery.mjs';
 
 const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
@@ -353,6 +348,71 @@ function wecomArtifactError(error, { dispatched = false } = {}) {
   return wrapped;
 }
 
+async function sendWecomMedia(
+  client,
+  chatId,
+  file,
+  mediaType,
+  { signal, timeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS } = {},
+) {
+  signal?.throwIfAborted();
+  if (typeof client?.uploadMedia !== 'function'
+    || typeof client?.sendMediaMessage !== 'function') {
+    const unavailable = new Error(`Enterprise WeChat ${mediaType} delivery is unavailable`);
+    unavailable.code = 'artifact-provider-unavailable';
+    throw unavailable;
+  }
+
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const waitSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  let uploaded;
+  try {
+    const pending = client.uploadMedia(file.bytes, {
+      type: mediaType,
+      filename: file.fileName,
+    });
+    trackOutboundArtifactProviderPromise(file, pending);
+    uploaded = await waitWithSignal(pending, waitSignal);
+  } catch (error) {
+    if (signal?.aborted) throw abortReason(signal);
+    throw wecomArtifactError(error);
+  }
+
+  signal?.throwIfAborted();
+  const mediaId = nonEmptyString(uploaded?.media_id);
+  if (!mediaId) {
+    const rejected = new Error(`Enterprise WeChat ${mediaType} upload returned no media id`);
+    rejected.code = 'artifact-provider-rejected';
+    throw rejected;
+  }
+
+  let sent;
+  try {
+    const pending = client.sendMediaMessage(chatId, mediaType, mediaId);
+    trackOutboundArtifactProviderPromise(file, pending);
+    sent = await waitWithSignal(pending, waitSignal);
+  } catch (error) {
+    if (signal?.aborted) throw abortReason(signal);
+    throw wecomArtifactError(error, { dispatched: true });
+  }
+
+  signal?.throwIfAborted();
+  const providerCode = Number(sent?.body?.errcode ?? sent?.errcode);
+  if (Number.isFinite(providerCode) && providerCode !== 0) {
+    throw wecomArtifactError({ providerCode });
+  }
+  return sent;
+}
+
+/** Send one materialized artifact through Enterprise WeChat's native image message. */
+export function sendWecomImage(client, chatId, file, options) {
+  return sendWecomMedia(client, chatId, file, 'image', options);
+}
+
+function sendWecomFile(client, chatId, file, options) {
+  return sendWecomMedia(client, chatId, file, 'file', options);
+}
+
 function answerTextForDelivery(answer, artifacts) {
   if (typeof answer === 'string' && answer.trim()) return answer;
   return artifacts.length > 0 ? '结果文件已生成。' : '任务已完成，但没有生成可显示的文本。';
@@ -650,98 +710,35 @@ export class WecomHarnessBridge {
     if (artifacts.length === 0) {
       return { receipt: baseReceipt, failureNoticeVisible: false };
     }
-    const receipts = baseReceipt ? [baseReceipt] : [];
-    let failureNoticeVisible = false;
-    for (const artifact of artifacts) {
-      this.#signal?.throwIfAborted();
-      try {
-        if (typeof this.#client.uploadMedia !== 'function'
-          || typeof this.#client.sendMediaMessage !== 'function') {
-          const unavailable = new Error('Enterprise WeChat file delivery is unavailable');
-          unavailable.code = 'artifact-provider-unavailable';
-          throw unavailable;
-        }
-        const file = await materializeOutboundArtifact(artifact, {
-          signal: this.#signal,
-        });
-        this.#signal?.throwIfAborted();
-        const timeout = AbortSignal.timeout(this.#fileUploadTimeoutMs);
-        const waitSignal = this.#signal ? AbortSignal.any([this.#signal, timeout]) : timeout;
-        let uploaded;
-        try {
-          const pending = this.#client.uploadMedia(file.bytes, {
-            type: 'file',
-            filename: file.fileName,
-          });
-          trackOutboundArtifactProviderPromise(file, pending);
-          uploaded = await waitWithSignal(pending, waitSignal);
-        } catch (error) {
-          if (this.#signal?.aborted) throw abortReason(this.#signal);
-          throw wecomArtifactError(error);
-        }
-        this.#signal?.throwIfAborted();
-        const mediaId = nonEmptyString(uploaded?.media_id);
-        if (!mediaId) {
-          const rejected = new Error('Enterprise WeChat upload returned no media id');
-          rejected.code = 'artifact-provider-rejected';
-          throw rejected;
-        }
-        let sent;
-        try {
-          const pending = this.#client.sendMediaMessage(chatId, 'file', mediaId);
-          trackOutboundArtifactProviderPromise(file, pending);
-          sent = await waitWithSignal(pending, waitSignal);
-        } catch (error) {
-          if (this.#signal?.aborted) throw abortReason(this.#signal);
-          throw wecomArtifactError(error, { dispatched: true });
-        }
-        this.#signal?.throwIfAborted();
-        const providerCode = Number(sent?.body?.errcode ?? sent?.errcode);
-        if (Number.isFinite(providerCode) && providerCode !== 0) {
-          throw wecomArtifactError({ providerCode });
-        }
-        const messageId = providerMessageId(sent);
-        receipts.push(createDeliveryReceipt({
-          deliveryId: file.deliveryKey,
-          presentation: 'wecom-file',
-          providerMessageIds: messageId ? [messageId] : [],
-          artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
-        }));
-        this.#status.artifactsSent = (this.#status.artifactsSent ?? 0) + 1;
-      } catch (error) {
-        if (this.#signal?.aborted) throw error;
-        this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0) + 1;
-        this.#logger.warn?.(
-          `[dsh-im:wecom] result file delivery failed (${error?.code ?? 'unknown'})`,
-        );
-        let providerMessageIds = [];
-        try {
-          providerMessageIds = await this.#sendActive(
-            chatId,
-            artifactFailureText(artifact?.fileName, error),
-          );
-          failureNoticeVisible = true;
-        } catch (noticeError) {
-          if (this.#signal?.aborted) throw noticeError;
-          this.#logger.warn?.('[dsh-im:wecom] unable to send the safe result-file failure notice');
-        }
-        receipts.push(createArtifactFailureReceipt({
-          artifactId: artifact?.artifactId ?? 'unknown',
-          deliveryId: artifact?.deliveryKey ?? artifact?.artifactId ?? 'unknown',
-          error,
-          providerMessageIds,
-        }));
-      } finally {
-        releaseOutboundArtifact(artifact);
-      }
-    }
-    return {
-      receipt: mergeDeliveryReceipts({
-        deliveryId: replyTo,
-        presentation: baseReceipt ? 'wecom-text-and-files' : 'wecom-files',
-        receipts,
+    const delivery = await deliverOutboundArtifacts({
+      artifacts,
+      baseReceipt,
+      deliveryId: replyTo,
+      aggregatePresentation: baseReceipt ? 'wecom-text-and-files' : 'wecom-files',
+      alwaysMerge: true,
+      channelKey: 'wecom',
+      signal: this.#signal,
+      sendImage: (file) => sendWecomImage(this.#client, chatId, file, {
+        signal: this.#signal,
+        timeoutMs: this.#fileUploadTimeoutMs,
       }),
-      failureNoticeVisible,
+      sendFile: (file) => sendWecomFile(this.#client, chatId, file, {
+        signal: this.#signal,
+        timeoutMs: this.#fileUploadTimeoutMs,
+      }),
+      sendFailureNotice: (artifact, error) => this.#sendActive(
+        chatId,
+        artifactFailureText(artifact?.fileName, error),
+      ),
+      logger: this.#logger,
+    });
+    this.#status.artifactsSent = (this.#status.artifactsSent ?? 0)
+      + delivery.artifactsSent;
+    this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0)
+      + delivery.artifactSendErrors;
+    return {
+      receipt: delivery.receipt,
+      failureNoticeVisible: delivery.failureNoticeVisible,
     };
   }
 

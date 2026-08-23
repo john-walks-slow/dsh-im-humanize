@@ -32,14 +32,11 @@ import {
   prefetchInboundFiles,
 } from '../shared/inbound-file.mjs';
 import {
-  materializeOutboundArtifact,
-  releaseOutboundArtifact,
   trackOutboundArtifactProviderPromise,
 } from '../shared/semantic/artifact.mjs';
+import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
 import {
-  createArtifactFailureReceipt,
   createDeliveryReceipt,
-  mergeDeliveryReceipts,
   providerMessageIdsFor,
 } from '../shared/semantic/delivery.mjs';
 import { sendMarkdownReply } from './markdown-reply.mjs';
@@ -210,7 +207,7 @@ function qqArtifactError(error, { dispatched = false } = {}) {
   if (status === 401 || status === 403) wrapped.code = 'artifact-permission-required';
   else if (status === 413) wrapped.code = 'artifact-too-large';
   else if (status === 429) wrapped.code = 'artifact-rate-limited';
-  else if (status === 400 || status === 404) {
+  else if ([400, 404, 405, 406, 410, 415, 422].includes(status)) {
     wrapped.code = 'artifact-provider-rejected';
   } else {
     wrapped.code = dispatched ? 'artifact-delivery-uncertain' : 'artifact-provider-failed';
@@ -243,6 +240,68 @@ function waitWithSignal(promise, signal) {
     );
     if (signal.aborted) onAbort();
   });
+}
+
+/** Send one materialized artifact through QQ's native image message. */
+export async function sendQqImage(
+  bot,
+  target,
+  file,
+  { signal, timeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS } = {},
+) {
+  signal?.throwIfAborted();
+  if (typeof bot?.sendImage !== 'function') {
+    const unavailable = new Error('QQ image delivery is unavailable');
+    unavailable.code = 'artifact-provider-unavailable';
+    throw unavailable;
+  }
+
+  try {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const waitSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    const pending = bot.sendImage(
+      target,
+      { buffer: file.bytes },
+      { onProgress: () => signal?.throwIfAborted() },
+    );
+    trackOutboundArtifactProviderPromise(file, pending);
+    return await waitWithSignal(pending, waitSignal);
+  } catch (error) {
+    if (signal?.aborted) throw abortReason(signal);
+    throw qqArtifactError(error, { dispatched: true });
+  }
+}
+
+async function sendQqFile(
+  bot,
+  target,
+  file,
+  { signal, timeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS } = {},
+) {
+  signal?.throwIfAborted();
+  if (typeof bot?.sendFile !== 'function') {
+    const unavailable = new Error('QQ file delivery is unavailable');
+    unavailable.code = 'artifact-provider-unavailable';
+    throw unavailable;
+  }
+
+  try {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const waitSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    const pending = bot.sendFile(
+      target,
+      { buffer: file.bytes },
+      {
+        fileName: file.fileName,
+        onProgress: () => signal?.throwIfAborted(),
+      },
+    );
+    trackOutboundArtifactProviderPromise(file, pending);
+    return await waitWithSignal(pending, waitSignal);
+  } catch (error) {
+    if (signal?.aborted) throw abortReason(signal);
+    throw qqArtifactError(error, { dispatched: true });
+  }
 }
 
 function canClaimInteractionReply(message, pending) {
@@ -491,80 +550,35 @@ export class QqHarnessBridge {
     if (artifacts.length === 0) {
       return { receipt: baseReceipt, failureNoticeVisible: false };
     }
-    const receipts = baseReceipt ? [baseReceipt] : [];
-    let failureNoticeVisible = false;
-    for (const artifact of artifacts) {
-      this.#signal?.throwIfAborted();
-      try {
-        if (typeof this.#bot.sendFile !== 'function') {
-          const unavailable = new Error('QQ file delivery is unavailable');
-          unavailable.code = 'artifact-provider-unavailable';
-          throw unavailable;
-        }
-        const file = await materializeOutboundArtifact(artifact, {
-          signal: this.#signal,
-        });
-        this.#signal?.throwIfAborted();
-        let result;
-        try {
-          const timeout = AbortSignal.timeout(this.#fileUploadTimeoutMs);
-          const waitSignal = this.#signal ? AbortSignal.any([this.#signal, timeout]) : timeout;
-          const pending = this.#bot.sendFile(
-            target,
-            { buffer: file.bytes },
-            {
-              fileName: file.fileName,
-              onProgress: () => this.#signal?.throwIfAborted(),
-            },
-          );
-          trackOutboundArtifactProviderPromise(file, pending);
-          result = await waitWithSignal(pending, waitSignal);
-        } catch (error) {
-          if (this.#signal?.aborted) throw abortReason(this.#signal);
-          throw qqArtifactError(error, { dispatched: true });
-        }
-        this.#signal?.throwIfAborted();
-        const messageId = nonEmptyString(result?.message?.id);
-        receipts.push(createDeliveryReceipt({
-          deliveryId: file.deliveryKey,
-          presentation: 'qq-file',
-          providerMessageIds: messageId ? [messageId] : [],
-          artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
-        }));
-        this.#status.artifactsSent = (this.#status.artifactsSent ?? 0) + 1;
-      } catch (rawError) {
-        if (this.#signal?.aborted) throw rawError;
-        const error = qqArtifactError(rawError);
-        this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0) + 1;
-        this.#logger.warn?.(
-          `[dsh-im:qq] result file delivery failed (${error?.code ?? error?.name ?? 'unknown'})`,
-        );
-        let providerMessageIds = [];
-        try {
-          const notice = await this.#bot.sendText(target, artifactFailureText(artifact?.fileName, error));
-          failureNoticeVisible = true;
-          providerMessageIds = providerMessageIdsFor(notice);
-        } catch (noticeError) {
-          if (this.#signal?.aborted) throw noticeError;
-          this.#logger.warn?.('[dsh-im:qq] unable to send the safe result-file failure notice');
-        }
-        receipts.push(createArtifactFailureReceipt({
-          artifactId: artifact?.artifactId ?? 'unknown',
-          deliveryId: artifact?.deliveryKey ?? artifact?.artifactId ?? 'unknown',
-          error,
-          providerMessageIds,
-        }));
-      } finally {
-        releaseOutboundArtifact(artifact);
-      }
-    }
-    return {
-      receipt: mergeDeliveryReceipts({
-        deliveryId: replyTo,
-        presentation: baseReceipt ? 'qq-text-and-files' : 'qq-files',
-        receipts,
+    const delivery = await deliverOutboundArtifacts({
+      artifacts,
+      baseReceipt,
+      deliveryId: replyTo,
+      aggregatePresentation: baseReceipt ? 'qq-text-and-files' : 'qq-files',
+      alwaysMerge: true,
+      channelKey: 'qq',
+      signal: this.#signal,
+      sendImage: (file) => sendQqImage(this.#bot, target, file, {
+        signal: this.#signal,
+        timeoutMs: this.#fileUploadTimeoutMs,
       }),
-      failureNoticeVisible,
+      sendFile: (file) => sendQqFile(this.#bot, target, file, {
+        signal: this.#signal,
+        timeoutMs: this.#fileUploadTimeoutMs,
+      }),
+      sendFailureNotice: (artifact, error) => this.#bot.sendText(
+        target,
+        artifactFailureText(artifact?.fileName, error),
+      ),
+      logger: this.#logger,
+    });
+    this.#status.artifactsSent = (this.#status.artifactsSent ?? 0)
+      + delivery.artifactsSent;
+    this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0)
+      + delivery.artifactSendErrors;
+    return {
+      receipt: delivery.receipt,
+      failureNoticeVisible: delivery.failureNoticeVisible,
     };
   }
 

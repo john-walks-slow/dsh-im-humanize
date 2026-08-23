@@ -1977,6 +1977,121 @@ test('reaction failures do not block streaming replies', async () => {
   assert.equal(status.streamResponses, 1);
 });
 
+test('Feishu routes Artifact images natively and preserves the shared fallback boundary', async (t) => {
+  const scenarios = [
+    {
+      name: 'native image',
+      fileName: 'native.png',
+      content: PNG_1X1,
+      expectedCalls: ['image'],
+      expectedPresentation: 'feishu-image',
+      expectedProviderIds: ['om-native-image'],
+    },
+    {
+      name: 'ordinary file',
+      fileName: 'ordinary.txt',
+      content: 'ordinary file',
+      expectedCalls: ['file'],
+      expectedPresentation: 'feishu-file',
+      expectedProviderIds: ['om-native-file'],
+    },
+    {
+      name: 'definite image rejection falls back',
+      fileName: 'fallback.png',
+      content: PNG_1X1,
+      imageError: 'artifact-provider-rejected',
+      expectedCalls: ['image', 'file'],
+      expectedPresentation: 'feishu-file',
+      expectedProviderIds: ['om-native-file'],
+    },
+    {
+      name: 'uncertain image never falls back',
+      fileName: 'uncertain.png',
+      content: PNG_1X1,
+      imageError: 'artifact-delivery-uncertain',
+      expectedCalls: ['image'],
+      expectedPresentation: 'text-fallback',
+      expectedProviderIds: [],
+      expectedOutcome: 'unknown',
+    },
+  ];
+
+  for (const [index, scenario] of scenarios.entries()) {
+    await t.test(scenario.name, async (subtest) => {
+      const artifact = await committedArtifact(
+        subtest,
+        scenario.fileName,
+        scenario.content,
+        `bridge-image-route-${index}`,
+      );
+      const calls = [];
+      const status = bridgeStatus();
+      const resultFor = (file, presentation, providerMessageId) => ({
+        schemaVersion: 1,
+        deliveryId: file.deliveryKey,
+        presentation,
+        providerMessageIds: [providerMessageId],
+        artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
+      });
+      const bridge = new FeishuHarnessBridge({
+        client: textClient(async () => { throw new Error('text intentionally unavailable'); }),
+        channel: {
+          addReaction: async () => 'reaction',
+          removeReaction: async () => undefined,
+          sendImage: async (chatId, file, options) => {
+            calls.push('image');
+            assert.equal(chatId, 'oc_chat');
+            assert.equal(file.fileName, scenario.fileName);
+            assert.equal(file.mediaType, 'image/png');
+            assert.equal(options.replyTo, `om-feishu-image-route-${index}`);
+            if (scenario.imageError) {
+              const error = new Error('private image result');
+              error.code = scenario.imageError;
+              throw error;
+            }
+            return resultFor(file, 'feishu-image', 'om-native-image');
+          },
+          sendFile: async (chatId, file, options) => {
+            calls.push('file');
+            assert.equal(chatId, 'oc_chat');
+            assert.equal(file.fileName, scenario.fileName);
+            assert.equal(options.replyTo, `om-feishu-image-route-${index}`);
+            return resultFor(file, 'feishu-file', 'om-native-file');
+          },
+        },
+        harness: {
+          sessionExists: async () => true,
+          ask: async (_sessionId, _text, options) => {
+            await options.onArtifact(artifact);
+            return '';
+          },
+        },
+        state: stateFixture([
+          ['p2p:ou_user', `session-feishu-image-route-${index}`],
+        ]).state,
+        status,
+        allowedSenderOpenIds: new Set(['ou_user']),
+        logger: { info() {}, warn() {}, error() {} },
+      });
+
+      const receipt = await bridge.accept(event(`om-feishu-image-route-${index}`, '生成产物'));
+
+      assert.deepEqual(calls, scenario.expectedCalls);
+      assert.equal(receipt.presentation, scenario.expectedPresentation);
+      assert.deepEqual(receipt.providerMessageIds, scenario.expectedProviderIds);
+      assert.deepEqual(receipt.artifacts, [{
+        artifactId: artifact.artifactId,
+        outcome: scenario.expectedOutcome ?? 'sent',
+        ...(scenario.imageError === 'artifact-delivery-uncertain'
+          ? { reason: 'artifact-delivery-uncertain' }
+          : {}),
+      }]);
+      assert.equal(status.artifactsSent, scenario.expectedOutcome === 'unknown' ? 0 : 1);
+      assert.equal(status.artifactSendErrors, scenario.expectedOutcome === 'unknown' ? 1 : 0);
+    });
+  }
+});
+
 test('Feishu finalizes the answer card before delivering registered result files and reports partial failure', async (t) => {
   const html = await committedArtifact(t, 'result.html', '<h1>result</h1>', 'html');
   const generic = await committedArtifact(t, 'notes.txt', 'notes', 'notes');

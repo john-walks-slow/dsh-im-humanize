@@ -25,7 +25,9 @@ import {
   normalizeWhatsappAccessPolicy,
 } from '../../../src/channels/whatsapp/config-store.mjs';
 import { WhatsappController } from '../../../src/channels/whatsapp/whatsapp-controller.mjs';
+import { WhatsappHarnessBridge } from '../../../src/channels/whatsapp/whatsapp-bridge.mjs';
 import {
+  WhatsappBotClient,
   WhatsappRuntime,
   createWhatsappMediaDownloader,
   normalizeWhatsappMessage,
@@ -685,6 +687,192 @@ test('WhatsApp runtime sends result files with native metadata, quote, stable id
   );
   assert.equal(fileCall.options.messageId.length, 20);
   assert.equal(calls.indexOf(textCall) < calls.indexOf(fileCall), true);
+});
+
+test('WhatsApp bot client sends native images with stable id and early echo suppression', async () => {
+  const remembered = [];
+  const calls = [];
+  const outboundIds = {
+    remember: (id) => remembered.push(id),
+  };
+  const quoted = { key: { id: 'quoted-image-message' } };
+  const deliveryKey = 'whatsapp-native-image-delivery';
+  const expectedMessageId = createHash('sha256')
+    .update(`${deliveryKey}:image`)
+    .digest('hex')
+    .slice(0, 20)
+    .toUpperCase();
+  const socket = {
+    sendPresenceUpdate: async () => {},
+    sendMessage: async (jid, content, options) => {
+      assert.equal(remembered.includes(options.messageId), true);
+      calls.push({ jid, content, options });
+      return { key: { id: 'provider-image-message' } };
+    },
+  };
+  const client = new WhatsappBotClient(socket, outboundIds);
+  const bytes = Buffer.from('whatsapp-image');
+
+  assert.deepEqual(await client.sendImage({
+    jid: '16505550999@s.whatsapp.net',
+    quoted,
+  }, {
+    deliveryKey,
+    fileName: 'result.png',
+    mediaType: 'image/png',
+    bytes,
+  }), { key: { id: 'provider-image-message' } });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].jid, '16505550999@s.whatsapp.net');
+  assert.equal(calls[0].content.image, bytes);
+  assert.equal(calls[0].content.mimetype, 'image/png');
+  assert.equal(calls[0].content.document, undefined);
+  assert.equal(calls[0].options.quoted, quoted);
+  assert.equal(calls[0].options.messageId, expectedMessageId);
+  assert.equal(calls[0].options.mediaUploadTimeoutMs, 120_000);
+  assert.deepEqual(remembered, [expectedMessageId, 'provider-image-message']);
+});
+
+test('WhatsApp classifies a definite image rejection and uses a distinct fallback file id', async () => {
+  const calls = [];
+  const deliveryKey = 'whatsapp-image-fallback-delivery';
+  const socket = {
+    sendPresenceUpdate: async () => {},
+    sendMessage: async (_jid, content, options) => {
+      calls.push({ content, options });
+      if (content.image) {
+        const error = new Error('unsupported image');
+        error.output = { statusCode: 415 };
+        throw error;
+      }
+      return { key: { id: 'provider-file-fallback' } };
+    },
+  };
+  const client = new WhatsappBotClient(socket, { remember() {} });
+  const file = {
+    artifactId: 'whatsapp-image-fallback',
+    deliveryKey,
+    fileName: 'result.png',
+    mediaType: 'image/png',
+    bytes: Buffer.from('whatsapp-image'),
+  };
+
+  await assert.rejects(
+    () => client.sendImage({ jid: '16505550999@s.whatsapp.net' }, file),
+    (error) => error.code === 'artifact-provider-rejected',
+  );
+  assert.deepEqual(
+    await client.sendFile({ jid: '16505550999@s.whatsapp.net' }, file),
+    { key: { id: 'provider-file-fallback' } },
+  );
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].options.messageId, createHash('sha256')
+    .update(`${deliveryKey}:image`).digest('hex').slice(0, 20).toUpperCase());
+  assert.equal(calls[1].options.messageId, createHash('sha256')
+    .update(deliveryKey).digest('hex').slice(0, 20).toUpperCase());
+  assert.notEqual(calls[0].options.messageId, calls[1].options.messageId);
+});
+
+test('WhatsApp native image timeout remains an uncertain artifact delivery', async () => {
+  const socket = {
+    sendPresenceUpdate: async () => {},
+    sendMessage: async () => new Promise(() => {}),
+  };
+  const client = new WhatsappBotClient(socket, { remember() {} }, {
+    mediaUploadTimeoutMs: 10,
+  });
+
+  await assert.rejects(() => client.sendImage({
+    jid: '16505550999@s.whatsapp.net',
+  }, {
+    artifactId: 'whatsapp-image-timeout',
+    fileName: 'result.png',
+    mediaType: 'image/png',
+    bytes: Buffer.from('whatsapp-image'),
+  }), (error) => error.code === 'artifact-delivery-uncertain'
+    && error.cause?.name === 'TimeoutError');
+});
+
+test('WhatsApp bridge routes outbound image artifacts natively with safe file fallback', async (t) => {
+  const scenarios = [{
+    name: 'native image',
+    suffix: 'native-image-route',
+    fileName: 'result.png',
+    content: Buffer.from([1, 2, 3]),
+    expectedCalls: ['image:result.png:image/png'],
+    expectedOutcome: 'sent',
+  }, {
+    name: 'ordinary file',
+    suffix: 'ordinary-file-route',
+    fileName: 'result.txt',
+    content: 'ordinary file',
+    expectedCalls: ['file:result.txt:text/plain'],
+    expectedOutcome: 'sent',
+  }, {
+    name: 'definitive image rejection',
+    suffix: 'image-fallback-route',
+    fileName: 'result.webp',
+    content: Buffer.from([4, 5, 6]),
+    imageErrorCode: 'artifact-provider-rejected',
+    expectedCalls: ['image:result.webp:image/webp', 'file:result.webp:image/webp'],
+    expectedOutcome: 'sent',
+  }, {
+    name: 'uncertain image result',
+    suffix: 'image-uncertain-route',
+    fileName: 'result.gif',
+    content: Buffer.from([7, 8, 9]),
+    imageErrorCode: 'artifact-delivery-uncertain',
+    expectedCalls: ['image:result.gif:image/gif'],
+    expectedOutcome: 'unknown',
+  }];
+
+  for (const scenario of scenarios) {
+    const { artifact } = await committedArtifact(t, scenario);
+    const calls = [];
+    const bot = {
+      sendText: async () => ({ key: { id: `text-${scenario.suffix}` } }),
+      sendImage: async (_target, file) => {
+        calls.push(`image:${file.fileName}:${file.mediaType}`);
+        if (scenario.imageErrorCode) {
+          const error = new Error(scenario.imageErrorCode);
+          error.code = scenario.imageErrorCode;
+          throw error;
+        }
+        return { key: { id: `image-${scenario.suffix}` } };
+      },
+      sendFile: async (_target, file) => {
+        calls.push(`file:${file.fileName}:${file.mediaType}`);
+        return { key: { id: `file-${scenario.suffix}` } };
+      },
+    };
+    const bridge = new WhatsappHarnessBridge({
+      bot,
+      state: artifactState(`session-${scenario.suffix}`),
+      logger: { warn() {}, error() {} },
+      harness: {
+        sessionExists: async () => true,
+        ask: async (_sessionId, _text, options) => {
+          await options.onArtifact(artifact);
+          return '图片已生成。';
+        },
+      },
+    });
+
+    const receipt = await bridge.accept({
+      messageId: `whatsapp:artifact-${scenario.suffix}`,
+      senderId: '16505550999@s.whatsapp.net',
+      kind: 'direct',
+      conversationId: `whatsapp-artifact-${scenario.suffix}`,
+      content: '生成结果',
+      addressed: true,
+      replyTarget: { jid: '16505550999@s.whatsapp.net' },
+    });
+
+    assert.deepEqual(calls, scenario.expectedCalls, scenario.name);
+    assert.equal(receipt.artifacts[0].outcome, scenario.expectedOutcome, scenario.name);
+  }
 });
 
 test('WhatsApp suppresses a self-chat file echo that arrives before the provider ACK', async (t) => {

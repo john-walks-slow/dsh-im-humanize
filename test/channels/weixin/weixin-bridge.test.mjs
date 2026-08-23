@@ -311,6 +311,104 @@ test('Weixin returns a registered result file with native context after its exis
   });
 });
 
+test('Weixin routes Artifact images natively and preserves the shared fallback boundary', async (t) => {
+  const scenarios = [
+    {
+      name: 'native image',
+      fileName: 'native.png',
+      content: PNG_BYTES,
+      expectedCalls: ['image'],
+      expectedPresentation: 'weixin-image',
+      expectedProviderIds: ['weixin-native-image'],
+    },
+    {
+      name: 'ordinary file',
+      fileName: 'ordinary.txt',
+      content: 'ordinary file',
+      expectedCalls: ['file'],
+      expectedPresentation: 'weixin-file',
+      expectedProviderIds: ['weixin-native-file'],
+    },
+    {
+      name: 'definite image rejection falls back',
+      fileName: 'fallback.png',
+      content: PNG_BYTES,
+      imageError: 'artifact-provider-rejected',
+      expectedCalls: ['image', 'file'],
+      expectedPresentation: 'weixin-file',
+      expectedProviderIds: ['weixin-native-file'],
+    },
+    {
+      name: 'uncertain image never falls back',
+      fileName: 'uncertain.png',
+      content: PNG_BYTES,
+      imageError: 'artifact-delivery-uncertain',
+      expectedCalls: ['image'],
+      expectedPresentation: 'text-fallback',
+      expectedProviderIds: [],
+      expectedOutcome: 'unknown',
+    },
+  ];
+
+  for (const [index, scenario] of scenarios.entries()) {
+    await t.test(scenario.name, async (subtest) => {
+      const artifact = await committedArtifact(subtest, scenario.fileName, scenario.content);
+      const fixture = stateFixture();
+      fixture.sessions.set('p2p:owner-user', `session-image-route-${index}`);
+      const calls = [];
+      const bridge = new WeixinHarnessBridge({
+        api: {
+          inboundImages: () => [],
+          sendText: async () => { throw new Error('text intentionally unavailable'); },
+          sendImage: async ({ file }) => {
+            calls.push('image');
+            assert.equal(file.fileName, scenario.fileName);
+            assert.equal(file.mediaType, 'image/png');
+            if (scenario.imageError) {
+              const error = new Error('private image result');
+              error.code = scenario.imageError;
+              throw error;
+            }
+            return { messageId: 'weixin-native-image' };
+          },
+          sendFile: async ({ file }) => {
+            calls.push('file');
+            assert.equal(file.fileName, scenario.fileName);
+            return { messageId: 'weixin-native-file' };
+          },
+        },
+        baseUrl: 'https://ilinkai.weixin.qq.com/',
+        token: 'host-token',
+        ownerUserId: 'owner-user',
+        harness: {
+          sessionExists: async () => true,
+          ask: async (_sessionId, _text, options) => {
+            await options.onArtifact(artifact);
+            return '';
+          },
+        },
+        state: fixture.state,
+        logger: { warn() {}, error() {} },
+      });
+
+      const receipt = await bridge.accept(message(`weixin-image-route-${index}`, '生成产物'));
+
+      assert.deepEqual(calls, scenario.expectedCalls);
+      assert.equal(receipt.presentation, scenario.expectedPresentation);
+      assert.deepEqual(receipt.providerMessageIds, scenario.expectedProviderIds);
+      assert.deepEqual(receipt.artifacts, [{
+        artifactId: artifact.artifactId,
+        outcome: scenario.expectedOutcome ?? 'sent',
+        ...(scenario.imageError === 'artifact-delivery-uncertain'
+          ? { reason: 'artifact-delivery-uncertain' }
+          : {}),
+      }]);
+      assert.equal(bridge.status.artifactsSent, scenario.expectedOutcome === 'unknown' ? 0 : 1);
+      assert.equal(bridge.status.artifactSendErrors, scenario.expectedOutcome === 'unknown' ? 1 : 0);
+    });
+  }
+});
+
 test('Weixin still attempts a registered file when the final text transport fails', async (t) => {
   const artifact = await committedArtifact(t, 'weixin-text-failed.txt', 'weixin-file');
   const fixture = stateFixture();

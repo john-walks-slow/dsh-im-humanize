@@ -184,6 +184,51 @@ test('Slack API completes the native external-upload flow in the original thread
   assert.match(SLACK_APP_MANIFEST_YAML, /\n\s+- files:write\n/);
 });
 
+test('Slack sends PNG and JPEG artifacts through one native image-preview upload flow each', async () => {
+  const calls = [];
+  const api = new SlackApi({
+    botToken: BOT_TOKEN,
+    appToken: APP_TOKEN,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      if (url.pathname.endsWith('/files.getUploadURLExternal')) {
+        return jsonResponse({
+          ok: true,
+          upload_url: 'https://files.slack.com/upload/v1/IMAGE',
+          file_id: `FIMAGE${calls.length}`,
+        });
+      }
+      if (url.pathname.startsWith('/upload/')) return new Response('OK', { status: 200 });
+      const completed = JSON.parse(options.body);
+      return jsonResponse({ ok: true, files: completed.files });
+    },
+  });
+
+  for (const image of [{
+    fileName: 'result.png',
+    mediaType: 'image/png',
+    bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+  }, {
+    fileName: 'result.jpg',
+    mediaType: 'image/jpeg',
+    bytes: Buffer.from([0xff, 0xd8, 0xff]),
+  }]) {
+    const offset = calls.length;
+    await api.uploadFile({ channelId: 'C12345678', file: image });
+
+    assert.equal(calls.length, offset + 3);
+    assert.equal(
+      calls[offset].options.body,
+      `filename=${image.fileName}&length=${image.bytes.length}`,
+    );
+    assert.equal(calls[offset + 1].options.headers['content-type'], image.mediaType);
+    assert.deepEqual(JSON.parse(calls[offset + 2].options.body).files, [{
+      id: `FIMAGE${offset + 1}`,
+      title: image.fileName,
+    }]);
+  }
+});
+
 test('Slack file preparation maps missing scope and pre-delivery failures without claiming uncertainty', async () => {
   const missingScopeApi = new SlackApi({
     botToken: BOT_TOKEN,

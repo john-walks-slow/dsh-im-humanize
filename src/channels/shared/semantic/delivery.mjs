@@ -34,6 +34,8 @@ export function providerMessageIdsFor(value) {
     value.message?.ts,
     value.key?.id,
     value.data?.message_id,
+    value.body?.msgid,
+    value.body?.message_id,
   ];
   const id = candidates.find((candidate) => (
     (typeof candidate === 'string' && candidate.trim())

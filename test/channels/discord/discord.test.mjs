@@ -153,6 +153,45 @@ test('Discord API uploads a result file as a native attachment and preserves the
   assert.equal(Buffer.from(await attachment.arrayBuffer()).toString(), '<p>discord-result</p>');
 });
 
+test('Discord sends PNG and JPEG artifacts as one native inline-preview attachment each', async () => {
+  const requests = [];
+  const api = new DiscordApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return jsonResponse({ id: '987654321012345681', attachments: [{ id: '1' }] });
+    },
+  });
+
+  for (const [index, image] of [{
+    fileName: 'result.png',
+    mediaType: 'image/png',
+    bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+  }, {
+    fileName: 'result.jpg',
+    mediaType: 'image/jpeg',
+    bytes: Buffer.from([0xff, 0xd8, 0xff]),
+  }].entries()) {
+    await api.createFileMessage({
+      channelId: '123456789012345678',
+      file: {
+        artifactId: `artifact-discord-image-${index}`,
+        deliveryKey: `session:turn:artifact-discord-image-${index}`,
+        ...image,
+      },
+    });
+
+    const request = requests[index];
+    assert.match(request.url.pathname, /channels\/123456789012345678\/messages$/);
+    const payload = JSON.parse(request.options.body.get('payload_json'));
+    assert.deepEqual(payload.attachments, [{ id: 0, filename: image.fileName }]);
+    const attachment = request.options.body.get('files[0]');
+    assert.equal(attachment.name, image.fileName);
+    assert.equal(attachment.type, image.mediaType);
+  }
+  assert.equal(requests.length, 2);
+});
+
 test('Discord attachment retry reuses one FormData body and one stable nonce', async () => {
   const bodies = [];
   const nonces = [];

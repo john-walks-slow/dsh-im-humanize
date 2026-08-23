@@ -211,6 +211,16 @@ export class TelegramBotClient {
     });
   }
 
+  sendImage(target, file) {
+    return this.#api.sendPhoto({
+      chatId: target.chatId,
+      file,
+      replyToMessageId: target.replyToMessageId,
+      messageThreadId: target.messageThreadId,
+      signal: this.#signal,
+    });
+  }
+
   async openStream(target) {
     const stream = createEditableMessageStream({
       limit: 4_000,

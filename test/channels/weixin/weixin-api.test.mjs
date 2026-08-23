@@ -281,6 +281,76 @@ test('sendFile uses the iLink 2.4.6 encrypted CDN flow and sends a native file i
   }]);
 });
 
+test('sendImage uses the encrypted CDN flow and sends a native image item', async () => {
+  const calls = [];
+  const api = createWeixinApi({
+    fetchImpl: async (url, init) => {
+      calls.push({ url: url.toString(), init });
+      if (url.pathname.endsWith('/getuploadurl')) {
+        return jsonResponse({
+          ret: 0,
+          upload_full_url: 'https://novac2c.cdn.weixin.qq.com/c2c/upload?ticket=image-one',
+        });
+      }
+      if (url.pathname === '/c2c/upload') {
+        return new Response(null, {
+          status: 200,
+          headers: { 'x-encrypted-param': 'download-image-ticket' },
+        });
+      }
+      return jsonResponse({ ret: 0 });
+    },
+  });
+  const plaintext = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x01, 0x02, 0x03,
+  ]);
+  const result = await api.sendImage({
+    baseUrl: 'https://ilinkai.weixin.qq.com',
+    token: 'host-only-token',
+    toUserId: 'wx-user',
+    contextToken: 'message-context',
+    runId: 'run-image',
+    file: {
+      artifactId: 'artifact-image',
+      deliveryKey: 'session:turn:artifact-image',
+      fileName: 'result.png',
+      mediaType: 'image/png',
+      bytes: plaintext,
+    },
+  });
+
+  assert.equal(calls.length, 3);
+  const ticket = JSON.parse(calls[0].init.body);
+  assert.equal(ticket.media_type, 1);
+  assert.equal(ticket.to_user_id, 'wx-user');
+  assert.equal(ticket.rawsize, plaintext.length);
+  assert.equal(ticket.filesize, 16);
+  assert.equal(ticket.no_need_thumb, true);
+  assert.match(ticket.aeskey, /^[0-9a-f]{32}$/);
+  assert.equal(
+    decryptWeixinImage(calls[1].init.body, Buffer.from(ticket.aeskey, 'hex')).equals(plaintext),
+    true,
+  );
+
+  const sent = JSON.parse(calls[2].init.body).msg;
+  assert.equal(sent.context_token, 'message-context');
+  assert.equal(sent.run_id, 'run-image');
+  assert.match(sent.client_id, /^dsh-weixin-[0-9a-f]{32}$/);
+  assert.equal(result.messageId, sent.client_id);
+  assert.deepEqual(sent.item_list, [{
+    type: 2,
+    image_item: {
+      media: {
+        encrypt_query_param: 'download-image-ticket',
+        aes_key: Buffer.from(ticket.aeskey).toString('base64'),
+        encrypt_type: 1,
+      },
+      mid_size: 16,
+    },
+  }]);
+});
+
 function weixinFileRequest(overrides = {}) {
   return {
     baseUrl: 'https://ilinkai.weixin.qq.com',
@@ -349,6 +419,26 @@ test('sendFile marks every ambiguous sendmessage result as uncertain', async (t)
       );
     });
   }
+});
+
+test('sendImage preserves the uncertain final-delivery boundary', async () => {
+  const api = createWeixinApi({
+    fetchImpl: weixinFileFetch(async () => { throw new TypeError('private socket detail'); }),
+  });
+
+  await assert.rejects(
+    api.sendImage(weixinFileRequest({
+      file: {
+        artifactId: 'artifact-image-error',
+        deliveryKey: 'session:turn:artifact-image-error',
+        fileName: 'result.png',
+        mediaType: 'image/png',
+        bytes: Buffer.from('image-error-case'),
+      },
+    })),
+    (error) => error.code === 'artifact-delivery-uncertain'
+      && !error.message.includes('private'),
+  );
 });
 
 test('sendFile maps definitive sendmessage rejection statuses without treating them as uncertain', async (t) => {

@@ -38,14 +38,9 @@ import {
 } from '../shared/preset-command.mjs';
 import { runWorkspaceCommand, resolveSessionListWorkspace, workspacePathSnapshot } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
+import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
 import {
-  materializeOutboundArtifact,
-  releaseOutboundArtifact,
-} from '../shared/semantic/artifact.mjs';
-import {
-  createArtifactFailureReceipt,
   createDeliveryReceipt,
-  mergeDeliveryReceipts,
 } from '../shared/semantic/delivery.mjs';
 import {
   MENU_PAGE_SIZE,
@@ -1641,64 +1636,50 @@ export class FeishuHarnessBridge {
   }
 
   async #deliverArtifacts(chatId, replyTo, artifacts = [], baseReceipt) {
-    const receipts = baseReceipt ? [baseReceipt] : [];
-    let failureNoticeVisible = false;
-    for (const artifact of artifacts) {
-      this.#signal?.throwIfAborted();
-      try {
-        if (typeof this.#channel?.sendFile !== 'function') {
-          const unavailable = new Error('Feishu file delivery is unavailable');
-          unavailable.code = 'artifact-provider-unavailable';
-          throw unavailable;
-        }
-        const file = await materializeOutboundArtifact(artifact, {
-          signal: this.#signal,
-        });
-        receipts.push(await this.#channel.sendFile(chatId, file, {
-          replyTo,
-          signal: this.#signal,
-        }));
-        this.#status.artifactsSent = (this.#status.artifactsSent ?? 0) + 1;
-      } catch (error) {
-        if (this.#signal?.aborted) throw error;
-        this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0) + 1;
-        this.#logger.warn?.(
-          `[dsh-feishu] result file delivery failed (${error?.code ?? 'unknown'})`,
-        );
-        let noticeMessageId = null;
-        try {
-          noticeMessageId = await this.#send(chatId, artifactFailureText(artifact?.fileName, error));
-          failureNoticeVisible = true;
-        } catch {
-          this.#logger.warn?.('[dsh-feishu] unable to send the safe result-file failure notice');
-        }
-        receipts.push(createArtifactFailureReceipt({
-          artifactId: artifact?.artifactId ?? 'unknown',
-          deliveryId: artifact?.deliveryKey ?? artifact?.artifactId ?? 'unknown',
-          error,
-          providerMessageIds: noticeMessageId ? [noticeMessageId] : [],
-        }));
-      } finally {
-        releaseOutboundArtifact(artifact);
-      }
-    }
-    if (receipts.length === 0) {
+    const delivery = await deliverOutboundArtifacts({
+      artifacts,
+      baseReceipt,
+      deliveryId: baseReceipt?.deliveryId ?? artifacts[0]?.deliveryKey ?? replyTo,
+      aggregatePresentation: baseReceipt ? 'feishu-text-and-files' : 'feishu-files',
+      channelKey: 'feishu',
+      signal: this.#signal,
+      sendImage: typeof this.#channel?.sendImage === 'function'
+        ? (file) => this.#channel.sendImage(chatId, file, {
+            replyTo,
+            signal: this.#signal,
+          })
+        : undefined,
+      sendFile: typeof this.#channel?.sendFile === 'function'
+        ? (file) => this.#channel.sendFile(chatId, file, {
+            replyTo,
+            signal: this.#signal,
+          })
+        : undefined,
+      sendFailureNotice: async (artifact, error) => ({
+        messageId: await this.#send(
+          chatId,
+          artifactFailureText(artifact?.fileName, error),
+        ),
+      }),
+      logger: this.#logger,
+    });
+    this.#status.artifactsSent = (this.#status.artifactsSent ?? 0)
+      + delivery.artifactsSent;
+    this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0)
+      + delivery.artifactSendErrors;
+    if (!delivery.receipt) {
       return {
         receipt: createDeliveryReceipt({
           deliveryId: replyTo,
           presentation: 'feishu-files',
         }),
-        failureNoticeVisible,
+        failureNoticeVisible: delivery.failureNoticeVisible,
       };
     }
-    const receipt = receipts.length === 1
-      ? receipts[0]
-      : mergeDeliveryReceipts({
-          deliveryId: baseReceipt?.deliveryId ?? artifacts[0]?.deliveryKey ?? replyTo,
-          presentation: baseReceipt ? 'feishu-text-and-files' : 'feishu-files',
-          receipts,
-        });
-    return { receipt, failureNoticeVisible };
+    return {
+      receipt: delivery.receipt,
+      failureNoticeVisible: delivery.failureNoticeVisible,
+    };
   }
 
   async #answerWithStream(event, key, message) {

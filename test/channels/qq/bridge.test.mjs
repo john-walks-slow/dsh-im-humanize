@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { qqInboundMessage, QqHarnessBridge } from '../../../src/channels/qq/qq-bridge.mjs';
+import {
+  qqInboundMessage,
+  QqHarnessBridge,
+  sendQqImage,
+} from '../../../src/channels/qq/qq-bridge.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
 import {
   OUTBOUND_ARTIFACT_TOOL,
@@ -95,6 +99,158 @@ const PNG_BYTES = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
   0x00, 0x00, 0x00, 0x00,
 ]);
+
+test('QQ native image adapter delegates to the SDK sendImage method', async () => {
+  const target = { scope: 'c2c', targetId: 'owner-openid', msgId: 'image-request' };
+  const calls = [];
+  const result = { message: { id: 'qq-image-1' } };
+  const returned = await sendQqImage({
+    sendImage: async (replyTarget, source, options) => {
+      calls.push({ replyTarget, source, options });
+      return result;
+    },
+  }, target, {
+    artifactId: 'image-artifact',
+    deliveryKey: 'image-delivery',
+    fileName: 'diagram.png',
+    mediaType: 'image/png',
+    bytes: PNG_BYTES,
+  });
+
+  assert.equal(returned, result);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].replyTarget, target);
+  assert.deepEqual(calls[0].source.buffer, PNG_BYTES);
+  assert.equal(typeof calls[0].options.onProgress, 'function');
+});
+
+test('QQ native image adapter preserves definite SDK rejections', async () => {
+  await assert.rejects(sendQqImage({
+    sendImage: async () => {
+      const error = new Error('unsupported image');
+      error.httpStatus = 415;
+      throw error;
+    },
+  }, { scope: 'c2c', targetId: 'owner-openid' }, {
+    fileName: 'diagram.png',
+    bytes: PNG_BYTES,
+  }), (error) => error.code === 'artifact-provider-rejected');
+});
+
+test('QQ native image adapter marks an unacknowledged SDK send as uncertain', async () => {
+  await assert.rejects(sendQqImage({
+    sendImage: async () => new Promise(() => {}),
+  }, { scope: 'c2c', targetId: 'owner-openid' }, {
+    fileName: 'diagram.png',
+    bytes: PNG_BYTES,
+  }, { timeoutMs: 20 }), (error) => error.code === 'artifact-delivery-uncertain');
+});
+
+test('QQ sends an image artifact with the native SDK image method', async (t) => {
+  const artifact = await committedArtifact(t, 'native.png', PNG_BYTES, 'native-image');
+  const images = [];
+  let files = 0;
+  const target = { scope: 'c2c', targetId: 'owner-openid', msgId: 'qq-native-image' };
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async () => ({ id: 'qq-text' }),
+      sendImage: async (replyTarget, source, options) => {
+        images.push({ replyTarget, bytes: Buffer.from(source.buffer), options });
+        return { message: { id: 'qq-image' } };
+      },
+      sendFile: async () => { files += 1; },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '图片已生成。';
+      },
+    },
+    state: stateFixture([['c2c:owner-openid', 'session-native-image']]).state,
+  });
+
+  const receipt = await bridge.accept(message({
+    messageId: 'qq-native-image',
+    replyTarget: target,
+  }));
+
+  assert.equal(images.length, 1);
+  assert.equal(images[0].replyTarget, target);
+  assert.deepEqual(images[0].bytes, PNG_BYTES);
+  assert.equal(typeof images[0].options.onProgress, 'function');
+  assert.equal(files, 0);
+  assert.equal(receipt.artifacts[0].artifactId, artifact.artifactId);
+  assert.equal(receipt.artifacts[0].outcome, 'sent');
+});
+
+test('QQ falls back to a native file after a definite native-image rejection', async (t) => {
+  const artifact = await committedArtifact(t, 'fallback.png', PNG_BYTES, 'image-fallback');
+  const order = [];
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async () => ({ id: 'qq-text' }),
+      sendImage: async () => {
+        order.push('image');
+        const error = new Error('unsupported image');
+        error.httpStatus = 422;
+        throw error;
+      },
+      sendFile: async (_target, source, options) => {
+        order.push(`file:${options.fileName}:${source.buffer.length}`);
+        return { message: { id: 'qq-file' } };
+      },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '图片已生成。';
+      },
+    },
+    state: stateFixture([['c2c:owner-openid', 'session-image-fallback']]).state,
+  });
+
+  const receipt = await bridge.accept(message({ messageId: 'qq-image-fallback' }));
+
+  assert.deepEqual(order, [`image`, `file:fallback.png:${PNG_BYTES.length}`]);
+  assert.equal(receipt.artifacts[0].outcome, 'sent');
+});
+
+test('QQ does not file-fallback after an uncertain native image send', async (t) => {
+  const artifact = await committedArtifact(t, 'uncertain.png', PNG_BYTES, 'image-uncertain');
+  const texts = [];
+  let files = 0;
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => {
+        texts.push(text);
+        return { id: `qq-text-${texts.length}` };
+      },
+      sendImage: async () => new Promise(() => {}),
+      sendFile: async () => { files += 1; },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '图片已生成。';
+      },
+    },
+    state: stateFixture([['c2c:owner-openid', 'session-image-uncertain']]).state,
+    fileUploadTimeoutMs: 20,
+    logger: { warn() {}, error() {} },
+  });
+
+  const receipt = await bridge.accept(message({ messageId: 'qq-image-uncertain' }));
+
+  assert.equal(files, 0);
+  assert.match(texts.at(-1), /发送结果未能确认.*不要立即重试/);
+  assert.equal(receipt.artifacts[0].outcome, 'unknown');
+});
 
 test('QQ normalizes protocol-relative ordinary-file URLs and lets the CDN redirect', async () => {
   const bytes = Buffer.from('qq-native-file');

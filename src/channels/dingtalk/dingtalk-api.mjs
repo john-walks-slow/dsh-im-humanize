@@ -540,6 +540,93 @@ export function createDingtalkApi({
     return true;
   }
 
+  async function sendArtifact({
+    clientId,
+    clientSecret,
+    target,
+    file,
+    signal,
+  }, { uploadType, messageKey, createMessageParams }) {
+    if (!file || typeof file !== 'object'
+      || typeof file.fileName !== 'string' || !file.fileName
+      || !Buffer.isBuffer(file.bytes)) {
+      throw new TypeError('A DingTalk file is required');
+    }
+    const normalizedTarget = normalizeFileTarget(target);
+    let token;
+    try {
+      token = await accessToken({ clientId, clientSecret, signal });
+    } catch (error) {
+      if (signal?.aborted) throw abortError(signal);
+      const status = Number(error?.status);
+      const fallback = error?.code === 'http-error' && status >= 400 && status < 500
+        ? 'artifact-provider-rejected'
+        : 'artifact-provider-failed';
+      throw dingtalkArtifactError(error, { fallback });
+    }
+    const uploadUrl = new URL('media/upload', DINGTALK_REGISTRATION_BASE_URL);
+    uploadUrl.searchParams.set('access_token', token);
+    uploadUrl.searchParams.set('type', uploadType);
+    const form = new FormData();
+    form.append(
+      'media',
+      new Blob([file.bytes], { type: file.mediaType ?? 'application/octet-stream' }),
+      file.fileName,
+    );
+    let uploaded;
+    try {
+      uploaded = await requestMultipart(fetchImpl, uploadUrl, { body: form, signal });
+    } catch (error) {
+      if (signal?.aborted) throw abortError(signal);
+      const status = Number(error?.status);
+      const fallback = error?.code === 'http-error' && status >= 400 && status < 500
+        ? 'artifact-provider-rejected'
+        : 'artifact-provider-failed';
+      throw dingtalkArtifactError(error, { fallback });
+    }
+    const uploadRejection = rejectedProviderResponse(uploaded);
+    const mediaId = nonEmptyString(uploaded?.media_id);
+    if (uploadRejection || !mediaId) {
+      throw dingtalkArtifactError(new DingtalkApiError(
+        'upload-rejected',
+        '钉钉服务拒绝了文件上传。',
+        { providerCode: uploadRejection ?? 'missing-media-id' },
+      ));
+    }
+    signal?.throwIfAborted();
+    const messageBody = {
+      robotCode: normalizedTarget.robotCode,
+      msgKey: messageKey,
+      msgParam: JSON.stringify(createMessageParams(mediaId, file)),
+      ...(normalizedTarget.type === 'group'
+        ? { openConversationId: normalizedTarget.openConversationId }
+        : { userIds: [normalizedTarget.userId] }),
+    };
+    const pathname = normalizedTarget.type === 'group'
+      ? 'v1.0/robot/groupMessages/send'
+      : 'v1.0/robot/oToMessages/batchSend';
+    let response;
+    try {
+      response = await requestJson(fetchImpl, endpoint(apiBase, pathname), {
+        body: messageBody,
+        headers: { 'x-acs-dingtalk-access-token': token },
+        signal,
+        action: '文件消息发送',
+      });
+    } catch (error) {
+      throw classifyDingtalkFinalDeliveryError(error, signal);
+    }
+    const sendRejection = rejectedProviderResponse(response);
+    if (sendRejection) {
+      throw dingtalkArtifactError(new DingtalkApiError(
+        'send-rejected',
+        '钉钉服务拒绝了文件消息。',
+        { providerCode: sendRejection },
+      ));
+    }
+    return response;
+  }
+
   return Object.freeze({
     async beginRegistration({ signal } = {}) {
       const initialized = assertRegistrationOk(await requestJson(
@@ -842,89 +929,24 @@ export function createDingtalkApi({
       return true;
     },
 
-    async sendFile({ clientId, clientSecret, target, file, signal }) {
-      if (!file || typeof file !== 'object'
-        || typeof file.fileName !== 'string' || !file.fileName
-        || !Buffer.isBuffer(file.bytes)) {
-        throw new TypeError('A DingTalk file is required');
-      }
-      const normalizedTarget = normalizeFileTarget(target);
-      const fileType = dingtalkFileType(file.fileName);
-      let token;
-      try {
-        token = await accessToken({ clientId, clientSecret, signal });
-      } catch (error) {
-        if (signal?.aborted) throw abortError(signal);
-        const status = Number(error?.status);
-        const fallback = error?.code === 'http-error' && status >= 400 && status < 500
-          ? 'artifact-provider-rejected'
-          : 'artifact-provider-failed';
-        throw dingtalkArtifactError(error, { fallback });
-      }
-      const uploadUrl = new URL('media/upload', DINGTALK_REGISTRATION_BASE_URL);
-      uploadUrl.searchParams.set('access_token', token);
-      uploadUrl.searchParams.set('type', 'file');
-      const form = new FormData();
-      form.append(
-        'media',
-        new Blob([file.bytes], { type: file.mediaType ?? 'application/octet-stream' }),
-        file.fileName,
-      );
-      let uploaded;
-      try {
-        uploaded = await requestMultipart(fetchImpl, uploadUrl, { body: form, signal });
-      } catch (error) {
-        if (signal?.aborted) throw abortError(signal);
-        const status = Number(error?.status);
-        const fallback = error?.code === 'http-error' && status >= 400 && status < 500
-          ? 'artifact-provider-rejected'
-          : 'artifact-provider-failed';
-        throw dingtalkArtifactError(error, { fallback });
-      }
-      const uploadRejection = rejectedProviderResponse(uploaded);
-      if (uploadRejection || !nonEmptyString(uploaded?.media_id)) {
-        throw dingtalkArtifactError(new DingtalkApiError(
-          'upload-rejected',
-          '钉钉服务拒绝了文件上传。',
-          { providerCode: uploadRejection ?? 'missing-media-id' },
-        ));
-      }
-      signal?.throwIfAborted();
-      const messageBody = {
-        robotCode: normalizedTarget.robotCode,
-        msgKey: 'sampleFile',
-        msgParam: JSON.stringify({
-          mediaId: uploaded.media_id,
+    async sendFile(request) {
+      return sendArtifact(request, {
+        uploadType: 'file',
+        messageKey: 'sampleFile',
+        createMessageParams: (mediaId, file) => ({
+          mediaId,
           fileName: file.fileName,
-          fileType,
+          fileType: dingtalkFileType(file.fileName),
         }),
-        ...(normalizedTarget.type === 'group'
-          ? { openConversationId: normalizedTarget.openConversationId }
-          : { userIds: [normalizedTarget.userId] }),
-      };
-      const pathname = normalizedTarget.type === 'group'
-        ? 'v1.0/robot/groupMessages/send'
-        : 'v1.0/robot/oToMessages/batchSend';
-      let response;
-      try {
-        response = await requestJson(fetchImpl, endpoint(apiBase, pathname), {
-          body: messageBody,
-          headers: { 'x-acs-dingtalk-access-token': token },
-          signal,
-          action: '文件消息发送',
-        });
-      } catch (error) {
-        throw classifyDingtalkFinalDeliveryError(error, signal);
-      }
-      const sendRejection = rejectedProviderResponse(response);
-      if (sendRejection) {
-        throw dingtalkArtifactError(new DingtalkApiError(
-          'send-rejected',
-          '钉钉服务拒绝了文件消息。',
-          { providerCode: sendRejection },
-        ));
-      }
-      return response;
+      });
+    },
+
+    async sendImage(request) {
+      return sendArtifact(request, {
+        uploadType: 'image',
+        messageKey: 'sampleImageMsg',
+        createMessageParams: (mediaId) => ({ photoURL: mediaId }),
+      });
     },
 
     clearAccessToken(clientId) {

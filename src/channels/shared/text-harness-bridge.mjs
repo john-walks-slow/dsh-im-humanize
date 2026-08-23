@@ -32,14 +32,9 @@ import {
   harnessQuestionText,
   validHarnessQuestion,
 } from './harness-question.mjs';
+import { deliverOutboundArtifacts } from './semantic/artifact-delivery.mjs';
 import {
-  materializeOutboundArtifact,
-  releaseOutboundArtifact,
-} from './semantic/artifact.mjs';
-import {
-  createArtifactFailureReceipt,
   createDeliveryReceipt,
-  mergeDeliveryReceipts,
   providerMessageIdsFor,
 } from './semantic/delivery.mjs';
 
@@ -339,73 +334,29 @@ export class TextHarnessBridge {
   }
 
   async #deliverArtifacts(target, replyTo, artifacts = [], baseReceipt) {
-    const receipts = baseReceipt ? [baseReceipt] : [];
-    let userVisible = Boolean(baseReceipt);
-    for (const artifact of artifacts) {
-      this.#signal?.throwIfAborted();
-      try {
-        if (typeof this.#bot.sendFile !== 'function') {
-          const unavailable = new Error('Native file delivery is unavailable');
-          unavailable.code = 'artifact-provider-unavailable';
-          throw unavailable;
-        }
-        const file = await materializeOutboundArtifact(artifact, {
-          signal: this.#signal,
-        });
-        this.#signal?.throwIfAborted();
-        const result = await this.#bot.sendFile(target, file);
-        receipts.push(createDeliveryReceipt({
-          deliveryId: file.deliveryKey,
-          presentation: `${this.#descriptor.key}-file`,
-          providerMessageIds: providerMessageIdsFor(result),
-          artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
-        }));
-        userVisible = true;
-        this.#status.artifactsSent = (this.#status.artifactsSent ?? 0) + 1;
-      } catch (error) {
-        if (this.#signal?.aborted) throw error;
-        this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0) + 1;
-        this.#logger.warn?.(
-          `[dsh-im:${this.#descriptor.key}] result file delivery failed (${error?.code ?? 'unknown'})`,
-        );
-        let providerMessageIds = [];
-        let noticeSent = false;
-        try {
-          const notice = await this.#bot.sendText(
-            target,
-            artifactFailureText(artifact?.fileName, error, this.#descriptor),
-          );
-          providerMessageIds = providerMessageIdsFor(notice);
-          noticeSent = true;
-        } catch {
-          this.#logger.warn?.(
-            `[dsh-im:${this.#descriptor.key}] unable to send the safe result-file failure notice`,
-          );
-        }
-        const failureReceipt = createArtifactFailureReceipt({
-          artifactId: artifact?.artifactId ?? 'unknown',
-          deliveryId: artifact?.deliveryKey ?? artifact?.artifactId ?? 'unknown',
-          error,
-          providerMessageIds,
-        });
-        receipts.push(failureReceipt);
-        if (noticeSent || failureReceipt.artifacts[0]?.outcome === 'unknown') userVisible = true;
-      } finally {
-        releaseOutboundArtifact(artifact);
-      }
-    }
-    const receipt = receipts.length === 0
-      ? null
-      : receipts.length === 1
-        ? receipts[0]
-        : mergeDeliveryReceipts({
-            deliveryId: replyTo,
-            presentation: baseReceipt
-              ? `${this.#descriptor.key}-text-and-files`
-              : `${this.#descriptor.key}-files`,
-            receipts,
-          });
-    return { receipt, userVisible };
+    const delivery = await deliverOutboundArtifacts({
+      artifacts,
+      baseReceipt,
+      deliveryId: replyTo,
+      channelKey: this.#descriptor.key,
+      signal: this.#signal,
+      sendImage: typeof this.#bot.sendImage === 'function'
+        ? (file) => this.#bot.sendImage(target, file)
+        : undefined,
+      sendFile: typeof this.#bot.sendFile === 'function'
+        ? (file) => this.#bot.sendFile(target, file)
+        : undefined,
+      sendFailureNotice: (artifact, error) => this.#bot.sendText(
+        target,
+        artifactFailureText(artifact?.fileName, error, this.#descriptor),
+      ),
+      logger: this.#logger,
+    });
+    this.#status.artifactsSent = (this.#status.artifactsSent ?? 0)
+      + delivery.artifactsSent;
+    this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0)
+      + delivery.artifactSendErrors;
+    return { receipt: delivery.receipt, userVisible: delivery.userVisible };
   }
 
   async #process(message, messageId, senderId, conversationKey, {

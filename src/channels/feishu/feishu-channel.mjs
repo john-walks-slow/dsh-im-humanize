@@ -114,9 +114,10 @@ function waitForFileOperation(operation, { signal, timeoutMs, stage }) {
   });
 }
 
-function deliveryUuid(file, chatId) {
+function deliveryUuid(file, chatId, messageType) {
+  const seed = `${file.deliveryKey}\u0000${chatId}`;
   const digest = createHash('sha256')
-    .update(`${file.deliveryKey}\u0000${chatId}`)
+    .update(messageType === 'file' ? seed : `${seed}\u0000${messageType}`)
     .digest('hex')
     .slice(0, 40);
   return `dshim_${digest}`;
@@ -230,6 +231,29 @@ export class VerifiedFeishuChannel {
   }
 
   async sendFile(chatId, file, { replyTo, signal } = {}) {
+    return this.#sendArtifact(chatId, file, {
+      replyTo,
+      signal,
+      messageType: 'file',
+      presentation: 'feishu-file',
+    });
+  }
+
+  async sendImage(chatId, file, { replyTo, signal } = {}) {
+    return this.#sendArtifact(chatId, file, {
+      replyTo,
+      signal,
+      messageType: 'image',
+      presentation: 'feishu-image',
+    });
+  }
+
+  async #sendArtifact(chatId, file, {
+    replyTo,
+    signal,
+    messageType,
+    presentation,
+  }) {
     signal?.throwIfAborted();
     if (typeof chatId !== 'string' || !chatId) throw new TypeError('chatId is required');
     if (!file || typeof file !== 'object'
@@ -243,13 +267,20 @@ export class VerifiedFeishuChannel {
     try {
       uploaded = await waitForFileOperation((operationSignal) => {
         operationSignal.throwIfAborted();
-        const pending = this.#client.im.v1.file.create({
-          data: {
-            file_type: 'stream',
-            file_name: file.fileName,
-            file: file.bytes,
-          },
-        });
+        const pending = messageType === 'image'
+          ? this.#client.im.v1.image.create({
+              data: {
+                image_type: 'message',
+                image: file.bytes,
+              },
+            })
+          : this.#client.im.v1.file.create({
+              data: {
+                file_type: 'stream',
+                file_name: file.fileName,
+                file: file.bytes,
+              },
+            });
         trackOutboundArtifactProviderPromise(file, pending);
         return pending;
       }, {
@@ -262,21 +293,25 @@ export class VerifiedFeishuChannel {
       throw fileDeliveryError('upload', error);
     }
     signal?.throwIfAborted();
-    const fileKey = uploaded?.file_key;
-    if (typeof fileKey !== 'string' || !fileKey) {
+    const resourceKey = messageType === 'image'
+      ? uploaded?.image_key ?? uploaded?.data?.image_key
+      : uploaded?.file_key ?? uploaded?.data?.file_key;
+    if (typeof resourceKey !== 'string' || !resourceKey) {
       throw fileDeliveryError('upload', undefined, uploaded?.code);
     }
 
-    const uuid = deliveryUuid(file, chatId);
-    const content = JSON.stringify({ file_key: fileKey });
+    const uuid = deliveryUuid(file, chatId, messageType);
+    const content = JSON.stringify(messageType === 'image'
+      ? { image_key: resourceKey }
+      : { file_key: resourceKey });
     const request = replyTo
       ? {
           path: { message_id: replyTo },
-          data: { msg_type: 'file', content, uuid },
+          data: { msg_type: messageType, content, uuid },
         }
       : {
           params: { receive_id_type: 'chat_id' },
-          data: { receive_id: chatId, msg_type: 'file', content, uuid },
+          data: { receive_id: chatId, msg_type: messageType, content, uuid },
         };
     const send = () => {
       const pending = replyTo
@@ -300,7 +335,7 @@ export class VerifiedFeishuChannel {
         operationSignal.throwIfAborted();
 
         // Feishu documents 230049 as an uncertain asynchronous send result.
-        // Reuse the same file_key and UUID once so the provider can deduplicate.
+        // Reuse the same resource key and UUID once so the provider can deduplicate.
         if (Number(result?.code) === 230049) {
           result = await send();
           operationSignal.throwIfAborted();
@@ -324,7 +359,7 @@ export class VerifiedFeishuChannel {
     }
     return createDeliveryReceipt({
       deliveryId: file.deliveryKey,
-      presentation: 'feishu-file',
+      presentation,
       providerMessageIds: [messageId],
       artifacts: [{
         artifactId: file.artifactId,

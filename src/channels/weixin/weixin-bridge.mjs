@@ -38,14 +38,9 @@ import {
   prefetchInboundFiles,
 } from '../shared/inbound-file.mjs';
 import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
+import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
 import {
-  materializeOutboundArtifact,
-  releaseOutboundArtifact,
-} from '../shared/semantic/artifact.mjs';
-import {
-  createArtifactFailureReceipt,
   createDeliveryReceipt,
-  mergeDeliveryReceipts,
   providerMessageIdsFor,
 } from '../shared/semantic/delivery.mjs';
 
@@ -869,73 +864,40 @@ export class WeixinHarnessBridge {
   }
 
   async #deliverArtifacts(toUserId, replyTo, artifacts, contextToken, runId, baseReceipt) {
-    const receipts = baseReceipt ? [baseReceipt] : [];
-    let userVisible = Boolean(baseReceipt);
-    for (const artifact of artifacts) {
-      this.#signal?.throwIfAborted();
-      try {
-        if (typeof this.#api.sendFile !== 'function') {
-          const unavailable = new Error('Weixin file delivery is unavailable');
-          unavailable.code = 'artifact-provider-unavailable';
-          throw unavailable;
-        }
-        const file = await materializeOutboundArtifact(artifact, {
-          signal: this.#signal,
-        });
-        const result = await this.#api.sendFile({
-          baseUrl: this.#baseUrl,
-          token: this.#token,
-          toUserId,
-          file,
-          contextToken,
-          runId,
-          signal: this.#signal,
-        });
-        receipts.push(createDeliveryReceipt({
-          deliveryId: file.deliveryKey,
-          presentation: 'weixin-file',
-          providerMessageIds: providerMessageIdsFor(result),
-          artifacts: [{ artifactId: file.artifactId, outcome: 'sent' }],
-        }));
-        userVisible = true;
-        this.#status.artifactsSent = (this.#status.artifactsSent ?? 0) + 1;
-      } catch (error) {
-        if (this.#signal?.aborted) throw error;
-        this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0) + 1;
-        this.#logger.warn?.(
-          `[dsh-weixin] result file delivery failed (${error?.code ?? 'unknown'})`,
-        );
-        let noticeSent = false;
-        const providerMessageIds = await this.#send(
-          toUserId,
-          artifactFailureText(artifact?.fileName, error),
-          contextToken,
-          runId,
-        ).then((ids) => {
-          noticeSent = true;
-          return ids;
-        }).catch(() => []);
-        const failureReceipt = createArtifactFailureReceipt({
-          artifactId: artifact?.artifactId ?? 'unknown',
-          deliveryId: artifact?.deliveryKey ?? artifact?.artifactId ?? 'unknown',
-          error,
-          providerMessageIds,
-        });
-        receipts.push(failureReceipt);
-        if (noticeSent || failureReceipt.artifacts[0]?.outcome === 'unknown') userVisible = true;
-      } finally {
-        releaseOutboundArtifact(artifact);
-      }
-    }
-    const receipt = receipts.length === 0
-      ? null
-      : receipts.length === 1
-        ? receipts[0]
-        : mergeDeliveryReceipts({
-            deliveryId: replyTo,
-            presentation: baseReceipt ? 'weixin-text-and-files' : 'weixin-files',
-            receipts,
-          });
-    return { receipt, userVisible };
+    const sendArtifact = (method, file) => this.#api[method]({
+      baseUrl: this.#baseUrl,
+      token: this.#token,
+      toUserId,
+      file,
+      contextToken,
+      runId,
+      signal: this.#signal,
+    });
+    const delivery = await deliverOutboundArtifacts({
+      artifacts,
+      baseReceipt,
+      deliveryId: replyTo,
+      aggregatePresentation: baseReceipt ? 'weixin-text-and-files' : 'weixin-files',
+      channelKey: 'weixin',
+      signal: this.#signal,
+      sendImage: typeof this.#api.sendImage === 'function'
+        ? (file) => sendArtifact('sendImage', file)
+        : undefined,
+      sendFile: typeof this.#api.sendFile === 'function'
+        ? (file) => sendArtifact('sendFile', file)
+        : undefined,
+      sendFailureNotice: (artifact, error) => this.#send(
+        toUserId,
+        artifactFailureText(artifact?.fileName, error),
+        contextToken,
+        runId,
+      ),
+      logger: this.#logger,
+    });
+    this.#status.artifactsSent = (this.#status.artifactsSent ?? 0)
+      + delivery.artifactsSent;
+    this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0)
+      + delivery.artifactSendErrors;
+    return { receipt: delivery.receipt, userVisible: delivery.userVisible };
   }
 }

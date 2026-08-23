@@ -173,6 +173,58 @@ test('DingTalk uploads and sends a native file message to the exact robot conver
   });
 });
 
+test('DingTalk uploads and sends a native image message to the exact robot user', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url: url.toString(), options });
+    if (url.pathname.endsWith('/oauth2/accessToken')) {
+      return jsonResponse({ accessToken: 'image-access-token', expireIn: 7_200 });
+    }
+    if (url.pathname.endsWith('/media/upload')) {
+      return jsonResponse({ errcode: 0, media_id: '@image-one', type: 'image' });
+    }
+    return jsonResponse({ processQueryKey: 'image-query-one' });
+  };
+  const api = createDingtalkApi({ fetchImpl });
+  const response = await api.sendImage({
+    clientId: 'ding-client',
+    clientSecret: 'host-only-secret',
+    target: {
+      type: 'user',
+      robotCode: 'robot-code',
+      userId: 'user-one',
+    },
+    file: {
+      fileName: 'result.png',
+      mediaType: 'image/png',
+      bytes: Buffer.from('dingtalk-image'),
+    },
+  });
+
+  assert.equal(response.processQueryKey, 'image-query-one');
+  const uploadUrl = new URL(calls[1].url);
+  assert.equal(uploadUrl.origin, 'https://oapi.dingtalk.com');
+  assert.equal(uploadUrl.pathname, '/media/upload');
+  assert.equal(uploadUrl.searchParams.get('access_token'), 'image-access-token');
+  assert.equal(uploadUrl.searchParams.get('type'), 'image');
+  const media = calls[1].options.body.get('media');
+  assert.equal(media.name, 'result.png');
+  assert.equal(media.type, 'image/png');
+  assert.equal(Buffer.from(await media.arrayBuffer()).toString(), 'dingtalk-image');
+
+  assert.equal(
+    calls[2].url,
+    `${DINGTALK_API_BASE_URL}v1.0/robot/oToMessages/batchSend`,
+  );
+  assert.equal(calls[2].options.headers['x-acs-dingtalk-access-token'], 'image-access-token');
+  assert.deepEqual(JSON.parse(calls[2].options.body), {
+    robotCode: 'robot-code',
+    msgKey: 'sampleImageMsg',
+    msgParam: JSON.stringify({ photoURL: '@image-one' }),
+    userIds: ['user-one'],
+  });
+});
+
 function dingtalkFileRequest(overrides = {}) {
   return {
     clientId: 'ding-client',
@@ -241,6 +293,24 @@ test('DingTalk marks every ambiguous robot file send result as uncertain', async
       );
     });
   }
+});
+
+test('DingTalk keeps ambiguous native image sends in the uncertain bucket', async () => {
+  const api = createDingtalkApi({
+    fetchImpl: dingtalkFileFetch(async () => { throw new TypeError('private socket detail'); }),
+  });
+
+  await assert.rejects(
+    api.sendImage(dingtalkFileRequest({
+      file: {
+        fileName: 'result.png',
+        mediaType: 'image/png',
+        bytes: Buffer.from('dingtalk-image-error'),
+      },
+    })),
+    (error) => error.code === 'artifact-delivery-uncertain'
+      && !error.message.includes('private'),
+  );
 });
 
 test('DingTalk maps definitive robot file rejection statuses without treating them as uncertain', async (t) => {

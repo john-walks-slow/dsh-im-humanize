@@ -313,10 +313,29 @@ function waitWithSignal(promise, signal) {
 
 function uncertainArtifactDelivery(error) {
   if (error?.code === 'artifact-delivery-uncertain') return error;
-  const uncertain = new Error('WhatsApp could not confirm result file delivery.');
+  const uncertain = new Error('WhatsApp could not confirm artifact delivery.');
   uncertain.code = 'artifact-delivery-uncertain';
   uncertain.cause = error;
   return uncertain;
+}
+
+function whatsappArtifactError(error) {
+  if (error?.code?.startsWith?.('artifact-')) return error;
+  const status = error?.output?.statusCode
+    ?? error?.data?.statusCode
+    ?? error?.statusCode;
+  let code;
+  if (status === 401 || status === 403) code = 'artifact-permission-required';
+  else if (status === 413) code = 'artifact-too-large';
+  else if (status === 429) code = 'artifact-rate-limited';
+  else if ([400, 404, 405, 406, 410, 415, 422].includes(status)) {
+    code = 'artifact-provider-rejected';
+  }
+  if (!code) return uncertainArtifactDelivery(error);
+  const wrapped = new Error('WhatsApp rejected artifact delivery.');
+  wrapped.code = code;
+  wrapped.cause = error;
+  return wrapped;
 }
 
 export class WhatsappBotClient {
@@ -354,14 +373,32 @@ export class WhatsappBotClient {
   }
 
   async sendFile(target, file) {
+    return this.#sendArtifact(target, file, {
+      document: file.bytes,
+      mimetype: file.mediaType ?? 'application/octet-stream',
+      fileName: file.fileName,
+    }, 'file');
+  }
+
+  async sendImage(target, file) {
+    return this.#sendArtifact(target, file, {
+      image: file.bytes,
+      mimetype: file.mediaType ?? 'image/jpeg',
+    }, 'image');
+  }
+
+  async #sendArtifact(target, file, content, presentation) {
     this.#signal?.throwIfAborted();
     await this.#stopTyping(target.jid);
     this.#signal?.throwIfAborted();
     const deliverySeed = typeof file.deliveryKey === 'string' && file.deliveryKey
       ? file.deliveryKey
       : file.artifactId;
-    const messageId = typeof deliverySeed === 'string' && deliverySeed
-      ? createHash('sha256').update(deliverySeed).digest('hex').slice(0, 20).toUpperCase()
+    const messageIdSeed = presentation === 'image'
+      ? `${deliverySeed}:image`
+      : deliverySeed;
+    const messageId = typeof messageIdSeed === 'string' && messageIdSeed
+      ? createHash('sha256').update(messageIdSeed).digest('hex').slice(0, 20).toUpperCase()
       : undefined;
     const options = {
       ...(target.quoted ? { quoted: target.quoted } : {}),
@@ -375,11 +412,7 @@ export class WhatsappBotClient {
     try {
       const pending = this.#socket.sendMessage(
         target.jid,
-        {
-          document: file.bytes,
-          mimetype: file.mediaType ?? 'application/octet-stream',
-          fileName: file.fileName,
-        },
+        content,
         options,
       );
       trackOutboundArtifactProviderPromise(file, pending);
@@ -390,7 +423,7 @@ export class WhatsappBotClient {
       result = await waitWithSignal(pending, waitSignal);
     } catch (error) {
       if (this.#signal?.aborted) throw abortReason(this.#signal);
-      throw uncertainArtifactDelivery(error);
+      throw whatsappArtifactError(error);
     }
     this.#signal?.throwIfAborted();
     this.#outboundIds.remember(result?.key?.id);

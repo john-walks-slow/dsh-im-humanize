@@ -60,6 +60,7 @@ test('provider message ids are collected only from explicit message-id fields', 
   assert.deepEqual(providerMessageIdsFor({ message_id: 42 }), ['42']);
   assert.deepEqual(providerMessageIdsFor({ key: { id: 'wamid-one' } }), ['wamid-one']);
   assert.deepEqual(providerMessageIdsFor({ ts: '123.456' }), ['123.456']);
+  assert.deepEqual(providerMessageIdsFor({ body: { msgid: 'wecom-one' } }), ['wecom-one']);
   assert.deepEqual(providerMessageIdsFor({
     providerMessageIds: ['first', 'second', 'first', '', null],
   }), ['first', 'second']);

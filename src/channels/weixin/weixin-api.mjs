@@ -457,6 +457,123 @@ function validateLoginResponse(value) {
 export function createWeixinApi({ fetchImpl = fetch } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
 
+  async function sendArtifact({
+    baseUrl,
+    token,
+    toUserId,
+    file,
+    contextToken,
+    runId,
+    signal,
+  }, { mediaType, createItem }) {
+    const recipient = nonEmptyString(toUserId);
+    if (!recipient || !file || typeof file !== 'object'
+      || typeof file.fileName !== 'string' || !file.fileName
+      || !Buffer.isBuffer(file.bytes)) {
+      throw new TypeError('toUserId and a file are required');
+    }
+    signal?.throwIfAborted();
+    const fileKey = randomBytes(16).toString('hex');
+    const aesKey = randomBytes(16);
+    const rawMd5 = createHash('md5').update(file.bytes).digest('hex');
+    let upload;
+    try {
+      upload = await requestJson(fetchImpl, {
+        method: 'POST',
+        baseUrl,
+        endpoint: 'ilink/bot/getuploadurl',
+        token,
+        signal,
+        body: {
+          filekey: fileKey,
+          media_type: mediaType,
+          to_user_id: recipient,
+          rawsize: file.bytes.byteLength,
+          rawfilemd5: rawMd5,
+          filesize: aesEcbPaddedSize(file.bytes.byteLength),
+          no_need_thumb: true,
+          aeskey: aesKey.toString('hex'),
+          base_info: baseInfo(),
+        },
+      });
+    } catch (error) {
+      if (signal?.aborted) throw abortError(signal);
+      const status = Number(error?.status);
+      const fallback = error?.code === 'http-error' && status >= 400 && status < 500
+        ? 'artifact-provider-rejected'
+        : 'artifact-provider-failed';
+      throw weixinArtifactError(error, { fallback });
+    }
+    const uploadRejection = rejectedProviderResponse(upload);
+    if (uploadRejection) {
+      throw weixinArtifactError(new WeixinApiError(
+        'upload-url-rejected',
+        '微信服务拒绝了文件上传请求。',
+        { providerCode: uploadRejection },
+      ));
+    }
+    const uploadUrl = weixinCdnUploadUrl(upload, fileKey);
+    const ciphertext = encryptWeixinUpload(file.bytes, aesKey);
+    let downloadParam;
+    try {
+      downloadParam = await uploadWeixinCdn(fetchImpl, uploadUrl, ciphertext, { signal });
+    } catch (error) {
+      if (signal?.aborted) throw abortError(signal);
+      const status = Number(error?.status);
+      const fallback = error?.code === 'upload-rejected' || (status >= 400 && status < 500)
+        ? 'artifact-provider-rejected'
+        : 'artifact-provider-failed';
+      throw weixinArtifactError(error, { fallback });
+    }
+    signal?.throwIfAborted();
+    const deliverySeed = nonEmptyString(file.deliveryKey) ?? nonEmptyString(file.artifactId)
+      ?? randomUUID();
+    const clientIdSeed = mediaType === 3 ? deliverySeed : `${deliverySeed}\u0000${mediaType}`;
+    const clientId = `dsh-weixin-${createHash('sha256')
+      .update(clientIdSeed)
+      .digest('hex')
+      .slice(0, 32)}`;
+    const media = {
+      encrypt_query_param: downloadParam,
+      aes_key: Buffer.from(aesKey.toString('hex')).toString('base64'),
+      encrypt_type: 1,
+    };
+    let response;
+    try {
+      response = await requestJson(fetchImpl, {
+        method: 'POST',
+        baseUrl,
+        endpoint: 'ilink/bot/sendmessage',
+        token,
+        signal,
+        body: {
+          msg: {
+            from_user_id: '',
+            to_user_id: recipient,
+            client_id: clientId,
+            message_type: 2,
+            message_state: 2,
+            item_list: [createItem({ file, media, ciphertextSize: ciphertext.byteLength })],
+            ...(nonEmptyString(contextToken) ? { context_token: contextToken.trim() } : {}),
+            ...(nonEmptyString(runId) ? { run_id: runId.trim() } : {}),
+          },
+          base_info: baseInfo(),
+        },
+      });
+    } catch (error) {
+      throw classifyWeixinFinalDeliveryError(error, signal);
+    }
+    const sendRejection = rejectedProviderResponse(response);
+    if (sendRejection) {
+      throw weixinArtifactError(new WeixinApiError(
+        'send-rejected',
+        '微信服务拒绝了文件消息。',
+        { providerCode: sendRejection },
+      ));
+    }
+    return { messageId: clientId };
+  }
+
   return Object.freeze({
     inboundImages(message) {
       return extractWeixinImages(message, { fetchImpl });
@@ -549,115 +666,31 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
       return true;
     },
 
-    async sendFile({ baseUrl, token, toUserId, file, contextToken, runId, signal }) {
-      const recipient = nonEmptyString(toUserId);
-      if (!recipient || !file || typeof file !== 'object'
-        || typeof file.fileName !== 'string' || !file.fileName
-        || !Buffer.isBuffer(file.bytes)) {
-        throw new TypeError('toUserId and a file are required');
-      }
-      signal?.throwIfAborted();
-      const fileKey = randomBytes(16).toString('hex');
-      const aesKey = randomBytes(16);
-      const rawMd5 = createHash('md5').update(file.bytes).digest('hex');
-      let upload;
-      try {
-        upload = await requestJson(fetchImpl, {
-          method: 'POST',
-          baseUrl,
-          endpoint: 'ilink/bot/getuploadurl',
-          token,
-          signal,
-          body: {
-            filekey: fileKey,
-            media_type: 3,
-            to_user_id: recipient,
-            rawsize: file.bytes.byteLength,
-            rawfilemd5: rawMd5,
-            filesize: aesEcbPaddedSize(file.bytes.byteLength),
-            no_need_thumb: true,
-            aeskey: aesKey.toString('hex'),
-            base_info: baseInfo(),
+    async sendFile(request) {
+      return sendArtifact(request, {
+        mediaType: 3,
+        createItem: ({ file, media }) => ({
+          type: 4,
+          file_item: {
+            media,
+            file_name: file.fileName,
+            len: String(file.bytes.byteLength),
           },
-        });
-      } catch (error) {
-        if (signal?.aborted) throw abortError(signal);
-        const status = Number(error?.status);
-        const fallback = error?.code === 'http-error' && status >= 400 && status < 500
-          ? 'artifact-provider-rejected'
-          : 'artifact-provider-failed';
-        throw weixinArtifactError(error, { fallback });
-      }
-      const uploadRejection = rejectedProviderResponse(upload);
-      if (uploadRejection) {
-        throw weixinArtifactError(new WeixinApiError(
-          'upload-url-rejected',
-          '微信服务拒绝了文件上传请求。',
-          { providerCode: uploadRejection },
-        ));
-      }
-      const uploadUrl = weixinCdnUploadUrl(upload, fileKey);
-      const ciphertext = encryptWeixinUpload(file.bytes, aesKey);
-      let downloadParam;
-      try {
-        downloadParam = await uploadWeixinCdn(fetchImpl, uploadUrl, ciphertext, { signal });
-      } catch (error) {
-        if (signal?.aborted) throw abortError(signal);
-        const status = Number(error?.status);
-        const fallback = error?.code === 'upload-rejected' || (status >= 400 && status < 500)
-          ? 'artifact-provider-rejected'
-          : 'artifact-provider-failed';
-        throw weixinArtifactError(error, { fallback });
-      }
-      signal?.throwIfAborted();
-      const deliverySeed = nonEmptyString(file.deliveryKey) ?? nonEmptyString(file.artifactId)
-        ?? randomUUID();
-      const clientId = `dsh-weixin-${createHash('sha256').update(deliverySeed).digest('hex').slice(0, 32)}`;
-      let response;
-      try {
-        response = await requestJson(fetchImpl, {
-          method: 'POST',
-          baseUrl,
-          endpoint: 'ilink/bot/sendmessage',
-          token,
-          signal,
-          body: {
-            msg: {
-              from_user_id: '',
-              to_user_id: recipient,
-              client_id: clientId,
-              message_type: 2,
-              message_state: 2,
-              item_list: [{
-                type: 4,
-                file_item: {
-                  media: {
-                    encrypt_query_param: downloadParam,
-                    aes_key: Buffer.from(aesKey.toString('hex')).toString('base64'),
-                    encrypt_type: 1,
-                  },
-                  file_name: file.fileName,
-                  len: String(file.bytes.byteLength),
-                },
-              }],
-              ...(nonEmptyString(contextToken) ? { context_token: contextToken.trim() } : {}),
-              ...(nonEmptyString(runId) ? { run_id: runId.trim() } : {}),
-            },
-            base_info: baseInfo(),
+        }),
+      });
+    },
+
+    async sendImage(request) {
+      return sendArtifact(request, {
+        mediaType: 1,
+        createItem: ({ media, ciphertextSize }) => ({
+          type: 2,
+          image_item: {
+            media,
+            mid_size: ciphertextSize,
           },
-        });
-      } catch (error) {
-        throw classifyWeixinFinalDeliveryError(error, signal);
-      }
-      const sendRejection = rejectedProviderResponse(response);
-      if (sendRejection) {
-        throw weixinArtifactError(new WeixinApiError(
-          'send-rejected',
-          '微信服务拒绝了文件消息。',
-          { providerCode: sendRejection },
-        ));
-      }
-      return { messageId: clientId };
+        }),
+      });
     },
 
     async notifyStart({ baseUrl, token, signal }) {

@@ -35,33 +35,33 @@ function preserveProviderMetadata(target, source) {
   return target;
 }
 
-function telegramArtifactProviderError(cause) {
+function telegramArtifactProviderError(cause, mediaLabel = 'document') {
   const providerCode = Number(cause?.providerCode);
   const status = Number(cause?.status);
   const message = cleanString(cause?.message) ?? '';
   let code = 'artifact-provider-rejected';
-  let summary = 'Telegram rejected the document.';
+  let summary = `Telegram rejected the ${mediaLabel}.`;
   if (providerCode === 401 || providerCode === 403 || status === 401 || status === 403) {
     code = 'artifact-permission-required';
-    summary = 'Telegram denied permission to send the document.';
+    summary = `Telegram denied permission to send the ${mediaLabel}.`;
   } else if (providerCode === 413 || status === 413
     || /(?:file|request|entity).{0,20}(?:too (?:big|large)|size limit)|too (?:big|large)/i.test(message)) {
     code = 'artifact-too-large';
-    summary = 'The document exceeds Telegram\'s size limit.';
+    summary = `The ${mediaLabel} exceeds Telegram's size limit.`;
   } else if (providerCode === 429 || status === 429) {
     code = 'artifact-rate-limited';
-    summary = 'Telegram rate-limited document delivery.';
+    summary = `Telegram rate-limited ${mediaLabel} delivery.`;
   } else if (providerCode >= 500 || status >= 500) {
     code = 'artifact-delivery-uncertain';
-    summary = 'Telegram document delivery result is uncertain.';
+    summary = `Telegram ${mediaLabel} delivery result is uncertain.`;
   }
   const error = new Error(summary, { cause });
   error.code = code;
   return preserveProviderMetadata(error, cause);
 }
 
-function uncertainTelegramDelivery(cause) {
-  const error = new Error('Telegram document delivery result is uncertain', { cause });
+function uncertainTelegramDelivery(cause, mediaLabel = 'document') {
+  const error = new Error(`Telegram ${mediaLabel} delivery result is uncertain`, { cause });
   error.code = 'artifact-delivery-uncertain';
   return preserveProviderMetadata(error, cause);
 }
@@ -184,15 +184,41 @@ export class TelegramApi {
   }
 
   async sendDocument({ chatId, file, replyToMessageId, messageThreadId, signal }) {
+    return this.#sendArtifact('sendDocument', 'document', 'document', {
+      chatId,
+      file,
+      replyToMessageId,
+      messageThreadId,
+      signal,
+    });
+  }
+
+  async sendPhoto({ chatId, file, replyToMessageId, messageThreadId, signal }) {
+    return this.#sendArtifact('sendPhoto', 'photo', 'photo', {
+      chatId,
+      file,
+      replyToMessageId,
+      messageThreadId,
+      signal,
+    });
+  }
+
+  async #sendArtifact(method, fieldName, mediaLabel, {
+    chatId,
+    file,
+    replyToMessageId,
+    messageThreadId,
+    signal,
+  }) {
     if (!file || typeof file !== 'object'
       || typeof file.fileName !== 'string' || !file.fileName
       || !Buffer.isBuffer(file.bytes)) {
-      throw new TypeError('A Telegram document is required');
+      throw new TypeError(`A Telegram ${mediaLabel} is required`);
     }
     const payload = new FormData();
     payload.append('chat_id', String(chatId));
     payload.append(
-      'document',
+      fieldName,
       new Blob([file.bytes], { type: file.mediaType ?? 'application/octet-stream' }),
       file.fileName,
     );
@@ -206,7 +232,7 @@ export class TelegramApi {
     if (signal?.aborted) throw abortReason(signal);
     const uploadSignal = requestSignal(signal, this.#fileUploadTimeoutMs);
     try {
-      return await this.#call('sendDocument', payload, {
+      return await this.#call(method, payload, {
         signal: uploadSignal,
         timeoutMs: this.#fileUploadTimeoutMs,
         multipart: true,
@@ -214,9 +240,9 @@ export class TelegramApi {
     } catch (error) {
       if (signal?.aborted) throw abortReason(signal);
       if (error?.code?.startsWith?.('telegram-')) {
-        throw telegramArtifactProviderError(error);
+        throw telegramArtifactProviderError(error, mediaLabel);
       }
-      throw uncertainTelegramDelivery(error);
+      throw uncertainTelegramDelivery(error, mediaLabel);
     }
   }
 

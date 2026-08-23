@@ -5,6 +5,11 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  OUTBOUND_ARTIFACT_TOOL,
+  OutboundArtifactRegistry,
+  createOutboundArtifactTool,
+} from '../../../src/channels/shared/semantic/artifact.mjs';
+import {
   TELEGRAM_ACCESS_MODES,
   TelegramConfigStore,
   deriveTelegramBotIdentity,
@@ -19,6 +24,7 @@ import {
 } from '../../../src/channels/telegram/telegram-api.mjs';
 import { TelegramHarnessBridge } from '../../../src/channels/telegram/telegram-bridge.mjs';
 import {
+  TelegramBotClient,
   TelegramRuntime,
   TELEGRAM_COMMAND_MENU,
   normalizeTelegramUpdate,
@@ -85,6 +91,42 @@ async function bounded(promise, message, timeoutMs = 1_000) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function committedTelegramArtifact(t, {
+  suffix,
+  fileName,
+  content,
+}) {
+  const workspace = await mkdtemp(join(tmpdir(), `dsh-im-telegram-artifact-${suffix}-`));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const sessionId = `session-telegram-artifact-${suffix}`;
+  let nextId = 0;
+  const registry = new OutboundArtifactRegistry({
+    uuid: () => `${suffix}-${++nextId}`,
+  });
+  t.after(() => registry.clear());
+  const agent = {
+    session: {
+      header: { id: sessionId, cwd: workspace },
+      events: [
+        { type: 'turn/start', data: { turn: 1 } },
+        { type: 'user/message', data: { turn: 1, source: { rpcId: `rpc-${suffix}` } } },
+      ],
+    },
+  };
+  await writeFile(join(workspace, fileName), content);
+  const tool = createOutboundArtifactTool({ registry });
+  const execution = {
+    name: OUTBOUND_ARTIFACT_TOOL,
+    callId: `call-${suffix}`,
+    rootCallId: `call-${suffix}`,
+    token: Symbol(`call-${suffix}`),
+    agent,
+  };
+  await tool.definition.execute({ path: fileName }, execution);
+  tool.onResult(execution, { isError: false });
+  return registry.take(sessionId, 1)[0];
 }
 
 test('Telegram API validates a Bot Token without exposing it in requests or errors', async () => {
@@ -240,6 +282,99 @@ test('Telegram API uploads a result file as a native document in the same topic 
   assert.equal(document.name, 'result.txt');
   assert.equal(document.type, 'text/plain');
   assert.equal(Buffer.from(await document.arrayBuffer()).toString(), 'telegram-result');
+});
+
+test('Telegram API uploads a result image as a native photo in the same topic and reply chain', async () => {
+  let request;
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return jsonResponse({ ok: true, result: { message_id: 902 } });
+    },
+  });
+  const result = await api.sendPhoto({
+    chatId: -100123,
+    replyToMessageId: 44,
+    messageThreadId: 55,
+    file: {
+      fileName: 'result.png',
+      mediaType: 'image/png',
+      bytes: Buffer.from('telegram-image'),
+    },
+  });
+
+  assert.equal(result.message_id, 902);
+  assert.match(request.url.pathname, /sendPhoto$/);
+  assert.equal(request.options.method, 'POST');
+  assert.equal(request.options.headers, undefined);
+  assert.ok(request.options.body instanceof FormData);
+  assert.equal(request.options.body.get('chat_id'), '-100123');
+  assert.equal(request.options.body.get('message_thread_id'), '55');
+  assert.deepEqual(JSON.parse(request.options.body.get('reply_parameters')), {
+    message_id: 44,
+    allow_sending_without_reply: true,
+  });
+  const photo = request.options.body.get('photo');
+  assert.equal(photo.name, 'result.png');
+  assert.equal(photo.type, 'image/png');
+  assert.equal(Buffer.from(await photo.arrayBuffer()).toString(), 'telegram-image');
+});
+
+test('Telegram bot client routes images through sendPhoto with the existing reply context', async () => {
+  let request;
+  const controller = new AbortController();
+  const client = new TelegramBotClient({
+    api: {
+      sendPhoto: async (value) => {
+        request = value;
+        return { message_id: 903 };
+      },
+    },
+    signal: controller.signal,
+  });
+  const file = {
+    fileName: 'result.png',
+    mediaType: 'image/png',
+    bytes: Buffer.from('telegram-image'),
+  };
+
+  assert.deepEqual(await client.sendImage({
+    chatId: -100456,
+    replyToMessageId: 66,
+    messageThreadId: 77,
+  }, file), { message_id: 903 });
+  assert.equal(request.chatId, -100456);
+  assert.equal(request.file, file);
+  assert.equal(request.replyToMessageId, 66);
+  assert.equal(request.messageThreadId, 77);
+  assert.equal(request.signal, controller.signal);
+});
+
+test('Telegram photo delivery reuses stable artifact error mapping', async () => {
+  const rejectedApi = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async () => jsonResponse({
+      ok: false,
+      error_code: 400,
+      description: 'Bad Request: unsupported photo',
+    }, 400),
+  });
+  await assert.rejects(() => rejectedApi.sendPhoto({
+    chatId: 123,
+    file: { fileName: 'result.webp', bytes: Buffer.from('result') },
+  }), (error) => error.code === 'artifact-provider-rejected'
+    && error.providerCode === 400
+    && error.status === 400);
+
+  const uncertainApi = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async () => new Response('not-json', { status: 200 }),
+  });
+  await assert.rejects(() => uncertainApi.sendPhoto({
+    chatId: 123,
+    file: { fileName: 'result.png', bytes: Buffer.from('result') },
+  }), (error) => error.code === 'artifact-delivery-uncertain');
 });
 
 test('Telegram document errors retain provider details and use stable artifact reasons', async () => {
@@ -956,6 +1091,86 @@ test('Telegram bridge ignores unaddressed groups and streams direct replies', as
   await reconnectedBridge.sendConnectionTest('after reconnect');
   assert.equal(sent.at(-1), 'after reconnect');
   assert.deepEqual(sentTargets.at(-1), { chatId: 88 });
+});
+
+test('Telegram bridge routes outbound image artifacts natively with safe file fallback', async (t) => {
+  const scenarios = [{
+    name: 'native image',
+    suffix: 'native-image',
+    fileName: 'result.png',
+    content: Buffer.from([1, 2, 3]),
+    expectedCalls: ['image:result.png:image/png'],
+    expectedOutcome: 'sent',
+  }, {
+    name: 'ordinary file',
+    suffix: 'ordinary-file',
+    fileName: 'result.txt',
+    content: 'ordinary file',
+    expectedCalls: ['file:result.txt:text/plain'],
+    expectedOutcome: 'sent',
+  }, {
+    name: 'definitive image rejection',
+    suffix: 'image-fallback',
+    fileName: 'result.webp',
+    content: Buffer.from([4, 5, 6]),
+    imageErrorCode: 'artifact-provider-rejected',
+    expectedCalls: ['image:result.webp:image/webp', 'file:result.webp:image/webp'],
+    expectedOutcome: 'sent',
+  }, {
+    name: 'uncertain image result',
+    suffix: 'image-uncertain',
+    fileName: 'result.gif',
+    content: Buffer.from([7, 8, 9]),
+    imageErrorCode: 'artifact-delivery-uncertain',
+    expectedCalls: ['image:result.gif:image/gif'],
+    expectedOutcome: 'unknown',
+  }];
+
+  for (const scenario of scenarios) {
+    const artifact = await committedTelegramArtifact(t, scenario);
+    const calls = [];
+    const bot = {
+      sendText: async () => ({ message_id: `text-${scenario.suffix}` }),
+      sendImage: async (_target, file) => {
+        calls.push(`image:${file.fileName}:${file.mediaType}`);
+        if (scenario.imageErrorCode) {
+          const error = new Error(scenario.imageErrorCode);
+          error.code = scenario.imageErrorCode;
+          throw error;
+        }
+        return { message_id: `image-${scenario.suffix}` };
+      },
+      sendFile: async (_target, file) => {
+        calls.push(`file:${file.fileName}:${file.mediaType}`);
+        return { message_id: `file-${scenario.suffix}` };
+      },
+    };
+    const bridge = new TelegramHarnessBridge({
+      bot,
+      state: memoryState(),
+      logger: { warn() {}, error() {} },
+      harness: {
+        createSession: async () => `session-${scenario.suffix}`,
+        ask: async (_sessionId, _text, options) => {
+          await options.onArtifact(artifact);
+          return '图片已生成。';
+        },
+      },
+    });
+
+    const receipt = await bridge.accept({
+      messageId: `telegram-artifact-${scenario.suffix}`,
+      senderId: '42',
+      kind: 'direct',
+      conversationId: `telegram-artifact-${scenario.suffix}`,
+      content: '生成结果',
+      addressed: true,
+      replyTarget: { chatId: 88, replyToMessageId: 7, messageThreadId: 9 },
+    });
+
+    assert.deepEqual(calls, scenario.expectedCalls, scenario.name);
+    assert.equal(receipt.artifacts[0].outcome, scenario.expectedOutcome, scenario.name);
+  }
 });
 
 test('Telegram runtime validates webhook state and starts a cancellable long poll', async () => {

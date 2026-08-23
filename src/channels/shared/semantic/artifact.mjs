@@ -576,7 +576,7 @@ export function createOutboundArtifactTool({ registry = outboundArtifactRegistry
   };
   const definition = Object.freeze({
     name: OUTBOUND_ARTIFACT_TOOL,
-    description: 'Send a readable file to the user through the current conversation. Existing and newly created files are both valid.',
+    description: 'Send a readable file or generated image to the user through the current conversation. Existing and newly created files are both valid.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -654,7 +654,7 @@ export function installOutboundArtifactTool(ctx, { registry = outboundArtifactRe
   ctx.systemPrompt.section({
     name: 'dsh-im:return-file',
     order: 115,
-    text: `When the user asks to receive a file, call ${OUTBOUND_ARTIFACT_TOOL} with its path. Existing files can be sent directly; do not recreate or rename a file solely for delivery.`,
+    text: `When the user asks to receive a file or generated image, call ${OUTBOUND_ARTIFACT_TOOL} with its path. Existing files can be sent directly; do not recreate or rename a file solely for delivery.`,
   });
   return true;
 }

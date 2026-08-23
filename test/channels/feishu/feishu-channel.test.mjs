@@ -11,6 +11,7 @@ function fakeClient(overrides = {}) {
     reactionsAdded: [],
     reactionsRemoved: [],
     fileUploads: [],
+    imageUploads: [],
   };
   const client = {
     cardkit: { v1: {
@@ -33,6 +34,12 @@ function fakeClient(overrides = {}) {
         create: async (request) => {
           calls.fileUploads.push(request);
           return { file_key: 'file-key-test' };
+        },
+      },
+      image: {
+        create: async (request) => {
+          calls.imageUploads.push(request);
+          return { data: { image_key: 'image-key-test' } };
         },
       },
       message: {
@@ -62,6 +69,7 @@ function fakeClient(overrides = {}) {
   if (overrides.updateContent) client.cardkit.v1.cardElement.content = overrides.updateContent;
   if (overrides.finishCard) client.cardkit.v1.card.settings = overrides.finishCard;
   if (overrides.uploadFile) client.im.v1.file.create = overrides.uploadFile;
+  if (overrides.uploadImage) client.im.v1.image.create = overrides.uploadImage;
   if (overrides.replyMessage) client.im.v1.message.reply = overrides.replyMessage;
   if (overrides.createMessage) client.im.v1.message.create = overrides.createMessage;
   return { client, calls };
@@ -169,6 +177,40 @@ test('VerifiedFeishuChannel uploads a materialized result and replies with a nat
     presentation: 'feishu-file',
     providerMessageIds: ['om-stream'],
     artifacts: [{ artifactId: 'artifact-html', outcome: 'sent' }],
+  });
+});
+
+test('VerifiedFeishuChannel uploads an image and replies with a native image message', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client });
+  const file = {
+    artifactId: 'artifact-image',
+    deliveryKey: 'delivery-image',
+    fileName: 'result.png',
+    mediaType: 'image/png',
+    size: 12,
+    bytes: Buffer.from('png contents'),
+  };
+
+  const receipt = await channel.sendImage('oc_chat', file, { replyTo: 'om_user' });
+
+  assert.equal(calls.fileUploads.length, 0);
+  assert.equal(calls.imageUploads.length, 1);
+  assert.deepEqual(calls.imageUploads[0].data, {
+    image_type: 'message',
+    image: file.bytes,
+  });
+  assert.equal(calls.replies.length, 1);
+  assert.equal(calls.replies[0].path.message_id, 'om_user');
+  assert.equal(calls.replies[0].data.msg_type, 'image');
+  assert.deepEqual(JSON.parse(calls.replies[0].data.content), { image_key: 'image-key-test' });
+  assert.match(calls.replies[0].data.uuid, /^dshim_[a-f0-9]{40}$/);
+  assert.deepEqual(receipt, {
+    schemaVersion: 1,
+    deliveryId: 'delivery-image',
+    presentation: 'feishu-image',
+    providerMessageIds: ['om-stream'],
+    artifacts: [{ artifactId: 'artifact-image', outcome: 'sent' }],
   });
 });
 

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  sendWecomImage,
   WecomHarnessBridge,
   wecomInboundMessage,
 } from '../../../src/channels/wecom/wecom-bridge.mjs';
@@ -20,6 +21,190 @@ const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
   'base64',
 );
+
+test('Enterprise WeChat native image adapter uploads and sends an image media message', async () => {
+  const calls = [];
+  const result = { body: { msgid: 'wecom-image-1', errcode: 0 } };
+  const file = {
+    artifactId: 'image-artifact',
+    deliveryKey: 'image-delivery',
+    fileName: 'diagram.png',
+    mediaType: 'image/png',
+    bytes: PNG_1X1,
+  };
+  const returned = await sendWecomImage({
+    uploadMedia: async (bytes, options) => {
+      calls.push({ operation: 'upload', bytes: Buffer.from(bytes), options });
+      return { media_id: 'image-media-1' };
+    },
+    sendMediaMessage: async (chatId, type, mediaId) => {
+      calls.push({ operation: 'send', chatId, type, mediaId });
+      return result;
+    },
+  }, 'chat-1', file);
+
+  assert.equal(returned, result);
+  assert.deepEqual(calls, [{
+    operation: 'upload',
+    bytes: PNG_1X1,
+    options: { type: 'image', filename: 'diagram.png' },
+  }, {
+    operation: 'send',
+    chatId: 'chat-1',
+    type: 'image',
+    mediaId: 'image-media-1',
+  }]);
+});
+
+test('Enterprise WeChat native image adapter preserves definite upload errors', async () => {
+  let sends = 0;
+  await assert.rejects(sendWecomImage({
+    uploadMedia: async () => {
+      const error = new Error('forbidden');
+      error.httpStatus = 403;
+      throw error;
+    },
+    sendMediaMessage: async () => { sends += 1; },
+  }, 'chat-1', {
+    fileName: 'diagram.png',
+    bytes: PNG_1X1,
+  }), (error) => error.code === 'artifact-permission-required');
+  assert.equal(sends, 0);
+});
+
+test('Enterprise WeChat native image adapter marks an unacknowledged message as uncertain', async () => {
+  await assert.rejects(sendWecomImage({
+    uploadMedia: async () => ({ media_id: 'image-media-uncertain' }),
+    sendMediaMessage: async () => new Promise(() => {}),
+  }, 'chat-1', {
+    fileName: 'diagram.png',
+    bytes: PNG_1X1,
+  }, { timeoutMs: 20 }), (error) => error.code === 'artifact-delivery-uncertain');
+});
+
+test('Enterprise WeChat sends an image artifact as a native image message', async (t) => {
+  const artifact = await committedArtifact(t, 'native.png', PNG_1X1, 'native-image');
+  const uploads = [];
+  const messages = [];
+  const bridge = new WecomHarnessBridge({
+    client: {
+      replyStream: async (_source, _streamId, _content, finish) => (
+        finish ? { body: { msgid: 'wecom-text' } } : undefined
+      ),
+      replyStreamNonBlocking: async () => {},
+      sendMessage: async () => {},
+      uploadMedia: async (bytes, options) => {
+        uploads.push({ bytes: Buffer.from(bytes), options });
+        return { media_id: 'native-image-media' };
+      },
+      sendMediaMessage: async (chatId, type, mediaId) => {
+        messages.push({ chatId, type, mediaId });
+        return { body: { msgid: 'wecom-image', errcode: 0 } };
+      },
+    },
+    generateStreamId: () => 'native-image-stream',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '图片已生成。';
+      },
+    },
+    state: state(),
+  });
+
+  const receipt = await bridge.accept(frame({ msgid: 'wecom-native-image' }));
+
+  assert.deepEqual(uploads, [{
+    bytes: PNG_1X1,
+    options: { type: 'image', filename: 'native.png' },
+  }]);
+  assert.deepEqual(messages, [{
+    chatId: 'member-1',
+    type: 'image',
+    mediaId: 'native-image-media',
+  }]);
+  assert.equal(receipt.artifacts[0].artifactId, artifact.artifactId);
+  assert.equal(receipt.artifacts[0].outcome, 'sent');
+  assert.equal(receipt.providerMessageIds.includes('wecom-image'), true);
+});
+
+test('Enterprise WeChat falls back to a file after a definite native-image rejection', async (t) => {
+  const artifact = await committedArtifact(t, 'fallback.png', PNG_1X1, 'image-fallback');
+  const uploads = [];
+  const messages = [];
+  const bridge = new WecomHarnessBridge({
+    client: {
+      replyStream: async () => {},
+      replyStreamNonBlocking: async () => {},
+      sendMessage: async () => {},
+      uploadMedia: async (_bytes, options) => {
+        uploads.push(options.type);
+        if (options.type === 'image') {
+          const error = new Error('image format rejected');
+          error.providerCode = 40014;
+          throw error;
+        }
+        return { media_id: 'fallback-file-media' };
+      },
+      sendMediaMessage: async (_chatId, type, mediaId) => {
+        messages.push({ type, mediaId });
+        return { body: { msgid: 'wecom-file', errcode: 0 } };
+      },
+    },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '图片已生成。';
+      },
+    },
+    state: state(),
+  });
+
+  const receipt = await bridge.accept(frame({ msgid: 'wecom-image-fallback' }));
+
+  assert.deepEqual(uploads, ['image', 'file']);
+  assert.deepEqual(messages, [{ type: 'file', mediaId: 'fallback-file-media' }]);
+  assert.equal(receipt.artifacts[0].outcome, 'sent');
+});
+
+test('Enterprise WeChat does not file-fallback after an uncertain native image send', async (t) => {
+  const artifact = await committedArtifact(t, 'uncertain.png', PNG_1X1, 'image-uncertain');
+  const uploads = [];
+  const notices = [];
+  const bridge = new WecomHarnessBridge({
+    client: {
+      replyStream: async () => {},
+      replyStreamNonBlocking: async () => {},
+      sendMessage: async (_chatId, body) => {
+        notices.push(body.markdown.content);
+        return { body: { msgid: 'wecom-uncertain-notice' } };
+      },
+      uploadMedia: async (_bytes, options) => {
+        uploads.push(options.type);
+        return { media_id: 'uncertain-image-media' };
+      },
+      sendMediaMessage: async () => new Promise(() => {}),
+    },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '图片已生成。';
+      },
+    },
+    state: state(),
+    fileUploadTimeoutMs: 20,
+    logger: { warn() {}, error() {} },
+  });
+
+  const receipt = await bridge.accept(frame({ msgid: 'wecom-image-uncertain' }));
+
+  assert.deepEqual(uploads, ['image']);
+  assert.match(notices[0], /发送结果未能确认.*不要立即重试/);
+  assert.equal(receipt.artifacts[0].outcome, 'unknown');
+});
 
 function frame(overrides = {}) {
   return {
