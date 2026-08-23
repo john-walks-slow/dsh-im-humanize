@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 
 import { connectionTestMessage } from '../shared/connection-test.mjs';
-import { deriveWhatsappBotId, maskWhatsappAccount } from './config-store.mjs';
+import {
+  deriveWhatsappBotId,
+  maskWhatsappAccount,
+  normalizeWhatsappAccessPolicy,
+} from './config-store.mjs';
 
 const ACTIVE_ATTEMPT_STATES = new Set(['starting', 'pending', 'connecting']);
 const TERMINAL_ATTEMPT_STATES = new Set(['connected', 'failed', 'cancelled']);
@@ -218,6 +222,20 @@ export class WhatsappController {
     });
   }
 
+  async setAccessPolicy(botId, value) {
+    if (this.#closed) throw new Error('WhatsApp controller is closed');
+    const accessPolicy = normalizeWhatsappAccessPolicy(value);
+    await this.#withBotTransition(botId, async () => {
+      if (this.#closed) throw new Error('WhatsApp controller is closed');
+      const config = this.#configStore.get(botId);
+      if (!config) throw new Error('Unknown WhatsApp bot');
+      const saved = await this.#configStore.save({ ...config, ...accessPolicy });
+      this.#runtimes.get(botId)?.setAccessPolicy?.(saved);
+      this.#touch();
+    });
+    return this.status();
+  }
+
   async deleteBot(botId) {
     const config = this.#configStore.get(botId);
     if (!config) throw new Error('Unknown WhatsApp bot');
@@ -266,6 +284,7 @@ export class WhatsappController {
           messagesReceived: runtimeStatus?.messagesReceived ?? 0,
           messagesReplied: runtimeStatus?.messagesReplied ?? 0,
         },
+        accessPolicy: normalizeWhatsappAccessPolicy(config),
         error: structuredClone(this.#errors.get(config.botId) ?? null),
       };
     });
@@ -310,6 +329,8 @@ export class WhatsappController {
       name: identity.name,
       createdAt: previous?.createdAt ?? new Date().toISOString(),
       connectedAt: new Date().toISOString(),
+      accessMode: previous?.accessMode,
+      allowedNumbers: previous?.allowedNumbers,
     };
     try {
       if (record.controller.signal.aborted || this.#closed) throw Object.assign(new Error(), { name: 'AbortError' });

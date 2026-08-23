@@ -10,6 +10,10 @@ import { splitMessageText } from '../shared/editable-message-stream.mjs';
 import { ImagePromptError } from '../shared/image-prompt.mjs';
 import { trackOutboundArtifactProviderPromise } from '../shared/semantic/artifact.mjs';
 import { createWhatsappBridgeStatus, WhatsappHarnessBridge } from './whatsapp-bridge.mjs';
+import {
+  WHATSAPP_ACCESS_MODES,
+  normalizeWhatsappAccessPolicy,
+} from './config-store.mjs';
 import { createWhatsappWebSession } from './whatsapp-web-session.mjs';
 
 const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
@@ -181,6 +185,7 @@ export function normalizeWhatsappMessage(message, accountJid, {
     && [remoteJid, alternateRemoteJid].some((jid) => jid && areJidsSameUser(jid, accountJid));
   if (fromMe && !selfChat) return null;
   const senderJid = selfChat ? accountJid : group ? message.key.participant : remoteJid;
+  const senderAlternateJid = group ? message.key.participantAlt : alternateRemoteJid;
   if (typeof senderJid !== 'string' || !senderJid) return null;
   const viewOnce = hasViewOnceWrapper(message.message);
   const content = normalizeMessageContent(message.message);
@@ -194,6 +199,7 @@ export function normalizeWhatsappMessage(message, accountJid, {
     messageId: `${remoteJid}:${messageId}`,
     providerMessageId: messageId,
     senderId: senderJid,
+    senderAlternateId: typeof senderAlternateJid === 'string' ? senderAlternateJid : '',
     senderIsBot: false,
     kind: group ? 'group' : 'direct',
     conversationId: remoteJid,
@@ -203,6 +209,22 @@ export function normalizeWhatsappMessage(message, accountJid, {
     selfChat,
     replyTarget: { jid: remoteJid, quoted: message, selfChat },
   };
+}
+
+export function whatsappInboundAllowed(message, {
+  accessMode = WHATSAPP_ACCESS_MODES.selfOnly,
+  allowedNumbers = new Set(),
+} = {}) {
+  if (accessMode === WHATSAPP_ACCESS_MODES.open) return true;
+  if (message?.kind !== 'direct') return false;
+  if (message.selfChat === true) return true;
+  if (accessMode !== WHATSAPP_ACCESS_MODES.privateAllowlist
+    || !(allowedNumbers instanceof Set)) return false;
+  const senderJids = [message.senderId, message.senderAlternateId]
+    .filter((jid) => typeof jid === 'string' && jid.endsWith('@s.whatsapp.net'));
+  return [...allowedNumbers].some((number) => senderJids.some((jid) => (
+    areJidsSameUser(jid, `${number}@s.whatsapp.net`)
+  )));
 }
 
 class RecentWhatsappOutboundIds {
@@ -390,6 +412,8 @@ export class WhatsappRuntime {
   #replyTimeoutMs;
   #connectTimeoutMs;
   #mediaUploadTimeoutMs;
+  #accessMode;
+  #allowedPrivateNumbers;
   #createSession;
   #status = createWhatsappRuntimeStatus();
   #abortController = null;
@@ -427,10 +451,19 @@ export class WhatsappRuntime {
       WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS,
     );
     this.#createSession = createSession;
+    this.setAccessPolicy(config);
   }
 
   get status() {
     return structuredClone(this.#status);
+  }
+
+  setAccessPolicy(value) {
+    const policy = normalizeWhatsappAccessPolicy(value);
+    this.#accessMode = policy.accessMode;
+    this.#allowedPrivateNumbers = new Set(policy.allowedNumbers);
+    this.#config = { ...this.#config, ...policy };
+    return policy;
   }
 
   async start() {
@@ -466,6 +499,14 @@ export class WhatsappRuntime {
           const message = normalizeWhatsappMessage(raw, this.#config.accountJid);
           if (!message || outboundIds.has(message.providerMessageId) || !this.#bridge) return;
           this.#status.lastCheckedAt = Date.now();
+          if (!whatsappInboundAllowed(message, {
+            accessMode: this.#accessMode,
+            allowedNumbers: this.#allowedPrivateNumbers,
+          })) {
+            this.#status.messagesRejected += 1;
+            this.#status.lastRejectedAt = new Date().toISOString();
+            return;
+          }
           await this.#bridge.accept(message);
         },
         onDisconnect: ({ error }) => {

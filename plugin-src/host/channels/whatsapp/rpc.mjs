@@ -1,6 +1,7 @@
 import QRCode from 'qrcode';
 
 import { publicConnectionTestResult } from '../../../../src/channels/shared/connection-test.mjs';
+import { normalizeWhatsappAccessPolicy } from '../../../../src/channels/whatsapp/config-store.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, SET_WORKSPACE_ENDPOINT, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
 import { SET_AGENT_PRESET_ENDPOINT, validAgentPresetPayload } from '../shared/agent-preset-rpc.mjs';
@@ -13,6 +14,7 @@ export const WHATSAPP_ENDPOINTS = Object.freeze({
   cancelProvisioning: 'provision.cancel',
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
+  setAccessPolicy: 'bot.access-policy.set',
   setWorkspace: SET_WORKSPACE_ENDPOINT,
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
 });
@@ -49,6 +51,17 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === WHATSAPP_ENDPOINTS.deleteBot) {
     return exactKeys(payload, ['botId', 'confirm']) && validId(payload.botId)
       && payload.confirm === true ? null : 'bot.delete requires a botId and confirm=true.';
+  }
+  if (endpoint === WHATSAPP_ENDPOINTS.setAccessPolicy) {
+    if (!exactKeys(payload, ['botId', 'accessMode', 'allowedNumbers'])
+      || Object.keys(payload).length !== 3
+      || !validId(payload.botId)) return '请输入有效的 WhatsApp 访问模式和电话号码。';
+    try {
+      normalizeWhatsappAccessPolicy(payload);
+      return null;
+    } catch {
+      return '请输入有效的 WhatsApp 访问模式和电话号码。';
+    }
   }
   if (endpoint === WHATSAPP_ENDPOINTS.setWorkspace) {
     return validWorkspacePayload(payload)
@@ -92,7 +105,7 @@ async function publicStatus(value, encodeQr) {
 }
 
 export function createWhatsappRpcHandler(controller, { encodeQr = qrDataUrl } = {}) {
-  for (const method of ['status', 'startProvisioning', 'registrationStatus', 'cancelProvisioning', 'reconnectBot', 'deleteBot']) {
+  for (const method of ['status', 'startProvisioning', 'registrationStatus', 'cancelProvisioning', 'reconnectBot', 'deleteBot', 'setAccessPolicy']) {
     if (typeof controller?.[method] !== 'function') {
       throw new TypeError(`A complete WhatsApp controller is required (${method})`);
     }
@@ -164,6 +177,11 @@ export function createWhatsappRpcHandler(controller, { encodeQr = qrDataUrl } = 
         if (typeof controller.updateAgentPreset !== 'function') throw new Error('Agent preset update is unavailable');
         value = await publicStatus(
           await controller.updateAgentPreset(payload.botId, payload.agentPreset),
+          cachedEncode,
+        );
+      } else if (endpoint === WHATSAPP_ENDPOINTS.setAccessPolicy) {
+        value = await publicStatus(
+          await controller.setAccessPolicy(payload.botId, normalizeWhatsappAccessPolicy(payload)),
           cachedEncode,
         );
       } else {

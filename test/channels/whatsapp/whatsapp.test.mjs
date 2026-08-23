@@ -19,13 +19,16 @@ import {
   createOutboundArtifactTool,
 } from '../../../src/channels/shared/semantic/artifact.mjs';
 import {
+  WHATSAPP_ACCESS_MODES,
   WhatsappConfigStore,
   deriveWhatsappBotId,
+  normalizeWhatsappAccessPolicy,
 } from '../../../src/channels/whatsapp/config-store.mjs';
 import { WhatsappController } from '../../../src/channels/whatsapp/whatsapp-controller.mjs';
 import {
   WhatsappRuntime,
   normalizeWhatsappMessage,
+  whatsappInboundAllowed,
 } from '../../../src/channels/whatsapp/whatsapp-runtime.mjs';
 import { createWhatsappWebSession } from '../../../src/channels/whatsapp/whatsapp-web-session.mjs';
 import {
@@ -123,6 +126,8 @@ function linkedConfig(overrides = {}) {
     accountJid: ACCOUNT_JID,
     authDirectory: AUTH_DIRECTORY,
     name: 'Harness WhatsApp',
+    accessMode: WHATSAPP_ACCESS_MODES.open,
+    allowedNumbers: [],
     createdAt: new Date().toISOString(),
     connectedAt: new Date().toISOString(),
     ...overrides,
@@ -135,8 +140,35 @@ test('WhatsApp config stores only linked-device metadata with restrictive permis
   const store = await new WhatsappConfigStore(path).load();
   await store.save(linkedConfig());
   assert.equal(store.list()[0].accountJid, ACCOUNT_JID);
+  assert.equal(store.list()[0].accessMode, WHATSAPP_ACCESS_MODES.open);
   assert.equal((await stat(path)).mode & 0o777, 0o600);
   await assert.rejects(() => store.save(linkedConfig({ botId: 'whatsapp_invalid' })));
+});
+
+test('WhatsApp migrates existing bots to self-only mode and validates access policies', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-im-whatsapp-access-migration-'));
+  const path = join(root, 'config.json');
+  const legacy = linkedConfig();
+  delete legacy.accessMode;
+  delete legacy.allowedNumbers;
+  await writeFile(path, `${JSON.stringify({ version: 2, bots: [legacy] })}\n`);
+  const store = await new WhatsappConfigStore(path).load();
+  assert.deepEqual(store.get(legacy.botId), {
+    ...legacy,
+    accessMode: WHATSAPP_ACCESS_MODES.selfOnly,
+    allowedNumbers: [],
+  });
+  assert.deepEqual(normalizeWhatsappAccessPolicy({
+    accessMode: WHATSAPP_ACCESS_MODES.privateAllowlist,
+    allowedNumbers: ['+16505550999', '16505550999'],
+  }), {
+    accessMode: WHATSAPP_ACCESS_MODES.privateAllowlist,
+    allowedNumbers: ['16505550999'],
+  });
+  assert.throws(() => normalizeWhatsappAccessPolicy({
+    accessMode: 'compatible',
+    allowedNumbers: [],
+  }), /accessMode/);
 });
 
 test('WhatsApp Web session reports QR and linked identity without printing either', async () => {
@@ -299,6 +331,46 @@ test('WhatsApp normalizes direct and explicitly mentioned group messages', () =>
   }, ACCOUNT_JID), null);
 });
 
+test('WhatsApp access modes allow self-chat, selected contacts, or the existing open behavior', () => {
+  const direct = normalizeWhatsappMessage({
+    key: {
+      remoteJid: '987654321098765@lid',
+      remoteJidAlt: '16505550999@s.whatsapp.net',
+      id: 'access-direct',
+      fromMe: false,
+    },
+    message: { conversation: 'hello' },
+  }, ACCOUNT_JID);
+  const group = normalizeWhatsappMessage({
+    key: {
+      remoteJid: '120363000000000000@g.us',
+      participant: '16505550999@s.whatsapp.net',
+      id: 'access-group',
+      fromMe: false,
+    },
+    message: { conversation: 'hello' },
+  }, ACCOUNT_JID);
+  const selfChat = normalizeWhatsappMessage({
+    key: { remoteJid: ACCOUNT_JID, id: 'access-self', fromMe: true },
+    message: { conversation: 'hello' },
+  }, ACCOUNT_JID);
+
+  assert.equal(whatsappInboundAllowed(selfChat), true);
+  assert.equal(whatsappInboundAllowed(direct), false);
+  assert.equal(whatsappInboundAllowed(group), false);
+  assert.equal(whatsappInboundAllowed(direct, {
+    accessMode: WHATSAPP_ACCESS_MODES.privateAllowlist,
+    allowedNumbers: new Set(['16505550999']),
+  }), true);
+  assert.equal(whatsappInboundAllowed(direct, {
+    accessMode: WHATSAPP_ACCESS_MODES.privateAllowlist,
+    allowedNumbers: new Set(['16505550000']),
+  }), false);
+  assert.equal(whatsappInboundAllowed(group, {
+    accessMode: WHATSAPP_ACCESS_MODES.open,
+  }), true);
+});
+
 test('WhatsApp exposes image media through a bounded Baileys download stream', async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const calls = [];
@@ -420,7 +492,7 @@ test('WhatsApp exposes image media through a bounded Baileys download stream', a
   });
 });
 
-test('WhatsApp runtime connects a linked device and replies through Harness', async () => {
+test('WhatsApp runtime filters messages before the bridge and applies policy updates live', async () => {
   let callbacks;
   const calls = [];
   const socket = {
@@ -443,7 +515,7 @@ test('WhatsApp runtime connects a linked device and replies through Harness', as
     ask: async () => 'Harness answer',
   };
   const runtime = new WhatsappRuntime({
-    config: linkedConfig(),
+    config: linkedConfig({ accessMode: WHATSAPP_ACCESS_MODES.selfOnly }),
     authDir: '/tmp/test-whatsapp-auth',
     harness,
     state,
@@ -463,6 +535,13 @@ test('WhatsApp runtime connects a linked device and replies through Harness', as
     message: { conversation: 'hello' },
   });
   assert.equal(runtime.status.ready, true);
+  assert.equal(runtime.status.messagesRejected, 1);
+  assert.equal(calls.length, 0);
+  runtime.setAccessPolicy({ accessMode: WHATSAPP_ACCESS_MODES.open, allowedNumbers: [] });
+  await callbacks.onMessage({
+    key: { remoteJid: '16505550999@s.whatsapp.net', id: 'direct-3', fromMe: false },
+    message: { conversation: 'hello again' },
+  });
   assert.ok(calls.some((call) => call[0] === 'presence' && call[1] === 'composing'));
   assert.ok(calls.some((call) => call[0] === 'message' && call[2].text === 'Harness answer'));
   await runtime.stop();
@@ -882,6 +961,7 @@ test('WhatsApp reconnect RPC sends tests only for the connected target and keeps
     cancelProvisioning: async () => null,
     reconnectBot: async () => snapshot(),
     deleteBot: async () => snapshot(),
+    setAccessPolicy: async () => snapshot(),
     sendConnectionTest: async () => {
       sendCalls += 1;
       if (sendFailure) throw new Error('private provider failure');
@@ -947,6 +1027,7 @@ test('WhatsApp RPC never sends a connection test after reconnect is cancelled', 
     reconnectBot: async () => reconnect,
     sendConnectionTest: async () => { sendCalls += 1; },
     deleteBot: async () => ({ bots: [] }),
+    setAccessPolicy: async () => ({ bots: [] }),
   };
   const abort = new AbortController();
   const result = createWhatsappRpcHandler(controller)(WHATSAPP_ENDPOINTS.reconnectBot, {
@@ -971,6 +1052,7 @@ test('WhatsApp QR controller and RPC keep the raw QR and linked identity host-on
   let resolveReady;
   const ready = new Promise((resolve) => { resolveReady = resolve; });
   const deletedAuth = [];
+  const appliedPolicies = [];
   const controller = new WhatsappController({
     configStore,
     authPath: (name) => join(root, 'auth', name),
@@ -988,6 +1070,10 @@ test('WhatsApp QR controller and RPC keep the raw QR and linked identity host-on
       },
       start: async () => {},
       stop: async () => {},
+      setAccessPolicy: (value) => appliedPolicies.push({
+        accessMode: value.accessMode,
+        allowedNumbers: value.allowedNumbers,
+      }),
     }),
     deleteAuth: async (name) => deletedAuth.push(name),
   });
@@ -1008,7 +1094,32 @@ test('WhatsApp QR controller and RPC keep the raw QR and linked identity host-on
   }
   assert.equal(status.ok, true);
   assert.equal(status.value.bots[0].connected, true);
+  assert.deepEqual(status.value.bots[0].accessPolicy, {
+    accessMode: WHATSAPP_ACCESS_MODES.selfOnly,
+    allowedNumbers: [],
+  });
   assert.doesNotMatch(JSON.stringify(status.value), /16505550123@s\.whatsapp\.net|authDirectory/);
+  const updated = await handler(WHATSAPP_ENDPOINTS.setAccessPolicy, {
+    botId: status.value.bots[0].botId,
+    accessMode: WHATSAPP_ACCESS_MODES.privateAllowlist,
+    allowedNumbers: ['+16505550999'],
+  });
+  assert.equal(updated.ok, true);
+  assert.deepEqual(updated.value.bots[0].accessPolicy, {
+    accessMode: WHATSAPP_ACCESS_MODES.privateAllowlist,
+    allowedNumbers: ['16505550999'],
+  });
+  assert.deepEqual(appliedPolicies, [{
+    accessMode: WHATSAPP_ACCESS_MODES.privateAllowlist,
+    allowedNumbers: ['16505550999'],
+  }]);
+  const invalidPolicy = await handler(WHATSAPP_ENDPOINTS.setAccessPolicy, {
+    botId: status.value.bots[0].botId,
+    accessMode: 'compatible',
+    allowedNumbers: [],
+  });
+  assert.equal(invalidPolicy.ok, false);
+  assert.equal(invalidPolicy.error.code, 'bad-request');
   assert.equal(sessionOptions.signal.aborted, false);
   assert.deepEqual(deletedAuth, []);
 });
