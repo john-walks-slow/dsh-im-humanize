@@ -1274,7 +1274,7 @@ test('Discord runtime identifies on Gateway v10 and becomes ready', async () => 
   assert.equal(runtime.status.ready, true);
   const identify = socket.sent.find((packet) => packet.op === 2);
   assert.equal(identify.d.token, TOKEN);
-  assert.equal(identify.d.intents, 4_609);
+  assert.equal(identify.d.intents, 37_377);
   assert.equal(identify.d.properties.browser, 'dsh-im');
 
   for (const [id, sequence] of [

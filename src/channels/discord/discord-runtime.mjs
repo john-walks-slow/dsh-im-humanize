@@ -4,7 +4,7 @@ import { fetchImageBuffer } from '../shared/image-prompt.mjs';
 import { DiscordApi } from './discord-api.mjs';
 import { createDiscordBridgeStatus, DiscordHarnessBridge } from './discord-bridge.mjs';
 
-const DISCORD_GATEWAY_INTENTS = (1 << 0) | (1 << 9) | (1 << 12);
+const DISCORD_GATEWAY_INTENTS = (1 << 0) | (1 << 9) | (1 << 12) | (1 << 15);
 const RECONNECT_DELAYS_MS = Object.freeze([1_000, 3_000, 5_000, 10_000, 30_000]);
 const GUILD_TEXT = 0;
 const GUILD_ANNOUNCEMENT = 5;
