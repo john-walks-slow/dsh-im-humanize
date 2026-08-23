@@ -15,4 +15,3 @@ export default {
   'WhatsApp账号': 'WhatsApp account',
   ' Web 关联设备': ' Web linked device',
 };
-

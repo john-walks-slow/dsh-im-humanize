@@ -14,7 +14,7 @@ let language = 'zh';
 // (including undefined and unrecognized values) selects Chinese.
 export function setImHostLanguage(lang) {
   const normalized = typeof lang === 'string' ? lang.trim().toLowerCase() : '';
-  language = normalized === 'english' || normalized.startsWith('en') ? 'en' : 'zh';
+  language = normalized === 'english' || /^en(?:[-_].*)?$/u.test(normalized) ? 'en' : 'zh';
 }
 
 export function getImHostLanguage() {

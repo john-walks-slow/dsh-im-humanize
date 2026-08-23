@@ -25,4 +25,3 @@ export default {
   'Slack App Token 无法创建 Socket Mode 连接，请确认已启用 Socket Mode 和 connections:write。':
     'The Slack App Token could not create a Socket Mode connection. Make sure Socket Mode and connections:write are enabled.',
 };
-

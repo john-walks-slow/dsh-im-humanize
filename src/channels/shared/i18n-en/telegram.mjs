@@ -19,4 +19,3 @@ export default {
   'Telegram机器人': 'Telegram Bot',
   ' Bot API 长轮询': ' Bot API long polling',
 };
-

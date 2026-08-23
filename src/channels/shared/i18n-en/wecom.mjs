@@ -36,4 +36,3 @@ export default {
   '企业微信连接未就绪，插件会自动重试': 'The Enterprise WeChat connection is not ready. The plugin will retry automatically',
   '企业微信连接当前离线': 'The Enterprise WeChat connection is currently offline',
 };
-

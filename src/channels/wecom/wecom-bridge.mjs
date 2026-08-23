@@ -280,7 +280,8 @@ function progressText(update) {
 }
 
 function artifactFailureText(fileName, error) {
-  const name = String(fileName ?? '结果文件').replace(/[\r\n]+/g, ' ').trim() || '结果文件';
+  const name = String(fileName ?? t('结果文件')).replace(/[\r\n]+/g, ' ').trim()
+    || t('结果文件');
   switch (error?.code) {
     case 'artifact-delivery-uncertain':
       return t('结果文件「{name}」的发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。', { name });

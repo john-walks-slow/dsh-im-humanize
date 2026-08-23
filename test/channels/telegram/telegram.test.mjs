@@ -9,6 +9,7 @@ import {
   OutboundArtifactRegistry,
   createOutboundArtifactTool,
 } from '../../../src/channels/shared/semantic/artifact.mjs';
+import { setImHostLanguage } from '../../../src/channels/shared/i18n.mjs';
 import {
   TELEGRAM_ACCESS_MODES,
   TelegramConfigStore,
@@ -28,6 +29,7 @@ import {
   TelegramRuntime,
   TELEGRAM_COMMAND_MENU,
   normalizeTelegramUpdate,
+  telegramCommandMenu,
   telegramInboundAllowed,
 } from '../../../src/channels/telegram/telegram-runtime.mjs';
 import { TelegramStateStore } from '../../../src/channels/telegram/state-store.mjs';
@@ -245,6 +247,17 @@ test('Telegram API registers the command menu and commands-type menu button', as
     commands: [{ command: 'help' }],
   }), /commands are invalid/);
   await assert.rejects(() => api.setChatMenuButton({ menuButton: 'commands' }), /menu button is invalid/);
+});
+
+test('Telegram command menu follows the host language at runtime', () => {
+  assert.equal(TELEGRAM_COMMAND_MENU[0].description, '开启一个全新会话');
+  setImHostLanguage('en');
+  try {
+    assert.equal(telegramCommandMenu()[0].description, 'Start a brand-new Session');
+  } finally {
+    setImHostLanguage('zh');
+  }
+  assert.deepEqual(telegramCommandMenu(), TELEGRAM_COMMAND_MENU);
 });
 
 test('Telegram API preserves the legacy plain send and edit payloads', async () => {

@@ -64,6 +64,20 @@ export default {
   '/help  显示本帮助': '/help  Show this help',
   '{label}机器人与 DeepSeek Harness 连接正常。':
     'The {label} bot is connected to DeepSeek Harness and working normally.',
+  '{label}机器人凭据缺失，请移除后重新接入。':
+    '{label} bot credentials are missing. Remove the bot and connect it again.',
+  '{label}连接未就绪，插件会自动重试。':
+    'The {label} connection is not ready yet. The plugin will retry automatically.',
+  '{label}机器人已接入，消息连接暂未就绪。':
+    'The {label} bot is connected, but its message connection is not ready yet.',
+  '{label}连接仍未就绪，请稍后重试。':
+    'The {label} connection is still not ready. Please try again later.',
+  '{label}机器人尚未连接': 'The {label} bot is not connected yet',
+  '{name}（{id}）': '{name} ({id})',
+  '{label}{connectionLabel}运行正常': 'The {label}{connectionLabel} is running normally',
+  '{label}连接未就绪，插件会自动重试':
+    'The {label} connection is not ready. The plugin will retry automatically',
+  '{label}连接当前离线': 'The {label} connection is currently offline',
   '已开启新会话。请发送你的问题。': 'A new session has started. Please send your question.',
   '正在使用{name}…': 'Using {name}…',
   '已停止。': 'Stopped.',
@@ -75,4 +89,3 @@ export default {
   '检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。':
     'A pending question left over in this Session was detected. It has been safely cancelled, and your latest message is being processed.',
 };
-

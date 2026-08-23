@@ -17,8 +17,10 @@ import {
 } from '../../../src/channels/slack/slack-api.mjs';
 import {
   SlackRuntime,
+  isSlackToolProgress,
   normalizeSlackEvent,
 } from '../../../src/channels/slack/slack-runtime.mjs';
+import { setImHostLanguage } from '../../../src/channels/shared/i18n.mjs';
 import { SLACK_APP_MANIFEST_YAML } from '../../../src/channels/slack/manifest.mjs';
 import {
   SLACK_ENDPOINTS,
@@ -56,6 +58,20 @@ function deferred() {
   });
   return { promise, resolve, reject };
 }
+
+test('Slack recognizes localized tool progress without hiding ordinary text', () => {
+  assert.equal(isSlackToolProgress('正在使用搜索…'), true);
+  assert.equal(isSlackToolProgress('正在使用…'), false);
+  assert.equal(isSlackToolProgress('普通回复'), false);
+  setImHostLanguage('en');
+  try {
+    assert.equal(isSlackToolProgress('Using search…'), true);
+    assert.equal(isSlackToolProgress('Using …'), false);
+    assert.equal(isSlackToolProgress('Ordinary reply'), false);
+  } finally {
+    setImHostLanguage('zh');
+  }
+});
 
 async function eventually(predicate, timeoutMs = 1_000) {
   const deadline = Date.now() + timeoutMs;

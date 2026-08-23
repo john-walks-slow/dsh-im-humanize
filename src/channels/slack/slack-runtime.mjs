@@ -136,8 +136,18 @@ export function normalizeSlackEvent(payload, botUserId, {
   };
 }
 
-function isToolProgress(text) {
-  return typeof text === 'string' && /^正在使用.+…$/.test(text.trim());
+export function isSlackToolProgress(text) {
+  if (typeof text !== 'string') return false;
+  const marker = '__DSH_IM_TOOL_NAME__';
+  const template = t('正在使用{name}…', { name: marker });
+  const markerIndex = template.indexOf(marker);
+  if (markerIndex < 0) return false;
+  const prefix = template.slice(0, markerIndex);
+  const suffix = template.slice(markerIndex + marker.length);
+  const source = text.trim();
+  return source.startsWith(prefix)
+    && source.endsWith(suffix)
+    && source.length > prefix.length + suffix.length;
 }
 
 async function appendInChunks(api, target, ts, text, signal) {
@@ -205,7 +215,8 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
       return [...providerMessageIds];
     },
     update(text) {
-      if (closed || broken || typeof text !== 'string' || !text.trim() || isToolProgress(text)) return;
+      if (closed || broken || typeof text !== 'string' || !text.trim()
+        || isSlackToolProgress(text)) return;
       pending = text;
       schedule();
     },

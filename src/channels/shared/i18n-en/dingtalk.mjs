@@ -50,4 +50,3 @@ export default {
   '钉钉 Stream 消息连接运行正常': 'The DingTalk Stream message connection is running normally',
   '钉钉消息连接当前离线': 'The DingTalk message connection is currently offline',
 };
-

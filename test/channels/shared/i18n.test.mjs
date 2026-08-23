@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { after, test } from 'node:test';
 
 import {
@@ -30,7 +30,7 @@ test('setImHostLanguage accepts English spellings and falls back to Chinese', ()
     setImHostLanguage(value);
     assert.equal(getImHostLanguage(), 'en', `expected ${value} to select English`);
   }
-  for (const value of [undefined, null, '', 'zh', 'zh-CN', 'fr', 42]) {
+  for (const value of [undefined, null, '', 'zh', 'zh-CN', 'fr', 'enabled', 42]) {
     setImHostLanguage(value);
     assert.equal(getImHostLanguage(), 'zh', `expected ${value} to select Chinese`);
   }
@@ -49,9 +49,34 @@ test('t() translates known keys and fills placeholders in English mode', () => {
 
 test('every English dictionary entry is a non-empty translation of a Chinese key', () => {
   for (const [key, value] of Object.entries(EN)) {
-    assert.ok(/[一-鿿]/.test(key), `dictionary key is not Chinese: ${key}`);
+    assert.ok(/[一-鿿（）]/.test(key), `dictionary key is not a Chinese source string: ${key}`);
     assert.ok(typeof value === 'string' && value.trim().length > 0, `empty translation for: ${key}`);
+    const placeholders = (text) => [...new Set(
+      [...text.matchAll(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g)].map((match) => match[1]),
+    )].sort();
+    assert.deepEqual(
+      placeholders(value),
+      placeholders(key),
+      `placeholder mismatch for: ${key}`,
+    );
   }
+});
+
+test('English dictionary source files do not define duplicate keys', async () => {
+  const dictionaryDir = join(srcChannelsDir, 'shared', 'i18n-en');
+  const seen = new Map();
+  const duplicates = [];
+  const files = readdirSync(dictionaryDir)
+    .filter((file) => file.endsWith('.mjs'))
+    .sort();
+  for (const file of files) {
+    const { default: entries } = await import(pathToFileURL(join(dictionaryDir, file)).href);
+    for (const key of Object.keys(entries)) {
+      if (seen.has(key)) duplicates.push(`${key}: ${seen.get(key)}, ${file}`);
+      else seen.set(key, file);
+    }
+  }
+  assert.deepEqual(duplicates, []);
 });
 
 test('every literal t() key in src/channels has an English dictionary entry', () => {

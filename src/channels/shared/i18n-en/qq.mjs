@@ -9,12 +9,6 @@ export default {
 
 
 
-
-
-
-
-
-  结果文件: 'Result file',
   '结果文件「{name}」已生成，但 QQ 今日文件上传额度已用完，请稍后重试。':
     'The result file "{name}" was generated, but QQ\'s daily file upload quota is used up. Please try again later.',
 
@@ -58,4 +52,3 @@ export default {
   'QQ 已授权，但无法安全保存接入配置。':
     'QQ authorization succeeded, but the connection configuration could not be saved safely.',
 };
-

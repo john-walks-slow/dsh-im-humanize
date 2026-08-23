@@ -78,4 +78,3 @@ export default {
   '微信服务拒绝了文件消息。': 'The WeChat service rejected the file message.',
   '微信账号连接启动失败。': 'Failed to start the WeChat account connection.',
 };
-

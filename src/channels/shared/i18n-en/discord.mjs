@@ -6,4 +6,3 @@ export default {
   'Discord机器人': 'Discord Bot',
   ' Gateway 长连接': ' Gateway long-lived connection',
 };
-

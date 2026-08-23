@@ -16,21 +16,28 @@ import {
 } from './config-store.mjs';
 
 export const TELEGRAM_COMMAND_MENU = Object.freeze([
-  { command: 'new', description: t('开启一个全新会话') },
-  { command: 'compact', description: t('压缩当前会话的较早上下文') },
-  { command: 'workspace', description: t('切换工作区') },
-  { command: 'workspacelist', description: t('列出工作区绝对路径') },
-  { command: 'sessionlist', description: t('列出会话 ID 和标题') },
-  { command: 'session', description: t('将当前聊天绑定到指定会话') },
-  { command: 'models', description: t('按序号列出所有可用模型') },
-  { command: 'model', description: t('查看或切换当前会话模型') },
-  { command: 'presetlist', description: t('列出可用 Agent Preset') },
-  { command: 'preset', description: t('查看或设置新会话 Agent Preset') },
-  { command: 'stop', description: t('停止当前任务') },
-  { command: 'steer', description: t('纠偏当前任务') },
-  { command: 'status', description: t('检查连接状态') },
-  { command: 'help', description: t('显示帮助') },
+  { command: 'new', description: '开启一个全新会话' },
+  { command: 'compact', description: '压缩当前会话的较早上下文' },
+  { command: 'workspace', description: '切换工作区' },
+  { command: 'workspacelist', description: '列出工作区绝对路径' },
+  { command: 'sessionlist', description: '列出会话 ID 和标题' },
+  { command: 'session', description: '将当前聊天绑定到指定会话' },
+  { command: 'models', description: '按序号列出所有可用模型' },
+  { command: 'model', description: '查看或切换当前会话模型' },
+  { command: 'presetlist', description: '列出可用 Agent Preset' },
+  { command: 'preset', description: '查看或设置新会话 Agent Preset' },
+  { command: 'stop', description: '停止当前任务' },
+  { command: 'steer', description: '纠偏当前任务' },
+  { command: 'status', description: '检查连接状态' },
+  { command: 'help', description: '显示帮助' },
 ]);
+
+export function telegramCommandMenu() {
+  return TELEGRAM_COMMAND_MENU.map((item) => ({
+    ...item,
+    description: t(item.description),
+  }));
+}
 
 function escaped(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -709,7 +716,7 @@ export class TelegramRuntime {
         throw error;
       }
       try {
-        await api.setMyCommands({ commands: TELEGRAM_COMMAND_MENU, signal: controller.signal });
+        await api.setMyCommands({ commands: telegramCommandMenu(), signal: controller.signal });
         await api.setChatMenuButton({ menuButton: COMMANDS_MENU_BUTTON, signal: controller.signal });
       } catch (error) {
         this.#logger.warn?.(

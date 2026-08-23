@@ -20,6 +20,7 @@ import {
   normalizeDiscordMessage,
   resolveDiscordMessageRoute,
 } from '../../../src/channels/discord/discord-runtime.mjs';
+import { setImHostLanguage } from '../../../src/channels/shared/i18n.mjs';
 import {
   DISCORD_ENDPOINTS,
   createDiscordRpcHandler,
@@ -387,6 +388,15 @@ test('Discord controller persists a credential reference and exposes only masked
   const status = await controller.bindCredentials({ token: TOKEN });
   assert.equal(status.totals.connected, 1);
   assert.equal(status.bots[0].bot.name, 'Harness Discord');
+  setImHostLanguage('en');
+  try {
+    assert.equal(
+      controller.status().bots[0].health.summary,
+      'The Discord Gateway long-lived connection is running normally',
+    );
+  } finally {
+    setImHostLanguage('zh');
+  }
   const identity = deriveDiscordBotIdentity('1234567890123456789');
   assert.equal(credentialStore.values.get(identity.tokenRef), TOKEN);
   assert.doesNotMatch(await readFile(configPath, 'utf8'), new RegExp(TOKEN.replaceAll('.', '\\.')));

@@ -21,4 +21,3 @@ export default {
   'Harness Session 已创建。': 'Harness Session created.',
   '正在使用 {tool}…': 'Using {tool}…',
 };
-
