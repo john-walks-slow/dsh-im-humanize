@@ -6,6 +6,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-23
+
 ### Added / 新增
 
 - WhatsApp 新增仅自己、指定联系人和开放响应三种访问模式；旧机器人和新接入机器人均默认仅响应账号自聊。
@@ -172,7 +174,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/xmanrui/dsh-im/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/xmanrui/dsh-im/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/xmanrui/dsh-im/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/xmanrui/dsh-im/compare/v1.0.0...v1.0.1
