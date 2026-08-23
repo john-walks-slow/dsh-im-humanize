@@ -37,6 +37,7 @@ import {
   mergeDeliveryReceipts,
   providerMessageIdsFor,
 } from '../shared/semantic/delivery.mjs';
+import { sendMarkdownReply } from './markdown-reply.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
 const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
@@ -661,11 +662,13 @@ export class QqHarnessBridge {
           }
         }
         if (!streamFinished) {
-          const sent = await this.#bot.sendText(target, displayAnswer);
+          const deliveries = await sendMarkdownReply(this.#bot, target, displayAnswer, {
+            logger: this.#logger,
+          });
           textReceipt = createDeliveryReceipt({
             deliveryId: messageId,
             presentation: 'qq-text',
-            providerMessageIds: providerMessageIdsFor(sent),
+            providerMessageIds: deliveries.flatMap((delivery) => providerMessageIdsFor(delivery)),
           });
         }
       } catch (error) {

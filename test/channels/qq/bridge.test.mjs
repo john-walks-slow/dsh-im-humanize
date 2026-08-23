@@ -458,6 +458,78 @@ test('QQ private messages stream Harness snapshots and finalize once', async () 
   assert.equal(bridge.status.messagesReplied, 1);
 });
 
+test('QQ delivers final group answers as markdown messages', async () => {
+  const sentText = [];
+  const markdownCalls = [];
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => sentText.push(text),
+      send: async (options) => {
+        markdownCalls.push(options);
+        return { id: `md-${markdownCalls.length}` };
+      },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => '## 标题\n\n**加粗**与 `代码`',
+    },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => {},
+      sessionFor: () => 'session-group',
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+  });
+
+  await bridge.accept(message({
+    kind: 'group',
+    rawEventType: 'GROUP_AT_MESSAGE_CREATE',
+    groupOpenid: 'group-md',
+    messageId: 'msg-group-md',
+    content: '请回答',
+    replyTarget: { scope: 'group', targetId: 'group-md', msgId: 'msg-group-md' },
+  }));
+  assert.equal(markdownCalls.length, 1);
+  assert.equal(markdownCalls[0].msgType, 2);
+  assert.equal(markdownCalls[0].markdown.content, '## 标题\n\n**加粗**与 `代码`');
+  assert.equal(Number.isInteger(markdownCalls[0].extra.msg_seq), true);
+  assert.deepEqual(sentText, []);
+  assert.equal(bridge.status.messagesReplied, 1);
+});
+
+test('QQ falls back to plain text when the platform rejects markdown', async () => {
+  const sentText = [];
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => sentText.push(text),
+      send: async () => { throw new Error('markdown rejected'); },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => '**回答**内容',
+    },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => {},
+      sessionFor: () => 'session-fallback',
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+    logger: { warn() {}, error() {} },
+  });
+
+  await bridge.accept(message({
+    messageId: 'msg-md-fallback',
+    replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: 'msg-md-fallback' },
+  }));
+  assert.deepEqual(sentText, ['**回答**内容']);
+  assert.equal(bridge.status.messagesReplied, 1);
+  assert.equal(bridge.status.lastError, null);
+});
+
 test('QQ closes an opened progress stream and announces when the Harness turn is stopped', async () => {
   const fixture = stateFixture([['c2c:owner-openid', 'session-stopped']]);
   const frames = [];
