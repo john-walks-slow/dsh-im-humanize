@@ -419,18 +419,12 @@ test('QQ remembers any authorized private inbound as a connection-test target', 
   assert.equal(sent.length, 2);
 });
 
-test('QQ private messages stream Harness snapshots and finalize once', async () => {
-  const frames = [];
+test('QQ pushes the final answer without streaming intermediate text frames', async () => {
   const sent = [];
   const seen = new Set();
   const bridge = new QqHarnessBridge({
     bot: {
       sendText: async (_target, text) => sent.push(text),
-      openStream: () => ({
-        update: async (text) => frames.push(text),
-        complete: async () => frames.push('DONE'),
-        cancel() {},
-      }),
     },
     ownerUserOpenid: 'owner-openid',
     harness: {
@@ -438,6 +432,7 @@ test('QQ private messages stream Harness snapshots and finalize once', async () 
       createSession: async () => 'session-new',
       ensureRunning: async () => true,
       ask: async (_session, _text, { onUpdate }) => {
+        // 正文流式帧不逐帧推送，避免原地刷新闪烁。
         await onUpdate({ type: 'text', text: '回答中' });
         return '最终回答';
       },
@@ -452,22 +447,16 @@ test('QQ private messages stream Harness snapshots and finalize once', async () 
   });
 
   await bridge.accept(message());
-  assert.deepEqual(frames, ['回答中', '最终回答', 'DONE']);
-  assert.deepEqual(sent, []);
+  assert.deepEqual(sent, ['最终回答']);
   assert.equal(seen.has('msg-1'), true);
   assert.equal(bridge.status.messagesReplied, 1);
 });
 
-test('QQ progress stream keeps the last frame when a tool finishes', async () => {
-  const frames = [];
+test('QQ pushes one notice per tool call and ignores status frames', async () => {
+  const sent = [];
   const bridge = new QqHarnessBridge({
     bot: {
-      sendText: async () => {},
-      openStream: () => ({
-        update: async (text) => frames.push(text),
-        complete: async () => frames.push('DONE'),
-        cancel() {},
-      }),
+      sendText: async (_target, text) => sent.push(text),
     },
     ownerUserOpenid: 'owner-openid',
     harness: {
@@ -491,7 +480,7 @@ test('QQ progress stream keeps the last frame when a tool finishes', async () =>
   });
 
   await bridge.accept(message({ messageId: 'msg-status-frame' }));
-  assert.deepEqual(frames, ['正在使用bash…', '正在使用read…', '最终回答', 'DONE']);
+  assert.deepEqual(sent, ['正在使用bash…', '正在使用read…', '最终回答']);
 });
 
 test('QQ delivers final group answers as markdown messages', async () => {
@@ -566,20 +555,13 @@ test('QQ falls back to plain text when the platform rejects markdown', async () 
   assert.equal(bridge.status.lastError, null);
 });
 
-test('QQ closes an opened progress stream and announces when the Harness turn is stopped', async () => {
+test('QQ announces a stopped turn after any tool notices already pushed', async () => {
   const fixture = stateFixture([['c2c:owner-openid', 'session-stopped']]);
-  const frames = [];
   const sent = [];
-  let cancellations = 0;
   let loggedErrors = 0;
   const bridge = new QqHarnessBridge({
     bot: {
       sendText: async (_target, text) => sent.push(text),
-      openStream: () => ({
-        update: async (text) => frames.push(text),
-        complete: async () => frames.push('DONE'),
-        cancel: () => { cancellations += 1; },
-      }),
     },
     ownerUserOpenid: 'owner-openid',
     harness: {
@@ -597,25 +579,18 @@ test('QQ closes an opened progress stream and announces when the Harness turn is
 
   await bridge.accept(message({ messageId: 'qq-stopped-stream' }));
 
-  assert.deepEqual(frames, ['正在使用bash…']);
-  assert.equal(cancellations, 1);
-  assert.deepEqual(sent, ['已停止。']);
+  assert.deepEqual(sent, ['正在使用bash…', '已停止。']);
   assert.equal(loggedErrors, 0);
   assert.equal(fixture.seen.has('qq-stopped-stream'), true);
 });
 
-test('QQ keeps a stopped turn terminal when stream cleanup and its notice both fail', async () => {
+test('QQ keeps a stopped turn terminal when its notice cannot be sent', async () => {
   const fixture = stateFixture([['c2c:owner-openid', 'session-stopped-fallback']]);
   let warnings = 0;
   let loggedErrors = 0;
   const bridge = new QqHarnessBridge({
     bot: {
       sendText: async () => { throw new Error('send unavailable'); },
-      openStream: () => ({
-        update: async () => {},
-        complete: async () => {},
-        cancel: () => { throw new Error('cancel unavailable'); },
-      }),
     },
     ownerUserOpenid: 'owner-openid',
     harness: {
@@ -635,7 +610,7 @@ test('QQ keeps a stopped turn terminal when stream cleanup and its notice both f
 
   await bridge.accept(message({ messageId: 'qq-stopped-stream-fallback' }));
 
-  assert.equal(warnings, 2);
+  assert.equal(warnings, 1);
   assert.equal(loggedErrors, 0);
   assert.equal(fixture.seen.has('qq-stopped-stream-fallback'), true);
 });

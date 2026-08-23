@@ -543,7 +543,6 @@ export class QqHarnessBridge {
     const promptMessage = qqInboundMessage(message, { fetchImpl: this.#fetchImpl });
     const text = promptMessage.content;
     const hasImages = hasInboundImages(promptMessage);
-    let stream = null;
     try {
       if (!text && !hasImages) {
         await this.#bot.sendText(target, '目前支持文字和图片消息。');
@@ -596,14 +595,6 @@ export class QqHarnessBridge {
       const content = hasImages
         ? await promptContentForMessage(promptMessage, { signal: this.#signal })
         : undefined;
-      let streamFinished = false;
-      if (message.kind === 'c2c' && target?.msgId && typeof this.#bot.openStream === 'function') {
-        try {
-          stream = this.#bot.openStream({ target });
-        } catch (error) {
-          this.#logger.warn?.('[dsh-im:qq] unable to start a QQ stream; using a text reply:', error);
-        }
-      }
       let answer;
       let artifacts = [];
       try {
@@ -618,16 +609,16 @@ export class QqHarnessBridge {
             timeoutMs: this.#replyTimeoutMs,
             signal: this.#signal,
             control: { owner: this, key },
-            onUpdate: stream ? async (update) => {
-              // status 帧（如工具结束后的“正在整理结果…”）不推送：
-              // 保持上一帧（工具名或已生成文本），避免中间过程反复闪提示。
-              const progress = update.type === 'text'
-                ? update.text
-                : update.type === 'tool'
-                  ? `正在使用${update.name}…`
-                  : null;
-              if (progress) await stream.update(progress);
-            } : undefined,
+            // 中间过程逐条推送：每个工具调用发一条独立消息；text 帧（正文流）
+            // 不逐帧推送，最终答案一次性发送；status 帧忽略。
+            onUpdate: async (update) => {
+              if (update.type !== 'tool' || !nonEmptyString(update.name)) return;
+              try {
+                await this.#bot.sendText(target, `正在使用${update.name}…`);
+              } catch (error) {
+                this.#logger.warn?.('[dsh-im:qq] unable to send a tool progress notice:', error);
+              }
+            },
             onInteraction: (interaction) => this.#handleInteraction(interaction, {
               key,
               actor: sender,
@@ -648,31 +639,14 @@ export class QqHarnessBridge {
       let textReceipt = null;
       let textSendError = null;
       try {
-        if (stream) {
-          try {
-            await stream.update(displayAnswer);
-            await stream.complete();
-            streamFinished = true;
-            textReceipt = createDeliveryReceipt({
-              deliveryId: messageId,
-              presentation: 'qq-text',
-              providerMessageIds: providerMessageIdsFor(stream),
-            });
-          } catch (error) {
-            stream.cancel?.();
-            this.#logger.warn?.('[dsh-im:qq] QQ stream finalization failed; using a text reply:', error);
-          }
-        }
-        if (!streamFinished) {
-          const deliveries = await sendMarkdownReply(this.#bot, target, displayAnswer, {
-            logger: this.#logger,
-          });
-          textReceipt = createDeliveryReceipt({
-            deliveryId: messageId,
-            presentation: 'qq-text',
-            providerMessageIds: deliveries.flatMap((delivery) => providerMessageIdsFor(delivery)),
-          });
-        }
+        const deliveries = await sendMarkdownReply(this.#bot, target, displayAnswer, {
+          logger: this.#logger,
+        });
+        textReceipt = createDeliveryReceipt({
+          deliveryId: messageId,
+          presentation: 'qq-text',
+          providerMessageIds: deliveries.flatMap((delivery) => providerMessageIdsFor(delivery)),
+        });
       } catch (error) {
         textSendError = error;
         this.#logger.warn?.('[dsh-im:qq] final text delivery failed; continuing with result files:', error);
@@ -691,22 +665,14 @@ export class QqHarnessBridge {
       return delivery.receipt;
     } catch (error) {
       if (error?.code === 'turn-stopped') {
-        if (stream) {
-          try {
-            await stream.cancel?.();
-          } catch (streamError) {
-            this.#logger.warn?.('[dsh-im:qq] unable to cancel a stopped QQ stream:', streamError);
-          }
-          try {
-            await this.#bot.sendText(target, '已停止。');
-          } catch (sendError) {
-            this.#logger.warn?.('[dsh-im:qq] unable to announce a stopped QQ turn:', sendError);
-          }
+        try {
+          await this.#bot.sendText(target, '已停止。');
+        } catch (sendError) {
+          this.#logger.warn?.('[dsh-im:qq] unable to announce a stopped QQ turn:', sendError);
         }
         await this.#state.markSeen(messageId);
         return;
       }
-      stream?.cancel?.();
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);
       this.#logger.error?.('[dsh-im:qq] failed to process an inbound message:', error);
