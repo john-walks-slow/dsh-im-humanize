@@ -6,6 +6,18 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-23
+
+### Added / 新增
+
+- 九个内置 IM 渠道现在都能接收普通文件，并把文件随同用户消息安全地交给当前 Harness Session。
+  All nine built-in IM channels can now receive ordinary files and safely pass them with the user message to the active Harness Session.
+
+### Changed / 变更
+
+- 统一入站文件的提前下载、工作区暂存、路径保护、失败提示和 Turn 结束清理，并继续由各消息平台决定文件类型、数量和大小限制。
+  Unified inbound-file prefetching, workspace staging, path protection, failure messages, and end-of-Turn cleanup, while leaving file type, count, and size limits to each messaging platform.
+
 ## [1.2.0] - 2026-08-23
 
 ### Added / 新增
@@ -174,7 +186,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/xmanrui/dsh-im/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/xmanrui/dsh-im/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/xmanrui/dsh-im/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/xmanrui/dsh-im/compare/v1.0.1...v1.0.2
