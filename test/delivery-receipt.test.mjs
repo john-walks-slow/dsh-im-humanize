@@ -5,9 +5,37 @@ import {
   artifactOutcomeForError,
   createArtifactFailureReceipt,
   createDeliveryReceipt,
+  createTextDeliveryBlock,
   mergeDeliveryReceipts,
   providerMessageIdsFor,
 } from '../src/channels/shared/semantic/delivery.mjs';
+
+test('text DeliveryBlocks preserve explicit format and legacy strings default to plain', () => {
+  const legacy = createTextDeliveryBlock('legacy *text*');
+  const markdown = createTextDeliveryBlock({
+    kind: 'text',
+    text: '# Harness answer',
+    format: 'markdown',
+  });
+
+  assert.deepEqual(legacy, {
+    kind: 'text',
+    text: 'legacy *text*',
+    format: 'plain',
+  });
+  assert.deepEqual(markdown, {
+    kind: 'text',
+    text: '# Harness answer',
+    format: 'markdown',
+  });
+  assert.equal(Object.isFrozen(legacy), true);
+  assert.equal(Object.isFrozen(markdown), true);
+  assert.throws(
+    () => createTextDeliveryBlock({ kind: 'text', text: 'x', format: 'html' }),
+    /plain or markdown/,
+  );
+  assert.throws(() => createTextDeliveryBlock('   '), /non-empty text/);
+});
 
 test('DeliveryReceipt validates and freezes the shared versioned contract', () => {
   const receipt = createDeliveryReceipt({
@@ -101,4 +129,33 @@ test('text and multiple artifact attempts merge into one authoritative receipt',
       { artifactId: 'artifact-2', outcome: 'failed', reason: 'artifact-rate-limited' },
     ],
   });
+});
+
+test('DeliveryReceipt optionally preserves final delivery outcome without changing legacy receipts', () => {
+  const legacy = createDeliveryReceipt({
+    deliveryId: 'legacy',
+    presentation: 'telegram-text',
+  });
+  const uncertain = createDeliveryReceipt({
+    deliveryId: 'rich',
+    presentation: 'telegram-rich-final',
+    deliveryOutcome: 'unknown',
+    reason: 'telegram-timeout',
+  });
+
+  assert.equal(Object.hasOwn(legacy, 'deliveryOutcome'), false);
+  assert.deepEqual(uncertain, {
+    schemaVersion: 1,
+    deliveryId: 'rich',
+    presentation: 'telegram-rich-final',
+    providerMessageIds: [],
+    deliveryOutcome: 'unknown',
+    reason: 'telegram-timeout',
+    artifacts: [],
+  });
+  assert.throws(() => createDeliveryReceipt({
+    deliveryId: 'invalid',
+    presentation: 'telegram-rich-final',
+    deliveryOutcome: 'maybe',
+  }), /deliveryOutcome/);
 });

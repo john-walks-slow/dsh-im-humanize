@@ -330,3 +330,17 @@ test('mixed artifacts preserve order and merge existing receipt semantics', asyn
   await assertReleased(image);
   await assertReleased(file);
 });
+
+test('a definitively failed base delivery is not treated as user-visible', async () => {
+  const delivery = await deliverOutboundArtifacts({
+    baseReceipt: createDeliveryReceipt({
+      deliveryId: 'failed-text',
+      presentation: 'telegram-rich-final',
+      deliveryOutcome: 'failed',
+      reason: 'telegram-provider-rejected',
+    }),
+    channelKey: 'telegram',
+  });
+
+  assert.equal(delivery.userVisible, false);
+});

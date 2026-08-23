@@ -35,6 +35,7 @@ import {
 import { deliverOutboundArtifacts } from './semantic/artifact-delivery.mjs';
 import {
   createDeliveryReceipt,
+  createTextDeliveryBlock,
   providerMessageIdsFor,
 } from './semantic/delivery.mjs';
 
@@ -372,6 +373,7 @@ export class TextHarnessBridge {
     const target = message.replyTarget;
     const text = cleanText(message.content);
     let stream = null;
+    let semanticStream = false;
     try {
       this.#signal?.throwIfAborted();
       if (message.kind === 'group' && message.addressed !== true) {
@@ -448,7 +450,17 @@ export class TextHarnessBridge {
         this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] typing indicator failed:`, error);
       });
       let streamFinished = false;
-      if (typeof this.#bot.openStream === 'function') {
+      if (typeof this.#bot.openDeliveryStream === 'function') {
+        try {
+          stream = await this.#bot.openDeliveryStream(target);
+          semanticStream = true;
+        } catch (error) {
+          this.#logger.warn?.(
+            `[dsh-im:${this.#descriptor.key}] unable to start a semantic reply stream; using final delivery:`,
+            error,
+          );
+        }
+      } else if (typeof this.#bot.openStream === 'function') {
         try {
           stream = await this.#bot.openStream(target);
         } catch (error) {
@@ -476,7 +488,12 @@ export class TextHarnessBridge {
           onUpdate: stream ? async (update) => {
             const progress = update.type === 'text' ? update.text
               : update.type === 'tool' ? `正在使用${update.name}…` : update.text;
-            if (progress) await stream.update(progress);
+            if (progress) {
+              const format = update.type === 'text' ? 'markdown' : 'plain';
+              await stream.update(semanticStream
+                ? createTextDeliveryBlock(progress, format)
+                : progress);
+            }
           } : undefined,
           onInteraction: (interaction) => this.#handleInteraction(interaction, {
             key: conversationKey,
@@ -491,19 +508,28 @@ export class TextHarnessBridge {
       const visibleAnswer = !cleanText(answer) && artifacts.length > 0
         ? FILE_ONLY_COMPLETION_TEXT
         : answer;
+      const answerFormat = visibleAnswer === FILE_ONLY_COMPLETION_TEXT && !cleanText(answer)
+        ? 'plain'
+        : 'markdown';
       let textDeliveryError = null;
       let textReceipt = null;
       if (stream) {
         try {
-          const result = await stream.finish(visibleAnswer);
+          const result = await stream.finish(semanticStream
+            ? createTextDeliveryBlock(visibleAnswer, answerFormat)
+            : visibleAnswer);
           streamFinished = true;
           textReceipt = createDeliveryReceipt({
             deliveryId: messageId,
-            presentation: `${this.#descriptor.key}-stream`,
+            presentation: result?.presentation
+              ?? stream.presentation
+              ?? `${this.#descriptor.key}-stream`,
             providerMessageIds: [
               ...providerMessageIdsFor(stream),
               ...providerMessageIdsFor(result),
             ],
+            deliveryOutcome: result?.deliveryOutcome,
+            reason: result?.reason,
           });
         } catch (error) {
           stream.cancel?.();
@@ -515,11 +541,18 @@ export class TextHarnessBridge {
       }
       if (!streamFinished) {
         try {
-          const result = await this.#bot.sendText(target, visibleAnswer);
+          const result = typeof this.#bot.sendDelivery === 'function'
+            ? await this.#bot.sendDelivery(
+                target,
+                createTextDeliveryBlock(visibleAnswer, answerFormat),
+              )
+            : await this.#bot.sendText(target, visibleAnswer);
           textReceipt = createDeliveryReceipt({
             deliveryId: messageId,
-            presentation: `${this.#descriptor.key}-text`,
+            presentation: result?.presentation ?? `${this.#descriptor.key}-text`,
             providerMessageIds: providerMessageIdsFor(result),
+            deliveryOutcome: result?.deliveryOutcome,
+            reason: result?.reason,
           });
         } catch (error) {
           textDeliveryError = error;
@@ -529,9 +562,11 @@ export class TextHarnessBridge {
       // Settle the independent attachment path before surfacing the text error.
       const delivery = await this.#deliverArtifacts(target, messageId, artifacts, textReceipt);
       if (textDeliveryError && !delivery.userVisible) throw textDeliveryError;
-      this.#status.messagesReplied += 1;
-      this.#status.lastReplyAt = new Date().toISOString();
-      this.#status.lastError = null;
+      if (delivery.userVisible) {
+        this.#status.messagesReplied += 1;
+        this.#status.lastReplyAt = new Date().toISOString();
+        this.#status.lastError = null;
+      }
       return delivery.receipt;
     } catch (error) {
       if (error?.code === 'turn-stopped') {
@@ -544,11 +579,28 @@ export class TextHarnessBridge {
         }
         return;
       }
-      stream?.cancel?.();
-      if (this.#signal?.aborted) return;
+      if (this.#signal?.aborted) {
+        stream?.cancel?.();
+        return;
+      }
       this.#status.lastError = error?.message ?? String(error);
+      const presentStreamFailure = async (text) => {
+        if (typeof stream?.fail !== 'function') return false;
+        try {
+          const result = await stream.fail(text);
+          return Boolean(result) && result.deliveryOutcome !== 'failed';
+        } catch (streamError) {
+          this.#logger.warn?.(
+            `[dsh-im:${this.#descriptor.key}] unable to finalize the failed stream:`,
+            streamError,
+          );
+          return false;
+        }
+      };
       const imageErrorMessage = imagePromptUserMessage(error);
       if (imageErrorMessage) {
+        if (await presentStreamFailure(imageErrorMessage)) return;
+        stream?.cancel?.();
         try {
           await this.#bot.sendText(target, imageErrorMessage);
         } catch (sendError) {
@@ -561,6 +613,8 @@ export class TextHarnessBridge {
       }
       const fileErrorMessage = inboundFileUserMessage(error);
       if (fileErrorMessage) {
+        if (await presentStreamFailure(fileErrorMessage)) return;
+        stream?.cancel?.();
         try {
           await this.#bot.sendText(target, fileErrorMessage);
         } catch (sendError) {
@@ -572,6 +626,8 @@ export class TextHarnessBridge {
         return;
       }
       this.#logger.error?.(`[dsh-im:${this.#descriptor.key}] failed to process a message:`, error);
+      if (await presentStreamFailure('消息处理失败，请稍后重试。')) return;
+      stream?.cancel?.();
       try {
         await this.#bot.sendText(target, '消息处理失败，请稍后重试。');
       } catch (sendError) {
