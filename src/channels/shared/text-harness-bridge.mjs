@@ -482,7 +482,7 @@ export class TextHarnessBridge {
             key: conversationKey,
             actor: senderId,
             target,
-            requiresMention: message.kind === 'group',
+            requiresMention: message.kind === 'group' && message.requiresMention !== false,
           }),
           onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
           files: message.files,

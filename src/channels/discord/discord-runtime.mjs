@@ -6,6 +6,12 @@ import { createDiscordBridgeStatus, DiscordHarnessBridge } from './discord-bridg
 
 const DISCORD_GATEWAY_INTENTS = (1 << 0) | (1 << 9) | (1 << 12);
 const RECONNECT_DELAYS_MS = Object.freeze([1_000, 3_000, 5_000, 10_000, 30_000]);
+const GUILD_TEXT = 0;
+const GUILD_ANNOUNCEMENT = 5;
+const ANNOUNCEMENT_THREAD = 10;
+const PUBLIC_THREAD = 11;
+const PRIVATE_THREAD = 12;
+const THREAD_TYPES = new Set([ANNOUNCEMENT_THREAD, PUBLIC_THREAD, PRIVATE_THREAD]);
 const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 const IMAGE_FILE_TYPES = new Map([
   ['.jpg', 'image/jpeg'],
@@ -59,6 +65,94 @@ function stripBotMention(text, botId) {
   return text.replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
 }
 
+function cleanThreadName(message, botId) {
+  const name = stripBotMention(message?.content ?? '', botId).replace(/\s+/g, ' ').trim()
+    || 'DeepSeek Harness';
+  return [...name].slice(0, 100).join('');
+}
+
+function isThreadChannel(channel) {
+  return THREAD_TYPES.has(Number(channel?.type));
+}
+
+function isThreadFromMessage(channel, message) {
+  return isThreadChannel(channel)
+    && String(channel?.id ?? '') === String(message?.id ?? '')
+    && String(channel?.parent_id ?? '') === String(message?.channel_id ?? '');
+}
+
+function rememberChannel(channel, callback) {
+  if (channel?.id) callback?.(channel);
+  return channel;
+}
+
+function withConversationRoute(normalized, channel, botId, {
+  created = false,
+  fallback = null,
+  notice = null,
+} = {}) {
+  const channelId = String(channel?.id ?? normalized.conversationId);
+  const thread = isThreadChannel(channel);
+  const managed = thread && (created || String(channel?.owner_id ?? '') === String(botId));
+  const parentId = thread && channel?.parent_id ? String(channel.parent_id) : channelId;
+  return {
+    ...normalized,
+    conversationId: channelId,
+    addressed: normalized.addressed || managed,
+    requiresMention: thread ? !managed : normalized.kind === 'group',
+    replyTarget: {
+      channelId,
+      ...(!created && normalized.replyTarget?.replyToMessageId
+        ? { replyToMessageId: normalized.replyTarget.replyToMessageId }
+        : {}),
+      ...(notice ? { notice } : {}),
+    },
+    connectionTestTarget: { channelId },
+    conversationRoute: {
+      peerId: parentId,
+      ...(thread ? { threadId: channelId, managed } : {}),
+      ...(fallback ? { fallback } : {}),
+    },
+  };
+}
+
+function uncertainThreadCreate(error) {
+  const status = Number(error?.status);
+  return !Number.isInteger(status) || status >= 500;
+}
+
+function threadCreateUncertain(cause) {
+  const error = new Error('Discord Thread creation result is uncertain', { cause });
+  error.code = 'discord-thread-create-uncertain';
+  return error;
+}
+
+async function findCreatedThread(api, message, { signal, onChannel } = {}) {
+  try {
+    const channel = rememberChannel(await api.getChannel({
+      channelId: String(message.id),
+      signal,
+    }), onChannel);
+    return isThreadFromMessage(channel, message) ? channel : null;
+  } catch (error) {
+    if (error?.status === 404) return null;
+    throw error;
+  }
+}
+
+async function sendThreadUncertainNotice(api, normalized, signal) {
+  try {
+    await api.createMessage({
+      channelId: normalized.replyTarget.channelId,
+      replyToMessageId: normalized.replyTarget.replyToMessageId,
+      content: 'Thread 创建结果暂时无法确认。若已创建，请在对应 Thread 中重试；若未创建，请稍后重新 @机器人。',
+      signal,
+    });
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
+  }
+}
+
 function attachmentMediaType(attachment) {
   const value = typeof attachment?.content_type === 'string'
     ? attachment.content_type.split(';', 1)[0].trim().toLowerCase() : '';
@@ -109,7 +203,8 @@ function discordFileSource(attachment, fetchImpl) {
 }
 
 export function normalizeDiscordMessage(message, botId, { fetchImpl = fetch } = {}) {
-  if (!message?.id || !message?.channel_id || !message?.author?.id) return null;
+  if (!message?.id || !message?.channel_id || !message?.author?.id
+    || Number(message.type) === 21) return null;
   const direct = !message.guild_id;
   const addressed = direct
     || message.mentions?.some((mention) => String(mention?.id) === String(botId));
@@ -135,9 +230,76 @@ export function normalizeDiscordMessage(message, botId, { fetchImpl = fetch } = 
   };
 }
 
+export async function resolveDiscordMessageRoute(message, botId, {
+  api,
+  channel,
+  fetchImpl = fetch,
+  signal,
+  onChannel,
+} = {}) {
+  const normalized = normalizeDiscordMessage(message, botId, { fetchImpl });
+  if (!normalized || normalized.senderIsBot) return normalized;
+  if (normalized.kind === 'direct') {
+    return withConversationRoute(normalized, { id: normalized.conversationId, type: 1 }, botId);
+  }
+  if (!api || typeof api.getChannel !== 'function') {
+    throw new TypeError('Discord route resolution requires the Discord API');
+  }
+
+  const sourceChannel = rememberChannel(channel ?? await api.getChannel({
+    channelId: normalized.conversationId,
+    signal,
+  }), onChannel);
+  if (isThreadChannel(sourceChannel)) {
+    return withConversationRoute(normalized, sourceChannel, botId);
+  }
+  if (!normalized.addressed) return withConversationRoute(normalized, sourceChannel, botId);
+
+  const sourceType = Number(sourceChannel?.type);
+  if (sourceType !== GUILD_TEXT && sourceType !== GUILD_ANNOUNCEMENT) {
+    return withConversationRoute(normalized, sourceChannel, botId, {
+      fallback: 'unsupported-channel',
+      notice: '当前频道不支持自动创建 Thread，已直接在当前频道回复。',
+    });
+  }
+
+  let created;
+  try {
+    created = rememberChannel(await api.startThreadFromMessage({
+      channelId: normalized.conversationId,
+      messageId: normalized.messageId,
+      name: cleanThreadName(message, botId),
+      signal,
+    }), onChannel);
+    if (!isThreadFromMessage(created, message)) {
+      throw new Error('Discord returned an invalid thread for the source message');
+    }
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
+    let recovered;
+    try {
+      recovered = await findCreatedThread(api, message, { signal, onChannel });
+    } catch (recoveryError) {
+      await sendThreadUncertainNotice(api, normalized, signal);
+      throw threadCreateUncertain(recoveryError);
+    }
+    if (recovered) return withConversationRoute(normalized, recovered, botId, { created: true });
+    if (uncertainThreadCreate(error)) {
+      await sendThreadUncertainNotice(api, normalized, signal);
+      throw threadCreateUncertain(error);
+    }
+    return withConversationRoute(normalized, sourceChannel, botId, {
+      fallback: 'thread-create-failed',
+      notice: '无法创建 Thread，已直接在当前频道回复。',
+    });
+  }
+  return withConversationRoute(normalized, created, botId, { created: true });
+}
+
 export class DiscordBotClient {
   #api;
   #signal;
+  #deliveredNotices = new WeakSet();
 
   constructor({ api, signal }) {
     this.#api = api;
@@ -145,7 +307,9 @@ export class DiscordBotClient {
   }
 
   async sendText(target, text) {
-    const chunks = splitMessageText(text, 1_900);
+    const notice = !this.#deliveredNotices.has(target) && target?.notice
+      ? String(target.notice) : null;
+    const chunks = splitMessageText(notice ? `${notice}\n\n${text}` : text, 1_900);
     const providerMessageIds = [];
     for (const [index, chunk] of chunks.entries()) {
       const result = await this.#api.createMessage({
@@ -154,6 +318,7 @@ export class DiscordBotClient {
         replyToMessageId: index === 0 ? target.replyToMessageId : undefined,
         signal: this.#signal,
       });
+      if (notice && index === 0) this.#deliveredNotices.add(target);
       if (typeof result?.id === 'string' && result.id) providerMessageIds.push(result.id);
     }
     return { providerMessageIds };
@@ -173,21 +338,25 @@ export class DiscordBotClient {
   }
 
   async openStream(target) {
+    const notice = !this.#deliveredNotices.has(target) && target?.notice
+      ? String(target.notice) : null;
+    const decorate = (content) => notice ? `${notice}\n\n${content}` : content;
     const stream = createEditableMessageStream({
-      limit: 1_900,
+      limit: notice ? 1_800 : 1_900,
       create: async (content) => {
         const message = await this.#api.createMessage({
           channelId: target.channelId,
-          content,
+          content: decorate(content),
           replyToMessageId: target.replyToMessageId,
           signal: this.#signal,
         });
+        if (notice) this.#deliveredNotices.add(target);
         return message.id;
       },
       edit: (messageId, content) => this.#api.editMessage({
         channelId: target.channelId,
         messageId,
-        content,
+        content: decorate(content),
         signal: this.#signal,
       }),
       sendRemainder: (content) => this.#api.createMessage({
@@ -241,6 +410,8 @@ export class DiscordRuntime {
   #generation = 0;
   #stopped = true;
   #starting = null;
+  #channels = new Map();
+  #routing = new Map();
 
   constructor({
     config,
@@ -299,6 +470,8 @@ export class DiscordRuntime {
     this.#resumeUrl = null;
     this.#sequence = null;
     this.#reconnectAttempt = 0;
+    this.#channels.clear();
+    this.#routing.clear();
     this.#status.startedAt = new Date().toISOString();
     this.#status.connectionState = 'connecting';
     this.#status.lastError = null;
@@ -432,11 +605,21 @@ export class DiscordRuntime {
           markReady();
         } else if (packet.t === 'RESUMED') {
           markReady();
+        } else if (packet.t === 'GUILD_CREATE') {
+          for (const channel of [...(packet.d?.channels ?? []), ...(packet.d?.threads ?? [])]) {
+            this.#rememberChannel(channel);
+          }
+        } else if (packet.t === 'CHANNEL_CREATE' || packet.t === 'CHANNEL_UPDATE'
+          || packet.t === 'THREAD_CREATE' || packet.t === 'THREAD_UPDATE') {
+          this.#rememberChannel(packet.d);
+        } else if (packet.t === 'CHANNEL_DELETE' || packet.t === 'THREAD_DELETE') {
+          if (packet.d?.id) this.#channels.delete(String(packet.d.id));
+        } else if (packet.t === 'THREAD_LIST_SYNC') {
+          for (const channel of packet.d?.threads ?? []) this.#rememberChannel(channel);
         } else if (packet.t === 'MESSAGE_CREATE') {
-          const message = normalizeDiscordMessage(packet.d, this.#config.platformId);
           const bridge = this.#bridge;
-          if (message && bridge) {
-            void bridge.accept(message).catch((error) => {
+          if (packet.d && bridge) {
+            void this.#acceptMessage(packet.d, bridge).catch((error) => {
               if (generation !== this.#generation || this.#stopped) return;
               this.#logger.error?.(
                 `[dsh-im:discord] bot ${this.#config.botId} message handling failed:`,
@@ -473,6 +656,38 @@ export class DiscordRuntime {
         this.#status.lastError = 'Discord Gateway WebSocket error';
       });
     });
+  }
+
+  #rememberChannel(channel) {
+    if (!channel?.id) return;
+    this.#channels.set(String(channel.id), channel);
+  }
+
+  async #acceptMessage(message, bridge) {
+    const messageId = String(message?.id ?? '');
+    if (!messageId || this.#state.hasSeen(messageId)) return;
+    let route = this.#routing.get(messageId);
+    if (!route) {
+      route = resolveDiscordMessageRoute(message, this.#config.platformId, {
+        api: this.#api,
+        channel: this.#channels.get(String(message.channel_id)),
+        signal: this.#abortController?.signal,
+        onChannel: (resolved) => this.#rememberChannel(resolved),
+      });
+      this.#routing.set(messageId, route);
+      void route.finally(() => {
+        if (this.#routing.get(messageId) === route) this.#routing.delete(messageId);
+      }).catch(() => undefined);
+    }
+    try {
+      const normalized = await route;
+      if (normalized) await bridge.accept(normalized);
+    } catch (error) {
+      if (error?.code === 'discord-thread-create-uncertain') {
+        await this.#state.markSeen(messageId);
+      }
+      throw error;
+    }
   }
 
   #sendGateway(socket, payload) {
@@ -541,6 +756,7 @@ export class DiscordRuntime {
     this.#socket = null;
     this.#bridge = null;
     this.#api = null;
+    this.#routing.clear();
     try {
       if (socket && socket.readyState < 2) socket.close(1000, 'Plugin stopped');
     } catch (error) {

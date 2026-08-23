@@ -55,7 +55,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 | QQ | 使用手机 QQ 扫码创建机器人，或使用 AppID + AppSecret 手动绑定 | WebSocket 长连接；私聊显示“正在输入”并以单条 Markdown 回复，群聊被 @ 后只发送最终答案 |
 | Slack | 使用预置 App Manifest 创建应用，再填写 Bot Token（`xoxb-`）和 App Token（`xapp-`） | Socket Mode 长连接；私聊直接回复，频道被 @ 后响应，优先使用官方流式消息 API |
 | Telegram | 使用 @BotFather 生成的 Bot Token | Bot API 长轮询；默认私聊直接响应、群聊被提及或回复时响应，也可为每个机器人独立启用私聊白名单安全模式；通过编辑消息流式显示回答 |
-| Discord | 使用 Developer Portal 生成的 Bot Token | Gateway v10 长连接；私信直接回复，服务器频道被提及时响应，通过编辑消息流式显示回答 |
+| Discord | 使用 Developer Portal 生成的 Bot Token | Gateway v10 长连接；私信直接回复；服务器文字/公告频道首次 @ 后创建原生 Thread，后续在线程中无需重复 @，并通过编辑消息流式显示回答 |
 | WhatsApp | 使用手机 WhatsApp 扫码关联设备 | WhatsApp Web 长连接；默认仅响应账号自聊，也可切换到指定联系人或开放响应模式；显示已读和“正在输入”，再发送最终回答 |
 
 其他 IM 平台可继续按同一渠道适配器结构接入。
@@ -77,7 +77,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 | QQ | 机器人需具备文件消息能力，并受 QQ 当日文件上传配额约束；额度耗尽时会明确提示稍后重试。 |
 | Slack | Bot Token 需有 `files:write`；实际大小上限由 Workspace 当前策略决定。已有 App 新增或变更 Scope 后，必须重新授权/安装 App 并重新连接机器人。 |
 | Telegram | 机器人必须能在当前聊天发送文档，实际可发送范围以 Bot API 返回为准。 |
-| Discord | 机器人需有 **Send Messages**、**Attach Files** 和 **Read Message History** 权限；实际附件额度由当前账号与服务器能力决定。 |
+| Discord | 机器人需有 **Send Messages**、**Create Public Threads**、**Send Messages in Threads** 和 **Read Message History** 权限；发送结果文件还需 **Attach Files**。实际附件额度由当前账号与服务器能力决定。 |
 | WhatsApp | 当前绑定会话需支持 Document Message，实际可发送范围以 WhatsApp/Baileys 返回为准。 |
 
 ## AI Office Connector

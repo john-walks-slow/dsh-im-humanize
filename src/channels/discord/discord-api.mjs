@@ -120,6 +120,29 @@ export class DiscordApi {
     return this.#request('gateway/bot', { ...options, method: 'GET' });
   }
 
+  getChannel({ channelId, signal } = {}) {
+    return this.#request(`channels/${snowflake(channelId, 'channel id')}`, {
+      method: 'GET',
+      signal,
+    });
+  }
+
+  startThreadFromMessage({ channelId, messageId, name, signal } = {}) {
+    const threadName = cleanString(name);
+    if (!threadName || [...threadName].length > 100) {
+      throw new TypeError('Discord thread name must contain 1-100 characters');
+    }
+    if (signal?.aborted) throw abortReason(signal);
+    return this.#request(
+      `channels/${snowflake(channelId, 'channel id')}/messages/${snowflake(messageId, 'message id')}/threads`,
+      {
+        method: 'POST',
+        signal,
+        body: { name: threadName },
+      },
+    );
+  }
+
   createMessage({ channelId, content, replyToMessageId, signal }) {
     return this.#request(`channels/${snowflake(channelId, 'channel id')}/messages`, {
       method: 'POST',
