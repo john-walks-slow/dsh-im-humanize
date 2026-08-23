@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+import { t } from '../shared/i18n.mjs';
+
 const EMPTY_STATE = Object.freeze({
   version: 1,
   sessions: {},
@@ -14,7 +16,7 @@ function nonEmptyString(value) {
 }
 
 function displayName(value) {
-  return (nonEmptyString(value) ?? '钉钉用户').slice(0, 100);
+  return (nonEmptyString(value) ?? t('钉钉用户')).slice(0, 100);
 }
 
 function normalizePendingSender(value, fallbackRequestId) {

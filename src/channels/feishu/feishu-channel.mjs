@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { trackOutboundArtifactProviderPromise } from '../shared/semantic/artifact.mjs';
 import { createDeliveryReceipt } from '../shared/semantic/delivery.mjs';
+import { t } from '../shared/i18n.mjs';
 
 const STREAM_ELEMENT_ID = 'stream_md';
 const DEFAULT_INITIAL_TEXT = '已连接 DeepSeek Harness，正在思考…';
@@ -133,7 +134,7 @@ function streamingCard(initialText) {
     schema: '2.0',
     config: {
       streaming_mode: true,
-      summary: { content: '正在生成…' },
+      summary: { content: t('正在生成…') },
       streaming_config: {
         print_frequency_ms: { default: 70 },
         print_step: { default: 1 },
@@ -158,12 +159,12 @@ export class VerifiedFeishuChannel {
 
   constructor({
     client,
-    initialText = DEFAULT_INITIAL_TEXT,
+    initialText,
     fileUploadTimeoutMs = MAX_FILE_OPERATION_TIMEOUT_MS,
     fileMessageTimeoutMs = MAX_FILE_OPERATION_TIMEOUT_MS,
   }) {
     this.#client = client;
-    this.#initialText = initialText;
+    this.#initialText = initialText ?? t(DEFAULT_INITIAL_TEXT);
     this.#fileUploadTimeoutMs = boundedFileTimeout(fileUploadTimeoutMs, 'fileUploadTimeoutMs');
     this.#fileMessageTimeoutMs = boundedFileTimeout(fileMessageTimeoutMs, 'fileMessageTimeoutMs');
   }
@@ -215,7 +216,7 @@ export class VerifiedFeishuChannel {
           settings: JSON.stringify({
             config: {
               streaming_mode: false,
-              summary: { content: summaryOf(lastContent) || '回答完成' },
+              summary: { content: summaryOf(lastContent) || t('回答完成') },
             },
           }),
           sequence: ++sequence,

@@ -4,6 +4,7 @@ import {
   DingtalkHarnessBridge,
 } from './dingtalk-bridge.mjs';
 import { sendRememberedConnectionTest } from '../shared/connection-test.mjs';
+import { t } from '../shared/i18n.mjs';
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -275,7 +276,7 @@ export class DingtalkRuntime {
               ? JSON.parse(response.data)
               : response?.data;
           } catch {
-            this.#status.lastError = '钉钉消息格式无效。';
+            this.#status.lastError = t('钉钉消息格式无效。');
             this.#logger.warn?.('[dsh-dingtalk] ignored an invalid callback payload');
             return;
           }
@@ -284,7 +285,7 @@ export class DingtalkRuntime {
           await bridge.accept(message);
         }).catch(() => {
           if (signal.aborted || this.#bridge !== bridge) return;
-          this.#status.lastError = '钉钉消息处理失败。';
+          this.#status.lastError = t('钉钉消息处理失败。');
           this.#logger.error?.('[dsh-dingtalk] callback processing failed');
         }).finally(() => this.#callbackTasks.delete(task));
         this.#callbackTasks.add(task);
@@ -352,7 +353,7 @@ export class DingtalkRuntime {
     return sendRememberedConnectionTest({
       state: this.#state,
       text,
-      channelLabel: '钉钉机器人',
+      channelLabel: t('钉钉机器人'),
       send: async ({ sessionWebhook }, content) => {
         if (!this.#status.ready || !this.#abortController) {
           throw new Error('DingTalk runtime is not connected');

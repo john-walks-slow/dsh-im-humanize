@@ -1,3 +1,5 @@
+import { t } from './i18n.mjs';
+
 /** Matches DeepSeek Harness agent-preset directory ids. */
 export const AGENT_PRESET_ID = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -17,7 +19,7 @@ export function validateAgentPresetId(value) {
   if (value == null || value === '') return null;
   const id = normalizeAgentPresetId(value);
   if (!id) {
-    const error = new Error('Agent Preset 无效。');
+    const error = new Error(t('Agent Preset 无效。'));
     error.code = 'agent-preset-invalid';
     throw error;
   }

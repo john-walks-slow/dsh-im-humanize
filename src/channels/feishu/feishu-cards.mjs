@@ -14,6 +14,8 @@
  * without button callbacks.
  */
 
+import { t } from '../shared/i18n.mjs';
+
 export const MENU_PAGE_SIZE = 10;
 
 function plainText(content) {
@@ -56,7 +58,7 @@ function buttonElement(content, actionValue) {
 
 function safeTitle(value) {
   const title = String(value ?? '').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').replace(/\s+/gu, ' ').trim();
-  return title || '暂无标题';
+  return title || t('暂无标题');
 }
 
 function cardWith(headerText, elements) {
@@ -69,18 +71,18 @@ function cardWith(headerText, elements) {
 
 /** The main command menu (buttons + number-reply fallback). */
 export function menuCard() {
-  return cardWith('🤖 助手菜单', [
-    { tag: 'div', text: markdown('**点击按钮或直接回复数字**') },
-    button('1 · 会话列表', 'sessions'),
-    button('2 · 工作区', 'workspaces'),
-    button('3 · 新会话', 'new'),
-    button('4 · 状态', 'status'),
-    button('5 · 帮助', 'help'),
+  return cardWith(t('🤖 助手菜单'), [
+    { tag: 'div', text: markdown(t('**点击按钮或直接回复数字**')) },
+    button(t('1 · 会话列表'), 'sessions'),
+    button(t('2 · 工作区'), 'workspaces'),
+    button(t('3 · 新会话'), 'new'),
+    button(t('4 · 状态'), 'status'),
+    button(t('5 · 帮助'), 'help'),
     // Repair must remain number-driven. Apps that need this command do not
     // have card.action.trigger yet, so rendering it as a callback button would
     // send the user straight back to Feishu's broken callback setup popup.
-    { tag: 'div', text: markdown('**6 · 修复卡片按钮**（请直接回复数字 **6**）') },
-    button('7 · 关注列表', 'watchlist'),
+    { tag: 'div', text: markdown(t('**6 · 修复卡片按钮**（请直接回复数字 **6**）')) },
+    button(t('7 · 关注列表'), 'watchlist'),
   ]);
 }
 
@@ -89,10 +91,10 @@ export function cardActionProbeCard(nonce) {
   if (typeof nonce !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) {
     throw new TypeError('A safe card-action probe nonce is required');
   }
-  return cardWith('🧪 验证卡片按钮', [
+  return cardWith(t('🧪 验证卡片按钮'), [
     {
       tag: 'div',
-      text: markdown('授权已提交。请点击下方按钮；机器人真实收到回调后才会判定修复成功。'),
+      text: markdown(t('授权已提交。请点击下方按钮；机器人真实收到回调后才会判定修复成功。')),
     },
     {
       tag: 'column_set',
@@ -103,7 +105,7 @@ export function cardActionProbeCard(nonce) {
         weight: 1,
         elements: [{
           tag: 'button',
-          text: plainText('完成验证'),
+          text: plainText(t('完成验证')),
           type: 'primary',
           width: 'fill',
           behaviors: [{
@@ -140,74 +142,80 @@ export function sessionListCard(workspace, sessions, page, total, watchedSession
     ],
   });
   const elements = [
-    { tag: 'div', text: markdown(`**工作区**：\`${workspace}\`\n共 **${total}** 个会话${total > MENU_PAGE_SIZE ? `（第 ${page + 1}/${pageCount} 页）` : ''}`) },
+    { tag: 'div', text: markdown(t('**工作区**：{workspace}\n共 **{total}** 个会话{paging}', {
+      workspace: `\`${workspace}\``,
+      total,
+      paging: total > MENU_PAGE_SIZE
+        ? t('（第 {page}/{pageCount} 页）', { page: page + 1, pageCount })
+        : '',
+    })) },
     ...slice.map((session, offset) => {
       // Page-local numbering: number replies resolve against this page.
-      const label = `${offset + 1}. ${safeTitle(session.title)}${session.archived === true ? '（已归档）' : ''}`;
+      const label = `${offset + 1}. ${safeTitle(session.title)}${session.archived === true ? t('（已归档）') : ''}`;
       const watching = watched(session.sessionId);
       return row(
-        buttonElement(watching ? '⭐取关' : '⭐关注', watching ? `unwatch:${session.sessionId}` : `watch:${session.sessionId}`),
+        buttonElement(watching ? t('⭐取关') : t('⭐关注'), watching ? `unwatch:${session.sessionId}` : `watch:${session.sessionId}`),
         buttonElement(label, `use:${session.sessionId}`),
       );
     }),
   ];
-  if (page > 0) elements.push(button('◀ 上一页', `sessions:${page - 1}`));
-  if (page + 1 < pageCount) elements.push(button('下一页 ▶', `sessions:${page + 1}`));
-  elements.push({ tag: 'div', text: markdown('回复数字（1~N）绑定本页会话。') });
-  return cardWith('📂 会话列表', elements);
+  if (page > 0) elements.push(button(t('◀ 上一页'), `sessions:${page - 1}`));
+  if (page + 1 < pageCount) elements.push(button(t('下一页 ▶'), `sessions:${page + 1}`));
+  elements.push({ tag: 'div', text: markdown(t('回复数字（1~N）绑定本页会话。')) });
+  return cardWith(t('📂 会话列表'), elements);
 }
 
 /** The workspace list card (switch-workspace buttons + reply fallback). */
 export function workspaceListCard(paths, current) {
   const elements = paths.length === 0
-    ? [{ tag: 'div', text: markdown('当前 Host 上没有已登记的工作区。') }]
+    ? [{ tag: 'div', text: markdown(t('当前 Host 上没有已登记的工作区。')) }]
     : [
-        { tag: 'div', text: markdown(`回复数字切换工作区，或点击按钮：`) },
+        { tag: 'div', text: markdown(t('回复数字切换工作区，或点击按钮：')) },
         ...paths.map((path, index) => button(
-          `${index + 1}. ${path}${path === current ? '（当前）' : ''}`,
+          `${index + 1}. ${path}${path === current ? t('（当前）') : ''}`,
           `workspace:${path}`,
         )),
       ];
-  return cardWith('🗂 工作区', elements);
+  return cardWith(t('🗂 工作区'), elements);
 }
 
 /** The card-menu help text (number-driven, no command memorization). */
 export function menuHelpText() {
   return [
-    '🤖 助手菜单（回复数字即可，无需记命令）',
+    t('🤖 助手菜单（回复数字即可，无需记命令）'),
     '',
-    '1 · /sessionlist  列出会话（回复数字绑定）',
-    '2 · /workspacelist  列出工作区（回复数字切换）',
-    '3 · /new  开启新会话',
-    '4 · /status  连接状态',
-    '5 · /help  本帮助',
-    '6 · /repair  修复卡片按钮（请回复数字 6）',
-    '7 · /watchlist  关注列表',
+    t('1 · /sessionlist  列出会话（回复数字绑定）'),
+    t('2 · /workspacelist  列出工作区（回复数字切换）'),
+    t('3 · /new  开启新会话'),
+    t('4 · /status  连接状态'),
+    t('5 · /help  本帮助'),
+    t('6 · /repair  修复卡片按钮（请回复数字 6）'),
+    t('7 · /watchlist  关注列表'),
     '',
-    '直接发送文字/图片即继续当前会话。',
-    '/session ID 或序号  绑定已有会话',
-    '/watch ID 或序号  关注会话（完成后推送）',
-    '/compact  压缩上下文',
-    '/workspace 绝对路径  切换工作区',
-    '/presetlist  列出可用 Agent Preset',
-    '/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset',
-    '纯数字 ID：/preset id:<ID>',
-    '/preset --default  跟随 Host 默认',
+    t('直接发送文字/图片即继续当前会话。'),
+    t('/session ID 或序号  绑定已有会话'),
+    t('/watch ID 或序号  关注会话（完成后推送）'),
+    t('/compact  压缩上下文'),
+    t('/workspace 绝对路径  切换工作区'),
+    t('/presetlist  列出可用 Agent Preset'),
+    t('/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset'),
+    t('纯数字 ID：/preset id:<ID>'),
+    t('/preset --default  跟随 Host 默认'),
   ].join('\n');
 }
 
 /** The watch list for one conversation (unwatch buttons + reply fallback). */
 export function watchListCard(entries) {
   const elements = entries.length === 0
-    ? [{ tag: 'div', text: markdown('当前没有关注的会话。\n`/watch <ID|序号>` 关注后，任务完成会自动推送。') }]
+    ? [{ tag: 'div', text: markdown(t('当前没有关注的会话。\n`/watch <ID|序号>` 关注后，任务完成会自动推送。')) }]
     : [
-        { tag: 'div', text: markdown('任务完成会自动推送，回复数字或点按钮取消关注：') },
+        { tag: 'div', text: markdown(t('任务完成会自动推送，回复数字或点按钮取消关注：')) },
         ...entries.map((entry, index) => button(
           `${index + 1}. ${safeTitle(entry.title)}`,
           `unwatch:${entry.sessionId}`,
         )),
       ];
-  return cardWith('👁 关注列表', elements);
+  return cardWith(t('👁 关注列表'), elements);
 }
 
 /**
@@ -216,19 +224,19 @@ export function watchListCard(entries) {
  */
 export function completionCard(sessionId, title, reason) {
   const reasonText = reason === 'completed'
-    ? '已完成'
+    ? t('已完成')
     : reason === 'stopped'
-      ? '已停止'
+      ? t('已停止')
       : reason === 'aborted'
-        ? '已中止'
+        ? t('已中止')
         : reason === 'cancelled'
-          ? '已取消'
-          : '已结束';
-  return cardWith('✅ 任务完成', [
+          ? t('已取消')
+          : t('已结束');
+  return cardWith(t('✅ 任务完成'), [
     { tag: 'div', text: markdown(`**${safeTitle(title)}**\n\`${sessionId}\``) },
-    { tag: 'div', text: markdown(`**状态**：${reasonText}`) },
-    button('打开会话列表', 'sessions'),
-    button('工作区', 'workspaces'),
-    { tag: 'div', text: markdown('绑定该会话后可继续追问，输入文字即可。') },
+    { tag: 'div', text: markdown(t('**状态**：{reason}', { reason: reasonText })) },
+    button(t('打开会话列表'), 'sessions'),
+    button(t('工作区'), 'workspaces'),
+    { tag: 'div', text: markdown(t('绑定该会话后可继续追问，输入文字即可。')) },
   ]);
 }

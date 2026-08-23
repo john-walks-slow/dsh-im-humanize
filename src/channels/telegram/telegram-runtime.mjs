@@ -2,6 +2,7 @@ import { randomInt } from 'node:crypto';
 
 import { createEditableMessageStream, splitMessageText } from '../shared/editable-message-stream.mjs';
 import { createTextDeliveryBlock } from '../shared/semantic/delivery.mjs';
+import { t } from '../shared/i18n.mjs';
 import { COMMANDS_MENU_BUTTON, TelegramApi } from './telegram-api.mjs';
 import { createTelegramBridgeStatus, TelegramHarnessBridge } from './telegram-bridge.mjs';
 import {
@@ -15,20 +16,20 @@ import {
 } from './config-store.mjs';
 
 export const TELEGRAM_COMMAND_MENU = Object.freeze([
-  { command: 'new', description: '开启一个全新会话' },
-  { command: 'compact', description: '压缩当前会话的较早上下文' },
-  { command: 'workspace', description: '切换工作区' },
-  { command: 'workspacelist', description: '列出工作区绝对路径' },
-  { command: 'sessionlist', description: '列出会话 ID 和标题' },
-  { command: 'session', description: '将当前聊天绑定到指定会话' },
-  { command: 'models', description: '按序号列出所有可用模型' },
-  { command: 'model', description: '查看或切换当前会话模型' },
-  { command: 'presetlist', description: '列出可用 Agent Preset' },
-  { command: 'preset', description: '查看或设置新会话 Agent Preset' },
-  { command: 'stop', description: '停止当前任务' },
-  { command: 'steer', description: '纠偏当前任务' },
-  { command: 'status', description: '检查连接状态' },
-  { command: 'help', description: '显示帮助' },
+  { command: 'new', description: t('开启一个全新会话') },
+  { command: 'compact', description: t('压缩当前会话的较早上下文') },
+  { command: 'workspace', description: t('切换工作区') },
+  { command: 'workspacelist', description: t('列出工作区绝对路径') },
+  { command: 'sessionlist', description: t('列出会话 ID 和标题') },
+  { command: 'session', description: t('将当前聊天绑定到指定会话') },
+  { command: 'models', description: t('按序号列出所有可用模型') },
+  { command: 'model', description: t('查看或切换当前会话模型') },
+  { command: 'presetlist', description: t('列出可用 Agent Preset') },
+  { command: 'preset', description: t('查看或设置新会话 Agent Preset') },
+  { command: 'stop', description: t('停止当前任务') },
+  { command: 'steer', description: t('纠偏当前任务') },
+  { command: 'status', description: t('检查连接状态') },
+  { command: 'help', description: t('显示帮助') },
 ]);
 
 function escaped(value) {
@@ -703,7 +704,7 @@ export class TelegramRuntime {
       }
       const webhook = await api.getWebhookInfo({ signal: controller.signal });
       if (typeof webhook?.url === 'string' && webhook.url) {
-        const error = new Error('该 Telegram 机器人已配置 Webhook，请先在原服务中移除 Webhook 后重试。');
+        const error = new Error(t('该 Telegram 机器人已配置 Webhook，请先在原服务中移除 Webhook 后重试。'));
         error.code = 'webhook-configured';
         throw error;
       }

@@ -4,6 +4,7 @@ import {
   connectionTestTarget,
   connectionTestTargetUnavailable,
 } from '../shared/connection-test.mjs';
+import { t } from '../shared/i18n.mjs';
 
 const DEFAULT_START_RETRY_DELAYS_MS = Object.freeze([250, 1_000, 3_000]);
 const HARNESS_HEALTH_ERROR_CODES = new Set([
@@ -224,7 +225,7 @@ export class WeixinRuntime {
           const code = response.errcode ?? response.ret;
           throw new WeixinApiError(
             code === -14 ? 'stale-token' : 'updates-rejected',
-            code === -14 ? '微信登录凭据已失效，请移除账号后重新扫码。' : '微信消息同步请求被拒绝。',
+            code === -14 ? t('微信登录凭据已失效，请移除账号后重新扫码。') : t('微信消息同步请求被拒绝。'),
           );
         }
         consecutiveFailures = 0;
@@ -293,7 +294,7 @@ export class WeixinRuntime {
       : typeof this.#config.ownerUserId === 'string' && this.#config.ownerUserId.trim()
         ? this.#config.ownerUserId.trim()
         : null;
-    if (!toUserId) throw connectionTestTargetUnavailable('微信机器人');
+    if (!toUserId) throw connectionTestTargetUnavailable(t('微信机器人'));
     if (!this.#status.ready || !this.#abortController) {
       throw new Error('Weixin runtime is not connected');
     }

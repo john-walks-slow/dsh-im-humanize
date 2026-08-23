@@ -3,10 +3,12 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
+import { t } from './i18n.mjs';
+
 const FILES_DIRECTORY = join('.dsh-im', 'inbound');
 
 export class InboundFileError extends Error {
-  constructor(code, message, userMessage = '文件接收失败，请重新发送后再试。', options = {}) {
+  constructor(code, message, userMessage = t('文件接收失败，请重新发送后再试。'), options = {}) {
     super(message, options);
     this.name = 'InboundFileError';
     this.code = code;
@@ -124,7 +126,7 @@ export async function stageInboundFiles(message, {
         throw new InboundFileError(
           'inbound-file-download-failed',
           `Unable to download inbound file ${index + 1}: ${error?.message ?? String(error)}`,
-          '文件下载失败，请重新发送后再试。',
+          t('文件下载失败，请重新发送后再试。'),
           { cause: error },
         );
       }
@@ -152,7 +154,7 @@ export async function stageInboundFiles(message, {
           throw new InboundFileError(
             'inbound-file-download-failed',
             `Unable to stream inbound file ${index + 1}: ${error?.message ?? String(error)}`,
-            '文件下载失败，请重新发送后再试。',
+            t('文件下载失败，请重新发送后再试。'),
             { cause: error },
           );
         }

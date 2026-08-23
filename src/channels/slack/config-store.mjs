@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+import { t } from '../shared/i18n.mjs';
+
 const EMPTY_DOCUMENT = Object.freeze({ version: 1, bots: Object.freeze([]) });
 const BOT_ID_PATTERN = /^slack_[a-f0-9]{24}$/;
 const BOT_TOKEN_REF_PATTERN = /^DSH_SLACK_BOT_TOKEN_[A-F0-9]{24}$/;
@@ -27,7 +29,7 @@ export function maskSlackBotId(platformId) {
   const value = cleanString(platformId) ?? '';
   const [teamId, userId] = value.split(':');
   if (teamId && userId) return `${teamId.slice(0, 5)}••• · ${userId.slice(0, 5)}•••`;
-  return value ? `${value.slice(0, 6)}••••` : 'Slack机器人';
+  return value ? `${value.slice(0, 6)}••••` : t('Slack机器人');
 }
 
 export class SlackConfigStore {

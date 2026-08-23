@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 
 import { fetchImageBuffer, ImagePromptError } from '../shared/image-prompt.mjs';
+import { t } from '../shared/i18n.mjs';
 
 export const DINGTALK_REGISTRATION_BASE_URL = 'https://oapi.dingtalk.com/';
 export const DINGTALK_API_BASE_URL = 'https://api.dingtalk.com/';
@@ -829,7 +830,7 @@ export function createDingtalkApi({
             clientId: appKey,
             clientSecret: appSecret,
             cardInstanceId,
-            text: '消息处理失败，请稍后重试。',
+            text: t('消息处理失败，请稍后重试。'),
             signal: cleanupSignal,
           }).catch(() => undefined);
         }

@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n.mjs';
 import {
   deriveTokenBotIdentity,
   maskPlatformId,
@@ -66,7 +67,7 @@ export function deriveTelegramBotIdentity(platformId) {
 }
 
 export function maskTelegramBotId(platformId) {
-  return maskPlatformId(platformId, 'Telegram机器人');
+  return maskPlatformId(platformId, t('Telegram机器人'));
 }
 
 export class TelegramConfigStore extends TokenBotConfigStore {
