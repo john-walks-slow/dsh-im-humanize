@@ -1414,6 +1414,49 @@ test('a group question only accepts an addressed reply from the initiating actor
   assert.equal(bridge.status.messagesRejected, 1);
 });
 
+test('a managed native thread can keep group isolation without asking for another mention', async () => {
+  const fixture = stateFixture({ 'group:managed-thread': 'session-managed' });
+  const sent = [];
+  const submitted = deferred();
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, _text, options) => {
+        await options.onInteraction(questionInteraction({
+          id: 'managed-thread-question',
+          sessionId,
+          questions: [{ id: 'choice', question: '请选择下一步' }],
+          respond: async (result) => {
+            submitted.resolve(result);
+            return { accepted: true };
+          },
+        }));
+        await submitted.promise;
+        return '已继续';
+      },
+    },
+  });
+  const route = {
+    kind: 'group',
+    conversationId: 'managed-thread',
+    addressed: true,
+    requiresMention: false,
+  };
+
+  const processing = bridge.accept(message('managed-start', '开始', route));
+  await eventually(() => sent.some(({ text }) => text.includes('请选择下一步')));
+  assert.doesNotMatch(sent[0].text, /群聊中请 @机器人/);
+  await bridge.accept(message('managed-answer', '继续', route));
+  assert.deepEqual((await submitted.promise).value.answer.answers, [{
+    id: 'choice',
+    selected: [],
+    custom: '继续',
+  }]);
+  await processing;
+});
+
 test('deduplicates replays and safely closes recovered questions and approvals', async () => {
   const fixture = stateFixture();
   const sent = [];
