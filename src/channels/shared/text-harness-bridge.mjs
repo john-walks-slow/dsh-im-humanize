@@ -558,10 +558,18 @@ export class TextHarnessBridge {
           textDeliveryError = error;
         }
       }
+      if (textReceipt?.deliveryOutcome === 'failed') {
+        const reason = textReceipt.reason ?? 'text-delivery-failed';
+        textDeliveryError = new Error(`Final text delivery failed (${reason})`);
+        textDeliveryError.code = reason;
+      }
       // A failed final text must not discard an already registered result file.
       // Settle the independent attachment path before surfacing the text error.
       const delivery = await this.#deliverArtifacts(target, messageId, artifacts, textReceipt);
-      if (textDeliveryError && !delivery.userVisible) throw textDeliveryError;
+      if (textDeliveryError && !delivery.userVisible) {
+        textDeliveryError.deliveryReceipt = delivery.receipt;
+        throw textDeliveryError;
+      }
       if (delivery.userVisible) {
         this.#status.messagesReplied += 1;
         this.#status.lastReplyAt = new Date().toISOString();
@@ -626,7 +634,9 @@ export class TextHarnessBridge {
         return;
       }
       this.#logger.error?.(`[dsh-im:${this.#descriptor.key}] failed to process a message:`, error);
-      if (await presentStreamFailure('消息处理失败，请稍后重试。')) return;
+      if (await presentStreamFailure('消息处理失败，请稍后重试。')) {
+        return error.deliveryReceipt;
+      }
       stream?.cancel?.();
       try {
         await this.#bot.sendText(target, '消息处理失败，请稍后重试。');
@@ -636,6 +646,7 @@ export class TextHarnessBridge {
           sendError,
         );
       }
+      return error.deliveryReceipt;
     } finally {
       await Promise.allSettled([
         this.#cancelPendingInteraction(conversationKey),

@@ -510,6 +510,131 @@ test('Telegram uncertain final delivery records unknown and never sends a fallba
   assert.deepEqual(groupResult.providerMessageIds, ['1202']);
 });
 
+test('shared bridge surfaces a definite final delivery failure without rerunning Prompt or artifacts', async (t) => {
+  for (const safeReplyFails of [false, true]) {
+    await t.test(safeReplyFails ? 'safe reply also fails' : 'safe reply succeeds', async () => {
+      const safeReplies = [];
+      let prompts = 0;
+      const stream = {
+        providerMessageIds: ['failed-placeholder'],
+        presentation: 'telegram-regular',
+        async update() {},
+        async finish() {
+          return {
+            presentation: 'telegram-rich-final',
+            providerMessageIds: ['failed-placeholder'],
+            deliveryOutcome: 'failed',
+            reason: 'telegram-403',
+          };
+        },
+        async fail() {
+          return undefined;
+        },
+        cancel() {},
+      };
+      const bridge = new TelegramHarnessBridge({
+        bot: {
+          sendTyping: async () => {},
+          openDeliveryStream: async () => stream,
+          sendText: async (_target, text) => {
+            safeReplies.push(text);
+            if (safeReplyFails) throw rejected(403);
+            return { message_id: 1261 };
+          },
+        },
+        state: memoryState(),
+        logger: { warn() {}, error() {} },
+        harness: {
+          createSession: async () => 'session-rich-artifact',
+          ask: async () => {
+            prompts += 1;
+            return '## final';
+          },
+        },
+      });
+
+      const receipt = await bridge.accept({
+        messageId: `definite-failure-${safeReplyFails}`,
+        senderId: 'rich-user',
+        kind: 'direct',
+        conversationId: `definite-failure-${safeReplyFails}`,
+        content: 'return a file',
+        addressed: true,
+        replyTarget: { chatId: 42, chatType: 'private', replyToMessageId: 44 },
+      });
+
+      assert.equal(prompts, 1);
+      assert.deepEqual(safeReplies, ['消息处理失败，请稍后重试。']);
+      assert.equal(receipt.deliveryOutcome, 'failed');
+      assert.equal(receipt.reason, 'telegram-403');
+      assert.deepEqual(receipt.artifacts, []);
+      assert.match(bridge.status.lastError, /telegram-403/);
+    });
+  }
+});
+
+test('shared bridge settles each artifact once before containing a definite text failure', async (t) => {
+  const artifact = await committedArtifact(t);
+  const sentFiles = [];
+  let prompts = 0;
+  let safeReplies = 0;
+  const bridge = new TelegramHarnessBridge({
+    bot: {
+      sendTyping: async () => {},
+      openDeliveryStream: async () => ({
+        providerMessageIds: ['failed-placeholder'],
+        presentation: 'telegram-regular',
+        async update() {},
+        async finish() {
+          return {
+            presentation: 'telegram-rich-final',
+            providerMessageIds: ['failed-placeholder'],
+            deliveryOutcome: 'failed',
+            reason: 'telegram-403',
+          };
+        },
+        cancel() {},
+      }),
+      sendText: async () => {
+        safeReplies += 1;
+        return { message_id: 1261 };
+      },
+      sendFile: async (_target, file) => {
+        sentFiles.push(file.fileName);
+        return { message_id: 1262 };
+      },
+    },
+    state: memoryState(),
+    logger: { warn() {}, error() {} },
+    harness: {
+      createSession: async () => 'session-rich-artifact',
+      ask: async (_sessionId, _text, options) => {
+        prompts += 1;
+        await options.onArtifact(artifact);
+        return '## final with file';
+      },
+    },
+  });
+
+  const receipt = await bridge.accept({
+    messageId: 'definite-failure-with-file',
+    senderId: 'rich-user',
+    kind: 'direct',
+    conversationId: 'definite-failure-with-file',
+    content: 'return a file',
+    addressed: true,
+    replyTarget: { chatId: 42, chatType: 'private', replyToMessageId: 44 },
+  });
+
+  assert.equal(prompts, 1);
+  assert.equal(safeReplies, 0);
+  assert.deepEqual(sentFiles, ['result.txt']);
+  assert.equal(receipt.deliveryOutcome, 'failed');
+  assert.deepEqual(receipt.artifacts, [{
+    artifactId: 'telegram-rich-artifact', outcome: 'sent',
+  }]);
+});
+
 test('Telegram distinguishes pre-dispatch abort from an uncertain in-flight abort', async () => {
   const before = new AbortController();
   const beforeReason = new DOMException('stopped before dispatch', 'AbortError');
