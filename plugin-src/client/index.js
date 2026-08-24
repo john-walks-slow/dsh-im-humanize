@@ -42,6 +42,10 @@ import { WHATSAPP_RPC_CHANNEL } from './channels/whatsapp/api.js';
 import { WhatsappSettingsTab } from './channels/whatsapp/index.js';
 import { installWhatsappStyles } from './channels/whatsapp/styles.js';
 import { en, h, IM_LOCALE_NAMESPACE, setImTranslator, zh } from './i18n.js';
+import {
+  createLoopbackAwareRpcCalls,
+  replacePageLocation,
+} from './loopback-recovery.js';
 import { installImStyles } from './styles.js';
 import { WorkspaceDirectoryPickerContext } from './workspace-editor.js';
 
@@ -122,6 +126,22 @@ function ChannelLogo({ channel }) {
   return h(OfficeLogo);
 }
 
+export function LoopbackRecoveryNotice({ recovery, onNavigate = replacePageLocation }) {
+  return h('div', {
+    className: 'dim-loopbackRecovery',
+    role: 'alert',
+  },
+  h('div', { className: 'dim-loopbackRecoveryCopy' },
+    h('strong', null, '请改用 localhost 重新打开'),
+    h('p', null, '页面会在当前端口重新打开，机器人配置不会改变。'),
+    h('code', null, recovery.origin)),
+  h('button', {
+    type: 'button',
+    className: 'dim-loopbackRecoveryAction',
+    onClick: () => onNavigate(recovery.url),
+  }, '使用 localhost 重新打开'));
+}
+
 export function IMSettingsTab({
   dingtalkRpcCall,
   discordRpcCall,
@@ -134,10 +154,44 @@ export function IMSettingsTab({
   whatsappRpcCall,
   officeRpcCall,
   workspaceDirectoryPicker,
+  browserLocation = globalThis.location,
+  navigateToRecoveryUrl = replacePageLocation,
 }) {
   const [selected, setSelected] = React.useState('weixin');
+  const [loopbackRecovery, setLoopbackRecovery] = React.useState(null);
   const githubTooltipId = React.useId();
   const active = CHANNELS.find((channel) => channel.id === selected) ?? CHANNELS[0];
+  const reportLoopbackRecovery = React.useCallback((recovery) => {
+    setLoopbackRecovery((current) => current?.url === recovery.url ? current : recovery);
+  }, []);
+  const rpcCalls = React.useMemo(() => createLoopbackAwareRpcCalls({
+    dingtalkRpcCall,
+    discordRpcCall,
+    feishuRpcCall,
+    qqRpcCall,
+    slackRpcCall,
+    telegramRpcCall,
+    wecomRpcCall,
+    weixinRpcCall,
+    whatsappRpcCall,
+    officeRpcCall,
+  }, {
+    location: browserLocation,
+    onRecovery: reportLoopbackRecovery,
+  }), [
+    browserLocation,
+    dingtalkRpcCall,
+    discordRpcCall,
+    feishuRpcCall,
+    officeRpcCall,
+    qqRpcCall,
+    reportLoopbackRecovery,
+    slackRpcCall,
+    telegramRpcCall,
+    wecomRpcCall,
+    weixinRpcCall,
+    whatsappRpcCall,
+  ]);
   return h(WorkspaceDirectoryPickerContext.Provider, { value: workspaceDirectoryPicker },
     h('section', { className: 'dim-page', 'aria-label': 'IM机器人设置' },
     h('header', { className: 'dim-title' },
@@ -184,25 +238,32 @@ export function IMSettingsTab({
         role: 'tabpanel',
         id: `dim-panel-${active.id}`,
         'aria-labelledby': `dim-tab-${active.id}`,
-      }, active.id === 'weixin'
-        ? h(WeixinSettingsTab, { rpcCall: weixinRpcCall })
+      },
+      loopbackRecovery
+        ? h(LoopbackRecoveryNotice, {
+            recovery: loopbackRecovery,
+            onNavigate: navigateToRecoveryUrl,
+          })
+        : null,
+      active.id === 'weixin'
+        ? h(WeixinSettingsTab, { rpcCall: rpcCalls.weixinRpcCall })
         : active.id === 'feishu'
-          ? h(FeishuSettingsTab, { rpcCall: feishuRpcCall })
+          ? h(FeishuSettingsTab, { rpcCall: rpcCalls.feishuRpcCall })
           : active.id === 'dingtalk'
-            ? h(DingtalkSettingsTab, { rpcCall: dingtalkRpcCall })
+            ? h(DingtalkSettingsTab, { rpcCall: rpcCalls.dingtalkRpcCall })
             : active.id === 'wecom'
-              ? h(WecomSettingsTab, { rpcCall: wecomRpcCall })
+              ? h(WecomSettingsTab, { rpcCall: rpcCalls.wecomRpcCall })
               : active.id === 'qq'
-                ? h(QqSettingsTab, { rpcCall: qqRpcCall })
+                ? h(QqSettingsTab, { rpcCall: rpcCalls.qqRpcCall })
                 : active.id === 'slack'
-                  ? h(SlackSettingsTab, { rpcCall: slackRpcCall })
+                  ? h(SlackSettingsTab, { rpcCall: rpcCalls.slackRpcCall })
                 : active.id === 'telegram'
-                  ? h(TelegramSettingsTab, { rpcCall: telegramRpcCall })
+                  ? h(TelegramSettingsTab, { rpcCall: rpcCalls.telegramRpcCall })
                   : active.id === 'discord'
-                    ? h(DiscordSettingsTab, { rpcCall: discordRpcCall })
+                    ? h(DiscordSettingsTab, { rpcCall: rpcCalls.discordRpcCall })
                     : active.id === 'whatsapp'
-                      ? h(WhatsappSettingsTab, { rpcCall: whatsappRpcCall })
-                      : h(OfficeSettingsTab, { rpcCall: officeRpcCall })),
+                      ? h(WhatsappSettingsTab, { rpcCall: rpcCalls.whatsappRpcCall })
+                      : h(OfficeSettingsTab, { rpcCall: rpcCalls.officeRpcCall })),
     ),
   ));
 }
