@@ -73,6 +73,23 @@ function delay(ms, signal) {
   });
 }
 
+export function orderWeixinMessages(messages) {
+  if (!Array.isArray(messages) || messages.length < 2) return Array.isArray(messages) ? messages : [];
+  const orderField = ['seq', 'create_time_ms'].find((field) => messages.every((message) => (
+    (typeof message?.[field] === 'number' && Number.isFinite(message[field]))
+      || (typeof message?.[field] === 'string'
+        && message[field].trim()
+        && Number.isFinite(Number(message[field])))
+  )));
+  if (!orderField) return messages;
+  return messages
+    .map((message, index) => ({ message, index, order: Number(message[orderField]) }))
+    .sort((left, right) => (
+      left.order - right.order || left.index - right.index
+    ))
+    .map(({ message }) => message);
+}
+
 export function createWeixinRuntimeStatus() {
   return {
     startedAt: null,
@@ -234,7 +251,7 @@ export class WeixinRuntime {
         this.#status.lastCheckedAt = Date.now();
         this.#status.lastError = null;
 
-        for (const message of response?.msgs ?? []) {
+        for (const message of orderWeixinMessages(response?.msgs)) {
           void this.#bridge.accept(message).catch((error) => {
             if (signal.aborted) return;
             this.#logger.error?.(

@@ -438,7 +438,26 @@ test('Discord normalizes DMs and only addressed server messages', () => {
   }, '1234567890123456789');
   assert.equal(direct.kind, 'direct');
   assert.equal(direct.addressed, true);
+  assert.equal(direct.plainText, true);
   assert.deepEqual(direct.connectionTestTarget, { channelId: '222222222222222222' });
+
+  const sticker = normalizeDiscordMessage({
+    id: '111111111111111115',
+    channel_id: '222222222222222222',
+    author: { id: '333333333333333333', bot: false },
+    content: 'sticker caption',
+    sticker_items: [{ id: '555555555555555555', name: 'wave' }],
+  }, '1234567890123456789');
+  assert.equal(sticker.plainText, false);
+
+  const poll = normalizeDiscordMessage({
+    id: '111111111111111116',
+    channel_id: '222222222222222222',
+    author: { id: '333333333333333333', bot: false },
+    content: 'poll caption',
+    poll: { question: { text: 'choose one' } },
+  }, '1234567890123456789');
+  assert.equal(poll.plainText, false);
 
   const group = normalizeDiscordMessage({
     id: '111111111111111112',
@@ -988,6 +1007,7 @@ test('Discord keeps image attachments in images and exposes ordinary attachments
   });
 
   assert.equal(message.content, '');
+  assert.equal(message.plainText, false);
   assert.equal(message.images.length, 2);
   assert.deepEqual({
     name: message.images[0].name,

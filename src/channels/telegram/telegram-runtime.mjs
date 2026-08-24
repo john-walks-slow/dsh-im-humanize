@@ -28,6 +28,9 @@ export const TELEGRAM_COMMAND_MENU = Object.freeze([
   { command: 'preset', description: '查看或设置新会话 Agent Preset' },
   { command: 'stop', description: '停止当前任务' },
   { command: 'steer', description: '纠偏当前任务' },
+  { command: 'batch', description: '开始批量输入（仅私聊）' },
+  { command: 'send', description: '提交当前批次' },
+  { command: 'cancel', description: '取消当前批次' },
   { command: 'status', description: '检查连接状态' },
   { command: 'help', description: '显示帮助' },
 ]);
@@ -160,6 +163,7 @@ export function normalizeTelegramUpdate(update, {
     conversationId: messageThreadId === undefined
       ? String(chatId) : `${chatId}:${messageThreadId}`,
     content: withoutBotMention(message.text ?? message.caption ?? '', username),
+    plainText: typeof message.text === 'string',
     images: image ? [image] : [],
     files: file ? [file] : [],
     addressed,

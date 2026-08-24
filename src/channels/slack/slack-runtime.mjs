@@ -119,6 +119,7 @@ export function normalizeSlackEvent(payload, botUserId, {
     kind: direct ? 'direct' : 'group',
     conversationId: direct ? String(event.channel) : `${event.channel}:${threadTs}`,
     content: stripBotMention(event.text ?? '', botUserId),
+    plainText: !Array.isArray(event.files) || event.files.length === 0,
     images: Array.isArray(event.files)
       ? event.files.map((file) => slackImageSource(file, loadFile)).filter(Boolean)
       : [],

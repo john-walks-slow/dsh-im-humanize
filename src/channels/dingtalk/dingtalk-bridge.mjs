@@ -25,6 +25,12 @@ import {
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 import {
+  BatchInputManager,
+  batchInputBusyMessage,
+  batchInputGroupUnsupportedMessage,
+  isBatchInputCommand,
+} from '../shared/batch-input.mjs';
+import {
   hasInboundImages,
   imagePromptUserMessage,
   promptContentForMessage,
@@ -67,6 +73,9 @@ const HELP_TEXT_LINES = [
   '/preset --default  跟随 Host 默认',
   '/stop  停止当前任务',
   '/steer 补充指令  纠偏当前任务',
+  '/batch  开始批量输入（仅私聊，最多 10 条文字）',
+  '/send  提交当前批次',
+  '/cancel  取消当前批次',
   '/status  检查连接状态',
   '/help  显示本帮助',
 ];
@@ -344,6 +353,7 @@ export class DingtalkHarnessBridge {
   #commandTasks = new Set();
   #acceptedMessageIds = new Set();
   #approvals;
+  #batchInputs = new BatchInputManager();
 
   constructor({
     api,
@@ -416,12 +426,52 @@ export class DingtalkHarnessBridge {
       clientSecret: this.#clientSecret,
     });
     const commandText = nonEmptyString(promptMessage.content) ?? '';
+    const addressed = String(message.conversationType) !== '2' || message?.isInAtList === true;
+    const direct = String(message.conversationType) !== '2';
+    const batchCommand = String(message?.msgtype).toLowerCase() === 'text'
+      && isBatchInputCommand(commandText);
+    const batchStatus = this.#batchInputs.status(key);
+    if (batchCommand && !direct && sessionWebhook && addressed) {
+      return this.#finishBatchResult(
+        messageId,
+        sessionWebhook,
+        { message: batchInputGroupUnsupportedMessage() },
+      );
+    }
+    if (direct && sessionWebhook && (batchCommand || batchStatus.phase === 'collecting')) {
+      const exactBatchStart = /^\/batch$/iu.test(commandText);
+      const result = exactBatchStart
+        && batchStatus.phase === 'idle'
+        && (this.#queues.has(key) || pending || this.#approvals.hasPending(key))
+        ? { handled: true, kind: 'busy', message: batchInputBusyMessage() }
+        : this.#batchInputs.handle(key, commandText, {
+            plainText: Boolean(commandText)
+              && String(message?.msgtype).toLowerCase() === 'text'
+              && !hasInboundFiles(promptMessage)
+              && !hasInboundImages(promptMessage),
+          });
+      if (result.handled) {
+        if (result.kind === 'submit') {
+          return this.#enqueueMessage(
+            {
+              ...message,
+              msgtype: 'text',
+              text: { content: result.prompt },
+            },
+            messageId,
+            sender,
+            key,
+            { batchSubmission: result },
+          );
+        }
+        return this.#finishBatchResult(messageId, sessionWebhook, result);
+      }
+    }
     const commandRunner = hasInboundFiles(promptMessage) ? null : isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText)
           ? runModelCommand
           : (isPresetCommand(commandText) ? runPresetCommand : null));
-    const addressed = String(message.conversationType) !== '2' || message?.isInAtList === true;
     if (commandRunner && sessionWebhook && addressed) {
       let task;
       task = this.#processFastCommand(
@@ -521,6 +571,7 @@ export class DingtalkHarnessBridge {
   #enqueueMessage(message, messageId, sender, key, {
     releaseMessageId = true,
     alreadyRecorded = false,
+    batchSubmission = null,
   } = {}) {
     let hasSafeReplyRoute = false;
     try {
@@ -543,6 +594,7 @@ export class DingtalkHarnessBridge {
       .then(() => this.#process(message, messageId, sender, key, {
         alreadyRecorded,
         preparedMessage,
+        batchSubmission,
       }))
       .finally(() => {
         if (releaseMessageId) this.#acceptedMessageIds.delete(messageId);
@@ -595,9 +647,32 @@ export class DingtalkHarnessBridge {
     this.#status.lastError = null;
   }
 
+  #finishBatchResult(messageId, sessionWebhook, result) {
+    let task;
+    task = Promise.resolve().then(async () => {
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      increment(this.#status, 'messagesReceived');
+      this.#status.lastMessageAt = new Date().toISOString();
+      if (result.message) await this.#send(sessionWebhook, result.message);
+      this.#status.lastError = null;
+    }).catch(async (error) => {
+      if (this.#signal?.aborted) return;
+      this.#status.lastError = t('钉钉命令处理失败。');
+      this.#logger.error?.('[dsh-dingtalk] failed to process a batch input message', safeErrorDiagnostic(error));
+      await this.#send(sessionWebhook, t(CARD_ERROR_TEXT)).catch(() => undefined);
+    }).finally(() => {
+      this.#acceptedMessageIds.delete(messageId);
+      this.#commandTasks.delete(task);
+    });
+    this.#commandTasks.add(task);
+    return task;
+  }
+
   async #process(message, messageId, sender, key, {
     alreadyRecorded = false,
     preparedMessage,
+    batchSubmission = null,
   } = {}) {
     this.#signal?.throwIfAborted();
     if (!alreadyRecorded) {
@@ -633,6 +708,7 @@ export class DingtalkHarnessBridge {
     const isPlainText = String(message?.msgtype).toLowerCase() === 'text';
     let cardStream = null;
     let cardStarted = false;
+    let batchSettled = batchSubmission === null;
     try {
       if (!text && !hasImages && !hasFiles) {
         await this.#send(sessionWebhook, t('目前支持文字、图片和文件消息。'));
@@ -717,6 +793,10 @@ export class DingtalkHarnessBridge {
           files: promptMessage.files,
         },
       });
+      if (batchSubmission) {
+        this.#batchInputs.complete(key, batchSubmission.token);
+        batchSettled = true;
+      }
       const answerText = typeof answer === 'string' && answer.trim()
         ? answer
         : artifacts.length > 0 ? t('结果文件已生成。') : answer;
@@ -753,6 +833,15 @@ export class DingtalkHarnessBridge {
       this.#status.lastError = null;
       return delivery.receipt;
     } catch (error) {
+      let batchFailureMessage = null;
+      if (!batchSettled && batchSubmission) {
+        if (error?.code === 'turn-stopped') {
+          this.#batchInputs.complete(key, batchSubmission.token);
+        } else {
+          batchFailureMessage = this.#batchInputs.fail(key, batchSubmission.token).message ?? null;
+        }
+        batchSettled = true;
+      }
       if (error?.code === 'turn-stopped') {
         if (cardStarted) await cardStream.finish(t('已停止。')).catch(() => undefined);
         return;
@@ -767,8 +856,11 @@ export class DingtalkHarnessBridge {
         const errorText = inboundFileUserMessage(error)
           ?? dingtalkImageErrorUserMessage(error)
           ?? t(CARD_ERROR_TEXT);
-        const streamed = cardStarted && await cardStream.finish(errorText);
-        if (!streamed) await this.#send(sessionWebhook, errorText);
+        const visibleError = batchFailureMessage
+          ? `${errorText}\n\n${batchFailureMessage}`
+          : errorText;
+        const streamed = cardStarted && await cardStream.finish(visibleError);
+        if (!streamed) await this.#send(sessionWebhook, visibleError);
       } catch {
         this.#logger.error?.('[dsh-dingtalk] failed to send the safe error reply');
       }

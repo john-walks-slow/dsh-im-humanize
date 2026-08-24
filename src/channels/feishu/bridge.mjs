@@ -22,6 +22,12 @@ import {
   validHarnessQuestion,
 } from '../shared/harness-question.mjs';
 import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
+import {
+  BatchInputManager,
+  batchInputBusyMessage,
+  batchInputGroupUnsupportedMessage,
+  isBatchInputCommand,
+} from '../shared/batch-input.mjs';
 import { runCompactCommand } from '../shared/compact-command.mjs';
 import {
   isControlCommand,
@@ -366,6 +372,7 @@ export class FeishuHarnessBridge {
   #harness;
   #state;
   #queues = new Map();
+  #batchInputs = new BatchInputManager();
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
   #resolvedQuestionReplies = new Map();
@@ -542,6 +549,58 @@ export class FeishuHarnessBridge {
     const processingReaction = this.#addReaction(messageId, 'OnIt');
     const commandMessage = extractInboundMessage(event, this.#client);
     const commandText = nonEmptyString(commandMessage.content) ?? '';
+    const batchText = event.message.message_type === 'text'
+      ? nonEmptyString(extractText(event)) ?? ''
+      : '';
+    const batchCommand = event.message.message_type === 'text'
+      && isBatchInputCommand(batchText);
+    const pending = this.#pendingInteractions.get(key);
+    const batchStatus = this.#batchInputs.status(key);
+    if (batchCommand && event.message.chat_type !== 'p2p') {
+      return this.#finishBatchResult(
+        event,
+        messageId,
+        processingReaction,
+        { message: batchInputGroupUnsupportedMessage() },
+      );
+    }
+    if (event.message.chat_type === 'p2p'
+      && (batchCommand || batchStatus.phase === 'collecting')) {
+      const exactBatchStart = /^\/batch$/iu.test(batchText);
+      const result = exactBatchStart
+        && batchStatus.phase === 'idle'
+        && (this.#queues.has(key) || pending || this.#approvals.hasPending(key))
+        ? { handled: true, kind: 'busy', message: batchInputBusyMessage() }
+        : this.#batchInputs.handle(key, batchText, {
+            plainText: event.message.message_type === 'text' && Boolean(batchText),
+          });
+      if (result.handled) {
+        if (result.kind === 'submit') {
+          const submissionEvent = {
+            ...event,
+            batchSubmission: { token: result.token },
+            message: {
+              ...event.message,
+              message_type: 'text',
+              content: JSON.stringify({ text: result.prompt }),
+              mentions: [],
+            },
+          };
+          return this.#enqueueMessage(
+            submissionEvent,
+            messageId,
+            key,
+            processingReaction,
+          );
+        }
+        return this.#finishBatchResult(
+          event,
+          messageId,
+          processingReaction,
+          result,
+        );
+      }
+    }
     // Card commands (/m, /help, /status, etc.) bypass the queue so they
     // respond immediately even when a harness task is still streaming.
     if (CARD_COMMAND.test(commandText)) {
@@ -599,7 +658,6 @@ export class FeishuHarnessBridge {
         .finally(() => this.#acceptedMessageIds.delete(messageId));
       return current;
     }
-    const pending = this.#pendingInteractions.get(key);
     const approvalReply = this.#approvals.claimReply({
       key,
       actor: senderOpenId(event),
@@ -691,6 +749,32 @@ export class FeishuHarnessBridge {
     return this.#enqueueMessage(event, messageId, key, processingReaction);
   }
 
+  #finishBatchResult(event, messageId, processingReaction, result) {
+    let current;
+    current = Promise.resolve()
+      .then(async () => {
+        if (this.#state.hasSeen(messageId)) return;
+        await this.#state.markSeen(messageId);
+        this.#status.lastMessageAt = new Date().toISOString();
+        this.#status.messagesReceived += 1;
+        if (result?.message) await this.#send(event.message.chat_id, result.message);
+        this.#status.lastError = null;
+      })
+      .then(() => this.#finishReaction(messageId, processingReaction, 'DONE'))
+      .catch((error) => this.#handleMessageFailure(
+        event,
+        messageId,
+        processingReaction,
+        error,
+      ))
+      .finally(() => {
+        this.#acceptedMessageIds.delete(messageId);
+        this.#commandTasks.delete(current);
+      });
+    this.#commandTasks.add(current);
+    return current;
+  }
+
   #enqueueMessage(event, messageId, key, processingReaction, {
     releaseMessageId = true,
     alreadyRecorded = false,
@@ -725,6 +809,9 @@ export class FeishuHarnessBridge {
   async #handleMessageFailure(event, messageId, processingReaction, error) {
     if (error?.code === 'turn-stopped') {
       await this.#removeProcessingReaction(messageId, processingReaction);
+      if (error?.batchInputMessage) {
+        await this.#send(event.message.chat_id, error.batchInputMessage).catch(() => undefined);
+      }
       return;
     }
     if (this.#signal?.aborted) {
@@ -736,7 +823,8 @@ export class FeishuHarnessBridge {
     await this.#finishReaction(messageId, processingReaction, 'ERROR');
     await this.#send(
       event.message.chat_id,
-      inboundFileUserMessage(error)
+      error?.batchInputMessage
+        ?? inboundFileUserMessage(error)
         ?? imagePromptUserMessage(error)
         ?? t('处理失败，请稍后重试。如果问题持续，请在 DeepSeek Harness 的飞书插件页面检查连接状态。'),
     ).catch(() => undefined);
@@ -939,12 +1027,38 @@ export class FeishuHarnessBridge {
     }
 
     this.#logger.info?.(`[dsh-feishu] processing ${event.message.chat_type} message ${messageId}`);
+    const batchSubmission = event.batchSubmission ?? null;
+    let batchAskCompleted = false;
     try {
-      const receipt = await this.#answerWithStream(event, key, message);
+      const receipt = await this.#answerWithStream(event, key, message, {
+        onAskComplete: batchSubmission
+          ? () => {
+              batchAskCompleted = this.#batchInputs.complete(
+                key,
+                batchSubmission.token,
+              ).completed;
+            }
+          : undefined,
+      });
       this.#status.messagesReplied += 1;
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
       return receipt;
+    } catch (error) {
+      if (batchSubmission && !batchAskCompleted) {
+        if (error?.code === 'turn-stopped') {
+          this.#batchInputs.complete(key, batchSubmission.token);
+          throw error;
+        }
+        const failed = this.#batchInputs.fail(key, batchSubmission.token);
+        if (failed.retained) {
+          const batchError = new Error(error?.message ?? String(error), { cause: error });
+          batchError.code = error?.code;
+          batchError.batchInputMessage = failed.message;
+          throw batchError;
+        }
+      }
+      throw error;
     } finally {
       await this.#cancelPendingInteraction(key);
       await this.#approvals.closeRoute(key);
@@ -2937,10 +3051,16 @@ export class FeishuHarnessBridge {
     };
   }
 
-  async #answerWithStream(event, key, message) {
+  async #answerWithStream(event, key, message, { onAskComplete } = {}) {
     const chatId = event.message.chat_id;
     const messageId = event.message.message_id;
     const text = message.content;
+    let askCompleted = false;
+    const markAskComplete = () => {
+      if (askCompleted) return;
+      askCompleted = true;
+      onAskComplete?.();
+    };
     const content = hasInboundImages(message)
       ? await promptContentForMessage(message, { signal: this.#signal })
       : undefined;
@@ -2955,6 +3075,7 @@ export class FeishuHarnessBridge {
         existsOptions: { signal: this.#signal },
         askOptions: this.#interactionAskOptions(event, key, message.files),
       });
+      markAskComplete();
       let textReceipt;
       let textSendError = null;
       try {
@@ -3009,6 +3130,7 @@ export class FeishuHarnessBridge {
             existsOptions: { signal: this.#signal },
             askOptions,
           });
+          markAskComplete();
           completedAnswer = completed.answer;
           completedArtifacts = completed.artifacts ?? [];
           await controller.setContent(answerTextForDelivery(completedAnswer, completedArtifacts));
@@ -3067,6 +3189,7 @@ export class FeishuHarnessBridge {
         existsOptions: { signal: this.#signal },
         askOptions: this.#interactionAskOptions(event, key, message.files),
       });
+      markAskComplete();
       let textReceipt;
       let textSendError = null;
       try {

@@ -778,6 +778,7 @@ test('Weixin lists models and presets without prompting and advertises fast comm
   for (const command of [
     '/models', '/model', '/reasoninglist', '/reasonings', '/reasoning',
     '/presetlist', '/preset', '/preset --default', '/stop', '/steer',
+    '/batch', '/send', '/cancel',
   ]) {
     assert.equal(help.includes(command), true, command);
   }
@@ -1649,4 +1650,155 @@ test('bridge commands are local and internal failures return a generic message',
     at: status.lastMessageError.at,
   });
   assert.doesNotMatch(JSON.stringify(status.lastMessageError), /private path|secret|token-shaped/);
+});
+
+test('Weixin batch input collects up to ten native text messages and submits one ordered turn', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-batch');
+  const sent = [];
+  const prompts = [];
+  const bridge = new WeixinHarnessBridge({
+    api: { sendText: async (request) => sent.push(request) },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, prompt) => {
+        prompts.push({ sessionId, prompt });
+        return '批量完成';
+      },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('batch-start', '/batch'));
+  await bridge.accept(message('batch-voice', '', {
+    item_list: [{ type: 3, voice_item: { text: '语音转写不能收录' } }],
+  }));
+  await bridge.accept(message('batch-image', '', {
+    item_list: [{ type: 2, image_item: { media: {} } }],
+  }));
+  for (let index = 1; index <= 10; index += 1) {
+    await bridge.accept(message(`batch-item-${index}`, `内容 ${index}`));
+  }
+  await bridge.accept(message('batch-overflow', '不会收录'));
+
+  assert.equal(prompts.length, 0);
+  assert.equal(sent.some(({ text }) => /目前仅支持文字.*未收录/s.test(text)), true);
+  assert.equal(sent.some(({ text }) => /10\/10.*已满/.test(text)), true);
+  assert.equal(sent.some(({ text }) => /这条消息未收录/.test(text)), true);
+
+  await bridge.accept(message('batch-send', '/send'));
+
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].sessionId, 'session-batch');
+  assert.match(prompts[0].prompt, /\[消息 1\]\n内容 1/);
+  assert.match(prompts[0].prompt, /\[消息 10\]\n内容 10/);
+  assert.doesNotMatch(prompts[0].prompt, /语音转写不能收录|不会收录/);
+  assert.equal(sent.at(-1).text, '批量完成');
+
+  await bridge.accept(message('after-batch', '恢复普通聊天'));
+  assert.equal(prompts.length, 2);
+  assert.equal(prompts[1].prompt, '恢复普通聊天');
+});
+
+test('Weixin batch cancellation is local and a failed submission remains retryable', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-batch-retry');
+  const sent = [];
+  let attempts = 0;
+  const bridge = new WeixinHarnessBridge({
+    api: { sendText: async ({ text }) => sent.push(text) },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('temporary failure');
+        return '重试成功';
+      },
+    },
+    state: fixture.state,
+    logger: { error() {} },
+  });
+
+  await bridge.accept(message('retry-start', '/batch'));
+  await bridge.accept(message('retry-content', '需要重试'));
+  await bridge.accept(message('retry-send-1', '/send'));
+  assert.match(sent.at(-1), /消息处理失败.*已保留 1 条消息/s);
+
+  await bridge.accept(message('retry-send-2', '/send'));
+  assert.equal(attempts, 2);
+  assert.equal(sent.at(-1), '重试成功');
+
+  await bridge.accept(message('cancel-start', '/batch'));
+  await bridge.accept(message('cancel-content', '丢弃我'));
+  await bridge.accept(message('cancel-command', '/cancel'));
+  assert.match(sent.at(-1), /已取消批量输入.*丢弃 1 条消息/s);
+  assert.equal(attempts, 2);
+});
+
+test('Weixin clears a submitted batch when the Harness turn is stopped', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-batch-stopped');
+  const sent = [];
+  const bridge = new WeixinHarnessBridge({
+    api: { sendText: async ({ text }) => sent.push(text) },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        const error = new Error('turn stopped');
+        error.code = 'turn-stopped';
+        throw error;
+      },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('stopped-start', '/batch'));
+  await bridge.accept(message('stopped-content', '不要重试'));
+  await bridge.accept(message('stopped-send', '/send'));
+  assert.doesNotMatch(sent.join('\n'), /已保留/);
+
+  await bridge.accept(message('stopped-cancel', '/cancel'));
+  assert.match(sent.at(-1), /没有正在进行的批量输入/);
+});
+
+test('Weixin refuses /batch while the existing conversation queue is running', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-batch-busy');
+  const running = deferred();
+  const sent = [];
+  let asks = 0;
+  const bridge = new WeixinHarnessBridge({
+    api: { sendText: async ({ text }) => sent.push(text) },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        asks += 1;
+        await running.promise;
+        return '原任务完成';
+      },
+    },
+    state: fixture.state,
+  });
+
+  const turn = bridge.accept(message('busy-turn', '正在运行'));
+  await eventually(() => asks === 1);
+  await bridge.accept(message('busy-batch', '/batch'));
+  assert.match(sent.at(-1), /正在运行的任务.*\/stop.*\/batch/s);
+
+  running.resolve();
+  await turn;
+  await bridge.accept(message('busy-send', '/send'));
+  assert.match(sent.at(-1), /没有待提交的批量内容/);
 });

@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { WeixinApiError } from '../../../src/channels/weixin/weixin-api.mjs';
-import { WeixinRuntime } from '../../../src/channels/weixin/weixin-runtime.mjs';
+import {
+  orderWeixinMessages,
+  WeixinRuntime,
+} from '../../../src/channels/weixin/weixin-runtime.mjs';
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -49,6 +52,90 @@ function abortable(promise, signal) {
     );
   });
 }
+
+test('Weixin orders one update batch by sequence instead of its unrelated message id', () => {
+  const first = { seq: 101, message_id: 900 };
+  const second = { seq: '102', message_id: 100 };
+  const third = { seq: 103, message_id: 500 };
+  assert.deepEqual(orderWeixinMessages([third, first, second]), [first, second, third]);
+
+  const earlier = { create_time_ms: 1_000 };
+  const later = { create_time_ms: 2_000 };
+  assert.deepEqual(orderWeixinMessages([later, earlier]), [earlier, later]);
+
+  const withoutOrder = { client_id: 'local-only' };
+  assert.deepEqual(orderWeixinMessages([third, withoutOrder, first]), [third, withoutOrder, first]);
+  assert.deepEqual(orderWeixinMessages(null), []);
+});
+
+test('runtime preserves rapid batch command order when getUpdates returns newest first', async () => {
+  const sends = [];
+  const seen = new Set();
+  let polls = 0;
+  const stopped = deferred();
+  const inbound = (seq, messageId, text) => ({
+    seq,
+    message_id: messageId,
+    message_type: 1,
+    from_user_id: 'owner',
+    context_token: `context-${messageId}`,
+    item_list: [{ type: 1, text_item: { text } }],
+  });
+  const runtime = new WeixinRuntime({
+    api: {
+      notifyStart: async () => {},
+      notifyStop: async () => {},
+      sendText: async ({ text }) => sends.push(text),
+      getUpdates: async ({ signal }) => {
+        polls += 1;
+        if (polls === 1) {
+          return {
+            ret: 0,
+            get_updates_buf: 'ordered-batch',
+            msgs: [
+              inbound(303, 200, '/cancel'),
+              inbound(302, 100, '这条内容必须被取消'),
+              inbound(301, 900, '/batch'),
+            ],
+          };
+        }
+        return abortable(stopped.promise, signal);
+      },
+    },
+    config: {
+      botId: 'wx_ordered_batch',
+      baseUrl: 'https://ilinkai.weixin.qq.com/',
+      ownerUserId: 'owner',
+    },
+    token: 'bot-token',
+    harness: {
+      ensureRunning: async () => true,
+      ask: async () => assert.fail('cancelled batch content must not reach Harness'),
+    },
+    state: {
+      getUpdatesBuf: () => '',
+      setGetUpdatesBuf: async () => {},
+      hasSeen: (id) => seen.has(id),
+      markSeen: async (id) => seen.add(id),
+      sessionFor: () => null,
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+    logger: { warn() {}, error() {} },
+  });
+
+  await runtime.start();
+  try {
+    await eventually(
+      () => sends.some((text) => /丢弃 1 条消息/.test(text)),
+      'the reversed provider batch should be processed in sequence order',
+    );
+    assert.equal(sends.some((text) => /仅支持文字|没有正在进行/.test(text)), false);
+  } finally {
+    await runtime.stop();
+    stopped.resolve({ ret: 0, msgs: [] });
+  }
+});
 
 test('runtime sends a connection test to the bound Weixin owner without reply context', async () => {
   const sends = [];

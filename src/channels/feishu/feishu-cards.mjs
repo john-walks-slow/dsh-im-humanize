@@ -513,6 +513,11 @@ export function menuHelpText() {
     '/reasoning [序号、等级ID或 --default]  查看或切换当前推理等级',
     '/model [序号或完整模型ID] [推理等级ID]  查看或切换当前会话模型',
     '',
+    '📦 批量输入（仅私聊）',
+    '/batch  开始批量输入（仅私聊，最多 10 条文字）',
+    '/send  提交当前批次',
+    '/cancel  取消当前批次',
+    '',
     '🎮 任务控制',
     '/stop  停止当前任务',
     '/steer 指令  给 Agent 补充指令',
@@ -564,6 +569,9 @@ const HELP_TEXT_COMMANDS = [
   '`/reasoninglist` 或 `/reasonings` — 按序号列出当前模型可用推理等级',
   '`/reasoning [序号、等级ID或 --default]` — 查看或切换当前推理等级',
   '`/model [序号或完整模型ID] [推理等级ID]` — 查看或切换当前会话模型',
+  '`/batch` — 开启批量输入（仅私聊，最多 10 条文字）',
+  '`/send` — 提交当前批次',
+  '`/cancel` — 取消当前批次',
   '`/repair` — 修复卡片按钮',
 ].join('\n');
 

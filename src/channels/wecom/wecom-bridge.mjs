@@ -5,6 +5,12 @@ import {
   validHarnessQuestion,
 } from '../shared/harness-question.mjs';
 import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
+import {
+  BatchInputManager,
+  batchInputBusyMessage,
+  batchInputGroupUnsupportedMessage,
+  isBatchInputCommand,
+} from '../shared/batch-input.mjs';
 import { runCompactCommand } from '../shared/compact-command.mjs';
 import {
   isControlCommand,
@@ -63,6 +69,9 @@ function helpText() {
     t('/preset --default  跟随 Host 默认'),
     t('/stop  停止当前任务'),
     t('/steer 补充指令  纠偏当前任务'),
+    t('/batch  开始批量输入（仅私聊，最多 10 条文字）'),
+    t('/send  提交当前批次'),
+    t('/cancel  取消当前批次'),
     t('/status  检查连接状态'),
     t('/help  显示本帮助'),
   ].join('\n');
@@ -252,6 +261,10 @@ function imageQueueFullMessage(message) {
 
 function interactionReplyText(frame) {
   return bodyOf(frame).msgtype === 'text' ? messageText(frame) : '';
+}
+
+function isNativeWecomText(frame) {
+  return bodyOf(frame).msgtype === 'text' && Boolean(nonEmptyString(messageText(frame)));
 }
 
 function splitUtf8(text, maxBytes = MAX_REPLY_BYTES) {
@@ -466,6 +479,7 @@ export class WecomHarnessBridge {
   #approvalTasks = new Set();
   #commandTasks = new Set();
   #approvals;
+  #batchInputs = new BatchInputManager();
   #prefetchedImageCount = 0;
 
   constructor({
@@ -523,6 +537,40 @@ export class WecomHarnessBridge {
     const pending = this.#pendingInteractions.get(key);
     const commandMessage = wecomInboundMessage(frame, this.#client);
     const commandText = nonEmptyString(commandMessage.content) ?? '';
+    const batchCommand = isBatchInputCommand(commandText);
+    const batchStatus = this.#batchInputs.status(key);
+    if (batchCommand && body.chattype === 'group') {
+      return this.#finishBatchResult(
+        frame,
+        messageId,
+        chatId,
+        { message: batchInputGroupUnsupportedMessage() },
+      );
+    }
+    if (body.chattype === 'single'
+      && (batchCommand || batchStatus.phase === 'collecting')) {
+      const exactBatchStart = /^\/batch$/iu.test(commandText);
+      const result = exactBatchStart
+        && batchStatus.phase === 'idle'
+        && (this.#queues.has(key) || pending || this.#approvals.hasPending(key))
+        ? { handled: true, kind: 'busy', message: batchInputBusyMessage() }
+        : this.#batchInputs.handle(key, commandText, {
+            plainText: isNativeWecomText(frame),
+          });
+      if (result.handled) {
+        if (result.kind === 'submit') {
+          return this.#enqueueMessage({
+            ...frame,
+            body: {
+              ...body,
+              msgtype: 'text',
+              text: { content: result.prompt },
+            },
+          }, messageId, key, { batchSubmission: result });
+        }
+        return this.#finishBatchResult(frame, messageId, chatId, result);
+      }
+    }
     const commandRunner = hasInboundFiles(commandMessage) ? null : isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText)
@@ -616,6 +664,7 @@ export class WecomHarnessBridge {
   #enqueueMessage(frame, messageId, key, {
     releaseMessageId = true,
     alreadyRecorded = false,
+    batchSubmission = null,
   } = {}) {
     // WeCom image URLs expire after five minutes, while a conversation turn
     // may legally stay queued longer. Start the authenticated SDK download as
@@ -637,7 +686,11 @@ export class WecomHarnessBridge {
     const previous = this.#queues.get(key) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
-      .then(() => this.#process(frame, { alreadyRecorded, preparedMessage }))
+      .then(() => this.#process(frame, {
+        alreadyRecorded,
+        preparedMessage,
+        batchSubmission,
+      }))
       .finally(() => {
         this.#prefetchedImageCount -= reservedImages;
         if (releaseMessageId) this.#acceptedMessageIds.delete(messageId);
@@ -645,6 +698,29 @@ export class WecomHarnessBridge {
       });
     this.#queues.set(key, current);
     return current;
+  }
+
+  #finishBatchResult(frame, messageId, chatId, result) {
+    let task;
+    task = Promise.resolve().then(async () => {
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      this.#status.messagesReceived += 1;
+      this.#status.lastMessageAt = new Date().toISOString();
+      if (result.message) await this.#sendImmediate(frame, chatId, result.message);
+      this.#status.lastError = null;
+    }).catch(async (error) => {
+      if (this.#signal?.aborted) return;
+      this.#status.lastError = error?.message ?? String(error);
+      this.#logger.error?.('[dsh-im:wecom] failed to process a batch input message');
+      await this.#sendImmediate(frame, chatId, t('消息处理失败，请稍后重试。'))
+        .catch(() => undefined);
+    }).finally(() => {
+      this.#acceptedMessageIds.delete(messageId);
+      this.#commandTasks.delete(task);
+    });
+    this.#commandTasks.add(task);
+    return task;
   }
 
   async waitForIdle() {
@@ -748,7 +824,11 @@ export class WecomHarnessBridge {
     };
   }
 
-  async #process(frame, { alreadyRecorded = false, preparedMessage } = {}) {
+  async #process(frame, {
+    alreadyRecorded = false,
+    preparedMessage,
+    batchSubmission = null,
+  } = {}) {
     if (this.#signal?.aborted) return;
     const body = bodyOf(frame);
     const messageId = typeof body.msgid === 'string' ? body.msgid : '';
@@ -767,6 +847,7 @@ export class WecomHarnessBridge {
     const key = conversationKey(frame);
     let streamId = null;
     let streamStarted = false;
+    let batchSettled = batchSubmission === null;
     try {
       if (!text && !hasImages && !hasFiles) {
         await this.#sendImmediate(frame, chatId, t('目前支持文字、图片、文件和语音转写消息。'));
@@ -855,6 +936,10 @@ export class WecomHarnessBridge {
           files: message.files,
         },
       });
+      if (batchSubmission) {
+        this.#batchInputs.complete(key, batchSubmission.token);
+        batchSettled = true;
+      }
 
       this.#signal?.throwIfAborted();
       const displayAnswer = answerTextForDelivery(answer, artifacts);
@@ -915,6 +1000,15 @@ export class WecomHarnessBridge {
       this.#status.lastError = null;
       return delivery.receipt;
     } catch (error) {
+      let batchFailureMessage = null;
+      if (!batchSettled && batchSubmission) {
+        if (error?.code === 'turn-stopped') {
+          this.#batchInputs.complete(key, batchSubmission.token);
+        } else {
+          batchFailureMessage = this.#batchInputs.fail(key, batchSubmission.token).message ?? null;
+        }
+        batchSettled = true;
+      }
       if (error?.code === 'turn-stopped') {
         if (streamStarted && streamId) {
           await this.#client.replyStream(frame, streamId, t('已停止。'), true)
@@ -929,11 +1023,14 @@ export class WecomHarnessBridge {
       const errorText = inboundFileUserMessage(error)
         ?? imagePromptUserMessage(error)
         ?? t('消息处理失败，请稍后重试。');
+      const visibleError = batchFailureMessage
+        ? `${errorText}\n\n${batchFailureMessage}`
+        : errorText;
       try {
         if (streamStarted && streamId) {
-          await this.#client.replyStream(frame, streamId, errorText, true);
+          await this.#client.replyStream(frame, streamId, visibleError, true);
         } else {
-          await this.#sendImmediate(frame, chatId, errorText);
+          await this.#sendImmediate(frame, chatId, visibleError);
         }
         await this.#state.markSeen(messageId);
       } catch {

@@ -217,6 +217,9 @@ export function normalizeDiscordMessage(message, botId, { fetchImpl = fetch } = 
     kind: direct ? 'direct' : 'group',
     conversationId: String(message.channel_id),
     content: stripBotMention(message.content ?? '', botId),
+    plainText: (!Array.isArray(message.attachments) || message.attachments.length === 0)
+      && (!Array.isArray(message.sticker_items) || message.sticker_items.length === 0)
+      && !message.poll,
     images: Array.isArray(message.attachments)
       ? message.attachments.map((attachment) => discordImageSource(attachment, fetchImpl)).filter(Boolean)
       : [],

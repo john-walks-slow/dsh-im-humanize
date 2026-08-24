@@ -389,12 +389,287 @@ test('Feishu lists models and presets without prompting and advertises fast comm
   const help = sent.at(-1);
   for (const command of [
     '/models', '/model', '/reasoninglist', '/reasonings', '/reasoning',
-    '/presetlist', '/preset', '/preset --default', '/stop', '/steer',
+    '/presetlist', '/preset', '/preset --default', '/batch', '/send', '/cancel',
+    '/stop', '/steer',
   ]) {
     assert.equal(help.includes(command), true, command);
   }
   assert.match(help, /\/model .*\[推理等级ID\]/);
   assert.match(help, /\/preset id:<ID>/);
+});
+
+test('Feishu private batch input synchronously collects messages and submits one ordered prompt', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-batch']]);
+  const sent = [];
+  const asked = [];
+  const reactions = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {
+      addReaction: async (messageId, emojiType) => {
+        reactions.push({ messageId, emojiType });
+        return `${messageId}-${emojiType}`;
+      },
+      removeReaction: async () => undefined,
+    },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, text) => {
+        asked.push(text);
+        return '批量处理完成';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  const operations = [
+    bridge.accept(event('batch-open', '/batch')),
+    bridge.accept(event('batch-one', '第一条')),
+    bridge.accept(event('batch-two', '第二条')),
+    bridge.accept(event('batch-progress', '/batch')),
+    bridge.accept(event('batch-send', '/send')),
+  ];
+  await Promise.all(operations);
+  await bridge.waitForIdle();
+
+  assert.deepEqual(asked, [
+    '以下是用户通过批量输入模式发送的多条内容，请按顺序作为同一次输入统一处理。\n\n'
+      + '[消息 1]\n第一条\n\n[消息 2]\n第二条',
+  ]);
+  assert.match(sent.join('\n'), /已进入批量输入模式/);
+  assert.match(sent.join('\n'), /已收集 2\/10 条/);
+  assert.match(sent.join('\n'), /批量处理完成/);
+  for (const messageId of ['batch-open', 'batch-one', 'batch-two', 'batch-progress', 'batch-send']) {
+    assert.equal(fixture.seen.has(messageId), true, messageId);
+    assert.deepEqual(
+      reactions.filter((reaction) => reaction.messageId === messageId).map(({ emojiType }) => emojiType),
+      ['OnIt', 'DONE'],
+    );
+  }
+
+  await bridge.accept(event('batch-after-success', '恢复普通聊天'));
+  await bridge.waitForIdle();
+  assert.equal(asked.at(-1), '恢复普通聊天');
+});
+
+test('Feishu batch input caps at ten, rejects non-text content, and can be cancelled', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-batch-limit']]);
+  const sent = [];
+  let asks = 0;
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        asks += 1;
+        return '不应调用';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  await bridge.accept(event('batch-limit-open', '/batch'));
+  for (let index = 1; index <= 10; index += 1) {
+    await bridge.accept(event(`batch-limit-${index}`, `内容 ${index}`));
+  }
+  await bridge.accept(event('batch-limit-overflow', '第十一条'));
+  await bridge.accept(event('batch-limit-cancel', '/cancel'));
+  assert.equal(asks, 0);
+  assert.match(sent.join('\n'), /已收集 10\/10 条/);
+  assert.match(sent.join('\n'), /当前批次已满，这条消息未收录/);
+  assert.match(sent.join('\n'), /共丢弃 10 条消息/);
+
+  await bridge.accept(event('batch-nontext-open', '/batch'));
+  await bridge.accept(event('batch-nontext-image', '', {
+    message_type: 'image',
+    content: JSON.stringify({ image_key: 'img_batch_rejected' }),
+  }));
+  await bridge.accept(event('batch-nontext-cancel', '/cancel'));
+  assert.equal(asks, 0);
+  assert.match(sent.join('\n'), /目前仅支持文字，这条消息未收录/);
+  assert.match(sent.at(-1), /已取消批量输入/);
+  assert.doesNotMatch(sent.at(-1), /丢弃 1 条/);
+});
+
+test('Feishu group batch commands follow the response policy but never reach Harness', async () => {
+  const fixture = stateFixture([['group:oc_batch_group', 'session-group-batch']]);
+  const sent = [];
+  let asks = 0;
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        asks += 1;
+        return '不应调用';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    botOpenId: 'ou_bot',
+    groupResponseMode: 'mention',
+  });
+
+  for (const [messageId, command] of [
+    ['group-batch', '/batch'],
+    ['group-send', '/send'],
+    ['group-cancel', '/cancel'],
+  ]) {
+    await bridge.accept(event(messageId, `@_bot ${command}`, {
+      chat_type: 'group',
+      chat_id: 'oc_batch_group',
+      mentions: [{ key: '@_bot', id: { open_id: 'ou_bot' } }],
+    }));
+  }
+  await bridge.accept(event('group-batch-unaddressed', '/batch', {
+    chat_type: 'group',
+    chat_id: 'oc_batch_group',
+  }));
+  bridge.setGroupResponseMode('all');
+  await bridge.accept(event('group-batch-all-mode', '/batch', {
+    chat_type: 'group',
+    chat_id: 'oc_batch_group',
+  }));
+
+  assert.equal(asks, 0);
+  assert.equal(sent.length, 4);
+  assert.equal(sent.every((text) => /仅支持私聊/.test(text)), true);
+  assert.equal(fixture.seen.has('group-batch-unaddressed'), false);
+  assert.equal(fixture.seen.has('group-batch-all-mode'), true);
+});
+
+test('Feishu batch start is busy behind a turn and submitting lets later messages use the normal queue', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-batch-queue']]);
+  const firstStarted = deferred();
+  const releaseFirst = deferred();
+  const batchStarted = deferred();
+  const releaseBatch = deferred();
+  const asked = [];
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, text) => {
+        asked.push(text);
+        if (text === '运行中的普通任务') {
+          firstStarted.resolve();
+          await releaseFirst.promise;
+        } else if (text.includes('[消息 1]\n批量内容')) {
+          batchStarted.resolve();
+          await releaseBatch.promise;
+        }
+        return `完成：${text}`;
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  const activeTurn = bridge.accept(event('batch-busy-turn', '运行中的普通任务'));
+  await firstStarted.promise;
+  await bridge.accept(event('batch-busy-open', '/batch'));
+  assert.match(sent.at(-1), /正在运行的任务/);
+  releaseFirst.resolve();
+  await activeTurn;
+
+  await bridge.accept(event('batch-queue-open', '/batch'));
+  await bridge.accept(event('batch-queue-content', '批量内容'));
+  const submission = bridge.accept(event('batch-queue-send', '/send'));
+  await batchStarted.promise;
+  const laterMessage = bridge.accept(event('batch-queue-later', '提交后的普通消息'));
+  await bridge.accept(event('batch-queue-cancel-late', '/cancel'));
+  assert.match(sent.at(-1), /已经提交，无法取消/);
+  releaseBatch.resolve();
+  await Promise.all([submission, laterMessage]);
+  await bridge.waitForIdle();
+
+  assert.equal(asked.length, 3);
+  assert.equal(asked[0], '运行中的普通任务');
+  assert.match(asked[1], /\[消息 1\]\n批量内容/);
+  assert.equal(asked[2], '提交后的普通消息');
+});
+
+test('Feishu retains a batch after an ask failure and retries the same snapshot', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-batch-retry']]);
+  const sent = [];
+  const asked = [];
+  const finalReactions = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {
+      addReaction: async (_messageId, emojiType) => {
+        finalReactions.push(emojiType);
+        return `reaction-${emojiType}`;
+      },
+      removeReaction: async () => undefined,
+    },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, text) => {
+        asked.push(text);
+        if (asked.length === 1) throw new Error('transient batch failure');
+        return '重试成功';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  await bridge.accept(event('batch-retry-open', '/batch'));
+  await bridge.accept(event('batch-retry-content', '需要重试'));
+  await bridge.accept(event('batch-retry-first-send', '/send'));
+  assert.match(sent.at(-1), /提交失败，已保留 1 条消息/);
+  assert.equal(finalReactions.at(-1), 'ERROR');
+
+  await bridge.accept(event('batch-retry-status', '/batch'));
+  assert.match(sent.at(-1), /已收集 1\/10 条/);
+  await bridge.accept(event('batch-retry-second-send', '/send'));
+  assert.equal(asked.length, 2);
+  assert.equal(asked[0], asked[1]);
+  assert.equal(sent.at(-1), '重试成功');
+
+  await bridge.accept(event('batch-retry-cancel-after-success', '/cancel'));
+  assert.match(sent.at(-1), /没有正在进行的批量输入/);
+});
+
+test('Feishu clears a submitted batch when the Harness turn is stopped', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-batch-stopped']]);
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        const error = new Error('turn stopped');
+        error.code = 'turn-stopped';
+        throw error;
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  await bridge.accept(event('stopped-batch-open', '/batch'));
+  await bridge.accept(event('stopped-batch-content', '不要重试'));
+  await bridge.accept(event('stopped-batch-send', '/send'));
+  assert.doesNotMatch(sent.join('\n'), /已保留/);
+
+  await bridge.accept(event('stopped-batch-cancel', '/cancel'));
+  assert.match(sent.at(-1), /没有正在进行的批量输入/);
 });
 
 test('bridge maps a Feishu conversation to a persistent Harness session and replies', async () => {
@@ -786,7 +1061,7 @@ test('bridge sends Feishu post text and all embedded images as one structured pr
   assert.deepEqual(sent, ['两张图片都已收到']);
 });
 
-test('text inside a Feishu post is a model prompt rather than a local command', async () => {
+test('text inside a Feishu post is a model prompt rather than a local or batch command', async () => {
   const fixture = stateFixture([['p2p:ou_user', 'session-post-command']]);
   const asked = [];
   const sent = [];
@@ -809,11 +1084,18 @@ test('text inside a Feishu post is a model prompt rather than a local command', 
     message_type: 'post',
     content: JSON.stringify({ content: [[{ tag: 'text', text: '/new' }]] }),
   }));
+  await bridge.accept(event('om_post_batch_command', '', {
+    message_type: 'post',
+    content: JSON.stringify({ content: [[{ tag: 'text', text: '/batch' }]] }),
+  }));
   await bridge.waitForIdle();
 
   assert.equal(fixture.sessions.get('p2p:ou_user'), 'session-post-command');
-  assert.deepEqual(asked, [{ sessionId: 'session-post-command', content: '/new' }]);
-  assert.deepEqual(sent, ['按普通内容处理']);
+  assert.deepEqual(asked, [
+    { sessionId: 'session-post-command', content: '/new' },
+    { sessionId: 'session-post-command', content: '/batch' },
+  ]);
+  assert.deepEqual(sent, ['按普通内容处理', '按普通内容处理']);
 });
 
 test('a threaded Feishu reply answers a pending Harness question before the original turn queue', async () => {

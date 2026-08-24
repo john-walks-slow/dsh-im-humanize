@@ -2246,3 +2246,154 @@ test('QQ cancellation prevents SDK sendFile', async (t) => {
   await cancelledBridge.accept(message({ messageId: 'qq-artifact-cancelled' }));
   assert.equal(fileCalls, 0);
 });
+
+test('QQ private batch input submits once, cancels cleanly, and restores normal chat', async () => {
+  const fixture = stateFixture();
+  const asked = [];
+  const sent = [];
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      createSession: async () => 'session-batch',
+      sessionExists: async () => true,
+      ask: async (_sessionId, prompt) => {
+        asked.push(prompt);
+        return asked.length === 1 ? '批量完成' : '普通完成';
+      },
+    },
+    state: fixture.state,
+  });
+  const inbound = (messageId, content, extra = {}) => message({
+    messageId,
+    content,
+    replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: messageId },
+    ...extra,
+  });
+
+  await bridge.accept(inbound('qq-batch-start', '/batch'));
+  await bridge.accept(inbound('qq-batch-one', '第一条'));
+  await bridge.accept(inbound('qq-batch-two', '第二条'));
+  assert.deepEqual(asked, []);
+  assert.equal(sent.length, 1);
+
+  await bridge.accept(inbound('qq-batch-send', '/send'));
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /\[消息 1\]\n第一条/);
+  assert.match(asked[0], /\[消息 2\]\n第二条/);
+  assert.equal(sent.at(-1), '批量完成');
+
+  await bridge.accept(inbound('qq-cancel-start', '/batch'));
+  await bridge.accept(inbound('qq-cancel-data', '不得提交'));
+  await bridge.accept(inbound('qq-cancel-command', '/cancel'));
+  assert.equal(asked.length, 1);
+  assert.match(sent.at(-1), /丢弃 1 条/);
+
+  await bridge.accept(inbound('qq-normal-after-batch', '普通问题'));
+  assert.equal(asked.at(-1), '普通问题');
+  assert.equal(sent.at(-1), '普通完成');
+});
+
+test('QQ retains a private batch after Harness ask fails and lets /send retry it', async () => {
+  const fixture = stateFixture();
+  const asked = [];
+  const sent = [];
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      createSession: async () => 'session-batch-retry',
+      sessionExists: async () => true,
+      ask: async (_sessionId, prompt) => {
+        asked.push(prompt);
+        if (asked.length === 1) throw new Error('temporary Harness failure');
+        return '重试成功';
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+  });
+  const inbound = (messageId, content) => message({
+    messageId,
+    content,
+    replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: messageId },
+  });
+
+  await bridge.accept(inbound('qq-batch-retry-start', '/batch'));
+  await bridge.accept(inbound('qq-batch-retry-data', '需要重试的内容'));
+  await bridge.accept(inbound('qq-batch-retry-first-send', '/send'));
+
+  assert.equal(asked.length, 1);
+  assert.match(sent.at(-1), /已保留 1 条消息/);
+  assert.match(sent.at(-1), /再次发送 \/send 重试/);
+
+  await bridge.accept(inbound('qq-batch-retry-second-send', '/send'));
+
+  assert.equal(asked.length, 2);
+  assert.equal(asked[1], asked[0]);
+  assert.equal(sent.at(-1), '重试成功');
+});
+
+test('QQ clears a private batch after turn-stopped without suggesting a batch retry', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let asks = 0;
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      createSession: async () => 'session-batch-stopped',
+      sessionExists: async () => true,
+      ask: async () => {
+        asks += 1;
+        const error = new Error('turn stopped');
+        error.code = 'turn-stopped';
+        throw error;
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+  });
+  const inbound = (messageId, content) => message({
+    messageId,
+    content,
+    replyTarget: { scope: 'c2c', targetId: 'owner-openid', msgId: messageId },
+  });
+
+  await bridge.accept(inbound('qq-batch-stopped-start', '/batch'));
+  await bridge.accept(inbound('qq-batch-stopped-data', '停止后应清除'));
+  await bridge.accept(inbound('qq-batch-stopped-send', '/send'));
+
+  assert.equal(asks, 1);
+  assert.equal(sent.at(-1), '已停止。');
+  assert.equal(sent.some((text) => text.includes('已保留')), false);
+
+  await bridge.accept(inbound('qq-batch-stopped-send-again', '/send'));
+
+  assert.equal(asks, 1);
+  assert.match(sent.at(-1), /当前没有待提交的批量内容/);
+});
+
+test('QQ group batch commands are rejected without reaching Harness', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let asks = 0;
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    ownerUserOpenid: 'owner-openid',
+    harness: { ask: async () => { asks += 1; } },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message({
+    kind: 'group',
+    rawEventType: 'GROUP_AT_MESSAGE_CREATE',
+    groupOpenid: 'batch-group',
+    content: '/batch',
+    messageId: 'qq-group-batch',
+    replyTarget: { scope: 'group', targetId: 'batch-group', msgId: 'qq-group-batch' },
+  }));
+
+  assert.equal(asks, 0);
+  assert.match(sent.at(-1), /仅支持私聊/);
+});

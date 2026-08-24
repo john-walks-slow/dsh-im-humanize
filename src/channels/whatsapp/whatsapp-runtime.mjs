@@ -239,6 +239,8 @@ export function normalizeWhatsappMessage(message, accountJid, {
     kind: group ? 'group' : 'direct',
     conversationId: remoteJid,
     content: messageText(content),
+    plainText: typeof content?.conversation === 'string'
+      || typeof content?.extendedTextMessage?.text === 'string',
     images: image ? [image] : [],
     files: file ? [file] : [],
     addressed: !group || fromMe || mentioned || replyToSelf,

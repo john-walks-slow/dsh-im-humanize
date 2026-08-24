@@ -1998,3 +1998,138 @@ test('only the actor who started a DingTalk group interaction can answer it', as
   await Promise.all([first, intruder]);
   assert.deepEqual(asked, ['甲发起交互', '乙试图代答']);
 });
+
+test('DingTalk private batch input submits once, cancels cleanly, and restores normal chat', async () => {
+  const fixture = stateFixture();
+  const asked = [];
+  const sent = [];
+  const bridge = new DingtalkHarnessBridge({
+    api: { sendText: async ({ text }) => sent.push(text) },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      createSession: async () => 'session-batch',
+      sessionExists: async () => true,
+      ask: async (_sessionId, prompt) => {
+        asked.push(prompt);
+        return asked.length === 1 ? '批量完成' : '普通完成';
+      },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('batch-start', '/batch'));
+  await bridge.accept(message('batch-one', '第一条'));
+  await bridge.accept(message('batch-two', '第二条'));
+  assert.deepEqual(asked, []);
+  assert.equal(sent.length, 1, 'only /batch acknowledges before submission');
+
+  await bridge.accept(message('batch-send', '/send'));
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /\[消息 1\]\n第一条/);
+  assert.match(asked[0], /\[消息 2\]\n第二条/);
+  assert.equal(sent.at(-1), '批量完成');
+
+  await bridge.accept(message('cancel-start', '/batch'));
+  await bridge.accept(message('cancel-data', '不得提交'));
+  await bridge.accept(message('cancel-command', '/cancel'));
+  assert.equal(asked.length, 1);
+  assert.match(sent.at(-1), /丢弃 1 条/);
+
+  await bridge.accept(message('normal-after-batch', '普通问题'));
+  assert.equal(asked.at(-1), '普通问题');
+  assert.equal(sent.at(-1), '普通完成');
+});
+
+test('DingTalk retains a private batch after Harness ask fails and lets /send retry it', async () => {
+  const fixture = stateFixture();
+  const asked = [];
+  const sent = [];
+  const bridge = new DingtalkHarnessBridge({
+    api: { sendText: async ({ text }) => sent.push(text) },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      createSession: async () => 'session-batch-retry',
+      sessionExists: async () => true,
+      ask: async (_sessionId, prompt) => {
+        asked.push(prompt);
+        if (asked.length === 1) throw new Error('temporary Harness failure');
+        return '重试成功';
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+  });
+
+  await bridge.accept(message('batch-retry-start', '/batch'));
+  await bridge.accept(message('batch-retry-data', '需要重试的内容'));
+  await bridge.accept(message('batch-retry-first-send', '/send'));
+
+  assert.equal(asked.length, 1);
+  assert.match(sent.at(-1), /已保留 1 条消息/);
+  assert.match(sent.at(-1), /再次发送 \/send 重试/);
+
+  await bridge.accept(message('batch-retry-second-send', '/send'));
+
+  assert.equal(asked.length, 2);
+  assert.equal(asked[1], asked[0]);
+  assert.equal(sent.at(-1), '重试成功');
+});
+
+test('DingTalk clears a private batch after turn-stopped without suggesting a batch retry', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let asks = 0;
+  const bridge = new DingtalkHarnessBridge({
+    api: { sendText: async ({ text }) => sent.push(text) },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      createSession: async () => 'session-batch-stopped',
+      sessionExists: async () => true,
+      ask: async () => {
+        asks += 1;
+        const error = new Error('turn stopped');
+        error.code = 'turn-stopped';
+        throw error;
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+  });
+
+  await bridge.accept(message('batch-stopped-start', '/batch'));
+  await bridge.accept(message('batch-stopped-data', '停止后应清除'));
+  await bridge.accept(message('batch-stopped-send', '/send'));
+
+  assert.equal(asks, 1);
+  assert.equal(sent.some((text) => text.includes('已保留')), false);
+
+  await bridge.accept(message('batch-stopped-send-again', '/send'));
+
+  assert.equal(asks, 1);
+  assert.match(sent.at(-1), /当前没有待提交的批量内容/);
+});
+
+test('DingTalk group batch commands are rejected without reaching Harness', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let asks = 0;
+  const bridge = new DingtalkHarnessBridge({
+    api: { sendText: async ({ text }) => sent.push(text) },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: { ask: async () => { asks += 1; } },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('group-batch-command', '/batch', {
+    conversationType: '2',
+    conversationId: 'batch-room',
+    isInAtList: true,
+  }));
+
+  assert.equal(asks, 0);
+  assert.match(sent.at(-1), /仅支持私聊/);
+});

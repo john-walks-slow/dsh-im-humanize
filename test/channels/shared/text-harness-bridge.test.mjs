@@ -215,6 +215,341 @@ test('all four shared text channels execute /compact outside the model prompt pa
   }
 });
 
+test('all four shared text channels collect a private batch and submit it in one ordered ask', async () => {
+  for (const [name, Bridge] of [
+    ['slack', SlackHarnessBridge],
+    ['telegram', TelegramHarnessBridge],
+    ['discord', DiscordHarnessBridge],
+    ['whatsapp', WhatsappHarnessBridge],
+  ]) {
+    const fixture = stateFixture();
+    const sent = [];
+    const asks = [];
+    const bridge = new Bridge({
+      bot: { sendText: async (_target, text) => sent.push(text) },
+      state: fixture.state,
+      harness: {
+        createSession: async () => `session-batch-${name}`,
+        sessionExists: async () => true,
+        ask: async (sessionId, text) => {
+          asks.push({ sessionId, text });
+          return `batch reply ${name}`;
+        },
+      },
+    });
+
+    const accepted = [
+      bridge.accept(message(`batch-start-${name}`, '/batch')),
+      bridge.accept(message(`batch-first-${name}`, 'first line')),
+      bridge.accept(message(`batch-last-${name}`, 'last line')),
+      bridge.accept(message(`batch-send-${name}`, '/send')),
+    ];
+    await Promise.all(accepted);
+
+    assert.equal(asks.length, 1, `${name} sends one ask`);
+    assert.equal(asks[0].sessionId, `session-batch-${name}`, name);
+    assert.match(asks[0].text, /\[消息 1\]\nfirst line/, name);
+    assert.match(asks[0].text, /\[消息 2\]\nlast line/, name);
+    assert.ok(
+      asks[0].text.indexOf('first line') < asks[0].text.indexOf('last line'),
+      `${name} preserves order`,
+    );
+    assert.equal(sent.filter((text) => text === `batch reply ${name}`).length, 1, name);
+    assert.equal(fixture.seen.has(`batch-first-${name}`), true, `${name} records first item`);
+    assert.equal(fixture.seen.has(`batch-last-${name}`), true, `${name} records last item`);
+
+    await bridge.accept(message(`normal-after-batch-${name}`, 'ordinary message'));
+    assert.equal(asks.length, 2, `${name} resumes ordinary chat`);
+    assert.equal(asks[1].text, 'ordinary message', `${name} ordinary prompt stays unchanged`);
+  }
+});
+
+test('shared text channels reserve addressed group batch commands without changing group chat', async () => {
+  const commands = ['/batch', '/BATCH now', '/send', '/send later', '/cancel', '/cancel all'];
+  for (const [name, Bridge] of [
+    ['slack', SlackHarnessBridge],
+    ['telegram', TelegramHarnessBridge],
+    ['discord', DiscordHarnessBridge],
+    ['whatsapp', WhatsappHarnessBridge],
+  ]) {
+    const fixture = stateFixture();
+    const sent = [];
+    const asks = [];
+    const bridge = new Bridge({
+      bot: { sendText: async (_target, text) => sent.push(text) },
+      state: fixture.state,
+      harness: {
+        createSession: async () => `group-session-${name}`,
+        sessionExists: async () => true,
+        ask: async (_sessionId, text) => {
+          asks.push(text);
+          return `${name} group reply`;
+        },
+      },
+    });
+
+    for (const [index, command] of commands.entries()) {
+      await bridge.accept(message(`group-batch-${name}-${index}`, command, {
+        kind: 'group',
+        conversationId: `group-${name}`,
+        addressed: true,
+      }));
+    }
+    assert.equal(asks.length, 0, `${name} never submits a group batch command`);
+    assert.equal(sent.length, commands.length, `${name} replies to every addressed form`);
+    assert.equal(
+      sent.every((text) => text.includes('仅支持私聊')),
+      true,
+      `${name} explains the private-only boundary`,
+    );
+
+    const beforeUnaddressed = sent.length;
+    await bridge.accept(message(`group-unaddressed-${name}`, '/batch', {
+      kind: 'group',
+      conversationId: `group-${name}`,
+      addressed: false,
+    }));
+    assert.equal(sent.length, beforeUnaddressed, `${name} keeps mention rules intact`);
+    assert.equal(asks.length, 0, `${name} ignores an unaddressed group command`);
+
+    await bridge.accept(message(`group-normal-${name}`, 'ordinary addressed group message', {
+      kind: 'group',
+      conversationId: `group-${name}`,
+      addressed: true,
+    }));
+    assert.deepEqual(asks, ['ordinary addressed group message'], `${name} group chat is unchanged`);
+  }
+});
+
+test('private batch input enforces text-only collection, command blocking, the limit, and cancel', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let asks = 0;
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    harness: {
+      createSession: async () => 'unused-batch-session',
+      ask: async () => { asks += 1; return 'unexpected'; },
+    },
+  });
+
+  await bridge.accept(message('limited-start', '/batch'));
+  await bridge.accept(message('limited-image', 'image caption', {
+    images: [{ data: Buffer.from('image') }],
+  }));
+  await bridge.accept(message('limited-file', 'file caption', {
+    files: [{ name: 'data.txt', data: Buffer.from('data') }],
+  }));
+  await bridge.accept(message('limited-unsupported-media', 'video caption', {
+    plainText: false,
+  }));
+  await bridge.accept(message('limited-command', '/new'));
+
+  const itemPromises = [];
+  for (let index = 1; index <= 11; index += 1) {
+    itemPromises.push(bridge.accept(message(`limited-item-${index}`, `item ${index}`)));
+  }
+  await Promise.all(itemPromises);
+  await bridge.accept(message('limited-item-10', 'item 10 replay'));
+  await bridge.accept(message('limited-cancel', '/cancel'));
+
+  assert.equal(asks, 0, 'collection and cancellation never call Harness');
+  assert.equal(sent.filter((text) => text.includes('目前仅支持文字')).length, 3);
+  assert.equal(sent.some((text) => text.includes('先发送 /send 提交或 /cancel 取消')), true);
+  assert.equal(sent.some((text) => /10\/10.*已满/.test(text)), true);
+  assert.equal(sent.some((text) => text.includes('这条消息未收录')), true);
+  assert.equal(sent.at(-1).includes('共丢弃 10 条消息'), true);
+  assert.equal(fixture.seen.has('limited-item-11'), true, 'a rejected eleventh item is recorded');
+
+  await bridge.accept(message('normal-after-cancel', 'normal after cancel'));
+  assert.equal(asks, 1, 'cancel restores the ordinary prompt path');
+});
+
+test('batch commands cannot answer a pending Harness question or approval', async () => {
+  for (const interactionKind of ['question', 'approval']) {
+    const fixture = stateFixture();
+    const sent = [];
+    const interactionDone = deferred();
+    let interactionResponses = 0;
+    const bridge = createBridge({
+      state: fixture.state,
+      bot: { sendText: async (_target, text) => sent.push(text) },
+      harness: {
+        createSession: async () => `session-pending-${interactionKind}`,
+        ask: async (sessionId, _text, options) => {
+          const interaction = interactionKind === 'question'
+            ? questionInteraction({
+                id: 'pending-batch-question',
+                sessionId,
+                questions: [{ id: 'answer', question: 'question waiting' }],
+                respond: async () => {
+                  interactionResponses += 1;
+                  interactionDone.resolve();
+                  return { accepted: true };
+                },
+              })
+            : approvalInteraction({
+                id: 'pending-batch-approval',
+                sessionId,
+                reason: 'approval waiting',
+                respond: async () => {
+                  interactionResponses += 1;
+                  interactionDone.resolve();
+                  return { accepted: true };
+                },
+              });
+          await options.onInteraction(interaction);
+          await interactionDone.promise;
+          return `${interactionKind} complete`;
+        },
+      },
+    });
+
+    const processing = bridge.accept(message(
+      `pending-${interactionKind}-start`,
+      `start ${interactionKind}`,
+    ));
+    await eventually(() => sent.some((text) => text.includes(`${interactionKind} waiting`)));
+
+    await within(
+      Promise.all([
+        bridge.accept(message(`pending-${interactionKind}-batch`, '/batch')),
+        bridge.accept(message(`pending-${interactionKind}-send`, '/send')),
+        bridge.accept(message(`pending-${interactionKind}-cancel`, '/cancel')),
+      ]),
+      250,
+      `batch commands waited behind a pending ${interactionKind}`,
+    );
+    assert.equal(interactionResponses, 0, `${interactionKind} was not answered by a batch command`);
+    assert.equal(sent.some((text) => text.includes('先完成当前交互')), true, interactionKind);
+    assert.equal(sent.some((text) => text.includes('没有待提交')), true, interactionKind);
+    assert.equal(sent.some((text) => text.includes('没有正在进行')), true, interactionKind);
+
+    await bridge.accept(message(
+      `pending-${interactionKind}-answer`,
+      interactionKind === 'question' ? 'yes' : '批准',
+    ));
+    await processing;
+    assert.equal(interactionResponses, 1, `${interactionKind} accepts its real answer`);
+  }
+});
+
+test('a submitting batch rejects duplicate controls while a later ordinary message stays ordinary', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const batchStarted = deferred();
+  const releaseBatch = deferred();
+  const asks = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    harness: {
+      createSession: async () => 'session-submitting-batch',
+      sessionExists: async () => true,
+      ask: async (_sessionId, text) => {
+        asks.push(text);
+        if (asks.length === 1) {
+          batchStarted.resolve();
+          await releaseBatch.promise;
+          return 'batch complete';
+        }
+        return 'ordinary complete';
+      },
+    },
+  });
+
+  await bridge.accept(message('submitting-start', '/batch'));
+  await bridge.accept(message('submitting-item', 'batched item'));
+  const submission = bridge.accept(message('submitting-send', '/send'));
+  await batchStarted.promise;
+
+  await within(
+    Promise.all([
+      bridge.accept(message('submitting-send-again', '/send')),
+      bridge.accept(message('submitting-cancel', '/cancel')),
+    ]),
+    250,
+    'submitting controls waited behind the batch ask',
+  );
+  const ordinary = bridge.accept(message('submitting-ordinary', 'ordinary after send'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(asks.length, 1, 'the later ordinary message waits in the existing queue');
+  assert.equal(sent.some((text) => text.includes('请勿重复发送 /send')), true);
+  assert.equal(sent.some((text) => text.includes('已经提交，无法取消')), true);
+
+  releaseBatch.resolve();
+  await Promise.all([submission, ordinary]);
+  assert.equal(asks.length, 2);
+  assert.equal(asks[1], 'ordinary after send');
+});
+
+test('a failed batch submission is retained with an explicit retry and can be sent once again', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const asks = [];
+  let attempt = 0;
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    harness: {
+      createSession: async () => 'session-retry-batch',
+      sessionExists: async () => true,
+      ask: async (_sessionId, text) => {
+        asks.push(text);
+        attempt += 1;
+        if (attempt === 1) throw new Error('transient Harness failure');
+        return 'retry complete';
+      },
+    },
+  });
+
+  await bridge.accept(message('retry-batch-start', '/batch'));
+  await bridge.accept(message('retry-batch-item', 'keep this item'));
+  await bridge.accept(message('retry-batch-send-one', '/send'));
+
+  assert.equal(asks.length, 1);
+  assert.equal(sent.at(-1).includes('已保留 1 条消息'), true);
+  assert.equal(sent.at(-1).includes('/send 重试'), true);
+
+  await bridge.accept(message('retry-batch-send-two', '/send'));
+  assert.equal(asks.length, 2);
+  assert.equal(asks[1], asks[0], 'retry reuses the retained immutable batch content');
+  assert.equal(sent.at(-1), 'retry complete');
+
+  await bridge.accept(message('retry-no-batch', '/send'));
+  assert.equal(sent.at(-1).includes('没有待提交'), true, 'successful retry clears the batch');
+});
+
+test('stopping a submitted batch clears it instead of offering a duplicate retry', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let asks = 0;
+  const stopped = new Error('stopped by user');
+  stopped.code = 'turn-stopped';
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    harness: {
+      createSession: async () => 'session-stopped-batch',
+      ask: async () => {
+        asks += 1;
+        throw stopped;
+      },
+    },
+  });
+
+  await bridge.accept(message('stopped-batch-start', '/batch'));
+  await bridge.accept(message('stopped-batch-item', 'do this once'));
+  await bridge.accept(message('stopped-batch-send', '/send'));
+  assert.equal(asks, 1);
+  assert.equal(sent.some((text) => text.includes('已保留')), false);
+
+  await bridge.accept(message('stopped-batch-send-again', '/send'));
+  assert.equal(asks, 1, 'a stopped submission cannot be retried as the same batch');
+  assert.equal(sent.at(-1).includes('没有待提交'), true);
+});
+
 test('shared text bridge passes a file-only message through askOptions.files', async () => {
   const fixture = stateFixture();
   const source = Object.freeze({

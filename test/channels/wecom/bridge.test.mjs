@@ -462,6 +462,7 @@ test('Enterprise WeChat lists models and presets without prompting and advertise
   for (const command of [
     '/models', '/model', '/reasoninglist', '/reasonings', '/reasoning',
     '/presetlist', '/preset', '/preset --default', '/stop', '/steer',
+    '/batch', '/send', '/cancel',
   ]) {
     assert.equal(help.includes(command), true, command);
   }
@@ -1889,4 +1890,136 @@ test('Enterprise WeChat cancellation prevents SDK upload', async (t) => {
   });
   await cancelledBridge.accept(frame({ msgid: 'wecom-artifact-cancelled' }));
   assert.equal(uploads, 0);
+});
+
+test('Enterprise WeChat batch input collects ten texts and submits one ordered Harness turn', async () => {
+  const transport = testClient();
+  const prompts = [];
+  const bridge = new WecomHarnessBridge({
+    client: transport.client,
+    generateStreamId: () => 'batch-stream',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, prompt) => {
+        prompts.push(prompt);
+        return '批量完成';
+      },
+    },
+    state: state(),
+  });
+
+  await bridge.accept(frame({ msgid: 'batch-start', text: { content: '/batch' } }));
+  for (let index = 1; index <= 10; index += 1) {
+    await bridge.accept(frame({
+      msgid: `batch-item-${index}`,
+      text: { content: `企微内容 ${index}` },
+    }));
+  }
+  await bridge.accept(frame({ msgid: 'batch-overflow', text: { content: '不会收录' } }));
+
+  assert.equal(prompts.length, 0);
+  assert.equal(transport.streamed.some(({ content }) => /10\/10.*已满/.test(content)), true);
+  assert.equal(transport.streamed.some(({ content }) => /这条消息未收录/.test(content)), true);
+
+  await bridge.accept(frame({ msgid: 'batch-send', text: { content: '/send' } }));
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /\[消息 1\]\n企微内容 1/);
+  assert.match(prompts[0], /\[消息 10\]\n企微内容 10/);
+  assert.doesNotMatch(prompts[0], /不会收录/);
+  assert.equal(transport.streamed.at(-1).content, '批量完成');
+});
+
+test('Enterprise WeChat rejects batch commands in groups without invoking Harness', async () => {
+  const transport = testClient();
+  let asks = 0;
+  const bridge = new WecomHarnessBridge({
+    client: transport.client,
+    harness: { ask: async () => { asks += 1; return 'unexpected'; } },
+    state: state(),
+  });
+
+  for (const [index, command] of ['/batch', '/send', '/cancel'].entries()) {
+    await bridge.accept(frame({
+      msgid: `group-batch-${index}`,
+      chattype: 'group',
+      chatid: 'group-batch',
+      text: { content: `@机器人 ${command}` },
+    }));
+  }
+
+  assert.equal(asks, 0);
+  assert.equal(transport.streamed.length, 3);
+  assert.equal(transport.streamed.every(({ content }) => /仅支持私聊/.test(content)), true);
+});
+
+test('Enterprise WeChat keeps a failed batch for retry and queues later ordinary messages normally', async () => {
+  const transport = testClient();
+  const firstBatch = deferred();
+  const prompts = [];
+  let failFirst = true;
+  const bridge = new WecomHarnessBridge({
+    client: transport.client,
+    generateStreamId: (() => { let index = 0; return () => `batch-retry-${++index}`; })(),
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, prompt) => {
+        prompts.push(prompt);
+        if (failFirst) {
+          failFirst = false;
+          throw new Error('temporary failure');
+        }
+        if (/\[消息 1\]/.test(prompt)) await firstBatch.promise;
+        return `完成：${prompt}`;
+      },
+    },
+    state: state(),
+    logger: { warn() {}, error() {} },
+  });
+
+  await bridge.accept(frame({ msgid: 'retry-start', text: { content: '/batch' } }));
+  await bridge.accept(frame({ msgid: 'retry-content', text: { content: '需要重试' } }));
+  await bridge.accept(frame({ msgid: 'retry-send-1', text: { content: '/send' } }));
+  assert.match(transport.streamed.at(-1).content, /消息处理失败.*已保留 1 条消息/s);
+
+  const retry = bridge.accept(frame({ msgid: 'retry-send-2', text: { content: '/send' } }));
+  await eventually(() => prompts.length === 2);
+  const ordinary = bridge.accept(frame({
+    msgid: 'ordinary-after-send',
+    text: { content: '提交期间的普通消息' },
+  }));
+  assert.equal(prompts.length, 2);
+
+  firstBatch.resolve();
+  await Promise.all([retry, ordinary]);
+  assert.equal(prompts.length, 3);
+  assert.equal(prompts[2], '提交期间的普通消息');
+
+  await bridge.accept(frame({ msgid: 'cancel-start', text: { content: '/batch' } }));
+  await bridge.accept(frame({ msgid: 'cancel-content', text: { content: '丢弃' } }));
+  await bridge.accept(frame({ msgid: 'cancel-command', text: { content: '/cancel' } }));
+  assert.match(transport.streamed.at(-1).content, /已取消批量输入.*丢弃 1 条消息/s);
+});
+
+test('Enterprise WeChat clears a submitted batch when the Harness turn is stopped', async () => {
+  const transport = testClient();
+  const bridge = new WecomHarnessBridge({
+    client: transport.client,
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        const error = new Error('turn stopped');
+        error.code = 'turn-stopped';
+        throw error;
+      },
+    },
+    state: state(),
+  });
+
+  await bridge.accept(frame({ msgid: 'stopped-start', text: { content: '/batch' } }));
+  await bridge.accept(frame({ msgid: 'stopped-content', text: { content: '不要重试' } }));
+  await bridge.accept(frame({ msgid: 'stopped-send', text: { content: '/send' } }));
+  assert.equal(transport.streamed.some(({ content }) => /已保留/.test(content)), false);
+
+  await bridge.accept(frame({ msgid: 'stopped-cancel', text: { content: '/cancel' } }));
+  assert.match(transport.streamed.at(-1).content, /没有正在进行的批量输入/);
 });

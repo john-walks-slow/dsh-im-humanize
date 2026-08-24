@@ -150,6 +150,9 @@ Each WhatsApp bot also has its own access mode. Existing bots migrate to **Only 
 | `/preset --default` | Clear this bot's explicit selection so later new Sessions follow the Host default. |
 | `/stop` | Immediately stop this chat's running task while preserving work that has not started. |
 | `/steer <additional instruction>` | Inject an additional instruction into this chat's running task. |
+| `/batch` | Start batch input in a direct chat and collect up to 10 text messages. |
+| `/send` | Submit the collected messages, in order, as one input. |
+| `/cancel` | Cancel batch input and discard its collected messages. |
 | `/compact` | Immediately compact older context in the Session bound to the current chat. |
 | `/workspace <absolute workspace path>` | Switch the current bot's Harness workspace. |
 | `/workspacelist` | List workspace absolute paths that still exist on the current Harness Host. |
@@ -177,6 +180,7 @@ If the Slack desktop app has no native Slash Command registered with the same na
 - An Agent Preset change is bot-wide: it affects future new Sessions in every chat for this bot, but never modifies, stops, unbinds, or rebuilds an existing Session and never runs `/new` automatically. If this chat already has a Session, ordinary messages keep using it; the first ordinary message after `/new` creates a Session with the new setting. Presets can still be queried or changed while a task is running or awaiting interaction because the command does not touch that Session.
 - `/stop` and `/steer` control only a running task started by this chat. Even when multiple chats bind the same Session, they do not intentionally control another chat's task. `/stop` does not delete the Session or its history, preserves queued work that has not started, and is safe to repeat.
 - `/steer` accepts text only, including multiple lines. It neither creates another Session nor starts a second task. Send an ordinary message when no task is running; while an approval or question is pending, answer it first or use `/stop`.
+- `/batch`, `/send`, and `/cancel` are available only in a direct chat with the bot. After `/batch`, subsequent text-only messages are held temporarily, up to 10 messages. The tenth is collected and prompts you to submit; later messages are rejected and the batch is never submitted automatically. `/send` processes the collected messages in their original order as one input, while `/cancel` discards them. Images, files, and other commands are not collected. An unsubmitted batch is lost if the bot restarts. Ordinary chat behavior is unchanged when batch input is not active.
 - `/compact` acts only on the Harness Session already bound to the current chat and is never sent to the model. The bot reports the applicable status when the chat has no Session yet, the Session is generating a reply, or there is no compactable history.
 - The path must be an existing absolute directory. The bot returns an actionable error and the correct usage when validation fails.
 - `/workspacelist` takes no arguments. It combines the Harness global registry with the current bot's path. When that current path still exists and is safe to display, it appears first and is marked as current. Any listed path can be copied directly into `/workspace`.

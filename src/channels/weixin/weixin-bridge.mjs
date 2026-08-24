@@ -12,6 +12,11 @@ import {
   validHarnessQuestion,
 } from '../shared/harness-question.mjs';
 import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
+import {
+  BatchInputManager,
+  batchInputBusyMessage,
+  isBatchInputCommand,
+} from '../shared/batch-input.mjs';
 import { runCompactCommand } from '../shared/compact-command.mjs';
 import {
   isControlCommand,
@@ -70,6 +75,9 @@ const HELP_TEXT = () => [
   t('/preset --default  跟随 Host 默认'),
   t('/stop  停止当前任务'),
   t('/steer 补充指令  纠偏当前任务'),
+  t('/batch  开始批量输入（仅私聊，最多 10 条文字）'),
+  t('/send  提交当前批次'),
+  t('/cancel  取消当前批次'),
   t('/status  检查连接状态'),
   t('/help  显示本帮助'),
 ].join('\n');
@@ -102,6 +110,15 @@ function hasWeixinImageItems(message) {
 function hasWeixinFileItems(message) {
   return Array.isArray(message?.item_list)
     && message.item_list.some((item) => item?.file_item && typeof item.file_item === 'object');
+}
+
+function isNativeWeixinText(message) {
+  return Array.isArray(message?.item_list)
+    && message.item_list.length > 0
+    && message.item_list.every((item) => (
+      item?.type === 1 && typeof item.text_item?.text === 'string'
+    ))
+    && Boolean(nonEmptyString(extractWeixinText(message)));
 }
 
 function canClaimInteractionReply(message, pending) {
@@ -176,6 +193,7 @@ export class WeixinHarnessBridge {
   #approvalTasks = new Set();
   #commandTasks = new Set();
   #approvals;
+  #batchInputs = new BatchInputManager();
 
   constructor({
     api,
@@ -227,6 +245,35 @@ export class WeixinHarnessBridge {
     const runId = nonEmptyString(message?.run_id) ?? undefined;
     const pending = this.#pendingInteractions.get(key);
     const commandText = nonEmptyString(extractWeixinText(message)) ?? '';
+    const batchCommand = isBatchInputCommand(commandText);
+    const batchStatus = this.#batchInputs.status(key);
+    if (sender === this.#ownerUserId
+      && (batchCommand || batchStatus.phase === 'collecting')) {
+      const exactBatchStart = /^\/batch$/iu.test(commandText);
+      const result = exactBatchStart
+        && batchStatus.phase === 'idle'
+        && (this.#queues.has(key) || pending || this.#approvals.hasPending(key))
+        ? { handled: true, kind: 'busy', message: batchInputBusyMessage() }
+        : this.#batchInputs.handle(key, commandText, {
+            plainText: isNativeWeixinText(message),
+          });
+      if (result.handled) {
+        if (result.kind === 'submit') {
+          return this.#enqueueMessage({
+            ...message,
+            item_list: [{ type: 1, text_item: { text: result.prompt } }],
+          }, messageId, key, { batchSubmission: result });
+        }
+        return this.#finishBatchResult(
+          message,
+          messageId,
+          sender,
+          contextToken,
+          runId,
+          result,
+        );
+      }
+    }
     const commandRunner = hasWeixinFileItems(message) ? null : isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText)
@@ -314,6 +361,7 @@ export class WeixinHarnessBridge {
   #enqueueMessage(message, messageId, key, {
     releaseMessageId = true,
     alreadyRecorded = false,
+    batchSubmission = null,
   } = {}) {
     const preparedMessage = message.from_user_id === this.#ownerUserId
       ? prefetchInboundFiles(
@@ -324,13 +372,44 @@ export class WeixinHarnessBridge {
     const previous = this.#queues.get(key) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
-      .then(() => this.#process(message, key, { alreadyRecorded, preparedMessage }))
+      .then(() => this.#process(message, key, {
+        alreadyRecorded,
+        preparedMessage,
+        batchSubmission,
+      }))
       .finally(() => {
         if (releaseMessageId) this.#acceptedMessageIds.delete(messageId);
         if (this.#queues.get(key) === current) this.#queues.delete(key);
       });
     this.#queues.set(key, current);
     return current;
+  }
+
+  #finishBatchResult(message, messageId, sender, contextToken, runId, result) {
+    let task;
+    task = Promise.resolve().then(async () => {
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      this.#status.messagesReceived += 1;
+      this.#status.lastMessageAt = new Date().toISOString();
+      if (result.message) {
+        await this.#send(sender, result.message, contextToken, runId);
+      }
+      this.#status.lastError = null;
+      this.#status.lastMessageError = null;
+    }).catch(async (error) => {
+      if (this.#signal?.aborted) return;
+      this.#status.lastError = error?.message ?? String(error);
+      this.#status.lastMessageError = safeMessageError(error);
+      this.#logger.error?.('[dsh-weixin] failed to process a batch input message:', error);
+      await this.#send(sender, GENERIC_PROCESSING_ERROR(), contextToken, runId)
+        .catch(() => undefined);
+    }).finally(() => {
+      this.#acceptedMessageIds.delete(messageId);
+      this.#commandTasks.delete(task);
+    });
+    this.#commandTasks.add(task);
+    return task;
   }
 
   async waitForIdle() {
@@ -380,7 +459,11 @@ export class WeixinHarnessBridge {
     this.#status.lastMessageError = null;
   }
 
-  async #process(message, key, { alreadyRecorded = false, preparedMessage } = {}) {
+  async #process(message, key, {
+    alreadyRecorded = false,
+    preparedMessage,
+    batchSubmission = null,
+  } = {}) {
     this.#signal?.throwIfAborted();
     const messageId = weixinMessageId(message);
     const sender = nonEmptyString(message?.from_user_id);
@@ -398,6 +481,7 @@ export class WeixinHarnessBridge {
 
     const contextToken = typeof message.context_token === 'string' ? message.context_token : undefined;
     const runId = typeof message.run_id === 'string' ? message.run_id : undefined;
+    let batchSettled = batchSubmission === null;
     try {
       const promptMessage = preparedMessage ?? weixinInboundMessage(message, this.#api);
       const text = promptMessage.content;
@@ -479,6 +563,10 @@ export class WeixinHarnessBridge {
             files: promptMessage.files,
           },
         }));
+        if (batchSubmission) {
+          this.#batchInputs.complete(key, batchSubmission.token);
+          batchSettled = true;
+        }
       } finally {
         await Promise.allSettled([
           this.#cancelPendingInteraction(key),
@@ -515,6 +603,15 @@ export class WeixinHarnessBridge {
       this.#status.lastMessageError = null;
       return delivery.receipt;
     } catch (error) {
+      let batchFailureMessage = null;
+      if (!batchSettled && batchSubmission) {
+        if (error?.code === 'turn-stopped') {
+          this.#batchInputs.complete(key, batchSubmission.token);
+        } else {
+          batchFailureMessage = this.#batchInputs.fail(key, batchSubmission.token).message ?? null;
+        }
+        batchSettled = true;
+      }
       if (error?.code === 'turn-stopped') {
         await this.#state.markSeen(messageId);
         return;
@@ -529,7 +626,7 @@ export class WeixinHarnessBridge {
       try {
         await this.#send(
           sender,
-          userMessage,
+          batchFailureMessage ? `${userMessage}\n\n${batchFailureMessage}` : userMessage,
           contextToken,
           runId,
         );

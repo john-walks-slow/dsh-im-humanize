@@ -20,6 +20,12 @@ import {
 import { askInWorkspaceSession } from './workspace-session.mjs';
 import { HarnessApprovalQueue } from './harness-approval.mjs';
 import {
+  BatchInputManager,
+  batchInputBusyMessage,
+  batchInputGroupUnsupportedMessage,
+  isBatchInputCommand,
+} from './batch-input.mjs';
+import {
   hasInboundImages,
   imagePromptUserMessage,
   promptContentForMessage,
@@ -119,6 +125,7 @@ export class TextHarnessBridge {
   #approvalTasks = new Set();
   #commandTasks = new Set();
   #approvals;
+  #batches = new BatchInputManager();
 
   constructor({
     descriptor,
@@ -173,7 +180,54 @@ export class TextHarnessBridge {
     const key = `${kind}:${conversationId}`;
     const pending = this.#pendingInteractions.get(key);
     const text = cleanText(normalized.content);
-    const commandRunner = hasInboundFiles(normalized) ? null : isControlCommand(text)
+    const batchCommand = isBatchInputCommand(text);
+    if (batchCommand && normalized.kind === 'group' && normalized.addressed === true) {
+      return this.#finishLocalMessage(
+        normalized,
+        messageId,
+        batchInputGroupUnsupportedMessage(),
+      );
+    }
+    if (batchCommand && normalized.kind === 'direct') {
+      const exactBatch = /^\/batch$/iu.test(text);
+      if (exactBatch && (
+        this.#queues.has(key)
+        || Boolean(pending)
+        || this.#approvals.hasPending(key)
+      )) {
+        return this.#finishLocalMessage(normalized, messageId, batchInputBusyMessage());
+      }
+      const batch = this.#batches.handle(key, text, {
+        plainText: Boolean(text)
+          && normalized.plainText !== false
+          && !hasInboundImages(normalized)
+          && !hasInboundFiles(normalized),
+      });
+      if (batch.handled) {
+        if (batch.kind === 'submit') {
+          return this.#enqueueMessage({
+            ...normalized,
+            content: batch.prompt,
+            batchSubmission: { token: batch.token },
+          }, messageId, senderId, key);
+        }
+        return this.#finishLocalMessage(normalized, messageId, batch.message);
+      }
+    } else if (normalized.kind === 'direct'
+      && this.#batches.status(key).phase === 'collecting') {
+      const batch = this.#batches.handle(key, text, {
+        plainText: Boolean(text)
+          && normalized.plainText !== false
+          && !hasInboundImages(normalized)
+          && !hasInboundFiles(normalized),
+      });
+      if (batch.handled) {
+        return this.#finishLocalMessage(normalized, messageId, batch.message);
+      }
+    }
+    const collectingBatch = normalized.kind === 'direct'
+      && this.#batches.status(key).phase === 'collecting';
+    const commandRunner = collectingBatch || hasInboundFiles(normalized) ? null : isControlCommand(text)
       ? runControlCommand
       : (isModelCommand(text)
           ? runModelCommand
@@ -252,6 +306,30 @@ export class TextHarnessBridge {
       return current;
     }
     return this.#enqueueMessage(normalized, messageId, senderId, key);
+  }
+
+  #finishLocalMessage(message, messageId, reply) {
+    let task;
+    task = (async () => {
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      this.#status.messagesReceived += 1;
+      this.#status.lastMessageAt = new Date().toISOString();
+      if (reply) await this.#bot.sendText(message.replyTarget, reply);
+      this.#status.lastError = null;
+    })().catch(async (error) => {
+      if (this.#signal?.aborted) return;
+      this.#status.lastError = error?.message ?? String(error);
+      this.#logger.error?.(
+        `[dsh-im:${this.#descriptor.key}] failed to process a batch input message:`,
+        error,
+      );
+    }).finally(() => {
+      this.#acceptedMessageIds.delete(messageId);
+      this.#commandTasks.delete(task);
+    });
+    this.#commandTasks.add(task);
+    return task;
   }
 
   #enqueueMessage(message, messageId, senderId, key, {
@@ -373,6 +451,7 @@ export class TextHarnessBridge {
 
     const target = message.replyTarget;
     const text = cleanText(message.content);
+    const batchSubmission = message.batchSubmission;
     let stream = null;
     let semanticStream = false;
     try {
@@ -411,6 +490,9 @@ export class TextHarnessBridge {
           t('/preset --default  跟随 Host 默认'),
           t('/stop  停止当前任务'),
           t('/steer 补充指令  纠偏当前任务'),
+          t('/batch  开始批量输入（仅私聊，最多 10 条文字）'),
+          t('/send  提交当前批次'),
+          t('/cancel  取消当前批次'),
           t('/status  检查连接状态'),
           t('/help  显示本帮助'),
         ].join('\n'));
@@ -508,6 +590,9 @@ export class TextHarnessBridge {
           files: message.files,
         },
       });
+      if (batchSubmission) {
+        this.#batches.complete(conversationKey, batchSubmission.token);
+      }
       const fileOnlyCompletion = !cleanText(answer) && artifacts.length > 0;
       const visibleAnswer = fileOnlyCompletion
         ? t(FILE_ONLY_COMPLETION_TEXT)
@@ -579,7 +664,14 @@ export class TextHarnessBridge {
       }
       return delivery.receipt;
     } catch (error) {
-      if (error?.code === 'turn-stopped') {
+      const turnStopped = error?.code === 'turn-stopped';
+      if (batchSubmission && turnStopped) {
+        this.#batches.complete(conversationKey, batchSubmission.token);
+      }
+      const failedBatch = batchSubmission && !turnStopped
+        ? this.#batches.fail(conversationKey, batchSubmission.token)
+        : null;
+      if (turnStopped) {
         if (stream) {
           try {
             await stream.finish(t('已停止。'));
@@ -607,6 +699,23 @@ export class TextHarnessBridge {
           return false;
         }
       };
+      if (failedBatch?.retained) {
+        this.#logger.error?.(
+          `[dsh-im:${this.#descriptor.key}] failed to submit a batch input:`,
+          error,
+        );
+        if (await presentStreamFailure(failedBatch.message)) return;
+        stream?.cancel?.();
+        try {
+          await this.#bot.sendText(target, failedBatch.message);
+        } catch (sendError) {
+          this.#logger.error?.(
+            `[dsh-im:${this.#descriptor.key}] failed to send the batch retry notice:`,
+            sendError,
+          );
+        }
+        return;
+      }
       const imageErrorMessage = imagePromptUserMessage(error);
       if (imageErrorMessage) {
         if (await presentStreamFailure(imageErrorMessage)) return;

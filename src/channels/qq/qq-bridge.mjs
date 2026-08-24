@@ -21,6 +21,12 @@ import {
 } from '../shared/preset-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 import {
+  BatchInputManager,
+  batchInputBusyMessage,
+  batchInputGroupUnsupportedMessage,
+  isBatchInputCommand,
+} from '../shared/batch-input.mjs';
+import {
   fetchImageBuffer,
   hasInboundImages,
   imagePromptUserMessage,
@@ -80,6 +86,9 @@ function helpText() {
     t('/preset --default  跟随 Host 默认'),
     t('/stop  停止当前任务'),
     t('/steer 补充指令  纠偏当前任务'),
+    t('/batch  开始批量输入（仅私聊，最多 10 条文字）'),
+    t('/send  提交当前批次'),
+    t('/cancel  取消当前批次'),
     t('/status  检查连接状态'),
     t('/help  显示本帮助'),
   ].join('\n');
@@ -352,6 +361,7 @@ export class QqHarnessBridge {
   #approvalTasks = new Set();
   #commandTasks = new Set();
   #approvals;
+  #batchInputs = new BatchInputManager();
 
   constructor({
     bot,
@@ -407,14 +417,47 @@ export class QqHarnessBridge {
     }
     const pending = this.#pendingInteractions.get(key);
     const commandText = safeText(message);
+    const allowed = this.#ownerUserOpenid === '*' || sender === this.#ownerUserOpenid;
+    const addressed = message.kind !== 'group'
+      || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE';
+    const batchCommand = isBatchInputCommand(commandText);
+    const batchStatus = this.#batchInputs.status(key);
+    if (batchCommand && allowed && addressed && message.kind === 'group') {
+      return this.#finishBatchResult(
+        message,
+        messageId,
+        { message: batchInputGroupUnsupportedMessage() },
+      );
+    }
+    if (allowed && message.kind === 'c2c'
+      && (batchCommand || batchStatus.phase === 'collecting')) {
+      const exactBatchStart = /^\/batch$/iu.test(commandText);
+      const result = exactBatchStart
+        && batchStatus.phase === 'idle'
+        && (this.#queues.has(key) || pending || this.#approvals.hasPending(key))
+        ? { handled: true, kind: 'busy', message: batchInputBusyMessage() }
+        : this.#batchInputs.handle(key, commandText, {
+            plainText: Boolean(commandText)
+              && !hasQqImageAttachments(message)
+              && !hasQqFileAttachments(message),
+          });
+      if (result.handled) {
+        if (result.kind === 'submit') {
+          return this.#enqueueMessage(
+            { ...message, content: result.prompt, attachments: [] },
+            messageId,
+            key,
+            { batchSubmission: result },
+          );
+        }
+        return this.#finishBatchResult(message, messageId, result);
+      }
+    }
     const commandRunner = hasQqFileAttachments(message) ? null : isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText)
           ? runModelCommand
           : (isPresetCommand(commandText) ? runPresetCommand : null));
-    const allowed = this.#ownerUserOpenid === '*' || sender === this.#ownerUserOpenid;
-    const addressed = message.kind !== 'group'
-      || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE';
     if (commandRunner && allowed && addressed) {
       let task;
       task = this.#processFastCommand(
@@ -494,6 +537,7 @@ export class QqHarnessBridge {
   #enqueueMessage(message, messageId, key, {
     releaseMessageId = true,
     alreadyRecorded = false,
+    batchSubmission = null,
   } = {}) {
     const allowed = this.#ownerUserOpenid === '*' || message.senderId === this.#ownerUserOpenid;
     const addressed = message.kind !== 'group'
@@ -507,7 +551,11 @@ export class QqHarnessBridge {
     const previous = this.#queues.get(key) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
-      .then(() => this.#process(message, key, { alreadyRecorded, preparedMessage }))
+      .then(() => this.#process(message, key, {
+        alreadyRecorded,
+        preparedMessage,
+        batchSubmission,
+      }))
       .finally(() => {
         if (releaseMessageId) this.#acceptedMessageIds.delete(messageId);
         if (this.#queues.get(key) === current) this.#queues.delete(key);
@@ -553,6 +601,29 @@ export class QqHarnessBridge {
     this.#status.lastError = null;
   }
 
+  #finishBatchResult(message, messageId, result) {
+    let task;
+    task = Promise.resolve().then(async () => {
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      this.#status.messagesReceived += 1;
+      this.#status.lastMessageAt = new Date().toISOString();
+      if (result.message) await this.#bot.sendText(message.replyTarget, result.message);
+      this.#status.lastError = null;
+    }).catch(async (error) => {
+      if (this.#signal?.aborted) return;
+      this.#status.lastError = error?.message ?? String(error);
+      this.#logger.error?.('[dsh-im:qq] failed to process a batch input message:', error);
+      await this.#bot.sendText(message.replyTarget, t('消息处理失败，请稍后重试。'))
+        .catch(() => undefined);
+    }).finally(() => {
+      this.#acceptedMessageIds.delete(messageId);
+      this.#commandTasks.delete(task);
+    });
+    this.#commandTasks.add(task);
+    return task;
+  }
+
   async #deliverArtifacts(target, replyTo, artifacts = [], baseReceipt = null) {
     if (artifacts.length === 0) {
       return { receipt: baseReceipt, failureNoticeVisible: false };
@@ -589,7 +660,11 @@ export class QqHarnessBridge {
     };
   }
 
-  async #process(message, key, { alreadyRecorded = false, preparedMessage } = {}) {
+  async #process(message, key, {
+    alreadyRecorded = false,
+    preparedMessage,
+    batchSubmission = null,
+  } = {}) {
     if (this.#signal?.aborted) return;
     const messageId = nonEmptyString(message?.messageId);
     const sender = nonEmptyString(message?.senderId);
@@ -614,6 +689,7 @@ export class QqHarnessBridge {
     const hasImages = hasInboundImages(promptMessage);
     const hasFiles = hasInboundFiles(promptMessage);
     let stream = null;
+    let batchSettled = batchSubmission === null;
     try {
       if (!text && !hasImages && !hasFiles) {
         await this.#bot.sendText(target, t('目前支持文字、图片和文件消息。'));
@@ -710,6 +786,10 @@ export class QqHarnessBridge {
             files: promptMessage.files,
           },
         }));
+        if (batchSubmission) {
+          this.#batchInputs.complete(key, batchSubmission.token);
+          batchSettled = true;
+        }
       } finally {
         await Promise.allSettled([
           this.#cancelPendingInteraction(key),
@@ -771,6 +851,15 @@ export class QqHarnessBridge {
       this.#status.lastError = null;
       return delivery.receipt;
     } catch (error) {
+      let batchFailureMessage = null;
+      if (!batchSettled && batchSubmission) {
+        if (error?.code === 'turn-stopped') {
+          this.#batchInputs.complete(key, batchSubmission.token);
+        } else {
+          batchFailureMessage = this.#batchInputs.fail(key, batchSubmission.token).message ?? null;
+        }
+        batchSettled = true;
+      }
       if (error?.code === 'turn-stopped') {
         try {
           stream?.cancel?.();
@@ -794,11 +883,12 @@ export class QqHarnessBridge {
       this.#status.lastError = error?.message ?? String(error);
       this.#logger.error?.('[dsh-im:qq] failed to process an inbound message:', error);
       try {
+        const errorMessage = inboundFileUserMessage(error)
+          ?? imagePromptUserMessage(error)
+          ?? t('消息处理失败，请稍后重试。');
         await this.#bot.sendText(
           target,
-          inboundFileUserMessage(error)
-            ?? imagePromptUserMessage(error)
-            ?? t('消息处理失败，请稍后重试。'),
+          batchFailureMessage ? `${errorMessage}\n\n${batchFailureMessage}` : errorMessage,
         );
         await this.#state.markSeen(messageId);
       } catch (sendError) {
