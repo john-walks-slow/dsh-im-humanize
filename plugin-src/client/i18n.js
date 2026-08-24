@@ -373,7 +373,7 @@ const EN = Object.freeze({
   '已生效：': 'Active: ',
   '只响应已绑定 WhatsApp 账号的自聊消息。': 'Only respond to self-chat messages from the linked WhatsApp account.',
   '响应自聊和白名单联系人的私聊，忽略群聊。': 'Respond to self-chat and allowlisted direct messages; ignore group messages.',
-  '响应所有私聊，以及群聊中的提及或回复。': 'Respond to all direct messages and to group mentions or replies.',
+  '响应所有私聊、已绑定账号自己发出的群聊消息，以及其他群成员的提及或回复。': 'Respond to all direct messages, group messages sent by the linked account, and mentions or replies from other group members.',
   '允许私聊的 WhatsApp 电话号码': 'WhatsApp phone numbers allowed to send direct messages',
   '每行一个含国家或地区代码的号码': 'One number with country or region code per line',
   '可以包含开头的 +，保存时会自动移除。': 'A leading + is allowed and removed when saved.',

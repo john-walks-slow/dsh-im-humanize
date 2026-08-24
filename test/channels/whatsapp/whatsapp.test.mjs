@@ -322,7 +322,7 @@ test('WhatsApp media downloader supplies Baileys reupload context', async () => 
   assert.deepEqual(reuploaded, [{ key: { id: 'expired-media' } }]);
 });
 
-test('WhatsApp normalizes direct and explicitly mentioned group messages', () => {
+test('WhatsApp normalizes direct, linked-account, and explicitly mentioned group messages', () => {
   const direct = normalizeWhatsappMessage({
     key: { remoteJid: '16505550999@s.whatsapp.net', id: 'direct-1', fromMe: false },
     message: { conversation: 'hello' },
@@ -358,6 +358,20 @@ test('WhatsApp normalizes direct and explicitly mentioned group messages', () =>
   }, ACCOUNT_JID);
   assert.equal(selfChat.selfChat, true);
   assert.equal(selfChat.addressed, true);
+
+  const linkedAccountGroup = normalizeWhatsappMessage({
+    key: {
+      remoteJid: '120363000000000001@g.us',
+      id: 'owner-group-1',
+      fromMe: true,
+    },
+    message: { conversation: 'message from linked account in a group' },
+  }, ACCOUNT_JID);
+  assert.equal(linkedAccountGroup.kind, 'group');
+  assert.equal(linkedAccountGroup.senderId, ACCOUNT_JID);
+  assert.equal(linkedAccountGroup.addressed, true);
+  assert.equal(linkedAccountGroup.selfChat, false);
+
   assert.equal(normalizeWhatsappMessage({
     key: { remoteJid: '16505550999@s.whatsapp.net', id: 'outbound-1', fromMe: true },
     message: { conversation: 'ordinary outbound message' },
@@ -387,10 +401,19 @@ test('WhatsApp access modes allow self-chat, selected contacts, or the existing 
     key: { remoteJid: ACCOUNT_JID, id: 'access-self', fromMe: true },
     message: { conversation: 'hello' },
   }, ACCOUNT_JID);
+  const linkedAccountGroup = normalizeWhatsappMessage({
+    key: {
+      remoteJid: '120363000000000001@g.us',
+      id: 'access-owner-group',
+      fromMe: true,
+    },
+    message: { conversation: 'hello from the linked account' },
+  }, ACCOUNT_JID);
 
   assert.equal(whatsappInboundAllowed(selfChat), true);
   assert.equal(whatsappInboundAllowed(direct), false);
   assert.equal(whatsappInboundAllowed(group), false);
+  assert.equal(whatsappInboundAllowed(linkedAccountGroup), false);
   assert.equal(whatsappInboundAllowed(direct, {
     accessMode: WHATSAPP_ACCESS_MODES.privateAllowlist,
     allowedNumbers: new Set(['16505550999']),
@@ -400,6 +423,9 @@ test('WhatsApp access modes allow self-chat, selected contacts, or the existing 
     allowedNumbers: new Set(['16505550000']),
   }), false);
   assert.equal(whatsappInboundAllowed(group, {
+    accessMode: WHATSAPP_ACCESS_MODES.open,
+  }), true);
+  assert.equal(whatsappInboundAllowed(linkedAccountGroup, {
     accessMode: WHATSAPP_ACCESS_MODES.open,
   }), true);
 });
@@ -621,6 +647,64 @@ test('WhatsApp runtime filters messages before the bridge and applies policy upd
   assert.ok(calls.some((call) => call[0] === 'presence' && call[1] === 'composing'));
   assert.ok(calls.some((call) => call[0] === 'message' && call[2].text === 'Harness answer'));
   await runtime.stop();
+});
+
+test('WhatsApp open mode answers linked-account group messages without processing reply echoes', async (t) => {
+  const groupJid = '120363000000000001@g.us';
+  let callbacks;
+  let replyEchoTask;
+  let askCount = 0;
+  const sent = [];
+  const socket = {
+    sendPresenceUpdate: async () => {},
+    readMessages: async () => {},
+    sendMessage: async (jid, content, options = {}) => {
+      sent.push({ jid, content, options });
+      replyEchoTask = callbacks.onMessage({
+        key: { remoteJid: groupJid, id: options.messageId, fromMe: true },
+        message: { conversation: content.text },
+      });
+      return { key: { id: options.messageId } };
+    },
+  };
+  const runtime = new WhatsappRuntime({
+    config: linkedConfig({ accessMode: WHATSAPP_ACCESS_MODES.open }),
+    authDir: '/tmp/test-whatsapp-linked-account-group',
+    harness: {
+      ensureRunning: async () => {},
+      sessionExists: async () => true,
+      ask: async () => {
+        askCount += 1;
+        return 'Harness group answer';
+      },
+    },
+    state: artifactState('session-linked-account-group'),
+    createSession: async (options) => {
+      callbacks = options;
+      return {
+        socket,
+        ready: Promise.resolve({ accountJid: ACCOUNT_JID, name: 'Harness WhatsApp' }),
+        close: async () => {},
+        logout: async () => {},
+      };
+    },
+  });
+  t.after(() => runtime.stop());
+  await runtime.start();
+
+  const inbound = {
+    key: { remoteJid: groupJid, id: 'linked-account-group-1', fromMe: true },
+    message: { conversation: 'hello from my group' },
+  };
+  await callbacks.onMessage(inbound);
+  await replyEchoTask;
+
+  assert.equal(askCount, 1);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].jid, groupJid);
+  assert.equal(sent[0].content.text, 'Harness group answer');
+  assert.equal(sent[0].options.quoted, inbound);
+  assert.match(sent[0].options.messageId, /^[0-9A-F]{20}$/);
 });
 
 test('WhatsApp runtime sends result files with native metadata, quote, stable id, and upload timeout', async (t) => {

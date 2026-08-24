@@ -99,7 +99,7 @@ export function WhatsappAccessSettings({ account, busy = false, onSave }) {
               h('span', null, '响应自聊和白名单联系人的私聊，忽略群聊。')),
             h('span', { className: 'dwa-accessTooltipItem' },
               h('strong', null, '开放响应模式'),
-              h('span', null, '响应所有私聊，以及群聊中的提及或回复。')))))),
+              h('span', null, '响应所有私聊、已绑定账号自己发出的群聊消息，以及其他群成员的提及或回复。')))))),
     h('label', { className: 'dwa-accessField' },
       h('span', null, '模式'),
       h('select', {

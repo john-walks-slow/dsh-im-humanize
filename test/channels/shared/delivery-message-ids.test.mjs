@@ -119,11 +119,13 @@ test('plain Slack, Telegram, Discord, and WhatsApp receipts retain every split m
 
   let whatsappId = 0;
   const remembered = [];
+  const reserved = [];
   const whatsapp = new WhatsappBotClient({
     sendPresenceUpdate: async () => {},
     sendMessage: async () => ({ key: { id: `whatsapp-${++whatsappId}` } }),
   }, {
     remember: (messageId) => remembered.push(messageId),
+    reserve: (messageId) => reserved.push(messageId),
   });
   const whatsappReceipt = await textReceipt({
     key: 'whatsapp',
@@ -133,6 +135,9 @@ test('plain Slack, Telegram, Discord, and WhatsApp receipts retain every split m
   });
   assert.deepEqual(whatsappReceipt.providerMessageIds, ['whatsapp-1', 'whatsapp-2']);
   assert.deepEqual(remembered, ['whatsapp-1', 'whatsapp-2']);
+  assert.equal(reserved.length, 2);
+  assert.equal(reserved.every((messageId) => /^[0-9A-F]{20}$/.test(messageId)), true);
+  assert.notEqual(reserved[0], reserved[1]);
 });
 
 test('Slack, Telegram, and Discord stream receipts retain the initial and remainder ids', async () => {

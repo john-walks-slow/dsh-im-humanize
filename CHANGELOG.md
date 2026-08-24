@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Fixed / 修复
+
+- WhatsApp 开放响应模式现在会处理已绑定账号自己在群聊中发出的消息，包括只有自己的群；出站文本消息会在发送前预留消息 ID，避免机器人回复的本地回显再次触发 Harness。
+  WhatsApp Open responses now handles group messages sent by the linked account, including owner-only groups; outbound text message IDs are reserved before sending so local reply echoes cannot trigger Harness again.
+
 ## [2.2.0] - 2026-08-25
 
 ### Added / 新增

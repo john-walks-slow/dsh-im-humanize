@@ -75,6 +75,7 @@ test('WhatsApp account card uses the unified compact channel layout', () => {
   assert.match(markup, /仅自己模式（默认）/);
   assert.match(markup, /指定联系人模式/);
   assert.match(markup, /开放响应模式/);
+  assert.match(markup, /已绑定账号自己发出的群聊消息/);
   assert.match(markup, /role="status"[^>]*>测试消息已发送/);
 });
 
