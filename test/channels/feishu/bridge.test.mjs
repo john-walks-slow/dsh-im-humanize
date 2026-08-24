@@ -2679,7 +2679,7 @@ test('card buttons from an allowed sender work', async () => {
 
   await bridge.onCardAction(cardActionEvent('om_card_1', 'new', 'ou_owner'));
   await bridge.waitForIdle();
-  assert.equal(sent.length, 2, 'allowed operator click should send a reply');
+  assert.equal(sent.length, 3, 'allowed operator click should send a reply + menu card update');
 });
 
 test('card buttons honor the wildcard sender allowlist', async () => {

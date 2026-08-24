@@ -48,8 +48,8 @@ test('menu exposes the increased command set and keeps repair number-only', () =
     button.behaviors?.map((behavior) => behavior?.value?.action) ?? []
   ));
   assert.deepEqual(actions, [
-    'new', 'sessions', 'workspaces', 'stop', 'compact',
-    'status', 'help', 'settings',
+    'presets', 'models', 'new', 'sessions', 'workspaces',
+    'stop', 'compact', 'archive_toggle', 'status', 'help',
   ]);
   // 修复不占位按钮：仅通过数字兜底「5🔧」触发（见 bridge）
   assert.equal(actions.includes('repair'), false);

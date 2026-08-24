@@ -113,15 +113,18 @@ function backButton() {
  * by operating flow:
  *   1. 会话 · 工作区（高频率）→ 会话下拉 · 工作区下拉 · 新会话 · 全部会话
  *   2. 任务控制 → 停止 · 压缩 · 补充指令下拉
- *   3. 系统 → 状态 · 帮助 · 更多设置
+ *   3. 配置 → 预设下拉 · 模型下拉 · 归档切换
+ *   4. 系统 → 状态 · 帮助
  * `ctx` bundle:
  *   - workspaces: string[]          (工作区下拉选项)
  *   - currentWorkspace: string|null (当前工作区,下拉高亮)
  *   - currentSession: {id,title}|null (当前绑定会话,续写目标)
  *   - sessions: {id,title}[]        (最近会话,供会话下拉切换)
  *   - archiveVisible: boolean       (归档显隐开关当前值)
+ *   - presetCatalog: object|null    (预设目录, {items,defaultId,_currentId})
+ *   - modelCatalog: object|null     (模型目录, {groups,current})
  * Number fallback: 1=续写 2=新会话 3=会话列表 4=状态
- * 5=修复 6=更多设置 7=帮助.
+ * 5=修复 6=帮助.
  */
 export function menuCard(ctx) {
   const {
@@ -130,26 +133,25 @@ export function menuCard(ctx) {
     currentSession = null,
     sessions = [],
     archiveVisible = false,
+    presetCatalog = null,
+    modelCatalog = null,
   } = ctx || {};
 
   // currentSession 提供 id/title；为兼容旧调用，也接受 currentSessionTitle
   const currentSessionId = currentSession?.id ?? null;
   const currentSessionTitle = currentSession?.title ?? ctx?.currentSessionTitle ?? null;
 
-  // 状态摘要：一眼看"当前是什么"
-  const wsLabel = currentWorkspace || '未设置工作区';
-  const sessLabel = currentSessionTitle ? `「${safeTitle(currentSessionTitle)}」` : '无会话';
-  const elements = [
-    { tag: 'div', text: markdown(`**📂 ${wsLabel}** · **💬 ${sessLabel}**`) },
-    { tag: 'hr' },
-  ];
-
-  // ── 会话 · 工作区（高频率，左右并排）────────────────────────
   const sessionOptions = (Array.isArray(sessions) ? sessions : []).slice(0, 20);
   const hasSessions = sessionOptions.length > 0;
   const hasWorkspaces = Array.isArray(workspaces) && workspaces.length > 0;
+  const elements = [];
 
-  // 构建会话下拉（始终显示，无会话时显示占位）
+  // ── 设置区 ──────────────────────────────────────────────────
+  elements.push({ tag: 'div', text: markdown('**设置**') });
+
+  // ── 四个下拉菜单 2×2 网格 ────────────────────────────────────
+
+  // 第 1 行：会话 + 工作区
   let sessionDropdown = null;
   if (hasSessions) {
     const sessionPickOptions = sessionOptions.map((s) => ({
@@ -175,7 +177,6 @@ export function menuCard(ctx) {
     };
   }
 
-  // 构建工作区下拉
   let workspaceDropdown = null;
   if (hasWorkspaces) {
     const wsOptions = workspaces.slice(0, 20).map((path) => ({
@@ -192,25 +193,87 @@ export function menuCard(ctx) {
     };
   }
 
-  // 左右并排：column_set 两列，左会话右工作区
-  if (sessionDropdown && workspaceDropdown) {
-    elements.push({
-      tag: 'column_set',
-      flex_mode: 'none',
-      columns: [
-        { tag: 'column', width: 'weighted', weight: 1, elements: [sessionDropdown] },
-        { tag: 'column', width: 'weighted', weight: 1, elements: [workspaceDropdown] },
-      ],
+  // 第 2 行：预设 + 模型
+  const presetItems = Array.isArray(presetCatalog?.items) ? presetCatalog.items : [];
+  const curPresetId = presetCatalog?._currentId ?? null;
+  const presetFollowDefault = curPresetId === null;
+  let presetDropdown = null;
+  if (presetItems.length >= 1) {
+    const setPresetOptions = presetItems.slice(0, 30).map((item) => ({
+      text: { tag: 'plain_text', content: `${item.id === curPresetId ? '✓ ' : ''}${item.label}` },
+      value: item.id,
+    }));
+    const presetSelected = presetFollowDefault ? PRESET_FOLLOW_DEFAULT_SENTINEL : curPresetId;
+    setPresetOptions.unshift({
+      text: { tag: 'plain_text', content: `${presetFollowDefault ? '✓ ' : ''}跟随默认` },
+      value: PRESET_FOLLOW_DEFAULT_SENTINEL,
     });
-  } else {
-    if (sessionDropdown) elements.push(sessionDropdown);
-    if (workspaceDropdown) elements.push(workspaceDropdown);
+    presetDropdown = {
+      tag: 'select_static',
+      name: 'preset_pick',
+      placeholder: { tag: 'plain_text', content: '切换预设' },
+      initial_index: initialIndex(setPresetOptions, presetSelected),
+      options: setPresetOptions,
+      behaviors: [{ type: 'callback', value: { action: 'preset_pick' } }],
+    };
   }
 
-  // 新会话 + 全部会话按钮
-  elements.push(buttonPair('🆕 新会话', 'new', '📋 全部会话', 'sessions'));
+  const groups = Array.isArray(modelCatalog?.groups) ? modelCatalog.groups : [];
+  const curModel = modelCatalog?.current;
+  const curModelId = curModel ? `${curModel.provider}/${curModel.model}` : null;
+  const flat = [];
+  for (const group of groups) {
+    for (const model of (group.models || [])) flat.push({ id: `${group.id}/${model.id}`, name: `${group.name} - ${model.name}` });
+  }
+  let modelDropdown = null;
+  if (flat.length > 1) {
+    const setModelOptions = flat.slice(0, 30).map((opt) => ({
+      text: { tag: 'plain_text', content: `${opt.id === curModelId ? '✓ ' : ''}${opt.name}` },
+      value: opt.id,
+    }));
+    modelDropdown = {
+      tag: 'select_static',
+      name: 'model_pick',
+      placeholder: { tag: 'plain_text', content: '切换模型' },
+      initial_index: initialIndex(setModelOptions, curModelId),
+      options: setModelOptions,
+      behaviors: [{ type: 'callback', value: { action: 'model_pick' } }],
+    };
+  }
 
-  // 如果既没有会话也没有工作区，显示工作区列表按钮
+  // 渲染 2×2 网格：图标 + 下拉并列
+  // 每一行用 4 列 column_set：图标 | 下拉 | 图标 | 下拉
+  function iconCol(icon) {
+    return { tag: 'column', width: 'weighted', weight: 0.1, vertical_align: 'center', elements: [{ tag: 'div', text: { tag: 'plain_text', content: icon } }] };
+  }
+  function dropdownCol(el) {
+    return { tag: 'column', width: 'weighted', weight: 1, elements: [el] };
+  }
+
+  const row1 = [];
+  if (sessionDropdown) row1.push(sessionDropdown);
+  if (workspaceDropdown) row1.push(workspaceDropdown);
+  if (row1.length === 2) {
+    elements.push({
+      tag: 'column_set', flex_mode: 'none',
+      columns: [iconCol('💬'), dropdownCol(row1[0]), iconCol('📂'), dropdownCol(row1[1])],
+    });
+  } else if (row1[0]) {
+    elements.push(row1[0]);
+  }
+
+  const row2 = [];
+  const presetBtn = button('🤖 切换预设', 'presets');
+  const modelBtn = button('🧠 切换模型', 'models');
+  if (presetDropdown) row2.push(presetDropdown); else row2.push(presetBtn);
+  if (modelDropdown) row2.push(modelDropdown); else row2.push(modelBtn);
+  elements.push({
+    tag: 'column_set', flex_mode: 'none',
+    columns: [iconCol('🤖'), dropdownCol(row2[0]), iconCol('🧠'), dropdownCol(row2[1])],
+  });
+
+  // 新会话 + 全部会话按钮
+  elements.push(buttonPair('🆕 新会话', 'new', '📋 会话/关注', 'sessions'));
   if (!hasSessions && !hasWorkspaces) {
     elements.push(button('🗂 工作区列表', 'workspaces'));
   }
@@ -219,32 +282,51 @@ export function menuCard(ctx) {
   // ── 任务控制（对运行中任务的操作）────────────────────────
   elements.push({ tag: 'div', text: markdown('**任务控制**') });
   elements.push(buttonPair('⏹ 停止', 'stop', '📐 压缩', 'compact'));
-  elements.push({ tag: 'div', text: markdown('**补充指令**（下拉选择，最后一项可自定义）') });
+  elements.push({ tag: 'hr' });
+
+  // ── 补充指令 + 归档切换（并列）────────────────────────────
   elements.push({
-    tag: 'select_static',
-    name: 'steer_pick',
-    placeholder: { tag: 'plain_text', content: '选择补充指令' },
-    initial_index: 1,
-    options: [
-      ...QUICK_STEER_OPTIONS.map((text) => ({
-        text: { tag: 'plain_text', content: text },
-        value: text,
-      })),
-      { text: { tag: 'plain_text', content: '✏️ 更多 / 自定义…' }, value: 'custom' },
+    tag: 'column_set', flex_mode: 'none',
+    columns: [
+      {
+        tag: 'column', width: 'weighted', weight: 1,
+        elements: [
+          { tag: 'div', text: markdown('**补充指令**') },
+          {
+            tag: 'select_static',
+            name: 'steer_pick',
+            placeholder: { tag: 'plain_text', content: '选择补充指令' },
+            initial_index: 1,
+            options: [
+              ...QUICK_STEER_OPTIONS.map((text) => ({
+                text: { tag: 'plain_text', content: text },
+                value: text,
+              })),
+              { text: { tag: 'plain_text', content: '✏️ 更多 / 自定义…' }, value: 'custom' },
+            ],
+            behaviors: [{ type: 'callback', value: { action: 'steer_pick' } }],
+          },
+        ],
+      },
+      {
+        tag: 'column', width: 'weighted', weight: 1,
+        elements: [
+          { tag: 'div', text: markdown(`🗄 归档：${archiveVisible ? '已显示' : '已隐藏'}`) },
+          button('切换归档显示', 'archive_toggle'),
+        ],
+      },
     ],
-    behaviors: [{ type: 'callback', value: { action: 'steer_pick' } }],
   });
   elements.push({ tag: 'hr' });
 
   // ── 底部操作（系统功能）────────────────────────────────────
   elements.push(buttonPair('📊 状态', 'status', '📖 帮助', 'help'));
-  elements.push(button('⚙ 更多设置', 'settings'));
 
   // 命令与数字兜底说明
   elements.push({ tag: 'div', text: markdown(
     '**数字兜底**\n'
-    + '**1**续写 · **2**新会话 · **3**会话列表 · **4**状态\n'
-    + '**5**🔧修复 · **6**更多设置 · **7**帮助',
+    + '**1**工作区列表 · **2**新会话 · **3**会话列表 · **4**状态\n'
+    + '**5**🔧修复 · **6**帮助',
   ) });
   return cardWith('🤖 助手中心', elements);
 }
@@ -507,11 +589,11 @@ export function menuHelpText() {
   return [
     '🤖 助手菜单（回复数字即可，无需记命令）',
     '',
-    '📋 会话',
-    '/sessionlist / session N  查看/绑定当前工作区会话',
+    '📋 会话 / 工作区',
+    '/sessionlist  列出工作区会话',
     '/session ID  绑定已有会话',
-    '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
-    '/workspacelist  列出工作区绝对路径',
+    '/workspacelist  列出工作区',
+    '/workspace 路径  切换工作区',
     '/new  开启全新会话',
     '',
     '📊 状态 / 压缩',
@@ -550,14 +632,16 @@ export function helpCard(extraTextLines = []) {
     { tag: 'div', text: markdown('**📋 卡片功能**\n\n' +
       '1. 会话下拉 — 切换当前绑定会话\n' +
       '2. 工作区下拉 — 切换工作区\n' +
-      '3. 🆕 新会话 — 开启全新会话\n' +
-      '4. 📋 全部会话 — 查看/绑定会话\n' +
-      '5. ⏹ 停止 — 停止当前任务\n' +
-      '6. 📐 压缩 — 压缩当前会话上下文\n' +
-      '7. 补充指令 — 给 Agent 发送指令\n' +
-      '8. 📊 状态 — 查看系统连接状态\n' +
-      '9. 📖 帮助 — 查看本帮助\n' +
-      '10. ⚙ 更多设置 — 预设/模型/归档设置') },
+      '3. 🤖 预设下拉 — 切换 Agent 预设\n' +
+      '4. 🧠 模型下拉 — 切换模型\n' +
+      '5. 🆕 新会话 — 开启全新会话\n' +
+      '6. 📋 会话/关注 — 查看/绑定会话，管理关注\n' +
+      '7. ⏹ 停止 — 停止当前任务\n' +
+      '8. 📐 压缩 — 压缩当前会话上下文\n' +
+      '9. 补充指令 — 给 Agent 发送指令\n' +
+      '10. 🗄 归档切换 — 显示/隐藏归档会话\n' +
+      '11. 📊 状态 — 查看系统连接状态\n' +
+      '12. 📖 帮助 — 查看本帮助') },
     { tag: 'hr' },
     { tag: 'div', text: markdown('**⌨️ 文本命令**\n\n' +
       '`/m` — 打开菜单卡片\n' +
@@ -582,8 +666,8 @@ export function helpCard(extraTextLines = []) {
       '`/repair` — 修复卡片按钮') },
     { tag: 'hr' },
     { tag: 'div', text: markdown('**💡 数字兜底**\n回复数字快速操作：\n' +
-      '**1**续写 · **2**新会话 · **3**全部会话\n' +
-      '**4**状态 · **5**修复 · **6**更多设置 · **7**帮助') },
+      '**1**工作区列表 · **2**新会话 · **3**会话/关注\n' +
+      '**4**状态 · **5**修复 · **6**帮助') },
     { tag: 'hr' },
     backButton(),
   ];

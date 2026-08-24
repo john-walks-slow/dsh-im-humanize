@@ -1259,6 +1259,7 @@ export class FeishuHarnessBridge {
     if (action === 'new') {
       await this.#state.clearSession(key);
       await this.#send(chatId, t('已开启全新 Harness 会话。'));
+      await this.#sendMenuCard(key, chatId);
       return;
     }
     if (action === 'use:current') {
@@ -1385,8 +1386,8 @@ export class FeishuHarnessBridge {
   async #handleMenuPick(menu, number, { chatId, key, event }) {
     if (menu.kind === 'menu') {
       // Number fallback for the total menu:
-      // 1=续写 2=新会话 3=会话列表 4=状态 5=修复 6=更多设置 7=帮助
-      const actions = ['use:current', 'new', 'sessions', 'status', 'repair', 'settings', 'help'];
+      // 1=工作区列表 2=新会话 3=会话列表 4=状态 5=修复 6=帮助
+      const actions = ['workspaces', 'new', 'sessions', 'status', 'repair', 'help'];
       const action = actions[number - 1];
       if (!action) {
         await this.#send(chatId, t('菜单没有这个编号，回复 /m 重新打开。'));
@@ -1605,13 +1606,32 @@ export class FeishuHarnessBridge {
       currentSessionTitle = sessions[0].title ?? sessions[0].id;
     }
     const archiveVisible = this.#state?.includesArchivedSessions?.() ?? false;
+    // 加载预设/模型目录供主卡内联配置使用
+    let presetCatalog = null;
+    let modelCatalog = null;
+    try {
+      const settings = await this.#harness.agentPresetSettings({ signal: this.#signal });
+      presetCatalog = settings.agentPresetCatalog;
+      presetCatalog._currentId = settings.agentPreset;
+    } catch { /* preset section degrades to button */ }
+    try {
+      await this.#harness.ensureRunning({ signal: this.#signal });
+      const sessionId = this.#state?.sessionFor?.(key);
+      let catalog;
+      if (typeof sessionId === 'string' && sessionId) {
+        const session = this.#harness.workspaceSession(sessionId);
+        if (session?.models) catalog = await session.models({ signal: this.#signal });
+      }
+      if (!catalog) catalog = await this.#harness.listModels({ signal: this.#signal });
+      modelCatalog = catalog;
+    } catch { /* model section degrades to button */ }
     this.#rememberMenu(key, { kind: 'menu', chatId });
     await this.#sendCard(
       chatId,
       menuCard({
         workspaces, currentWorkspace,
         currentSession: currentSessionId ? { id: currentSessionId, title: currentSessionTitle } : null,
-        sessions, archiveVisible,
+        sessions, archiveVisible, presetCatalog, modelCatalog,
       }),
       { key, update: !newCard },
     );
@@ -1883,7 +1903,7 @@ export class FeishuHarnessBridge {
       }
       await this.#harness.updateAgentPreset(null, { signal: this.#signal });
       await this.#send(chatId, '已恢复跟随 Host 默认预设。');
-      await this.#showSettingsCard(key, chatId);
+      await this.#sendMenuCard(key, chatId);
     } catch (error) {
       this.#logger.warn?.('[dsh-feishu] preset default failed:', error.message);
       await this.#send(chatId, '预设重置失败，请稍后重试。');
@@ -1901,7 +1921,7 @@ export class FeishuHarnessBridge {
       }
       await this.#harness.updateAgentPreset(presetId, { signal: this.#signal });
       await this.#send(chatId, `预设已切换为：${presetId}`);
-      await this.#showSettingsCard(key, chatId);
+      await this.#sendMenuCard(key, chatId);
     } catch (error) {
       this.#logger.warn?.('[dsh-feishu] preset select failed:', error.message);
       await this.#send(chatId, `预设切换失败：${error.message}`);
@@ -1927,7 +1947,7 @@ export class FeishuHarnessBridge {
       );
       const message = result?.message || '模型切换失败，请稍后重试。';
       await this.#send(chatId, message);
-      await this.#showSettingsCard(key, chatId);
+      await this.#sendMenuCard(key, chatId);
     } catch (error) {
       this.#logger.warn?.('[dsh-feishu] model select failed:', error.message);
       await this.#send(chatId, `模型切换失败：${error.message}`);
