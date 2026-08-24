@@ -5,7 +5,10 @@ import { join, resolve } from 'node:path';
 import { WeixinConfigStore } from '../../../../src/channels/weixin/config-store.mjs';
 import { HarnessClient } from '../../../../src/channels/weixin/harness-client.mjs';
 import { WeixinStateStore } from '../../../../src/channels/weixin/state-store.mjs';
-import { createWeixinApi } from '../../../../src/channels/weixin/weixin-api.mjs';
+import {
+  createWeixinApi,
+  DEFAULT_WEIXIN_MAX_MESSAGE_CHARS,
+} from '../../../../src/channels/weixin/weixin-api.mjs';
 import { WeixinController } from '../../../../src/channels/weixin/weixin-controller.mjs';
 import { WeixinRuntime } from '../../../../src/channels/weixin/weixin-runtime.mjs';
 import {
@@ -113,7 +116,7 @@ export async function createProductionController(ctx, config = {}, internals = {
         harness: workspaceScope.harness,
         state: workspaceScope.state,
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
-        maxMessageChars: config.maxMessageChars ?? 4_000,
+        maxMessageChars: config.maxMessageChars ?? DEFAULT_WEIXIN_MAX_MESSAGE_CHARS,
         logger: {
           error: (...args) => logger.error?.(`[${botId}]`, ...args),
           warn: (...args) => logger.warn?.(`[${botId}]`, ...args),

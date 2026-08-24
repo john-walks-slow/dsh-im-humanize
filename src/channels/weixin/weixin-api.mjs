@@ -12,6 +12,7 @@ export const WEIXIN_QR_BASE_URL = 'https://ilinkai.weixin.qq.com/';
 export const WEIXIN_PROTOCOL_VERSION = '2.4.6';
 export const DEFAULT_BOT_TYPE = '3';
 export const WEIXIN_CDN_BASE_URL = 'https://novac2c.cdn.weixin.qq.com/c2c';
+export const DEFAULT_WEIXIN_MAX_MESSAGE_CHARS = 1_800;
 
 const WEIXIN_CDN_HOST = 'novac2c.cdn.weixin.qq.com';
 
@@ -744,7 +745,7 @@ export function weixinMessageId(message) {
   return nonEmptyString(message?.client_id);
 }
 
-export function splitWeixinText(text, maxChars = 4_000) {
+export function splitWeixinText(text, maxChars = DEFAULT_WEIXIN_MAX_MESSAGE_CHARS) {
   if (text.length <= maxChars) return [text];
   const chunks = [];
   let remaining = text;

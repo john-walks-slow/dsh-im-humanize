@@ -1,4 +1,5 @@
 import {
+  DEFAULT_WEIXIN_MAX_MESSAGE_CHARS,
   extractWeixinFiles,
   extractWeixinImages,
   extractWeixinText,
@@ -184,7 +185,7 @@ export class WeixinHarnessBridge {
     status = createWeixinBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
-    maxMessageChars = 1_800,
+    maxMessageChars = DEFAULT_WEIXIN_MAX_MESSAGE_CHARS,
     signal,
   }) {
     if (!api || typeof api.sendText !== 'function') throw new TypeError('Weixin API is required');

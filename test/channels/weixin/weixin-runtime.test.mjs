@@ -85,6 +85,7 @@ test('runtime verifies the token, consumes getUpdates, replies, persists cursor,
   const calls = [];
   let pollCount = 0;
   let askSignal;
+  const answer = '答'.repeat(2_000);
   const stateData = { cursor: '', seen: new Set(), session: null };
   const api = {
     notifyStart: async (request) => calls.push(['start', request.token]),
@@ -133,7 +134,7 @@ test('runtime verifies the token, consumes getUpdates, replies, persists cursor,
       createSession: async () => 'session-1',
       ask: async (_sessionId, _text, options) => {
         askSignal = options.signal;
-        return '回答';
+        return answer;
       },
     },
     state,
@@ -145,10 +146,14 @@ test('runtime verifies the token, consumes getUpdates, replies, persists cursor,
   await flush();
   await flush();
   assert.equal(stateData.cursor, 'cursor-next');
-  assert.deepEqual(calls.slice(0, 2), [
-    ['start', 'bot-token'],
-    ['send', '回答', 'context-7'],
+  assert.equal(calls[0][0], 'start');
+  assert.deepEqual(calls.slice(1, 3).map((call) => call[1].length), [1_800, 200]);
+  assert.equal(calls.slice(1, 3).map((call) => call[1]).join(''), answer);
+  assert.deepEqual(calls.slice(1, 3).map((call) => call[2]), [
+    'context-7',
+    'context-7',
   ]);
+  assert.equal(runtime.status.messagesReplied, 1);
   assert.equal(askSignal.aborted, false);
   await runtime.stop();
   assert.equal(askSignal.aborted, true);
