@@ -82,6 +82,22 @@ const NUMBER_REPLY = /^\d{1,2}$/;
 /** A displayed menu stays number-tappable for this long. */
 const MENU_TTL_MS = 10 * 60_000;
 const MAX_TRACKED_MENUS = 50;
+/** Bound callback work per conversation so retries cannot exhaust Host RPCs. */
+const MAX_PENDING_CARD_ACTIONS_PER_KEY = 8;
+/** Bound actual stop/steer submissions independently from ordinary card UI work. */
+const MAX_PENDING_CARD_CONTROLS_PER_KEY = 8;
+/** Provider retries may arrive after the original callback has already settled. */
+const CARD_ACTION_DEDUPE_TTL_MS = 10 * 60_000;
+const MAX_COMPLETED_CARD_ACTIONS = 400;
+/** Keep pre-persistence completion arrivals long enough for a new watch to baseline. */
+const COMPLETION_OBSERVATION_TTL_MS = 10 * 60_000;
+const MAX_OBSERVED_COMPLETION_SESSIONS = 100;
+const MAX_OBSERVED_COMPLETIONS_PER_SESSION = 50;
+const MAX_OBSERVED_COMPLETIONS = 500;
+/** Collapse callback-flood notices instead of amplifying overload into more API calls. */
+const CARD_OVERLOAD_NOTICE_COOLDOWN_MS = 5_000;
+/** Cards should degrade promptly when one optional Host data source is slow. */
+const CARD_DATA_TIMEOUT_MS = 5_000;
 const REPAIR_LINK_WAIT_MS = 15_000;
 const REPAIR_POLL_INTERVAL_MS = 1_000;
 const REPAIR_ACTIVE_STATES = new Set([
@@ -155,10 +171,88 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+/** Accept SDK payload fields that may already be objects or JSON strings. */
+function callbackObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Normalize a single-select value without corrupting valid commas in an id/path. */
+function callbackSingleOption(value) {
+  if (value === null || value === undefined) return null;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const selected = callbackSingleOption(entry);
+      if (selected !== null) return selected;
+    }
+    return null;
+  }
+  if (value && typeof value === 'object') {
+    if ('value' in value) return callbackSingleOption(value.value);
+    if ('option' in value) return callbackSingleOption(value.option);
+    return null;
+  }
+  if (typeof value !== 'string') return null;
+  const source = value.trim();
+  if (!source) return null;
+  if (source.startsWith('[') || source.startsWith('{') || source.startsWith('"')) {
+    try {
+      const parsed = JSON.parse(source);
+      if (parsed !== value) return callbackSingleOption(parsed);
+    } catch { /* plain value below */ }
+  }
+  return source;
+}
+
+/** Normalize multi-select values across current and legacy SDK shapes. */
+function callbackMultiOptionValues(value) {
+  if (value === null || value === undefined) return [];
+  if (Array.isArray(value)) return value.flatMap((entry) => callbackMultiOptionValues(entry));
+  if (value && typeof value === 'object') {
+    if ('value' in value) return callbackMultiOptionValues(value.value);
+    if ('option' in value) return callbackMultiOptionValues(value.option);
+    return [];
+  }
+  if (typeof value !== 'string') return [];
+  const source = value.trim();
+  if (!source) return [];
+  if (source.startsWith('[') || source.startsWith('{') || source.startsWith('"')) {
+    try {
+      const parsed = JSON.parse(source);
+      if (parsed !== value) return callbackMultiOptionValues(parsed);
+    } catch { /* plain value below */ }
+  }
+  return source.split(',').map((entry) => entry.trim()).filter(Boolean);
+}
+
+function validLastSeq(value) {
+  return Number.isSafeInteger(value) && value >= -1;
+}
+
+function validEventSeq(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function watchBoundary(entry) {
+  return Number.isSafeInteger(entry?.watchStartedAt) && entry.watchStartedAt >= 0
+    ? entry.watchStartedAt
+    : null;
+}
+
+function watchNeedsBaseline(entry) {
+  return entry && (watchBoundary(entry) !== null || !validLastSeq(entry.lastSeq));
+}
+
 function orderedHistoryEvents(history) {
   return (Array.isArray(history?.events) ? history.events : [])
     .map((entry) => entry?.event ?? entry)
-    .filter((entry) => entry && typeof entry === 'object' && Number.isFinite(entry.seq))
+    .filter((entry) => entry && typeof entry === 'object' && validEventSeq(entry.seq))
     .sort((left, right) => left.seq - right.seq);
 }
 
@@ -278,6 +372,26 @@ export class FeishuHarnessBridge {
   #acceptedMessageIds = new Set();
   #interactionTasks = new Set();
   #commandTasks = new Set();
+  /** All accepted card work, including tasks waiting behind an earlier click. */
+  #cardActionTasks = new Set();
+  /** Per-conversation navigation/configuration serialization tails. */
+  #cardActionTails = new Map();
+  /** Per-conversation serialization for actual stop/steer side effects. */
+  #cardControlTails = new Map();
+  /** Pending callback count per conversation, used for bounded backpressure. */
+  #cardActionCounts = new Map();
+  /** Pending control count per conversation, isolated from ordinary UI work. */
+  #cardControlCounts = new Map();
+  /** Same callback retry joins the original task instead of repeating side effects. */
+  #cardActionInFlight = new Map();
+  /** Stop is idempotent per conversation; coalesce floods while one stop is pending. */
+  #cardStopInFlight = new Map();
+  /** Stable ids coalesced into a stop move to the completed cache when it settles. */
+  #cardStopFollowers = new Map();
+  /** Settled provider event ids stay deduplicated for a bounded retry window. */
+  #completedCardActions = new Map();
+  /** Last overload notice time per conversation. */
+  #cardOverloadNoticeAt = new Map();
   #approvals;
   #status;
   #allowedSenderOpenIds;
@@ -300,10 +414,15 @@ export class FeishuHarnessBridge {
   #cardKeys = new Map();
   /** The global event-mux watcher (one per bridge). */
   #eventWatcher = null;
-  /** Serializes live completions and reconnect compensation. */
-  #eventTail = Promise.resolve();
+  /** Serializes completion work per session without blocking unrelated sessions. */
+  #eventTails = new Map();
+  /** Coalesces baseline compensation and records whether a trailing pass is needed. */
+  #pendingCompensations = new Map();
+  /** Bounded live arrivals bridge target-list, persistence, and history-projection races. */
+  #observedCompletionEvents = new Map();
   /** Earliest completion that still needs delivery for each watch. */
   #failedWatchSeqs = new Map();
+  #cardDataTimeoutMs;
 
   constructor({
     client,
@@ -320,6 +439,7 @@ export class FeishuHarnessBridge {
     repairOwnerOpenIds,
     repairPollIntervalMs = REPAIR_POLL_INTERVAL_MS,
     repairLinkWaitMs = REPAIR_LINK_WAIT_MS,
+    cardDataTimeoutMs = CARD_DATA_TIMEOUT_MS,
     replyTimeoutMs = 600_000,
     logger = console,
     signal,
@@ -338,8 +458,9 @@ export class FeishuHarnessBridge {
       }
     }
     if (!Number.isFinite(repairPollIntervalMs) || repairPollIntervalMs <= 0
-      || !Number.isFinite(repairLinkWaitMs) || repairLinkWaitMs <= 0) {
-      throw new TypeError('Feishu repair timing values must be positive numbers');
+      || !Number.isFinite(repairLinkWaitMs) || repairLinkWaitMs <= 0
+      || !Number.isFinite(cardDataTimeoutMs) || cardDataTimeoutMs <= 0) {
+      throw new TypeError('Feishu timing values must be positive numbers');
     }
     this.#client = client;
     this.#channel = channel;
@@ -358,6 +479,7 @@ export class FeishuHarnessBridge {
     );
     this.#repairPollIntervalMs = repairPollIntervalMs;
     this.#repairLinkWaitMs = repairLinkWaitMs;
+    this.#cardDataTimeoutMs = cardDataTimeoutMs;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#logger = logger;
     this.#approvals = new HarnessApprovalQueue({ label: 'Feishu', logger });
@@ -621,15 +743,35 @@ export class FeishuHarnessBridge {
   }
 
   async waitForIdle() {
-    await Promise.allSettled([
-      ...this.#queues.values(),
-      ...[...this.#pendingInteractions.values()].flatMap((pending) => (
-        pending.queue ? [pending.queue] : []
-      )),
-      ...this.#interactionTasks,
-      ...this.#commandTasks,
-      this.#eventTail,
-    ]);
+    // Drain to a fixed point: awaited work can register compensation or
+    // another serialized tail before it settles.
+    for (;;) {
+      const tasks = [
+        ...this.#queues.values(),
+        ...[...this.#pendingInteractions.values()].flatMap((pending) => (
+          pending.queue ? [pending.queue] : []
+        )),
+        ...this.#interactionTasks,
+        ...this.#commandTasks,
+        ...this.#cardActionTasks,
+        ...this.#eventTails.values(),
+        ...[...this.#pendingCompensations.values()].map((pending) => pending.promise),
+      ];
+      if (tasks.length === 0) return;
+      await Promise.allSettled(tasks);
+      if (this.#queues.size === 0
+        && this.#interactionTasks.size === 0
+        && this.#commandTasks.size === 0
+        && this.#cardActionTasks.size === 0
+        && this.#eventTails.size === 0
+        && this.#pendingCompensations.size === 0
+        && ![...this.#pendingInteractions.values()].some((pending) => pending.queue)) return;
+    }
+  }
+
+  #cardDataSignal() {
+    const timeout = AbortSignal.timeout(this.#cardDataTimeoutMs);
+    return this.#signal ? AbortSignal.any([this.#signal, timeout]) : timeout;
   }
 
   #hasPendingInteraction(key) {
@@ -1140,26 +1282,33 @@ export class FeishuHarnessBridge {
       // Keep accepting the legacy nested shape while preferring the current
       // card.action.trigger v2 payload used by the official SDK.
       ?? nonEmptyString(event?.operator?.operator_id?.open_id)
-      ?? nonEmptyString(event?.operator?.operator_id?.user_id);
+      ?? nonEmptyString(event?.operator?.operator_id?.user_id)
+      ?? nonEmptyString(event?.open_id)
+      ?? nonEmptyString(event?.user_id);
     const operatorAllowed = operatorOpenId !== null
       && (this.#allowedSenderOpenIds.has('*') || this.#allowedSenderOpenIds.has(operatorOpenId));
     if (!operatorAllowed) {
       this.#logger.warn?.('[dsh-feishu] ignoring card action from an unallowed sender');
       return Promise.resolve();
     }
-    const action = typeof event?.action?.value?.action === 'string'
-      ? event.action.value.action
-      : null;
+    const actionValue = callbackObject(event?.action?.value);
+    const formValue = callbackObject(event?.action?.form_value);
+    const action = nonEmptyString(actionValue.action)
+      ?? nonEmptyString(event?.action?.action);
     if (!action) return Promise.resolve();
     // select_static dropdown: resolve pickers to their target actions
-    const option = event?.action?.option;
-    // multi_select_static: selected option values arrive as an array in
-    // value.options (or echoed option). Capture them for batch handlers.
-    const multiValues = Array.isArray(event?.action?.value?.options)
-      ? event.action.value.options.map((opt) => (opt?.value ?? opt)).filter((v) => typeof v === 'string')
-      : Array.isArray(event?.action?.options)
-        ? event.action.options.map((opt) => (opt?.value ?? opt)).filter((v) => typeof v === 'string')
-        : [];
+    const option = callbackSingleOption(event?.action?.option)
+      ?? (action.endsWith('_pick') ? callbackMultiOptionValues(event?.action?.options)[0] : null);
+    // The official Card 2.0 callback currently uses a comma-separated string
+    // for multi-select values; older SDKs emitted arrays or value objects.
+    const multiValues = [...new Set([
+      ...callbackMultiOptionValues(actionValue.options),
+      ...callbackMultiOptionValues(event?.action?.options),
+      ...callbackMultiOptionValues(formValue[action]),
+      ...(action === 'watch_add' || action === 'watch_remove'
+        ? callbackMultiOptionValues(event?.action?.option)
+        : []),
+    ])];
     const resolvedAction = action === 'workspace_pick' && typeof option === 'string'
       ? `workspace:${option}`
       : action === 'session_pick' && typeof option === 'string'
@@ -1173,50 +1322,224 @@ export class FeishuHarnessBridge {
               : action === 'steer_pick' && typeof option === 'string'
                 ? `steer:${option}`
                 : action;
-    const messageId = nonEmptyString(event?.context?.open_message_id);
+    const messageId = nonEmptyString(event?.context?.open_message_id)
+      ?? nonEmptyString(event?.open_message_id)
+      ?? nonEmptyString(event?.message_id);
     const route = messageId ? this.#cardKeys.get(messageId) : null;
     if (!route) {
       // The card predates this process (the in-memory mapping resets on
       // restart) or never came from us: nudge instead of staying silent.
-      const chatId = nonEmptyString(event?.context?.open_chat_id);
+      const chatId = nonEmptyString(event?.context?.open_chat_id)
+        ?? nonEmptyString(event?.open_chat_id)
+        ?? nonEmptyString(event?.chat_id);
       if (chatId) {
         this.#send(chatId, t('这个菜单已过期，请回复 /m 重新打开。')).catch(() => undefined);
       }
       return Promise.resolve();
     }
-    const entry = { ...route, messageId, selections: multiValues };
-    // 补充指令卡片：快捷下拉(source=quick, option=指令) / 表单提交(source=form)
-    if (action === 'steer') {
-      const source = event?.action?.value?.source;
-      if (source === 'quick' && typeof option === 'string') {
-        if (option === STEER_CUSTOM_SENTINEL) {
-          return this.#sendCard(entry.chatId, customSteerCard(), {
-            key: entry.key,
-            updateMessageId: entry.messageId,
-          }).catch((error) => {
-            this.#logger.warn?.('[dsh-feishu] steer custom card failed:', error.message);
-          });
+    // A used card is recent even if it was first created long ago.
+    this.#cardKeys.delete(messageId);
+    this.#cardKeys.set(messageId, route);
+    const entry = { ...route, messageId, selections: multiValues, operatorOpenId };
+    const source = nonEmptyString(actionValue.source);
+    const formText = nonEmptyString(formValue.steer_text);
+    const eventId = nonEmptyString(event?.event_id)
+      ?? nonEmptyString(event?.header?.event_id)
+      ?? nonEmptyString(event?.uuid)
+      ?? nonEmptyString(event?.header?.uuid);
+    const identity = JSON.stringify({
+      messageId,
+      resolvedAction,
+      option,
+      multiValues,
+      source,
+      formText,
+    });
+    const isStop = resolvedAction === 'stop';
+    const rawSteer = resolvedAction.startsWith('steer:')
+      ? resolvedAction.slice('steer:'.length)
+      : null;
+    const isCustomSteer = rawSteer === 'custom' || rawSteer === STEER_CUSTOM_SENTINEL;
+    const isRealSteer = (action === 'steer'
+      && source === 'quick'
+      && option !== null
+      && option !== STEER_CUSTOM_SENTINEL)
+      || (action === 'steer' && source === 'form' && formText !== null)
+      || (rawSteer !== null && rawSteer !== '' && !isCustomSteer);
+
+    return this.#queueCardAction(entry, identity, async () => {
+      // 补充指令卡片：快捷下拉(source=quick, option=指令) / 表单提交(source=form)
+      if (action === 'steer') {
+        if (source === 'quick' && option) {
+          if (option === STEER_CUSTOM_SENTINEL) {
+            await this.#sendCard(entry.chatId, customSteerCard(), {
+              key: entry.key,
+              updateMessageId: entry.messageId,
+            });
+            return;
+          }
+          await this.#sendSteer(entry, option);
+          return;
         }
-        return this.#sendSteer(entry, option).catch((error) => {
-          this.#logger.warn?.('[dsh-feishu] steer (quick) failed:', error.message);
-        });
+        if (source === 'form') {
+          if (formText) {
+            await this.#sendSteer(entry, formText);
+            return;
+          }
+          await this.#send(entry.chatId, t('请输入补充指令后再提交。'));
+          return;
+        }
       }
-      if (source === 'form') {
-        const text = nonEmptyString(event?.action?.form_value?.steer_text);
-        if (text) {
-          return this.#sendSteer(entry, text).catch((error) => {
-            this.#logger.warn?.('[dsh-feishu] steer (form) failed:', error.message);
-          });
+      await this.#handleCardAction(resolvedAction, entry);
+    }, {
+      lane: isStop || isRealSteer ? 'control' : 'regular',
+      coalesceStop: isStop,
+      eventId,
+      operatorOpenId,
+    });
+  }
+
+  #pruneCompletedCardActions(now = Date.now()) {
+    for (const [key, expiresAt] of this.#completedCardActions) {
+      if (expiresAt <= now) this.#completedCardActions.delete(key);
+    }
+    while (this.#completedCardActions.size > MAX_COMPLETED_CARD_ACTIONS) {
+      const oldest = this.#completedCardActions.keys().next().value;
+      if (oldest === undefined) break;
+      this.#completedCardActions.delete(oldest);
+    }
+  }
+
+  #rememberCompletedCardAction(key, now = Date.now()) {
+    if (!key) return;
+    this.#completedCardActions.delete(key);
+    this.#completedCardActions.set(key, now + CARD_ACTION_DEDUPE_TTL_MS);
+    this.#pruneCompletedCardActions(now);
+  }
+
+  #notifyCardOverflow(entry) {
+    const conversation = entry.key;
+    const now = Date.now();
+    const existing = this.#cardOverloadNoticeAt.get(conversation);
+    if (existing?.task || (existing && now - existing.at < CARD_OVERLOAD_NOTICE_COOLDOWN_MS)) {
+      return existing?.task ?? Promise.resolve();
+    }
+    this.#logger.warn?.('[dsh-feishu] card action queue is full; dropping callbacks');
+    let tracked;
+    tracked = this.#send(entry.chatId, t('操作过于频繁，请稍后再试。'))
+      .catch(() => undefined)
+      .finally(() => {
+        this.#cardActionTasks.delete(tracked);
+        const current = this.#cardOverloadNoticeAt.get(conversation);
+        if (current?.task === tracked) this.#cardOverloadNoticeAt.set(conversation, { at: current.at, task: null });
+      });
+    this.#cardOverloadNoticeAt.delete(conversation);
+    this.#cardOverloadNoticeAt.set(conversation, { at: now, task: tracked });
+    this.#cardActionTasks.add(tracked);
+    while (this.#cardOverloadNoticeAt.size > 200) {
+      const oldest = this.#cardOverloadNoticeAt.keys().next().value;
+      if (oldest === undefined) break;
+      this.#cardOverloadNoticeAt.delete(oldest);
+    }
+    return tracked;
+  }
+
+  #queueCardAction(entry, identity, task, {
+    lane = 'regular',
+    coalesceStop = false,
+    eventId = null,
+    operatorOpenId = null,
+  } = {}) {
+    const conversation = entry.key;
+    const completedKey = eventId
+      ? `${conversation}\0${operatorOpenId ?? ''}\0event:${eventId}`
+      : null;
+    const dedupeKey = completedKey
+      ?? `${conversation}\0${operatorOpenId ?? ''}\0action:${identity}`;
+    const now = Date.now();
+    this.#pruneCompletedCardActions(now);
+    if (completedKey && (this.#completedCardActions.get(completedKey) ?? 0) > now) {
+      return Promise.resolve();
+    }
+    const duplicate = this.#cardActionInFlight.get(dedupeKey);
+    if (duplicate) return duplicate;
+    if (coalesceStop) {
+      const pendingStop = this.#cardStopInFlight.get(conversation);
+      if (pendingStop) {
+        if (completedKey) {
+          // Remember only a bounded LRU of provider ids while the shared stop
+          // is unresolved. They become completed only after that stop settles.
+          this.#cardStopFollowers.delete(completedKey);
+          this.#cardStopFollowers.set(completedKey, pendingStop);
+          while (this.#cardStopFollowers.size > MAX_COMPLETED_CARD_ACTIONS) {
+            const oldest = this.#cardStopFollowers.keys().next().value;
+            if (oldest === undefined) break;
+            this.#cardStopFollowers.delete(oldest);
+          }
         }
-        this.#send(entry.chatId, t('请输入补充指令后再提交。')).catch(() => undefined);
-        return Promise.resolve();
+        return pendingStop;
       }
     }
-    // The promise is returned so tests (and future callers) can await the
-    // action; the runtime dispatcher ignores it.
-    return this.#handleCardAction(resolvedAction, entry).catch((error) => {
-      this.#logger.warn?.('[dsh-feishu] card action failed:', error.message);
-    });
+
+    const control = lane === 'control';
+    const tails = control ? this.#cardControlTails : this.#cardActionTails;
+    const counts = control ? this.#cardControlCounts : this.#cardActionCounts;
+    const limit = control ? MAX_PENDING_CARD_CONTROLS_PER_KEY : MAX_PENDING_CARD_ACTIONS_PER_KEY;
+    const pending = counts.get(conversation) ?? 0;
+    // Reserve one bounded control slot for stop. All further stop clicks join
+    // that task, so a flood cannot grow the queue beyond limit + 1.
+    const pendingLimit = coalesceStop ? limit + 1 : limit;
+    if (pending >= pendingLimit) {
+      return this.#notifyCardOverflow(entry);
+    }
+
+    const previous = tails.get(conversation) ?? Promise.resolve();
+    counts.set(conversation, pending + 1);
+
+    let tracked;
+    let started = false;
+    tracked = previous
+      .catch(() => undefined)
+      .then(async () => {
+        this.#signal?.throwIfAborted();
+        started = true;
+        await task();
+      })
+      .catch(async (error) => {
+        if (this.#signal?.aborted) return;
+        this.#logger.warn?.('[dsh-feishu] card action failed:', error?.message ?? String(error));
+        this.#status.lastError = error?.message ?? String(error);
+        await this.#send(entry.chatId, t('卡片操作失败，请稍后重试。')).catch(() => undefined);
+      })
+      .finally(() => {
+        if (this.#cardActionInFlight.get(dedupeKey) === tracked) {
+          this.#cardActionInFlight.delete(dedupeKey);
+        }
+        if (started && completedKey) {
+          this.#rememberCompletedCardAction(completedKey);
+        }
+        if (coalesceStop && this.#cardStopInFlight.get(conversation) === tracked) {
+          this.#cardStopInFlight.delete(conversation);
+        }
+        if (coalesceStop) {
+          const settledAt = Date.now();
+          for (const [followerKey, pendingStop] of this.#cardStopFollowers) {
+            if (pendingStop !== tracked) continue;
+            this.#cardStopFollowers.delete(followerKey);
+            this.#rememberCompletedCardAction(followerKey, settledAt);
+          }
+        }
+        if (tails.get(conversation) === tracked) tails.delete(conversation);
+        const remaining = (counts.get(conversation) ?? 1) - 1;
+        if (remaining > 0) counts.set(conversation, remaining);
+        else counts.delete(conversation);
+        this.#cardActionTasks.delete(tracked);
+      });
+    this.#cardActionInFlight.set(dedupeKey, tracked);
+    if (coalesceStop) this.#cardStopInFlight.set(conversation, tracked);
+    this.#cardActionTasks.add(tracked);
+    tails.set(conversation, tracked);
+    return tracked;
   }
 
   async #handleCardAction(action, {
@@ -1224,6 +1547,7 @@ export class FeishuHarnessBridge {
     key,
     messageId = null,
     sessionWorkspace = null,
+    sessionPage = 0,
     selections = [],
   }) {
     if (action === 'sessions' || /^sessions:\d+$/.test(action)) {
@@ -1246,36 +1570,60 @@ export class FeishuHarnessBridge {
     }
     // 多选关注下拉：action=watch_add / watch_remove，选中项在 selections 数组
     if (action === 'watch_add' || action === 'watch_remove') {
-      if (action === 'watch_add') {
-        let added = 0;
-        for (const sessionId of selections) {
-          try {
-            await this.#runWatch(key, chatId, sessionId);
-            added += 1;
-          } catch { /* skip individual failure */ }
-        }
-        await this.#send(
-          chatId,
-          added > 0
-            ? t('已批量关注 {count} 个会话。', { count: added })
-            : t('已关注（或已达关注上限）。'),
-        );
-      } else {
-        let removed = 0;
-        for (const sessionId of selections) {
-          try {
-            await this.#runUnwatch(key, chatId, sessionId);
-            removed += 1;
-          } catch { /* skip individual failure */ }
-        }
-        await this.#send(
-          chatId,
-          removed > 0
-            ? t('已取消关注 {count} 个会话。', { count: removed })
-            : t('未取消任何关注。'),
-        );
+      if (selections.length === 0) {
+        await this.#send(chatId, t('请先选择至少一个会话。'));
+        return;
       }
-      await this.#showWatchList(key, chatId, { updateMessageId: messageId });
+      let changed = 0;
+      let failed = 0;
+      if (action === 'watch_add') {
+        let freshTargets = new Map();
+        try {
+          freshTargets = await this.#freshWatchTargets(sessionWorkspace);
+        } catch (error) {
+          this.#logger.warn?.('[dsh-feishu] batch watch validation failed:', error.message);
+        }
+        for (const sessionId of selections) {
+          const validatedTarget = freshTargets.get(sessionId);
+          if (!validatedTarget) {
+            failed += 1;
+            continue;
+          }
+          const result = await this.#runWatch(key, chatId, sessionId, {
+            notify: false,
+            validatedTarget,
+          });
+          if (result.changed) changed += 1;
+          else if (!result.ok) failed += 1;
+        }
+      } else {
+        for (const sessionId of selections) {
+          const result = await this.#runUnwatch(key, chatId, sessionId, { notify: false });
+          if (result.changed) changed += 1;
+          else if (!result.ok) failed += 1;
+        }
+      }
+      const summary = changed > 0 && failed > 0
+        ? action === 'watch_add'
+          ? t('已批量关注 {count} 个会话，另有 {failed} 个未成功。', { count: changed, failed })
+          : t('已取消关注 {count} 个会话，另有 {failed} 个未成功。', { count: changed, failed })
+        : changed > 0
+          ? action === 'watch_add'
+            ? t('已批量关注 {count} 个会话。', { count: changed })
+            : t('已取消关注 {count} 个会话。', { count: changed })
+          : failed > 0
+            ? t('所选会话均未处理成功，请稍后重试。')
+            : action === 'watch_add'
+              ? t('所选会话已在关注列表中。')
+              : t('所选会话已不在关注列表中。');
+      try {
+        await this.#showWatchList(key, chatId, { updateMessageId: messageId });
+      } catch (error) {
+        this.#logger.warn?.('[dsh-feishu] watch list refresh failed:', error.message);
+      }
+      await this.#send(chatId, summary).catch((error) => {
+        this.#logger.warn?.('[dsh-feishu] watch batch summary failed:', error.message);
+      });
       return;
     }
     if (action === 'new') {
@@ -1381,11 +1729,30 @@ export class FeishuHarnessBridge {
       return;
     }
     if (action.startsWith('unwatch:')) {
-      await this.#runUnwatch(key, chatId, action.slice('unwatch:'.length));
+      const result = await this.#runUnwatch(key, chatId, action.slice('unwatch:'.length));
+      if (result.ok && messageId) {
+        await this.#showSessions(
+          { chatId, key },
+          sessionWorkspace,
+          sessionPage,
+          { updateMessageId: messageId },
+        );
+      }
       return;
     }
     if (action.startsWith('watch:')) {
-      await this.#runWatch(key, chatId, action.slice('watch:'.length));
+      const sessionId = action.slice('watch:'.length);
+      const result = await this.#runWatch(key, chatId, sessionId, {
+        workspaceHint: sessionWorkspace,
+      });
+      if (result.ok && messageId) {
+        await this.#showSessions(
+          { chatId, key },
+          sessionWorkspace,
+          sessionPage,
+          { updateMessageId: messageId },
+        );
+      }
     }
   }
 
@@ -1469,12 +1836,13 @@ export class FeishuHarnessBridge {
     { updateMessageId = null } = {},
   ) {
     try {
-      const resolved = await resolveSessionListWorkspace(selector ?? '', this.#harness);
+      const signal = this.#cardDataSignal();
+      const resolved = await resolveSessionListWorkspace(selector ?? '', this.#harness, { signal });
       if (resolved.error) {
         await this.#send(chatId, resolved.error);
         return;
       }
-      const listed = await this.#harness.listWorkspaceSessions(resolved.workspace);
+      const listed = await this.#harness.listWorkspaceSessions(resolved.workspace, { signal });
       const sessions = this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : []);
       const workspace = listed?.workspace ?? resolved.workspace;
       if (sessions.length === 0) {
@@ -1500,6 +1868,7 @@ export class FeishuHarnessBridge {
           // Keep the canonical selector result for later page callbacks. The
           // list response's workspace is display data and is not authoritative.
           sessionWorkspace: resolved.workspace,
+          sessionPage: safePage,
         },
       );
     } catch (error) {
@@ -1510,7 +1879,10 @@ export class FeishuHarnessBridge {
 
   async #showWorkspaces({ chatId, key }, { updateMessageId = null } = {}) {
     try {
-      const { current, paths } = await workspacePathSnapshot(this.#harness);
+      const { current, paths } = await workspacePathSnapshot(
+        this.#harness,
+        { signal: this.#cardDataSignal() },
+      );
       this.#rememberMenu(key, { kind: 'workspaces', paths });
       await this.#sendCard(
         chatId,
@@ -1546,12 +1918,16 @@ export class FeishuHarnessBridge {
 
   #rememberCardRoute(messageId, chatId, options) {
     if (!options.key || !messageId) return;
+    this.#cardKeys.delete(messageId);
     this.#cardKeys.set(messageId, {
       key: options.key,
       chatId,
       sessionWorkspace: typeof options.sessionWorkspace === 'string' && options.sessionWorkspace
         ? options.sessionWorkspace
         : null,
+      sessionPage: Number.isSafeInteger(options.sessionPage) && options.sessionPage >= 0
+        ? options.sessionPage
+        : 0,
     });
     if (this.#cardKeys.size > 200) {
       const oldest = this.#cardKeys.keys().next().value;
@@ -1591,38 +1967,84 @@ export class FeishuHarnessBridge {
   }
 
   async #sendMenuCard(key, chatId, { updateMessageId = null } = {}) {
-    let workspaces = [];
-    let currentWorkspace = null;
-    try {
-      const snapshot = await workspacePathSnapshot(this.#harness);
-      workspaces = snapshot.paths;
-      currentWorkspace = snapshot.current ?? null;
-    } catch {
-      // workspace query failed; render menu without dropdown
-    }
-    // Current bound session (标题尽力获取,失败退化为 id) — 用于续写入口
-    let currentSessionTitle = null;
     let currentSessionId = null;
+    let directSessionTitle = null;
     try {
       const sessionId = this.#state.sessionFor(key);
       if (typeof sessionId === 'string' && sessionId) {
         currentSessionId = sessionId;
-        currentSessionTitle = await this.#resolveSessionTitle(key, sessionId) || sessionId;
+        const session = this.#harness.workspaceSession?.(sessionId);
+        directSessionTitle = nonEmptyString(session?.title)
+          ?? nonEmptyString(session?.name)
+          ?? nonEmptyString(session?.displayName);
       }
     } catch { /* render without a selected session */ }
-    // 最近会话列表（会话下拉切换用；失败则留空数组 → 菜单回退按钮）
-    let sessions = [];
-    try {
+
+    const dataSignal = this.#cardDataSignal();
+    // Independent sections start together. Each one degrades on its own so a
+    // slow preset/model RPC cannot force redundant session-list scans.
+    const workspaceTask = workspacePathSnapshot(this.#harness, { signal: dataSignal })
+      .catch(() => {
+        const current = typeof this.#harness.currentWorkspace === 'function'
+          ? this.#harness.currentWorkspace()
+          : null;
+        return { current, paths: current ? [current] : [] };
+      });
+    const sessionTask = (async () => {
       const current = typeof this.#harness.currentWorkspace === 'function'
         ? this.#harness.currentWorkspace()
         : null;
-      if (current && typeof this.#harness.listWorkspaceSessions === 'function') {
-        const listed = await this.#harness.listWorkspaceSessions(current);
-        sessions = this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : [])
-          .map((s) => ({ id: s.sessionId, title: s.title ?? s.name ?? s.sessionId }))
-          .slice(0, 20);
+      if (!current || typeof this.#harness.listWorkspaceSessions !== 'function') return [];
+      try {
+        const listed = await this.#harness.listWorkspaceSessions(current, { signal: dataSignal });
+        return this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : []);
+      } catch {
+        return [];
       }
-    } catch { /* session dropdown unavailable; fall back to buttons */ }
+    })();
+    const presetTask = (async () => {
+      try {
+        const settings = await this.#harness.agentPresetSettings({ signal: dataSignal });
+        return { ...settings.agentPresetCatalog, _currentId: settings.agentPreset };
+      } catch {
+        return null;
+      }
+    })();
+    const modelTask = (async () => {
+      try {
+        if (currentSessionId) {
+          const session = this.#harness.workspaceSession?.(currentSessionId);
+          if (typeof session?.models === 'function') {
+            return await session.models({ signal: dataSignal });
+          }
+        }
+        return await this.#harness.listModels({ signal: dataSignal });
+      } catch {
+        return null;
+      }
+    })();
+
+    const [snapshot, listedSessions, presetCatalog, modelCatalog] = await Promise.all([
+      workspaceTask,
+      sessionTask,
+      presetTask,
+      modelTask,
+    ]);
+    const workspaces = Array.isArray(snapshot.paths) ? snapshot.paths : [];
+    const currentWorkspace = snapshot.current ?? null;
+    const currentMatch = listedSessions.find((session) => session.sessionId === currentSessionId);
+    const currentSessionTitle = currentSessionId
+      ? nonEmptyString(currentMatch?.title)
+        ?? nonEmptyString(currentMatch?.name)
+        ?? directSessionTitle
+        ?? currentSessionId
+      : null;
+    let sessions = listedSessions
+      .map((session) => ({
+        id: session.sessionId,
+        title: session.title ?? session.name ?? session.sessionId,
+      }))
+      .slice(0, 20);
     // 确保当前绑定会话始终出现在下拉最前（它可能不在最近列表里），
     // 否则 initial_index 找不到默认展示项，下拉会显示占位文本。
     if (currentSessionId) {
@@ -1631,25 +2053,6 @@ export class FeishuHarnessBridge {
       sessions = sessions.slice(0, 20);
     }
     const archiveVisible = this.#state?.includesArchivedSessions?.() ?? false;
-    // 加载预设/模型目录供主卡内联配置使用
-    let presetCatalog = null;
-    let modelCatalog = null;
-    try {
-      const settings = await this.#harness.agentPresetSettings({ signal: this.#signal });
-      presetCatalog = settings.agentPresetCatalog;
-      presetCatalog._currentId = settings.agentPreset;
-    } catch { /* preset section degrades to button */ }
-    try {
-      await this.#harness.ensureRunning({ signal: this.#signal });
-      const sessionId = this.#state?.sessionFor?.(key);
-      let catalog;
-      if (typeof sessionId === 'string' && sessionId) {
-        const session = this.#harness.workspaceSession(sessionId);
-        if (session?.models) catalog = await session.models({ signal: this.#signal });
-      }
-      if (!catalog) catalog = await this.#harness.listModels({ signal: this.#signal });
-      modelCatalog = catalog;
-    } catch { /* model section degrades to button */ }
     this.#rememberMenu(key, { kind: 'menu', chatId });
     await this.#sendCard(
       chatId,
@@ -1702,7 +2105,7 @@ export class FeishuHarnessBridge {
    */
   async #showPresetCard(key, chatId, { updateMessageId = null } = {}) {
     try {
-      const settings = await this.#harness.agentPresetSettings({ signal: this.#signal });
+      const settings = await this.#harness.agentPresetSettings({ signal: this.#cardDataSignal() });
       const catalog = settings.agentPresetCatalog;
       // Inject the current preset id so the card can render the selection
       catalog._currentId = settings.agentPreset;
@@ -1718,18 +2121,19 @@ export class FeishuHarnessBridge {
    */
   async #showModelCard(key, chatId, { updateMessageId = null } = {}) {
     try {
-      await this.#harness.ensureRunning({ signal: this.#signal });
+      const signal = this.#cardDataSignal();
+      await this.#harness.ensureRunning({ signal });
       // Try to get the session-bound catalog first, fall back to harness-level
       const sessionId = this.#state?.sessionFor?.(key);
       let catalog;
       if (typeof sessionId === 'string' && sessionId) {
         const session = this.#harness.workspaceSession(sessionId);
         if (session?.models) {
-          catalog = await session.models({ signal: this.#signal });
+          catalog = await session.models({ signal });
         }
       }
       if (!catalog) {
-        catalog = await this.#harness.listModels({ signal: this.#signal });
+        catalog = await this.#harness.listModels({ signal });
       }
       await this.#sendCard(chatId, modelCard(catalog), { key, updateMessageId });
     } catch (error) {
@@ -1769,7 +2173,8 @@ export class FeishuHarnessBridge {
 
   async #showStatusCard(key, chatId, { updateMessageId = null } = {}) {
     try {
-      await this.#harness.ensureRunning({ signal: this.#signal });
+      const signal = this.#cardDataSignal();
+      await this.#harness.ensureRunning({ signal });
       const info = { connected: true, workspace: null, preset: null, model: null, sessionCount: 0 };
 
       // Current workspace
@@ -1782,7 +2187,7 @@ export class FeishuHarnessBridge {
 
       // Preset
       try {
-        const settings = await this.#harness.agentPresetSettings({ signal: this.#signal });
+        const settings = await this.#harness.agentPresetSettings({ signal });
         const item = settings.agentPresetCatalog.items.find((i) => i.id === settings.agentPreset);
         info.preset = item
           ? `${item.label}（${item.id}）`
@@ -1795,7 +2200,7 @@ export class FeishuHarnessBridge {
         if (typeof sessionId === 'string' && sessionId) {
           const session = this.#harness.workspaceSession(sessionId);
           if (session?.models) {
-            const cat = await session.models({ signal: this.#signal });
+            const cat = await session.models({ signal });
             if (cat.current) info.model = `${cat.current.provider}/${cat.current.model}`;
           }
         }
@@ -1807,7 +2212,7 @@ export class FeishuHarnessBridge {
           ? this.#harness.currentWorkspace()
           : null;
         if (ws) {
-          const listed = await this.#harness.listWorkspaceSessions(ws);
+          const listed = await this.#harness.listWorkspaceSessions(ws, { signal });
           if (Array.isArray(listed?.sessions)) info.sessionCount = listed.sessions.length;
         }
       } catch { /* ignore */ }
@@ -1985,7 +2390,7 @@ export class FeishuHarnessBridge {
         signal,
         onSessionEvent: (payload) => this.#onHarnessEvent(payload),
         onReconnect: () => {
-          void this.#queueEventTask(() => this.#compensateMissedEvents());
+          void this.#compensateMissedEvents();
         },
       });
       Promise.resolve(this.#eventWatcher).catch((error) => {
@@ -1999,14 +2404,83 @@ export class FeishuHarnessBridge {
     }
   }
 
-  #queueEventTask(task) {
-    const next = this.#eventTail.then(task, task).catch((error) => {
+  #queueEventTask(sessionId, task) {
+    const previous = this.#eventTails.get(sessionId) ?? Promise.resolve();
+    let next;
+    next = previous.then(task, task).catch((error) => {
       if (!this.#signal?.aborted) {
         this.#logger.warn?.('[dsh-feishu] completion event failed:', error.message);
       }
+    }).finally(() => {
+      if (this.#eventTails.get(sessionId) === next) this.#eventTails.delete(sessionId);
     });
-    this.#eventTail = next;
+    this.#eventTails.set(sessionId, next);
     return next;
+  }
+
+  #pruneObservedCompletionEvents(now = Date.now()) {
+    let total = 0;
+    for (const [sessionId, observed] of this.#observedCompletionEvents) {
+      for (const [seq, record] of observed) {
+        if (!Number.isSafeInteger(record?.arrivalAt)
+          || record.arrivalAt < 0
+          || record.arrivalAt + COMPLETION_OBSERVATION_TTL_MS <= now) {
+          observed.delete(seq);
+        }
+      }
+      while (observed.size > MAX_OBSERVED_COMPLETIONS_PER_SESSION) {
+        const oldest = observed.keys().next().value;
+        if (oldest === undefined) break;
+        observed.delete(oldest);
+      }
+      if (observed.size === 0) this.#observedCompletionEvents.delete(sessionId);
+      else total += observed.size;
+    }
+    while (this.#observedCompletionEvents.size > MAX_OBSERVED_COMPLETION_SESSIONS) {
+      const oldestSessionId = this.#observedCompletionEvents.keys().next().value;
+      if (oldestSessionId === undefined) break;
+      total -= this.#observedCompletionEvents.get(oldestSessionId)?.size ?? 0;
+      this.#observedCompletionEvents.delete(oldestSessionId);
+    }
+    while (total > MAX_OBSERVED_COMPLETIONS) {
+      const oldestSessionId = this.#observedCompletionEvents.keys().next().value;
+      if (oldestSessionId === undefined) break;
+      const observed = this.#observedCompletionEvents.get(oldestSessionId);
+      const oldestSeq = observed?.keys().next().value;
+      if (oldestSeq === undefined) {
+        this.#observedCompletionEvents.delete(oldestSessionId);
+        continue;
+      }
+      observed.delete(oldestSeq);
+      total -= 1;
+      if (observed.size === 0) this.#observedCompletionEvents.delete(oldestSessionId);
+    }
+  }
+
+  #recordObservedCompletion(sessionId, event, now = Date.now()) {
+    this.#pruneObservedCompletionEvents(now);
+    let observed = this.#observedCompletionEvents.get(sessionId);
+    if (!observed) observed = new Map();
+    const rawReason = event?.data?.reason;
+    const reason = typeof rawReason === 'string'
+      ? rawReason
+      : typeof rawReason?.kind === 'string'
+        ? { kind: rawReason.kind }
+        : null;
+    observed.delete(event.seq);
+    observed.set(event.seq, {
+      arrivalAt: now,
+      event: {
+        type: 'turn/end',
+        seq: event.seq,
+        ...(Number.isSafeInteger(event.time) && event.time >= 0 ? { time: event.time } : {}),
+        data: { reason },
+      },
+    });
+    // Refresh the session as a unit so both session and entry eviction are LRU.
+    this.#observedCompletionEvents.delete(sessionId);
+    this.#observedCompletionEvents.set(sessionId, observed);
+    this.#pruneObservedCompletionEvents(now);
   }
 
   /**
@@ -2014,7 +2488,7 @@ export class FeishuHarnessBridge {
    * the registered workspaces' listings, an index against the current
    * workspace. Nothing is bound and no workspace is switched.
    */
-  async #resolveWatchTarget(target) {
+  async #resolveWatchTarget(target, { workspaceHint = null, signal = this.#signal } = {}) {
     if (typeof target !== 'string' || target === '') {
       return { error: t('用法：/watch <Session ID 或当前工作区序号>') };
     }
@@ -2023,7 +2497,7 @@ export class FeishuHarnessBridge {
       ? this.#harness.currentWorkspace()
       : null;
     const listSessions = async (workspace) => {
-      const listed = await this.#harness.listWorkspaceSessions(workspace);
+      const listed = await this.#harness.listWorkspaceSessions(workspace, { signal });
       return Array.isArray(listed?.sessions) ? listed.sessions : [];
     };
     if (numeric !== null) {
@@ -2033,111 +2507,216 @@ export class FeishuHarnessBridge {
       if (!session?.sessionId) {
         return { error: t('当前工作区只有 {count} 个会话。', { count: sessions.length }) };
       }
-      return { sessionId: session.sessionId, title: session.title ?? t('暂无标题') };
+      return {
+        sessionId: session.sessionId,
+        title: session.title ?? t('暂无标题'),
+        workspace: currentPath,
+        ...(validLastSeq(session.lastSeq) ? { lastSeq: session.lastSeq } : {}),
+      };
     }
-    const extraPaths = typeof this.#harness?.listWorkspaces === 'function'
-      ? (await this.#harness.listWorkspaces()).filter((path) => path !== currentPath)
-      : [];
-    const paths = [currentPath, ...extraPaths].filter(Boolean);
+    let paths;
+    if (nonEmptyString(workspaceHint)) {
+      paths = [workspaceHint];
+    } else {
+      const extraPaths = typeof this.#harness?.listWorkspaces === 'function'
+        ? (await this.#harness.listWorkspaces({ signal })).filter((path) => path !== currentPath)
+        : [];
+      paths = [currentPath, ...extraPaths].filter(Boolean);
+    }
     for (const workspace of paths) {
       const sessions = await listSessions(workspace);
       const session = sessions.find((candidate) => candidate.sessionId === target);
-      if (session) return { sessionId: target, title: session.title ?? t('暂无标题') };
+      if (session) {
+        return {
+          sessionId: target,
+          title: session.title ?? t('暂无标题'),
+          workspace,
+          ...(validLastSeq(session.lastSeq) ? { lastSeq: session.lastSeq } : {}),
+        };
+      }
     }
     return { error: t('没有找到这个会话，请用 /sessionlist 查看可用会话。') };
   }
 
-  async #latestSessionSeq(sessionId) {
-    if (typeof this.#harness?.rpc !== 'function') return null;
-    const history = await this.#harness.rpc(
-      'session.history',
-      { sessionId, maxMessages: 20 },
-      30_000,
-      { signal: this.#signal },
+  async #freshWatchTargets(workspace) {
+    const selectedWorkspace = nonEmptyString(workspace)
+      ?? (typeof this.#harness?.currentWorkspace === 'function'
+        ? nonEmptyString(this.#harness.currentWorkspace())
+        : null);
+    if (!selectedWorkspace || typeof this.#harness?.listWorkspaceSessions !== 'function') {
+      return new Map();
+    }
+    const listed = await this.#harness.listWorkspaceSessions(
+      selectedWorkspace,
+      { signal: this.#cardDataSignal() },
     );
-    return orderedHistoryEvents(history).at(-1)?.seq ?? -1;
+    return new Map(this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : [])
+      .filter((session) => nonEmptyString(session?.sessionId))
+      .map((session) => [session.sessionId, {
+        sessionId: session.sessionId,
+        title: session.title ?? session.name ?? t('暂无标题'),
+        workspace: selectedWorkspace,
+        ...(validLastSeq(session.lastSeq) ? { lastSeq: session.lastSeq } : {}),
+      }]));
   }
 
-  async #runWatch(key, chatId, target) {
+  #scheduleCompensation(sessionId) {
+    const pending = this.#pendingCompensations.get(sessionId);
+    if (pending) {
+      pending.requested = true;
+      return pending.promise;
+    }
+    const state = { requested: true, promise: null };
+    this.#pendingCompensations.set(sessionId, state);
+    state.promise = Promise.resolve().then(async () => {
+      try {
+        // A watch can be persisted after an in-progress compensation already
+        // snapshotted its keys. Remember that request and run one trailing pass.
+        do {
+          state.requested = false;
+          await this.#queueEventTask(sessionId, () => this.#compensateSession(sessionId));
+        } while (state.requested && !this.#signal?.aborted);
+      } finally {
+        if (this.#pendingCompensations.get(sessionId) === state) {
+          this.#pendingCompensations.delete(sessionId);
+        }
+      }
+    });
+    return state.promise;
+  }
+
+  async #runWatch(key, chatId, target, {
+    notify = true,
+    validatedTarget = null,
+    workspaceHint = null,
+  } = {}) {
+    const watchRequestedAt = Date.now();
+    const reply = async (message) => {
+      if (!notify) return;
+      await this.#send(chatId, message).catch((error) => {
+        this.#logger.warn?.('[dsh-feishu] watch notification failed:', error.message);
+      });
+    };
     this.#ensureEventWatcher();
     if (typeof this.#state?.setWatch !== 'function') {
-      await this.#send(chatId, t('当前状态存储不支持关注。'));
-      return;
+      await reply(t('当前状态存储不支持关注。'));
+      return { ok: false, changed: false, reason: 'unsupported' };
     }
     let resolved;
     try {
-      resolved = await this.#resolveWatchTarget(target);
+      resolved = validatedTarget?.sessionId === target
+        ? validatedTarget
+        : await this.#resolveWatchTarget(target, {
+          workspaceHint,
+          signal: workspaceHint ? this.#cardDataSignal() : this.#signal,
+        });
     } catch (error) {
-      await this.#send(chatId, t('无法解析会话：{message}', { message: safeErrorText(error) }));
-      return;
+      await reply(t('无法解析会话：{message}', { message: safeErrorText(error) }));
+      return { ok: false, changed: false, reason: 'resolve' };
     }
     if (resolved.error) {
-      await this.#send(chatId, resolved.error);
-      return;
+      await reply(resolved.error);
+      return { ok: false, changed: false, reason: 'not-found' };
     }
     const existing = this.#state.watchEntries?.(key) ?? [];
     const existingEntry = existing.find((entry) => entry.sessionId === resolved.sessionId);
     if (!existingEntry && existing.length >= MAX_WATCHES_PER_KEY) {
-      await this.#send(chatId, t('每个聊天最多关注 {count} 个会话。', { count: MAX_WATCHES_PER_KEY }));
-      return;
+      await reply(t('每个聊天最多关注 {count} 个会话。', { count: MAX_WATCHES_PER_KEY }));
+      return { ok: false, changed: false, reason: 'limit' };
     }
+    const lastSeq = validLastSeq(existingEntry?.lastSeq)
+      ? existingEntry.lastSeq
+      : validLastSeq(resolved.lastSeq)
+        ? resolved.lastSeq
+        : null;
+    // session.list's projection asOfSeq can be stale for a cold session. Every
+    // new watch therefore keeps a durable wall-clock boundary; lastSeq is only
+    // a lower bound for the history scan. Existing settled and legacy entries
+    // keep their prior semantics when /watch is repeated.
+    const existingBoundary = watchBoundary(existingEntry);
+    const watchStartedAt = existingBoundary ?? (existingEntry ? null : watchRequestedAt);
     try {
-      const lastSeq = typeof existingEntry?.lastSeq === 'number'
-        ? existingEntry.lastSeq
-        : await this.#latestSessionSeq(resolved.sessionId);
       await this.#state.setWatch(key, {
         sessionId: resolved.sessionId,
         title: resolved.title,
         chatId,
         lastSeq,
+        ...(watchStartedAt !== null ? { watchStartedAt } : {}),
       });
-      await this.#send(chatId, t('已关注会话「{title}」，任务完成会推送结果。', { title: String(resolved.title).replace(/\s+/gu, ' ') }));
-      await this.#queueEventTask(() => this.#compensateSession(resolved.sessionId));
     } catch (error) {
-      await this.#send(chatId, t('关注失败：{message}', { message: safeErrorText(error) }));
+      await reply(t('关注失败：{message}', { message: safeErrorText(error) }));
+      return { ok: false, changed: false, reason: 'persist' };
     }
+    // Always compensate a newly created or still-unsettled watch. This closes
+    // both target-list and durable-persistence windows.
+    if (!existingEntry || watchStartedAt !== null || !validLastSeq(lastSeq)) {
+      void this.#scheduleCompensation(resolved.sessionId);
+    }
+    await reply(t('已关注会话「{title}」，任务完成会推送结果。', { title: String(resolved.title).replace(/\s+/gu, ' ') }));
+    return { ok: true, changed: !existingEntry, entry: this.#state.watchEntry?.(key, resolved.sessionId) };
   }
 
-  async #runUnwatch(key, chatId, target) {
-    if (typeof this.#state?.removeWatch !== 'function') return;
+  async #runUnwatch(key, chatId, target, { notify = true } = {}) {
+    const reply = async (message) => {
+      if (!notify) return;
+      await this.#send(chatId, message).catch((error) => {
+        this.#logger.warn?.('[dsh-feishu] unwatch notification failed:', error.message);
+      });
+    };
+    if (typeof this.#state?.removeWatch !== 'function') {
+      return { ok: false, changed: false, reason: 'unsupported' };
+    }
     const entries = this.#state.watchEntries?.(key) ?? [];
     const entry = typeof target === 'string' && /^\d{1,4}$/.test(target)
       ? entries[Number(target) - 1]
       : entries.find((candidate) => candidate.sessionId === target);
     if (!entry) {
-      await this.#send(chatId, t('关注列表里没有这个会话，回复 /watchlist 查看。'));
-      return;
+      await reply(t('关注列表里没有这个会话，回复 /watchlist 查看。'));
+      return { ok: true, changed: false, reason: 'absent' };
     }
     try {
       await this.#state.removeWatch(key, entry.sessionId);
       this.#failedWatchSeqs.delete(`${key}\0${entry.sessionId}`);
-      await this.#send(chatId, t('已取消关注「{title}」。', { title: String(entry.title ?? '').replace(/\s+/gu, ' ') }));
     } catch (error) {
-      await this.#send(chatId, t('取消失败：{message}', { message: safeErrorText(error) }));
+      await reply(t('取消失败：{message}', { message: safeErrorText(error) }));
+      return { ok: false, changed: false, reason: 'persist' };
     }
+    await reply(t('已取消关注「{title}」。', { title: String(entry.title ?? '').replace(/\s+/gu, ' ') }));
+    return { ok: true, changed: true, entry };
   }
 
   async #showWatchList(key, chatId, { updateMessageId = null } = {}) {
     const entries = this.#state.watchEntries?.(key) ?? [];
     // 收集可选会话（用于「添加关注」多选下拉）；失败则传空数组 → 只渲染移除/列表。
     let availableSessions = [];
+    let currentWorkspace = null;
     try {
-      const current = typeof this.#harness?.currentWorkspace === 'function'
+      currentWorkspace = typeof this.#harness?.currentWorkspace === 'function'
         ? this.#harness.currentWorkspace()
         : null;
-      if (current && typeof this.#harness?.listWorkspaceSessions === 'function') {
-        const listed = await this.#harness.listWorkspaceSessions(current);
+      if (currentWorkspace && typeof this.#harness?.listWorkspaceSessions === 'function') {
+        const listed = await this.#harness.listWorkspaceSessions(
+          currentWorkspace,
+          { signal: this.#cardDataSignal() },
+        );
         availableSessions = this.#visibleSessions(
           Array.isArray(listed?.sessions) ? listed.sessions : [],
         )
-          .map((s) => ({ sessionId: s.sessionId, title: s.title ?? s.name ?? s.sessionId }));
+          .map((session) => ({
+            sessionId: session.sessionId,
+            title: session.title ?? session.name ?? session.sessionId,
+          }));
       }
     } catch { /* add-select section degrades to remove-only */ }
     this.#rememberMenu(key, { kind: 'watches', entries });
     await this.#sendCard(
       chatId,
       watchListCard(entries, availableSessions),
-      { key, updateMessageId },
+      {
+        key,
+        updateMessageId,
+        sessionWorkspace: currentWorkspace,
+      },
     );
   }
 
@@ -2148,32 +2727,41 @@ export class FeishuHarnessBridge {
       || !event
       || typeof event !== 'object'
       || event.type !== 'turn/end'
-      || !Number.isFinite(event.seq)) return;
-    void this.#queueEventTask(async () => {
-      const hasFailedDelivery = (this.#state.keysWatching?.(sessionId) ?? [])
+      || !validEventSeq(event.seq)) return;
+    // Record before consulting state: /watch may still be resolving its target
+    // or waiting for setWatch persistence and therefore have no visible entry.
+    this.#recordObservedCompletion(sessionId, event);
+    void this.#queueEventTask(sessionId, async () => {
+      const keys = this.#state.keysWatching?.(sessionId) ?? [];
+      const needsBaseline = keys.some((key) => (
+        watchNeedsBaseline(this.#state.watchEntry?.(key, sessionId))
+      ));
+      const hasFailedDelivery = keys
         .some((key) => this.#failedWatchSeqs.has(`${key}\0${sessionId}`));
-      if (hasFailedDelivery) await this.#compensateSession(sessionId);
+      if (needsBaseline || hasFailedDelivery) await this.#compensateSession(sessionId);
       await this.#deliverCompletion(sessionId, event);
     });
   }
 
-  async #deliverCompletion(sessionId, event) {
+  async #deliverCompletion(sessionId, event, { keys: targetKeys = null } = {}) {
     if (this.#signal?.aborted || typeof this.#state?.keysWatching !== 'function') return;
     const reason = event?.data?.reason?.kind ?? event?.data?.reason ?? null;
-    for (const key of this.#state.keysWatching(sessionId)) {
+    const keys = targetKeys ?? this.#state.keysWatching(sessionId);
+    for (const key of keys) {
       if (this.#signal?.aborted) return;
       const entry = this.#state.watchEntry?.(key, sessionId);
       const deliveryKey = `${key}\0${sessionId}`;
       let failedSeq = this.#failedWatchSeqs.get(deliveryKey);
-      if (typeof failedSeq === 'number'
-        && typeof entry?.lastSeq === 'number'
+      if (validEventSeq(failedSeq)
+        && validLastSeq(entry?.lastSeq)
         && entry.lastSeq >= failedSeq) {
         this.#failedWatchSeqs.delete(deliveryKey);
         failedSeq = undefined;
       }
       if (!entry?.chatId
-        || (typeof entry.lastSeq === 'number' && entry.lastSeq >= event.seq)
-        || (typeof failedSeq === 'number' && event.seq > failedSeq)) continue;
+        || watchNeedsBaseline(entry)
+        || (validLastSeq(entry.lastSeq) && entry.lastSeq >= event.seq)
+        || (validEventSeq(failedSeq) && event.seq > failedSeq)) continue;
       try {
         await this.#sendCard(
           entry.chatId,
@@ -2183,13 +2771,14 @@ export class FeishuHarnessBridge {
         const current = this.#state.watchEntry?.(key, sessionId);
         if (!current
           || current.chatId !== entry.chatId
-          || (typeof current.lastSeq === 'number' && current.lastSeq >= event.seq)) continue;
+          || watchNeedsBaseline(current)
+          || (validLastSeq(current.lastSeq) && current.lastSeq >= event.seq)) continue;
         await this.#state.setWatch(key, { ...current, lastSeq: event.seq });
         if (failedSeq === event.seq) this.#failedWatchSeqs.delete(deliveryKey);
       } catch (error) {
         this.#failedWatchSeqs.set(
           deliveryKey,
-          typeof failedSeq === 'number' ? Math.min(failedSeq, event.seq) : event.seq,
+          validEventSeq(failedSeq) ? Math.min(failedSeq, event.seq) : event.seq,
         );
         this.#logger.warn?.('[dsh-feishu] completion push failed:', error.message);
       }
@@ -2205,23 +2794,55 @@ export class FeishuHarnessBridge {
         30_000,
         { signal: this.#signal },
       );
-      const events = orderedHistoryEvents(history);
+      const historicalEvents = orderedHistoryEvents(history);
+      this.#pruneObservedCompletionEvents();
+      const observed = this.#observedCompletionEvents.get(sessionId) ?? new Map();
+      const eventsBySeq = new Map(historicalEvents.map((event) => [event.seq, event]));
+      // The event mux can be ahead of the history projection. Retain a bounded,
+      // minimal completion payload so a pre-persistence live frame is not lost.
+      for (const [seq, record] of observed) {
+        if (!eventsBySeq.has(seq)) eventsBySeq.set(seq, record.event);
+      }
+      const events = [...eventsBySeq.values()].sort((left, right) => left.seq - right.seq);
       const latestSeq = events.at(-1)?.seq ?? -1;
       const keys = typeof this.#state?.keysWatching === 'function'
         ? this.#state.keysWatching(sessionId)
         : [];
 
-      // Watches created by older versions have no baseline. Establish one
-      // without replaying completions that predate the watch.
+      // Establish independent baselines for every chat watching this Session.
+      // New watches carry a durable wall-clock boundary; old persisted null
+      // watches retain the legacy "baseline latest without replay" behavior.
       for (const key of keys) {
         const entry = this.#state.watchEntry?.(key, sessionId);
-        if (entry && typeof entry.lastSeq !== 'number') {
-          await this.#state.setWatch(key, { ...entry, lastSeq: latestSeq });
-        }
+        if (!watchNeedsBaseline(entry)) continue;
+        const watchStartedAt = watchBoundary(entry);
+        const lowerBound = validLastSeq(entry.lastSeq) ? entry.lastSeq : -1;
+        const firstKnownNew = watchStartedAt === null
+          ? null
+          : events.find((event) => {
+            if (event.seq <= lowerBound) return false;
+            const eventTime = Number.isSafeInteger(event.time) && event.time >= 0
+              ? event.time
+              : observed.get(event.seq)?.arrivalAt;
+            return Number.isSafeInteger(eventTime) && eventTime >= watchStartedAt;
+          });
+        // Unknown events before the first event proven post-boundary are
+        // conservatively part of the baseline. Sequence order proves all later
+        // events are post-boundary. With no proof, replay nothing.
+        const baselineSeq = firstKnownNew
+          ? Math.max(lowerBound, firstKnownNew.seq - 1)
+          : Math.max(lowerBound, latestSeq);
+        const current = this.#state.watchEntry?.(key, sessionId);
+        if (!current
+          || current.chatId !== entry.chatId
+          || current.lastSeq !== entry.lastSeq
+          || watchBoundary(current) !== watchStartedAt) continue;
+        const { watchStartedAt: _watchStartedAt, ...settled } = current;
+        await this.#state.setWatch(key, { ...settled, lastSeq: baselineSeq });
       }
 
       for (const event of events) {
-        if (event.type === 'turn/end') await this.#deliverCompletion(sessionId, event);
+        if (event.type === 'turn/end') await this.#deliverCompletion(sessionId, event, { keys });
       }
     } catch (error) {
       if (!this.#signal?.aborted) {
@@ -2235,10 +2856,8 @@ export class FeishuHarnessBridge {
     const sessionIds = typeof this.#state?.watchedSessionIds === 'function'
       ? this.#state.watchedSessionIds()
       : [];
-    for (const sessionId of sessionIds) {
-      if (this.#signal?.aborted) return;
-      await this.#compensateSession(sessionId);
-    }
+    if (this.#signal?.aborted) return;
+    await Promise.allSettled(sessionIds.map((sessionId) => this.#scheduleCompensation(sessionId)));
   }
 
   #interactionAskOptions(event, key, files) {

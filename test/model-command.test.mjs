@@ -43,11 +43,14 @@ function fixture({
   running = false,
   activeTurn = false,
   selectionError = null,
+  selectionResult,
+  selectionReadback,
   selectModelHook,
   setSessionResult,
 } = {}) {
   const calls = [];
   let boundId = initialSessionId;
+  const selectedModels = new Map();
   const session = (sessionId) => ({
     async sessionExists(options) {
       calls.push(['sessionExists', sessionId, options]);
@@ -56,7 +59,8 @@ function fixture({
     async models(options) {
       calls.push(['models', sessionId, options]);
       if (sessionCatalog instanceof Error) throw sessionCatalog;
-      return sessionCatalog;
+      const current = selectedModels.get(sessionId) ?? sessionCatalog.current;
+      return { ...sessionCatalog, current };
     },
     async isRunning(options) {
       calls.push(['isRunning', sessionId, options]);
@@ -70,7 +74,9 @@ function fixture({
       calls.push(['selectModel', sessionId, selection, options]);
       if (selectModelHook) await selectModelHook({ sessionId, selection, options });
       if (selectionError) throw selectionError;
-      return { selected: selection };
+      const selected = selectionResult ?? selection;
+      selectedModels.set(sessionId, selectionReadback ?? selection);
+      return { selected };
     },
   });
   const state = {
@@ -282,6 +288,8 @@ test('/model creates and selects a blank Session before exposing its binding', a
   const operations = calls.map(([name]) => name);
   assert.ok(operations.indexOf('listModels') < operations.indexOf('createSession'));
   assert.ok(operations.indexOf('createSession') < operations.indexOf('selectModel'));
+  assert.ok(operations.lastIndexOf('models') > operations.indexOf('selectModel'));
+  assert.ok(operations.lastIndexOf('models') < operations.indexOf('setSession'));
   assert.ok(operations.indexOf('selectModel') < operations.indexOf('setSession'));
   assert.deepEqual(calls.find(([name]) => name === 'selectModel'), [
     'selectModel',
@@ -289,6 +297,45 @@ test('/model creates and selects a blank Session before exposing its binding', a
     { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
     { signal },
   ]);
+});
+
+test('a mismatched selectModel result is reported as a failed switch', async () => {
+  const { calls, harness, state } = fixture({
+    initialSessionId: 'session-one',
+    selectionResult: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+  });
+
+  const result = await runModelCommand(
+    '/model deepseek-official/deepseek-v4-pro',
+    harness,
+    state,
+    'direct:one',
+  );
+
+  assert.match(result.message, /模型切换失败/);
+  assert.match(result.message, /requested: deepseek-official\/deepseek-v4-pro/);
+  assert.match(result.message, /selectModel\.selected: deepseek-official\/deepseek-v4-flash/);
+  assert.equal(calls.filter(([name]) => name === 'models').length, 1);
+});
+
+test('an authoritative current-model mismatch is reported and leaves a new Session unbound', async () => {
+  const { calls, harness, state, boundId } = fixture({
+    selectionReadback: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+  });
+
+  const result = await runModelCommand(
+    '/model deepseek-official/deepseek-v4-pro',
+    harness,
+    state,
+    'direct:one',
+  );
+
+  assert.match(result.message, /模型切换失败/);
+  assert.match(result.message, /requested: deepseek-official\/deepseek-v4-pro/);
+  assert.match(result.message, /当前模型： deepseek-official\/deepseek-v4-flash/);
+  assert.equal(boundId(), null);
+  assert.equal(calls.filter(([name]) => name === 'models').length, 1);
+  assert.equal(calls.some(([name]) => name === 'setSession'), false);
 });
 
 test('a failed first model selection leaves the conversation unbound', async () => {
@@ -365,6 +412,34 @@ test('a concurrent external binding is preserved after selecting an unbound Sess
   assert.equal(fixtureValue.calls.some((call) => (
     call[0] === 'setSession' && call[2] === 'session-created'
   )), false);
+});
+
+test('a concurrent external rebind is preserved after selecting a bound Session', async () => {
+  const selectionStarted = deferred();
+  const releaseSelection = deferred();
+  const fixtureValue = fixture({
+    initialSessionId: 'session-one',
+    selectModelHook: async ({ sessionId }) => {
+      if (sessionId !== 'session-one') return;
+      selectionStarted.resolve();
+      await releaseSelection.promise;
+    },
+  });
+
+  const switching = runModelCommand(
+    '/model deepseek-official/deepseek-v4-pro',
+    fixtureValue.harness,
+    fixtureValue.state,
+    'direct:one',
+  );
+  await selectionStarted.promise;
+  await fixtureValue.state.setSession('direct:one', 'session-two');
+  releaseSelection.resolve();
+
+  const result = await switching;
+  assert.match(result.message, /会话已发生变化.*重试/);
+  assert.equal(fixtureValue.boundId(), 'session-two');
+  assert.doesNotMatch(result.message, /模型已切换为/);
 });
 
 test('/model refuses pending interactions and active or running Sessions', async () => {

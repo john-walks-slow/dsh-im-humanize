@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 import { build } from 'esbuild';
 
+import { larkSdkHandshakePatch } from './lark-sdk-handshake-patch.mjs';
+
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(sourceDirectory, '../..');
 const outputPath = resolve(packageRoot, 'lib/index.js');
@@ -25,6 +27,7 @@ await build({
   target: ['node22'],
   mainFields: ['module', 'main'],
   external,
+  plugins: [larkSdkHandshakePatch],
   outfile: outputPath,
   banner: {
     js: [

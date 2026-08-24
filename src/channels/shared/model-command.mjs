@@ -8,6 +8,7 @@ const MODELS_COMMAND = /^\/models(?=$|\s)/i;
 const MODEL_USAGE = '用法：/model <序号> 或 /model <provider>/<model>';
 const MODELS_USAGE = '用法：/models（不带参数）';
 const SESSION_BINDING_CHANGED = 'session-binding-changed';
+const MODEL_SELECTION_MISMATCH = 'model-selection-mismatch';
 const UNSAFE_DISPLAY_TEXT_GLOBAL = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu;
 
 function commandResult(message) {
@@ -76,6 +77,32 @@ function normalizeCatalog(value, { requireCurrent = false } = {}) {
 
 function modelId(provider, model) {
   return `${provider}/${model}`;
+}
+
+function sameModel(left, right) {
+  return left?.provider === right?.provider && left?.model === right?.model;
+}
+
+function selectionMismatch(expected, actual, source) {
+  const error = new Error(`Harness ${source} did not confirm the selected model`);
+  error.code = MODEL_SELECTION_MISMATCH;
+  error.expected = expected;
+  error.actual = actual;
+  error.source = source;
+  return error;
+}
+
+function sessionBindingChanged() {
+  const error = new Error('Conversation binding changed during model selection');
+  error.code = SESSION_BINDING_CHANGED;
+  return error;
+}
+
+function assertSessionBinding(state, key, expectedSessionId) {
+  const currentSessionId = typeof state?.sessionFor === 'function'
+    ? state.sessionFor(key)
+    : null;
+  if (currentSessionId !== expectedSessionId) throw sessionBindingChanged();
 }
 
 function matchingModel(catalog, requested) {
@@ -181,6 +208,23 @@ function modelErrorMessage(error, action) {
   if (code === SESSION_BINDING_CHANGED) {
     return t('当前聊天绑定的会话已发生变化，请重试。');
   }
+  if (code === MODEL_SELECTION_MISMATCH) {
+    const expected = error?.expected;
+    const actual = error?.actual;
+    const lines = [t('模型切换失败，请稍后重试。')];
+    if (expected?.provider && expected?.model) {
+      lines.push('', `requested: ${safeDisplayText(modelId(expected.provider, expected.model))}`);
+    }
+    if (actual?.provider && actual?.model) {
+      const label = error?.source === 'models.current'
+        ? t('当前模型：')
+        : 'selectModel.selected:';
+      lines.push(`${label} ${safeDisplayText(modelId(actual.provider, actual.model))}`);
+    } else {
+      lines.push(`${error?.source ?? 'Harness'}: unconfirmed`);
+    }
+    return lines.join('\n');
+  }
   if (code === 'cancelled' || error?.name === 'AbortError') {
     return action === 'list' ? t('获取模型列表已取消。') : t('模型切换已取消。');
   }
@@ -228,6 +272,21 @@ async function sessionCatalog(session, options) {
     throw new TypeError('Harness session does not support listing models');
   }
   return normalizeCatalog(await session.models(options), { requireCurrent: true });
+}
+
+async function selectAndVerifyModel(session, selection, options) {
+  if (typeof session?.selectModel !== 'function') {
+    throw new TypeError('Harness session does not support model selection');
+  }
+  const selected = (await session.selectModel(selection, options))?.selected;
+  if (!sameModel(selected, selection)) {
+    throw selectionMismatch(selection, selected, 'selectModel.selected');
+  }
+  const current = (await sessionCatalog(session, options)).current;
+  if (!sameModel(current, selection)) {
+    throw selectionMismatch(selection, current, 'models.current');
+  }
+  return current;
 }
 
 function isModelsCommand(command) {
@@ -312,11 +371,10 @@ export async function runModelCommand(text, harness, state, key, options = {}) {
         ].join('\n'));
       }
 
+      let applied;
       if (bound) {
-        if (typeof bound.session.selectModel !== 'function') {
-          throw new TypeError('Harness session does not support model selection');
-        }
-        await bound.session.selectModel(selection, requestOptions);
+        applied = await selectAndVerifyModel(bound.session, selection, requestOptions);
+        assertSessionBinding(state, key, bound.sessionId);
       } else {
         if (typeof harness?.createSession !== 'function'
           || typeof harness?.workspaceSession !== 'function'
@@ -329,15 +387,10 @@ export async function runModelCommand(text, harness, state, key, options = {}) {
           throw new TypeError('Harness returned an invalid session id');
         }
         const session = harness.workspaceSession(sessionId);
-        if (!session || typeof session.selectModel !== 'function') {
-          throw new TypeError('Harness session does not support model selection');
-        }
-        await session.selectModel(selection, requestOptions);
+        applied = await selectAndVerifyModel(session, selection, requestOptions);
         const currentSessionId = state.sessionFor(key);
         if (typeof currentSessionId === 'string' && currentSessionId) {
-          const changed = new Error('Conversation binding changed during model selection');
-          changed.code = SESSION_BINDING_CHANGED;
-          throw changed;
+          throw sessionBindingChanged();
         }
         if (await state.setSession(key, sessionId) === false) {
           const stale = new Error('Workspace changed while binding the new session');
@@ -348,7 +401,7 @@ export async function runModelCommand(text, harness, state, key, options = {}) {
       return commandResult(t(`模型已切换为：
 {model}
 
-后续消息将使用该模型。`, { model: modelId(selection.provider, selection.model) }));
+后续消息将使用该模型。`, { model: modelId(applied.provider, applied.model) }));
     });
   } catch (error) {
     return commandResult(modelErrorMessage(error, 'select'));

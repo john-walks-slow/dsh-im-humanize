@@ -49,6 +49,25 @@ class FakeWSClient {
     this.options.onReady();
   }
 
+  fail(error = new Error('synthetic WebSocket failure')) {
+    this.state = 'failed';
+    this.options.onError(error);
+  }
+
+  beginReconnecting() {
+    this.state = 'reconnecting';
+    this.options.onReconnecting();
+  }
+
+  becomeReconnected() {
+    this.state = 'connected';
+    this.options.onReconnected();
+  }
+
+  becomeIdle() {
+    this.state = 'idle';
+  }
+
   getConnectionStatus() {
     return { state: this.state };
   }
@@ -81,6 +100,16 @@ function fakeLark() {
   };
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 test('FeishuRuntime becomes chat-ready only after Harness and Feishu are connected', async () => {
   let harnessChecks = 0;
   let harnessSignal;
@@ -98,6 +127,7 @@ test('FeishuRuntime becomes chat-ready only after Harness and Feishu are connect
       },
     },
     state: { hasSeen: () => false },
+    connectTimeoutMs: 1_234,
   });
 
   assert.equal(runtime.status.ready, false);
@@ -110,6 +140,7 @@ test('FeishuRuntime becomes chat-ready only after Harness and Feishu are connect
   assert.equal(settled, false);
   assert.equal(runtime.status.feishuLongConnectionState, 'connecting');
   assert.equal(FakeWSClient.instances[0].options.agent, wsAgent);
+  assert.equal(FakeWSClient.instances[0].options.handshakeTimeoutMs, 1_234);
   assert.equal('agent' in FakeClient.instances[0].options, false);
   FakeWSClient.instances[0].becomeReady();
   const status = await starting;
@@ -121,6 +152,19 @@ test('FeishuRuntime becomes chat-ready only after Harness and Feishu are connect
   assert.equal((await FakeClient.instances[0].options.httpInstance.request({
     url: 'https://open.feishu.cn/test',
   })).timeout, 15_000);
+
+  const firstDispatcher = FakeWSClient.instances[0].dispatcher;
+  FakeWSClient.instances[0].beginReconnecting();
+  const reconnecting = await runtime.start();
+  assert.equal(reconnecting.ready, false);
+  assert.equal(reconnecting.feishuLongConnectionState, 'reconnecting');
+  assert.equal(harnessChecks, 1);
+  assert.equal(FakeWSClient.instances.length, 1);
+  assert.equal(FakeClient.instances.length, 1);
+  assert.equal(FakeWSClient.instances[0].dispatcher, firstDispatcher);
+  FakeWSClient.instances[0].becomeReconnected();
+  assert.equal(runtime.status.ready, true);
+  assert.equal(runtime.status.feishuLongConnectionState, 'connected');
 
   assert.deepEqual(await runtime.sendConnectionTest('连接测试'), { sent: true });
   assert.deepEqual(FakeClient.sent, [{
@@ -137,6 +181,16 @@ test('FeishuRuntime becomes chat-ready only after Harness and Feishu are connect
   assert.equal(stopped.feishuLongConnectionState, 'idle');
   assert.equal(FakeWSClient.instances[0].state, 'closed');
   assert.equal(harnessSignal.aborted, true);
+
+  const stoppedStatus = runtime.status;
+  FakeWSClient.instances[0].becomeReady();
+  assert.deepEqual(runtime.status, stoppedStatus);
+  FakeWSClient.instances[0].fail(new Error('late failure after stop'));
+  assert.deepEqual(runtime.status, stoppedStatus);
+  FakeWSClient.instances[0].beginReconnecting();
+  assert.deepEqual(runtime.status, stoppedStatus);
+  FakeWSClient.instances[0].becomeReconnected();
+  assert.deepEqual(runtime.status, stoppedStatus);
 });
 
 test('FeishuRuntime uses a remembered private target for wildcard-only manual bots', async () => {
@@ -173,6 +227,50 @@ test('FeishuRuntime uses a remembered private target for wildcard-only manual bo
   await runtime.stop();
 });
 
+test('FeishuRuntime stop waits for a pending Harness check and prevents startup resurrection', async () => {
+  const harnessReady = deferred();
+  let harnessSignal;
+  const runtime = new FeishuRuntime({
+    lark: fakeLark(),
+    appId: 'cli_delayed_harness',
+    appSecret: 'secret',
+    ownerOpenId: 'ou_owner',
+    harness: {
+      async ensureRunning({ signal }) {
+        harnessSignal = signal;
+        await harnessReady.promise;
+      },
+    },
+    state: { hasSeen: () => false },
+  });
+
+  const starting = runtime.start();
+  const startRejected = assert.rejects(starting, (error) => error?.name === 'AbortError');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harnessSignal.aborted, false);
+
+  let stopSettled = false;
+  const stopping = runtime.stop().then((status) => {
+    stopSettled = true;
+    return status;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harnessSignal.aborted, true);
+  assert.equal(stopSettled, false);
+  assert.equal(FakeClient.instances.length, 0);
+  assert.equal(FakeWSClient.instances.length, 0);
+
+  harnessReady.resolve();
+  await startRejected;
+  const stopped = await stopping;
+  assert.equal(stopped.ready, false);
+  assert.equal(stopped.feishuLongConnectionState, 'idle');
+  assert.equal(FakeClient.instances.length, 0);
+  assert.equal(FakeWSClient.instances.length, 0);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(runtime.status, stopped);
+});
+
 test('FeishuRuntime fails closed when the initial WebSocket handshake times out', async () => {
   const runtime = new FeishuRuntime({
     lark: fakeLark(),
@@ -188,6 +286,17 @@ test('FeishuRuntime fails closed when the initial WebSocket handshake times out'
   assert.equal(runtime.status.ready, false);
   assert.equal(runtime.status.feishuLongConnectionState, 'failed');
   assert.equal(FakeWSClient.instances[0].state, 'closed');
+  assert.equal(FakeWSClient.instances[0].options.handshakeTimeoutMs, 10);
+
+  const failedStatus = runtime.status;
+  FakeWSClient.instances[0].becomeReady();
+  assert.deepEqual(runtime.status, failedStatus);
+  FakeWSClient.instances[0].fail(new Error('late failure after timeout'));
+  assert.deepEqual(runtime.status, failedStatus);
+  FakeWSClient.instances[0].beginReconnecting();
+  assert.deepEqual(runtime.status, failedStatus);
+  FakeWSClient.instances[0].becomeReconnected();
+  assert.deepEqual(runtime.status, failedStatus);
 });
 
 test('FeishuRuntime fails closed when Harness is unavailable', async () => {
@@ -226,6 +335,41 @@ async function startRuntimeForProbe(options = {}) {
   return runtime;
 }
 
+test('FeishuRuntime drains failed and idle WS resources before creating a replacement', async () => {
+  const runtime = await startRuntimeForProbe({
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  const firstWsClient = FakeWSClient.instances[0];
+  firstWsClient.fail(new Error('terminal connection failure'));
+  assert.equal(runtime.status.feishuLongConnectionState, 'failed');
+
+  const restartingFromFailure = runtime.start();
+  for (let attempt = 0; attempt < 20 && FakeWSClient.instances.length < 2; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(firstWsClient.state, 'closed');
+  assert.equal(FakeWSClient.instances.length, 2);
+  assert.equal(FakeClient.instances.length, 2);
+  const secondWsClient = FakeWSClient.instances[1];
+  secondWsClient.becomeReady();
+  assert.equal((await restartingFromFailure).ready, true);
+
+  // The SDK snapshot is authoritative even if a transition callback was
+  // missed and Runtime status still says connected.
+  secondWsClient.becomeIdle();
+  assert.equal(runtime.status.ready, true);
+  const restartingFromIdle = runtime.start();
+  for (let attempt = 0; attempt < 20 && FakeWSClient.instances.length < 3; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(secondWsClient.state, 'closed');
+  assert.equal(FakeWSClient.instances.length, 3);
+  assert.equal(FakeClient.instances.length, 3);
+  FakeWSClient.instances[2].becomeReady();
+  assert.equal((await restartingFromIdle).ready, true);
+  await runtime.stop();
+});
+
 function probeAction({ messageId = 'message-1', nonce, operatorOpenId = 'ou_owner' } = {}) {
   return {
     operator: { open_id: operatorOpenId },
@@ -233,6 +377,192 @@ function probeAction({ messageId = 'message-1', nonce, operatorOpenId = 'ou_owne
     context: { open_message_id: messageId },
   };
 }
+
+test('FeishuRuntime dispatcher ACKs immediately while card work is still pending', async () => {
+  const seen = new Set();
+  const runtime = await startRuntimeForProbe({
+    logger: { info() {}, warn() {}, error() {} },
+    harness: {
+      async ensureRunning() {},
+      async listWorkspaces() { return []; },
+    },
+    state: {
+      hasSeen: (messageId) => seen.has(messageId),
+      async markSeen(messageId) { seen.add(messageId); },
+      sessionFor: () => null,
+      includesArchivedSessions: () => false,
+    },
+  });
+  const handlers = FakeWSClient.instances[0].dispatcher.handlers;
+
+  assert.equal(handlers['im.message.reaction.created_v1']({}), undefined);
+  assert.equal(handlers['im.message.reaction.deleted_v1']({}), undefined);
+  assert.equal(handlers['im.message.receive_v1']({
+    sender: {
+      sender_type: 'user',
+      sender_id: { open_id: 'ou_owner' },
+    },
+    message: {
+      message_id: 'incoming-menu',
+      chat_type: 'p2p',
+      chat_id: 'oc_chat',
+      message_type: 'text',
+      content: JSON.stringify({ text: '/m' }),
+    },
+  }), undefined);
+
+  for (let attempt = 0; attempt < 20 && FakeClient.sent.length === 0; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(FakeClient.sent[0]?.data?.msg_type, 'interactive');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  let patchCalls = 0;
+  let resolvePatch;
+  const pendingPatch = new Promise((resolve) => { resolvePatch = resolve; });
+  FakeClient.instances[0].im.v1.message.patch = async () => {
+    patchCalls += 1;
+    return pendingPatch;
+  };
+
+  const result = handlers['card.action.trigger']({
+    operator: { open_id: 'ou_owner' },
+    action: { value: { action: 'help' } },
+    context: {
+      open_message_id: 'message-1',
+      open_chat_id: 'oc_chat',
+    },
+  });
+
+  assert.equal(result, undefined);
+  assert.equal(runtime.status.cardActionsReceived, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(patchCalls, 1);
+
+  resolvePatch({ code: 0, data: { message_id: 'message-1' } });
+  await pendingPatch;
+  await new Promise((resolve) => setImmediate(resolve));
+  await runtime.stop();
+});
+
+test('FeishuRuntime start waits for an idle-draining stop and preserves the new resources', async () => {
+  const seen = new Set();
+  const runtime = await startRuntimeForProbe({
+    logger: { info() {}, warn() {}, error() {} },
+    harness: {
+      async ensureRunning() {},
+      async listWorkspaces() { return []; },
+    },
+    state: {
+      hasSeen: (messageId) => seen.has(messageId),
+      async markSeen(messageId) { seen.add(messageId); },
+      sessionFor: () => null,
+      includesArchivedSessions: () => false,
+    },
+  });
+  const firstWsClient = FakeWSClient.instances[0];
+  const handlers = firstWsClient.dispatcher.handlers;
+  handlers['im.message.receive_v1']({
+    sender: {
+      sender_type: 'user',
+      sender_id: { open_id: 'ou_owner' },
+    },
+    message: {
+      message_id: 'restart-menu',
+      chat_type: 'p2p',
+      chat_id: 'oc_chat',
+      message_type: 'text',
+      content: JSON.stringify({ text: '/m' }),
+    },
+  });
+  for (let attempt = 0; attempt < 20 && FakeClient.sent.length === 0; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(FakeClient.sent[0]?.data?.msg_type, 'interactive');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const patchEntered = deferred();
+  const patchReleased = deferred();
+  FakeClient.instances[0].im.v1.message.patch = async () => {
+    patchEntered.resolve();
+    return patchReleased.promise;
+  };
+  handlers['card.action.trigger']({
+    operator: { open_id: 'ou_owner' },
+    action: { value: { action: 'help' } },
+    context: {
+      open_message_id: 'message-1',
+      open_chat_id: 'oc_chat',
+    },
+  });
+  await patchEntered.promise;
+
+  let stopSettled = false;
+  const stopping = runtime.stop().then((status) => {
+    stopSettled = true;
+    return status;
+  });
+  let restartSettled = false;
+  const restarting = runtime.start().then((status) => {
+    restartSettled = true;
+    return status;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(stopSettled, false);
+  assert.equal(restartSettled, false);
+  assert.equal(FakeWSClient.instances.length, 1);
+  assert.equal(FakeClient.instances.length, 1);
+  assert.equal(firstWsClient.state, 'closed');
+
+  patchReleased.resolve({ code: 0, data: { message_id: 'message-1' } });
+  const stopped = await stopping;
+  assert.equal(stopped.ready, false);
+  assert.equal(stopped.feishuLongConnectionState, 'idle');
+  for (let attempt = 0; attempt < 20 && FakeWSClient.instances.length < 2; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(FakeWSClient.instances.length, 2);
+  assert.equal(FakeClient.instances.length, 2);
+
+  const secondWsClient = FakeWSClient.instances[1];
+  secondWsClient.becomeReady();
+  const restarted = await restarting;
+  assert.equal(restarted.ready, true);
+  assert.equal(restarted.feishuLongConnectionState, 'connected');
+  assert.equal(secondWsClient.state, 'connected');
+
+  const sentBeforeLateDispatch = FakeClient.sent.length;
+  const cardActionsBeforeLateDispatch = runtime.status.cardActionsReceived;
+  handlers['im.message.receive_v1']({
+    sender: {
+      sender_type: 'user',
+      sender_id: { open_id: 'ou_owner' },
+    },
+    message: {
+      message_id: 'late-old-dispatcher-message',
+      chat_type: 'p2p',
+      chat_id: 'oc_chat',
+      message_type: 'text',
+      content: JSON.stringify({ text: '/m' }),
+    },
+  });
+  handlers['card.action.trigger']({
+    operator: { open_id: 'ou_owner' },
+    action: { value: { action: 'help' } },
+    context: {
+      open_message_id: 'message-1',
+      open_chat_id: 'oc_chat',
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(seen.has('late-old-dispatcher-message'), false);
+  assert.equal(runtime.status.cardActionsReceived, cardActionsBeforeLateDispatch);
+  assert.equal(FakeClient.sent.length, sentBeforeLateDispatch);
+
+  assert.deepEqual(await runtime.sendConnectionTest('重启后连接测试'), { sent: true });
+  await runtime.stop();
+});
 
 test('FeishuRuntime resolves a card-action probe only for the exact message, nonce and operator', async () => {
   const runtime = await startRuntimeForProbe();

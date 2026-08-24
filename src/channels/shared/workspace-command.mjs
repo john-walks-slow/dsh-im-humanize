@@ -92,8 +92,8 @@ async function selectedWorkspacePath(value) {
   }
 }
 
-export async function workspacePathSnapshot(harness) {
-  const listed = await harness.listWorkspaces();
+export async function workspacePathSnapshot(harness, options = {}) {
+  const listed = await harness.listWorkspaces(options);
   const currentValue = typeof harness?.currentWorkspace === 'function'
     ? harness.currentWorkspace()
     : null;
@@ -155,7 +155,7 @@ async function runWorkspaceListCommand(match, harness) {
   }
 }
 
-export async function resolveSessionListWorkspace(selector, harness) {
+export async function resolveSessionListWorkspace(selector, harness, options = {}) {
   if (!selector) {
     if (typeof harness?.currentWorkspace !== 'function') {
       return { error: t('当前机器人没有可用的工作区。') };
@@ -169,7 +169,7 @@ export async function resolveSessionListWorkspace(selector, harness) {
     if (typeof harness?.listWorkspaces !== 'function') {
       return { error: t('当前机器人暂不支持按序号选择工作区。') };
     }
-    const { paths } = await workspacePathSnapshot(harness);
+    const { paths } = await workspacePathSnapshot(harness, options);
     const position = Number(selector);
     if (!Number.isSafeInteger(position) || position < 1 || position > paths.length) {
       return { error: t('工作区序号不存在，请先执行 /workspacelist。') };

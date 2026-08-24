@@ -223,6 +223,11 @@ function workspaceSessions(workspace, archivedSessionIds, sessionList) {
         origin: summary?.origin === 'subagent' ? 'subagent' : null,
         summaryAvailable: summary !== undefined,
       };
+      const lastSeq = summary?.projections?.asOfSeq;
+      // This is the projection's durable lower bound, not necessarily the live
+      // log tail for a cold session. Harness uses -1 as the legitimate bound
+      // for a session with no projected events yet.
+      if (Number.isSafeInteger(lastSeq) && lastSeq >= -1) session.lastSeq = lastSeq;
       const time = sessionTimeMs(summary);
       if (time !== null) session.time = time;
       return session;

@@ -134,9 +134,20 @@ export default {
   '当前任务仍在运行，请先停止任务或等待任务完成后再开启新会话。':
     'The current task is still running. Stop it or wait for it to finish before starting a new session.',
   '请输入补充指令后再提交。': 'Enter an instruction before submitting.',
+  '操作过于频繁，请稍后再试。': 'Too many card actions are pending. Please try again shortly.',
+  '卡片操作失败，请稍后重试。': 'The card action failed. Please try again later.',
+  '请先选择至少一个会话。': 'Select at least one session first.',
   '已批量关注 {count} 个会话。': 'Now watching {count} sessions.',
+  '已批量关注 {count} 个会话，另有 {failed} 个未成功。':
+    'Now watching {count} sessions; {failed} could not be processed.',
   '已关注（或已达关注上限）。': 'Sessions are already watched, or the watch limit has been reached.',
   '已取消关注 {count} 个会话。': 'Stopped watching {count} sessions.',
+  '已取消关注 {count} 个会话，另有 {failed} 个未成功。':
+    'Stopped watching {count} sessions; {failed} could not be processed.',
+  '所选会话均未处理成功，请稍后重试。':
+    'None of the selected sessions could be processed. Please try again later.',
+  '所选会话已在关注列表中。': 'The selected sessions are already being watched.',
+  '所选会话已不在关注列表中。': 'The selected sessions are no longer in the watch list.',
   '未取消任何关注。': 'No watches were removed.',
   '当前没有绑定的会话，请先从会话列表选择。':
     'No session is currently bound. Select one from the session list first.',

@@ -93,7 +93,11 @@ test('custom steer card wraps input and submit in a form container', () => {
   const input = form.elements.find((element) => element.tag === 'input');
   assert.equal(input?.name, 'steer_text');
   const submit = form.elements.find((element) => element.tag === 'button');
+  assert.equal(submit?.name, 'steer_submit');
   assert.equal(submit?.form_action_type, 'submit');
+  assert.equal(submit?.action_type, undefined, 'Card 2.0 must not rely on the legacy action_type field');
+  const controlNames = [form.name, ...form.elements.map((element) => element.name).filter(Boolean)];
+  assert.equal(new Set(controlNames).size, controlNames.length, 'form control names must be card-global unique');
   assert.deepEqual(submit?.behaviors, [{
     type: 'callback',
     value: { action: 'steer', source: 'form' },

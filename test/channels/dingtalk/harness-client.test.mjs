@@ -151,14 +151,14 @@ test('HarnessClient lists sessions by workspace accounting and forwards request 
           sessionId: 'session-one',
           blank: false,
           cwd: '/tmp/target',
-          projections: { values: { title: null } },
+          projections: { asOfSeq: -1, values: { title: null } },
         },
         {
           sessionId: 'session-two',
           blank: true,
           origin: 'subagent',
           cwd: '/tmp/different',
-          projections: { values: { title: 'Second session' } },
+          projections: { asOfSeq: 0, values: { title: 'Second session' } },
         },
         {
           sessionId: 'cwd-only',
@@ -180,6 +180,7 @@ test('HarnessClient lists sessions by workspace accounting and forwards request 
         blank: true,
         origin: 'subagent',
         summaryAvailable: true,
+        lastSeq: 0,
       },
       {
         sessionId: 'session-missing',
@@ -196,6 +197,7 @@ test('HarnessClient lists sessions by workspace accounting and forwards request 
         blank: false,
         origin: null,
         summaryAvailable: true,
+        lastSeq: -1,
       },
     ],
   });

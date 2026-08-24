@@ -831,6 +831,9 @@ export function customSteerCard() {
         },
         {
           tag: 'button',
+          // Card 2.0 form controls need stable names so the client can
+          // construct a submit action (and expose action.name) reliably.
+          name: 'steer_submit',
           text: { tag: 'plain_text', content: t('提交') },
           type: 'primary',
           width: 'fill',
