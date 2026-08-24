@@ -112,6 +112,18 @@ GitHub 源安装会直接拉取并构建 Git 依赖；pnpm 10 及以上版本可
 
 如果本机必须通过正向代理访问飞书，请在启动 `dsh web` 前把 `HTTPS_PROXY` 设置为包含协议的 HTTP 代理 URL（例如 `http://proxy:8080`；也支持小写 `https_proxy`，并兼容使用 `HTTP_PROXY` 作为回退），修改后重启 Host。飞书注册和凭据验证会复用 SDK 的代理感知 HTTP 客户端，消息长连接会显式通过这个代理建立 WebSocket；长连接目前不读取 `ALL_PROXY` 或 `NO_PROXY`。
 
+如果本机无法直连 Telegram Bot API，请使用 Node.js 22.21 或更高版本，并在启动 `dsh web` 前启用 Node 的环境变量代理支持：
+
+```sh
+NODE_USE_ENV_PROXY=1 \
+HTTPS_PROXY=http://proxy:8080 \
+HTTP_PROXY=http://proxy:8080 \
+NO_PROXY=localhost,127.0.0.1 \
+dsh web
+```
+
+代理地址按本机网络环境填写；修改代理后需要重启 Host。绑定 Telegram Bot Token 时，如果页面提示无法访问 Bot API，请优先检查代理地址、Node.js 版本和 `NO_PROXY` 配置。
+
 | 默认行为 | 说明 |
 | --- | --- |
 | 机器人工作区 | 每个机器人独立保存工作区。新机器人默认使用 Host 当时的工作目录；之后可在机器人卡片中修改。 |
