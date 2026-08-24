@@ -150,6 +150,38 @@ test('Weixin bridge hands a native file source to the current Harness turn', asy
   assert.deepEqual(sent, ['文件已收到']);
 });
 
+test('Weixin splits long replies below the iLink text limit', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-long-reply');
+  const chunks = [];
+  const answer = '答案'.repeat(1_000);
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      sendText: async ({ text }) => {
+        chunks.push(text);
+        return { messageId: `weixin-long-${chunks.length}` };
+      },
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com',
+    token: 'token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => answer,
+    },
+    state: fixture.state,
+  });
+
+  const receipt = await bridge.accept(message('weixin-long-reply', '生成一段长回答'));
+
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((chunk) => chunk.length <= 1_800));
+  assert.equal(chunks.join(''), answer);
+  assert.equal(receipt.providerMessageIds.length, chunks.length);
+  assert.equal(bridge.status.messagesReplied, 1);
+  assert.equal(bridge.status.lastMessageError, null);
+});
+
 test('Weixin starts a native-file download before an earlier queued turn finishes', async () => {
   const fixture = stateFixture();
   fixture.sessions.set('p2p:owner-user', 'session-prefetch-file');

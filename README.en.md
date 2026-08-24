@@ -46,7 +46,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 | Channel | Setup | Messaging and replies |
 | --- | --- | --- |
 | Feishu | Create a bot by QR code, or bind one with App ID + App Secret | Persistent connection for incoming messages; streaming cards show thinking, tool progress, and replies |
-| WeChat | Scan a QR code to bind a WeChat bot | Tencent iLink long polling for sending and receiving messages |
+| WeChat | Scan a QR code to bind a WeChat bot | Tencent iLink long polling for sending and receiving messages; long replies are sent in 1,800-character chunks |
 | DingTalk | Create a bot by QR code, or bind one with Client ID + Client Secret | DingTalk Stream connection; streaming replies through AI Cards |
 | WeCom | Create an intelligent bot by QR code, or bind one with Bot ID + Secret | Official WebSocket connection; native thinking state, tool progress, and streaming replies |
 | QQ | Create a bot with mobile QQ QR scanning, or bind one with AppID + AppSecret | WebSocket connection; private chats show typing and receive one Markdown reply, while mentioned group chats receive only the final answer |

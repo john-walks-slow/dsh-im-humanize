@@ -184,7 +184,7 @@ export class WeixinHarnessBridge {
     status = createWeixinBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
-    maxMessageChars = 4_000,
+    maxMessageChars = 1_800,
     signal,
   }) {
     if (!api || typeof api.sendText !== 'function') throw new TypeError('Weixin API is required');
