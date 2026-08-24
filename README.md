@@ -49,7 +49,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 | 渠道 | 接入方式 | 消息与回复 |
 | --- | --- | --- |
 | 飞书 | 扫码创建机器人，或使用 App ID + App Secret 手动绑定 | 长连接接收消息；通过飞书流式卡片显示思考、工具进度和回答 |
-| 微信 | 使用微信扫码绑定机器人 | 腾讯 iLink 长轮询收发消息 |
+| 微信 | 使用微信扫码绑定机器人 | 腾讯 iLink 长轮询收发消息；长回复会按 1,800 字符分段发送 |
 | 钉钉 | 扫码创建机器人，或使用 Client ID + Client Secret 手动绑定 | 钉钉 Stream 长连接；通过 AI Card 流式显示回答 |
 | 企业微信 | 使用企业微信 App 扫码创建智能机器人，或使用 Bot ID + Secret 手动绑定 | 官方 WebSocket 长连接；原生显示“正在思考中”、工具执行进度和流式回答 |
 | QQ | 使用手机 QQ 扫码创建机器人，或使用 AppID + AppSecret 手动绑定 | WebSocket 长连接；私聊显示“正在输入”并以单条 Markdown 回复，群聊被 @ 后只发送最终答案 |

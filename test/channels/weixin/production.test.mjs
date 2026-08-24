@@ -63,6 +63,8 @@ test('Weixin production has no per-bot result-file Gate', async (t) => {
 
   assert.equal(Object.hasOwn(runtimes[0], 'outboundArtifactsEnabled'), false);
   assert.equal(Object.hasOwn(runtimes[1], 'outboundArtifactsEnabled'), false);
+  assert.equal(runtimes[0].maxMessageChars, 1_800);
+  assert.equal(runtimes[1].maxMessageChars, 1_800);
   await production.close();
 
   const productionWithDefault = await createProductionController(ctx, { dataDir }, internals);
@@ -72,5 +74,6 @@ test('Weixin production has no per-bot result-file Gate', async (t) => {
     token: 'host-only',
   });
   assert.equal(Object.hasOwn(runtimes[2], 'outboundArtifactsEnabled'), false);
+  assert.equal(runtimes[2].maxMessageChars, 1_800);
   await productionWithDefault.close();
 });
