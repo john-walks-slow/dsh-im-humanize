@@ -6,6 +6,15 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Changed / 变更
+
+- 飞书原“修复卡片按钮”操作已更名为“补全权限”，并会同时增量申请读取用户消息内图片或文件所需的 `im:message:readonly`、上传机器人图片或文件所需的 `im:resource`，以及卡片回调；缺权提示会引导用户私聊执行 `/repair`，或在插件页面点击“补全权限”。界面会说明各自用途，并明确确认页只展示应用当前缺少的配置。
+  The former Feishu **Repair card buttons** action is now **Complete permissions**. It incrementally requests `im:message:readonly` for reading images or files in user messages, `im:resource` for uploading bot-sent images or files, and the card callback. The UI explains each purpose and that the confirmation page shows only the app's currently missing items.
+- 飞书 `/repair` 不再额外区分管理员和普通用户；所有通过当前机器人渠道访问策略的私聊用户都能发起修复，包括使用 `*` 开放访问的手动绑定机器人。
+  Feishu `/repair` no longer defines a separate administrator role. Any direct-message user admitted by the current bot's channel access policy can start repair, including manually bound bots configured with `*` access.
+- 飞书私聊重复发送普通 `/repair` 时会作废仍在等待授权的旧一次性链接并生成新链接，避免错误账号打开链接后继续复用已消耗的授权码；查询、二维码、验证和取消命令不会意外重启流程，已提交的平台更新也不会并发执行。
+  Repeating bare `/repair` in a Feishu direct chat now invalidates a still-pending one-time authorization link and generates a fresh one, avoiding reuse after the link was opened under the wrong account. Status, QR, verify, and cancel commands do not restart the flow, and a platform update that has already been submitted is never duplicated concurrently.
+
 ## [2.3.0] - 2026-08-25
 
 ### Added / 新增

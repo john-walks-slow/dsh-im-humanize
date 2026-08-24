@@ -231,6 +231,8 @@ test('Feishu bot cards place the application identifier under the bot name', asy
   assert.match(markup, /class="bxf-card bxf-botCard dim-botCard"/);
   assert.match(markup, /class="bxf-healthPill dim-botHealth"/);
   assert.match(markup, /<button[^>]*aria-label="检查连接今天是牢梁"[^>]*><span>检查连接<\/span><\/button>/);
+  assert.match(markup, /class="bxf-repairAction"[^]*role="tooltip"/);
+  assert.match(markup, /card\.action\.trigger[^]*im:message:readonly[^]*im:resource/);
   assert.match(markup, /class="bxf-connectedFooter dim-cardFooter"/);
   assert.doesNotMatch(markup, /dim-cardSummary|长连接运行正常/);
   assert.equal((markup.match(/dim-cardAction(?: |")/g) ?? []).length, 3);
@@ -241,6 +243,7 @@ test('Feishu bot cards place the application identifier under the bot name', asy
   assert.match(markup, /class="dim-presetSelect"/);
   assert.doesNotMatch(markup, />应用标识<|>飞书机器人</);
   assert.doesNotMatch(styles, /\.bxf-statusGrid|\.bxf-metric/);
+  assert.match(styles, /\.bxf-repairAction:hover \.bxf-repairTooltip,[^]*\.bxf-repairAction:focus-within \.bxf-repairTooltip \{[^}]*visibility: visible;/);
 });
 
 test('Feishu keeps its heading controls on one row without a plus icon', async () => {

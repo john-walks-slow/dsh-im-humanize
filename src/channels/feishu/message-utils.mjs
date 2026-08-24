@@ -5,7 +5,7 @@ const FEISHU_MISSING_MESSAGE_SCOPE_CODE = 99991672;
 const FEISHU_ERROR_BODY_LIMIT = 64 * 1024;
 const FEISHU_ERROR_BODY_TIMEOUT_MS = 1_000;
 const FEISHU_IMAGE_PERMISSION_MESSAGE =
-  '飞书机器人缺少图片读取权限。请在飞书开放平台为该应用添加 im:message:readonly，发布新版本并完成必要的管理员审批后，再重新发送图片。';
+  '飞书机器人缺少图片读取权限 im:message:readonly（飞书显示为“获取单聊、群组消息”）。请私聊机器人执行 /repair 命令，或者在插件页面点击“补全权限”按钮并扫码。按飞书提示发布新版本、完成必要审批后，再重新发送图片。';
 
 export function conversationKey(event) {
   const chatType = event?.message?.chat_type;

@@ -980,7 +980,10 @@ test('bridge tells users to grant im:message:readonly when Feishu rejects image 
 
   assert.equal(sent.length, 1);
   assert.match(sent[0], /im:message:readonly/);
+  assert.match(sent[0], /\/repair/);
   assert.match(sent[0], /发布新版本/);
+  assert.match(sent[0], /插件页面/);
+  assert.match(sent[0], /补全权限/);
   assert.doesNotMatch(sent[0], /99991672|HTTP 400|secret-shaped|private\/path/);
 });
 
@@ -3682,15 +3685,20 @@ function repairCapability({
   return {
     calls,
     capability: {
-      async start(args) { calls.start.push(args); return startStatus; },
+      async start(args) {
+        calls.start.push(args);
+        return typeof startStatus === 'function'
+          ? startStatus(calls.start.length, args)
+          : startStatus;
+      },
       async status(args) {
         calls.status.push(args);
-        return typeof status === 'function' ? status(calls.status.length) : status;
+        return typeof status === 'function' ? status(calls.status.length, args) : status;
       },
       async cancel(args) {
         calls.cancel.push(args);
         return typeof cancelStatus === 'function'
-          ? cancelStatus(calls.cancel.length)
+          ? cancelStatus(calls.cancel.length, args)
           : cancelStatus;
       },
     },
@@ -3699,7 +3707,6 @@ function repairCapability({
 
 function repairBridge({
   allowedSenderOpenIds = new Set(['ou_owner']),
-  repairOwnerOpenIds,
   capability,
   client,
   sent = [],
@@ -3721,7 +3728,6 @@ function repairBridge({
       state: fixture.state,
       status: bridgeStatus(),
       allowedSenderOpenIds,
-      repairOwnerOpenIds,
       botId: REPAIR_BOT_ID,
       appId: REPAIR_APP_ID,
       repair: capability,
@@ -3747,8 +3753,62 @@ test('/repair sends a validated ordinary SDK link without prompting Harness', as
   assert.equal(fx.asks, 0);
   const message = JSON.parse(fx.sent.at(-1).content).text;
   assert.match(message, /card\.action\.trigger/);
+  assert.match(message, /im:message:readonly/);
+  assert.match(message, /im:resource/);
   assert.match(message, new RegExp(REPAIR_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(message, /\/repair qr/);
+});
+
+test('repeating bare /repair replaces a still-waiting one-time link', async () => {
+  const oldUrl = `${REPAIR_URL}&user_code=old`;
+  const freshUrl = `${REPAIR_URL}&user_code=fresh`;
+  const repair = repairCapability({
+    startStatus: (count) => repairStatus('qr_ready', {
+      attempt: `repair_attempt_${count}`,
+      qrCodeUrl: count === 1 ? oldUrl : freshUrl,
+    }),
+    status: (_count, args) => repairStatus('qr_ready', {
+      attempt: args.attemptId,
+      qrCodeUrl: args.attemptId === 'repair_attempt_1' ? oldUrl : freshUrl,
+    }),
+    cancelStatus: (_count, args) => repairStatus('cancelled', {
+      attempt: args.attemptId,
+      qrCodeUrl: undefined,
+    }),
+  });
+  const fx = repairBridge({ capability: repair.capability });
+
+  await fx.bridge.accept(event('repair-retry-first', '/repair', { senderOpenId: 'ou_owner' }));
+  await fx.bridge.waitForIdle();
+  await fx.bridge.accept(event('repair-retry-second', '/repair', { senderOpenId: 'ou_owner' }));
+  await fx.bridge.waitForIdle();
+
+  assert.equal(repair.calls.start.length, 2);
+  assert.equal(repair.calls.cancel.length, 1);
+  assert.equal(repair.calls.cancel[0].attemptId, 'repair_attempt_1');
+  const reply = JSON.parse(fx.sent.at(-1).content).text;
+  assert.match(reply, /旧授权链接已作废/);
+  assert.match(reply, /user_code=fresh/);
+  assert.doesNotMatch(reply, /user_code=old/);
+  assert.match(reply, /获取单聊、群组消息/);
+  assert.match(reply, /im:resource/);
+  assert.match(reply, /只会显示当前缺少的项/);
+});
+
+test('repeating bare /repair never duplicates an update already being saved', async () => {
+  const repair = repairCapability({
+    status: repairStatus('saving', { qrCodeUrl: undefined }),
+  });
+  const fx = repairBridge({ capability: repair.capability });
+
+  await fx.bridge.accept(event('repair-saving-first', '/repair', { senderOpenId: 'ou_owner' }));
+  await fx.bridge.waitForIdle();
+  await fx.bridge.accept(event('repair-saving-second', '/repair', { senderOpenId: 'ou_owner' }));
+  await fx.bridge.waitForIdle();
+
+  assert.equal(repair.calls.start.length, 1);
+  assert.equal(repair.calls.cancel.length, 0);
+  assert.match(JSON.parse(fx.sent.at(-1).content).text, /正在等待专用测试按钮/);
 });
 
 test('/repair status after a runtime restart never starts a duplicate authorization', async () => {
@@ -3768,14 +3828,14 @@ test('/repair status after a runtime restart never starts a duplicate authorizat
   assert.match(message, /不会启动新的授权/);
 });
 
-test('menu repair entry is number-only and reply 5 starts the same repair flow', async () => {
+test('menu permission-completion entry is number-only and reply 5 starts the same repair flow', async () => {
   const repair = repairCapability();
   const fx = repairBridge({ capability: repair.capability });
 
   await fx.bridge.accept(event('repair-menu-open', '/m', { senderOpenId: 'ou_owner' }));
   await fx.bridge.waitForIdle();
   const menu = cards(fx.sent)[0].content;
-  assert.match(JSON.stringify(menu), /\*\*5\*\*🔧修复/);
+  assert.match(JSON.stringify(menu), /\*\*5\*\*🔧补全权限/);
   assert.equal(buttonsFromCard(menu).some((button) => callbackAction(button) === 'repair'), false);
 
   await fx.bridge.accept(event('repair-menu-five', '5', { senderOpenId: 'ou_owner' }));
@@ -3783,9 +3843,11 @@ test('menu repair entry is number-only and reply 5 starts the same repair flow',
   assert.equal(repair.calls.start.length, 1);
   assert.equal(fx.asks, 0);
   assert.match(JSON.parse(fx.sent.at(-1).content).text, /card\.action\.trigger/);
+  assert.match(JSON.parse(fx.sent.at(-1).content).text, /im:message:readonly/);
+  assert.match(JSON.parse(fx.sent.at(-1).content).text, /im:resource/);
 });
 
-test('chat repair requires a private chat and an exact owner; wildcard never authorizes it', async () => {
+test('chat repair follows the channel access policy without a separate administrator role', async () => {
   const wildcardRepair = repairCapability();
   const wildcard = repairBridge({
     allowedSenderOpenIds: new Set(['*']),
@@ -3793,21 +3855,8 @@ test('chat repair requires a private chat and an exact owner; wildcard never aut
   });
   await wildcard.bridge.accept(event('repair-wildcard', '/repair', { senderOpenId: 'ou_anyone' }));
   await wildcard.bridge.waitForIdle();
-  assert.equal(wildcardRepair.calls.start.length, 0);
-  assert.match(JSON.parse(wildcard.sent.at(-1).content).text, /没有可验证的接入者身份/);
-
-  const mixedRepair = repairCapability();
-  const mixed = repairBridge({
-    allowedSenderOpenIds: new Set(['*', 'ou_owner']),
-    capability: mixedRepair.capability,
-  });
-  await mixed.bridge.accept(event('repair-mixed-intruder', '/repair', { senderOpenId: 'ou_other' }));
-  await mixed.bridge.waitForIdle();
-  assert.equal(mixedRepair.calls.start.length, 0);
-  assert.match(JSON.parse(mixed.sent.at(-1).content).text, /只能由机器人接入者/);
-  await mixed.bridge.accept(event('repair-mixed-owner', '/repair', { senderOpenId: 'ou_owner' }));
-  await mixed.bridge.waitForIdle();
-  assert.equal(mixedRepair.calls.start.length, 1);
+  assert.equal(wildcardRepair.calls.start.length, 1);
+  assert.equal(wildcardRepair.calls.start[0].actorOpenId, 'ou_anyone');
 
   const groupRepair = repairCapability();
   const group = repairBridge({ capability: groupRepair.capability });
@@ -3821,7 +3870,7 @@ test('chat repair requires a private chat and an exact owner; wildcard never aut
   assert.match(JSON.parse(group.sent.at(-1).content).text, /请私聊机器人/);
 });
 
-test('/repair qr, status, verify and cancel stay scoped to the initiating owner', async () => {
+test('/repair qr, status, verify and cancel stay scoped to the initiating user', async () => {
   const sent = [];
   let sequence = 0;
   const client = {
@@ -3851,6 +3900,8 @@ test('/repair qr, status, verify and cancel stay scoped to the initiating owner'
   await fx.bridge.accept(event('repair-commands-status', '/repair status', { senderOpenId: 'ou_owner' }));
   await fx.bridge.accept(event('repair-commands-verify', '/repair verify', { senderOpenId: 'ou_owner' }));
   await fx.bridge.waitForIdle();
+  assert.equal(repair.calls.start.length, 1);
+  assert.equal(repair.calls.cancel.length, 0);
   const textMessages = sent
     .filter((request) => request.data.msg_type === 'text')
     .map((request) => JSON.parse(request.data.content).text);

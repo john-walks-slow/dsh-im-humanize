@@ -341,6 +341,7 @@ test('callback repair is deduplicated per bot, updates only its secret, and prov
   assert.equal(Object.hasOwn(run.options, 'appPreset'), false);
   assert.deepEqual(run.options.addons, {
     preset: false,
+    scopes: { tenant: ['im:message:readonly', 'im:resource'] },
     callbacks: { items: ['card.action.trigger'] },
   });
   run.options.onQRCodeReady({
@@ -517,7 +518,7 @@ test('web callback repair accepts wildcard visibility but probes the precise SDK
   await fx.controller.close();
 });
 
-test('chat callback repair rejects SDK authorization by a different operator', async () => {
+test('chat callback repair has no separate administrator role', async () => {
   const existing = bot('bot_existing', 'existing');
   const fx = fixture({
     bots: [existing],
@@ -540,13 +541,18 @@ test('chat callback repair rejects SDK authorization by a different operator', a
     user_info: { open_id: 'ou_different_operator', tenant_brand: 'feishu' },
   });
 
-  await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'error');
+  await waitFor(() => fx.controller.registrationStatus(attemptId).registration.state === 'succeeded');
   const result = fx.controller.registrationStatus(attemptId);
-  assert.equal(result.registration.error.code, 'repair_owner_mismatch');
-  assert.equal(fx.values.get(existing.secretRef), 'stable-secret');
-  assert.equal(fx.runtimes.get(existing.id).length, 1);
-  assert.equal(runtime.stops, 0);
-  assert.deepEqual(runtime.probes, []);
+  assert.equal(result.registration.stage, 'verified');
+  assert.equal(fx.values.get(existing.secretRef), 'rotated-secret');
+  const history = fx.runtimes.get(existing.id);
+  assert.equal(history.length, 2);
+  assert.equal(runtime.stops, 1);
+  assert.deepEqual(history[1].probes, [{
+    expectedOperatorOpenId: existing.ownerOpenIds[0],
+    timeoutMs: 50,
+    chatId: 'oc_owner_chat',
+  }]);
   await fx.controller.close();
 });
 

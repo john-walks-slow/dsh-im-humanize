@@ -265,7 +265,7 @@ function QrPane({ provision, now, onRefresh, onCancel, busy }) {
               ? h("img", {
                 src: qrSource,
                 alt: repairing
-                  ? `用于修复${botName}卡片按钮的一次性授权二维码`
+                  ? `用于为${botName}补全权限与回调的一次性授权二维码`
                   : grantingGroupMessages
                     ? `用于为${botName}开通群消息权限的一次性授权二维码`
                     : "用于新增 DeepSeek Harness 飞书机器人的一次性授权二维码",
@@ -293,31 +293,31 @@ function QrPane({ provision, now, onRefresh, onCancel, busy }) {
         h("div", { className: "bxf-stateLabel dim-stateLabel" },
           h("span", { className: "bxf-dot dim-stateDot", "data-tone": "warning" }),
           h("span", null, repairing
-            ? `正在修复「${botName}」`
+            ? `正在为「${botName}」补全权限与回调`
             : grantingGroupMessages
               ? `正在为「${botName}」开通群消息权限`
               : "正在添加新机器人")),
         h("h3", null, expired
           ? "刷新二维码后继续"
           : repairing
-            ? "使用飞书扫码修复卡片按钮"
+            ? "使用飞书扫码补全权限"
             : grantingGroupMessages
               ? "使用飞书确认群消息权限"
               : "使用飞书扫码创建机器人"),
         h("p", null, repairing
-          ? "扫码会更新现有飞书应用，只增量补充卡片按钮回调；不会创建新应用。确认后此机器人会短暂重连，其他机器人不受影响。"
+          ? "扫码会更新现有飞书应用，最多增量补充卡片按钮回调、读取用户消息内图片或文件所需的 im:message:readonly（飞书显示为“获取单聊、群组消息”），以及上传机器人图片或文件所需的 im:resource；不会创建新应用。确认页只显示当前缺少项，完成后此机器人会短暂重连，其他机器人不受影响。"
           : grantingGroupMessages
             ? "扫码会更新现有飞书应用，只增量开通“获取群组中所有消息”权限；不会创建新应用。确认后会自动启用“响应所有群消息”，其他机器人不受影响。"
             : "扫码只会新增一个机器人，已接入的机器人会继续正常收发消息。"),
         h("ol", { className: "bxf-steps dim-steps" },
           h("li", null, "打开飞书移动端，使用扫一扫读取二维码"),
           h("li", null, repairing
-            ? "核对现有应用名称，并确认只新增卡片回调"
+            ? "核对现有应用名称，并确认只新增当前缺少的上述配置"
             : grantingGroupMessages
               ? "核对现有应用，并确认“获取群组中所有消息”权限"
               : "核对应用名称与权限范围，并确认创建"),
           h("li", null, repairing
-            ? "保持本页打开，等待卡片按钮修复完成"
+            ? "保持本页打开，等待权限与回调补全完成"
             : grantingGroupMessages
               ? "保持本页打开，等待权限生效并自动切换响应方式"
               : "保持本页打开，等待新机器人的长连接就绪")),
@@ -336,7 +336,7 @@ function QrPane({ provision, now, onRefresh, onCancel, busy }) {
             ? h(Button, { onClick: onRefresh, disabled: busy }, "换一个二维码")
             : null,
           h(Button, { onClick: onCancel, disabled: busy }, repairing
-            ? "取消修复"
+            ? "取消补全"
             : grantingGroupMessages ? "取消授权" : "取消添加")),
       ),
     ),
@@ -354,16 +354,16 @@ function ProvisionProgress({ phase, provision, onCancel, busy }) {
     h("div", { className: "dim-spinner", "aria-hidden": "true" }),
     h("h3", null, connecting
       ? repairing
-        ? "已确认，正在完成卡片按钮修复"
+        ? "已确认，正在完成权限与回调配置"
         : grantingGroupMessages
           ? "已确认，正在启用全部消息模式"
           : "已确认，正在连接新机器人"
       : repairing
-        ? "正在准备修复二维码"
+        ? "正在准备权限补全二维码"
         : grantingGroupMessages ? "正在准备权限授权二维码" : "正在准备授权二维码"),
     h("p", null, connecting
       ? repairing
-        ? "配置已提交，正在验证卡片按钮回调并重连此机器人；此阶段无法取消，其他机器人不会中断。"
+        ? "配置已提交，正在保存权限、验证卡片回调并重连此机器人；此阶段无法取消，其他机器人不会中断。"
         : grantingGroupMessages
           ? "权限配置已提交，正在保存设置并重连此机器人；此阶段无法取消，其他机器人不会中断。"
           : "正在安全保存凭据并检查新机器人的消息通道，其他机器人不会中断。"
@@ -375,7 +375,7 @@ function ProvisionProgress({ phase, provision, onCancel, busy }) {
     connecting && onCancel
       ? h("div", { className: "bxf-actions dim-viewActions", style: { justifyContent: "center" } },
           h(Button, { onClick: onCancel, disabled: busy }, repairing
-            ? "取消修复"
+            ? "取消补全"
             : grantingGroupMessages ? "取消授权" : "取消添加"))
       : null,
   );
@@ -388,7 +388,7 @@ function ProvisionError({ error, provision, onRetry, onCancel, busy }) {
     h("div", { className: "bxf-inlineError dim-inlineError", role: "alert" },
       h("div", null,
         h("h3", null, repairing
-          ? "卡片按钮没有修复完成"
+          ? "权限与回调没有补全完成"
           : grantingGroupMessages ? "群消息权限没有开通完成" : "新机器人没有添加完成"),
         h("p", null, error.message),
         error.code ? h("span", { className: "bxf-errorCode" }, error.code) : null,
@@ -564,6 +564,7 @@ export function BotCard({
   removeButtonRef,
 }) {
   const { bot, health, state, connected } = connection;
+  const repairTooltipId = React.useId();
   const stateForDisplay = busy === "reconnect"
     ? "connecting"
     : state;
@@ -637,13 +638,22 @@ export function BotCard({
               disabled: Boolean(busy), "aria-busy": busy === "reconnect" ? "true" : undefined,
               "aria-label": `${connected ? "检查连接" : "重试连接"}${bot.name}`,
             }, busy === "reconnect" ? (connected ? "检查中…" : "正在连接…") : connected ? "检查连接" : "重试连接"),
-            h(Button, {
-              className: "bxf-repairButton dim-cardAction",
-              onClick: onRepairCallback,
-              disabled: Boolean(busy) || repairDisabled,
-              "aria-busy": busy === "callback-repair" ? "true" : undefined,
-              "aria-label": `修复${bot.name}的卡片按钮`,
-            }, busy === "callback-repair" ? "等待扫码…" : "修复卡片按钮"),
+            h("span", { className: "bxf-repairAction" },
+              h(Button, {
+                className: "bxf-repairButton dim-cardAction",
+                onClick: onRepairCallback,
+                disabled: Boolean(busy) || repairDisabled,
+                "aria-busy": busy === "callback-repair" ? "true" : undefined,
+                "aria-label": `为${bot.name}补全权限与回调`,
+                "aria-describedby": repairTooltipId,
+              }, busy === "callback-repair" ? "等待扫码…" : "补全权限"),
+              h("span", {
+                id: repairTooltipId,
+                className: "bxf-repairTooltip",
+                role: "tooltip",
+              },
+                h("strong", null, "补全范围"),
+                h("span", null, "最多增量添加卡片回调 card.action.trigger、读取消息内图片或文件所需的 im:message:readonly（飞书显示为“获取单聊、群组消息”），以及上传机器人图片或文件所需的 im:resource；确认页只显示当前缺少项，不会创建新应用。"))),
             h(Button, {
               className: "dim-cardAction", kind: "danger", onClick: onRequestRemove,
               disabled: Boolean(busy), ref: removeButtonRef,
@@ -933,7 +943,7 @@ export function FeishuSettingsTab({ rpcCall }) {
         && (provision.operation !== operation || provision.botId !== botId)) {
         throw new Error(grantingGroupMessages
           ? "飞书服务返回了不匹配的群消息权限二维码"
-          : "飞书服务返回了不匹配的卡片修复二维码");
+          : "飞书服务返回了不匹配的权限补全二维码");
       }
       const timestamp = Date.now();
       setNow(timestamp);
@@ -948,7 +958,7 @@ export function FeishuSettingsTab({ rpcCall }) {
         },
       }));
       announce(repairing
-        ? `${botName ?? "机器人"}的修复二维码已生成，请使用飞书扫码。`
+        ? `${botName ?? "机器人"}的权限补全二维码已生成，请使用飞书扫码。`
         : grantingGroupMessages
           ? `${botName ?? "机器人"}的群消息权限二维码已生成，请使用飞书确认。`
           : "授权二维码已生成，请使用飞书扫码。");
@@ -1032,7 +1042,7 @@ export function FeishuSettingsTab({ rpcCall }) {
             : current);
           announce(grantingGroupMessages
             ? "权限配置已提交，正在启用全部消息模式并重连此机器人；此阶段无法取消，其他机器人不会中断。"
-            : "配置已提交，正在验证卡片按钮回调并重连此机器人；此阶段无法取消，其他机器人不会中断。");
+            : "配置已提交，正在保存权限、验证卡片回调并重连此机器人；此阶段无法取消，其他机器人不会中断。");
           return;
         }
         if (result.status === "connected") {
@@ -1040,7 +1050,7 @@ export function FeishuSettingsTab({ rpcCall }) {
           setModel((current) => ({ ...current, provisioning: null }));
           announce(grantingGroupMessages
             ? `${targetBotName}已开通群消息权限，并启用“响应所有群消息”。`
-            : `${targetBotName}的卡片按钮已修复。`);
+            : `${targetBotName}的权限与回调已补全。`);
           if (activeProvision.botId) setFocusBotId(activeProvision.botId);
           await loadStatus({ silent: true, restoreProvisioning: false });
           return;
@@ -1048,7 +1058,7 @@ export function FeishuSettingsTab({ rpcCall }) {
       }
       setModel((current) => ({ ...current, provisioning: null }));
       announce(repairing
-        ? "已取消卡片按钮修复。"
+        ? "已取消补全权限与回调。"
         : grantingGroupMessages ? "已取消群消息权限授权。" : "已取消添加机器人。");
       await loadStatus({ silent: true, restoreProvisioning: false });
       scheduleAnimationFrame(() => {
@@ -1117,7 +1127,7 @@ export function FeishuSettingsTab({ rpcCall }) {
           const targetBot = snapshot?.bots.find((bot) => bot.botId === result.botId);
           if (!snapshot) {
             throw new Error(isCallbackRepair(provision)
-              ? "卡片按钮已更新，但暂时无法确认机器人连接状态"
+              ? "权限与回调已更新，但暂时无法确认机器人连接状态"
               : isGroupMessagePermission(provision)
                 ? "群消息权限已更新，但暂时无法确认机器人连接状态"
                 : "机器人已经创建，但暂时无法确认连接状态");
@@ -1130,7 +1140,7 @@ export function FeishuSettingsTab({ rpcCall }) {
           }
           setModel((current) => ({ ...current, provisioning: null }));
           announce(isCallbackRepair(provision)
-            ? `${targetBot.bot.name}的卡片按钮已修复。`
+            ? `${targetBot.bot.name}的权限与回调已补全。`
             : isGroupMessagePermission(provision)
               ? `${targetBot.bot.name}已开通群消息权限，并启用“响应所有群消息”。`
               : targetBot
@@ -1142,7 +1152,7 @@ export function FeishuSettingsTab({ rpcCall }) {
         if (result.status === "failed") {
           const error = new Error(result.message
             ?? (isCallbackRepair(provision)
-              ? "飞书卡片按钮修复失败"
+              ? "飞书权限与回调补全失败"
               : isGroupMessagePermission(provision)
                 ? "飞书群消息权限开通失败"
                 : "飞书应用创建失败"));

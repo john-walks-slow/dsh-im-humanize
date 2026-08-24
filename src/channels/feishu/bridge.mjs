@@ -106,9 +106,10 @@ const CARD_OVERLOAD_NOTICE_COOLDOWN_MS = 5_000;
 const CARD_DATA_TIMEOUT_MS = 5_000;
 const REPAIR_LINK_WAIT_MS = 15_000;
 const REPAIR_POLL_INTERVAL_MS = 1_000;
-const REPAIR_ACTIVE_STATES = new Set([
-  'starting', 'qr_ready', 'polling', 'slow_down', 'domain_switched', 'saving',
+const REPAIR_AUTHORIZATION_STATES = new Set([
+  'starting', 'qr_ready', 'polling', 'slow_down', 'domain_switched',
 ]);
+const REPAIR_ACTIVE_STATES = new Set([...REPAIR_AUTHORIZATION_STATES, 'saving']);
 const REPAIR_TERMINAL_STATES = new Set([
   'succeeded', 'expired', 'cancelled', 'error',
 ]);
@@ -150,7 +151,7 @@ function artifactFailureText(fileName, error) {
   const name = String(fileName ?? t('结果文件')).replace(/[\r\n]+/g, ' ').trim() || t('结果文件');
   switch (error?.code) {
     case 'artifact-permission-required':
-      return t('结果文件「{name}」已生成，但机器人缺少飞书文件上传权限。请为应用添加 im:resource 并完成必要审批后重试。', { name });
+      return t('结果文件「{name}」已生成，但机器人缺少飞书文件上传权限 im:resource。请私聊机器人执行 /repair 命令，或者在插件页面点击“补全权限”按钮并扫码。完成飞书要求的发布审批后重试。', { name });
     case 'artifact-too-large':
       return t('结果文件「{name}」超过飞书 30 MB 上限，未发送。', { name });
     case 'artifact-empty':
@@ -410,7 +411,6 @@ export class FeishuHarnessBridge {
   #botOpenId;
   #groupResponseMode;
   #repair;
-  #repairOwnerOpenIds;
   #repairAttempt = null;
   #repairMonitorVersion = 0;
   #repairPollIntervalMs;
@@ -443,7 +443,6 @@ export class FeishuHarnessBridge {
     botOpenId,
     groupResponseMode = FEISHU_GROUP_RESPONSE_MODES.ALL,
     repair,
-    repairOwnerOpenIds,
     repairPollIntervalMs = REPAIR_POLL_INTERVAL_MS,
     repairLinkWaitMs = REPAIR_LINK_WAIT_MS,
     cardDataTimeoutMs = CARD_DATA_TIMEOUT_MS,
@@ -480,10 +479,6 @@ export class FeishuHarnessBridge {
     this.#botOpenId = nonEmptyString(botOpenId);
     this.#groupResponseMode = normalizeFeishuGroupResponseMode(groupResponseMode);
     this.#repair = repair ?? null;
-    const repairOwners = repairOwnerOpenIds ?? allowedSenderOpenIds;
-    this.#repairOwnerOpenIds = new Set(
-      [...(repairOwners ?? [])].filter((value) => typeof value === 'string' && value && value !== '*'),
-    );
     this.#repairPollIntervalMs = repairPollIntervalMs;
     this.#repairLinkWaitMs = repairLinkWaitMs;
     this.#cardDataTimeoutMs = cardDataTimeoutMs;
@@ -1075,13 +1070,8 @@ export class FeishuHarnessBridge {
       return;
     }
     const actorOpenId = strictSenderOpenId(event);
-    if (!actorOpenId || !this.#repairOwnerOpenIds.has(actorOpenId)) {
-      await this.#send(
-        event.message.chat_id,
-        this.#repairOwnerOpenIds.size === 0
-          ? t('当前机器人没有可验证的接入者身份，不能从聊天发起修复；请先在插件页设置管理员。')
-          : t('此操作只能由机器人接入者在私聊中发起，未进行任何修改。'),
-      );
+    if (!actorOpenId) {
+      await this.#send(event.message.chat_id, t('无法识别当前发送者，未发起修复。'));
       return;
     }
     if (!this.#repair) {
@@ -1110,7 +1100,7 @@ export class FeishuHarnessBridge {
       return;
     }
     if (attempt.actorOpenId !== actorOpenId) {
-      await this.#send(chatId, t('另一位管理员正在修复该机器人，本次不会显示其授权信息。'));
+      await this.#send(chatId, t('另一位用户正在修复该机器人，本次不会显示其授权信息。'));
       return;
     }
     if (operation === 'cancel') {
@@ -1162,20 +1152,52 @@ export class FeishuHarnessBridge {
 
   async #startRepair({ actorOpenId, chatId }) {
     const previous = this.#repairAttempt;
+    let restarted = false;
     if (previous && REPAIR_ACTIVE_STATES.has(previous.snapshot.state)) {
       if (previous.actorOpenId !== actorOpenId) {
-        await this.#send(chatId, t('另一位管理员正在修复该机器人，本次不会显示其授权信息。'));
+        await this.#send(chatId, t('另一位用户正在修复该机器人，本次不会显示其授权信息。'));
         return;
       }
+      let current;
       try {
-        const current = await this.#refreshRepairAttempt(previous);
-        if (REPAIR_ACTIVE_STATES.has(current.state) && previous.verificationUrl) {
-          await this.#sendRepairLink(chatId, previous.verificationUrl, current, { existing: true });
-          return;
-        }
+        current = await this.#refreshRepairAttempt(previous);
       } catch {
         await this.#send(chatId, t('暂时无法查询修复状态，请稍后重试。'));
         return;
+      }
+      // Once Feishu has accepted the update, starting another attempt could
+      // race the credential swap and callback probe. Status commands remain
+      // available while that non-cancellable convergence is in progress.
+      if (current.state === 'saving') {
+        await this.#send(chatId, this.#repairStatusText(current));
+        return;
+      }
+      // Feishu launcher links carry one-time user codes. Opening one with the
+      // wrong Open Platform account can consume it even though authorization
+      // did not succeed, so a fresh bare /repair must replace a still-waiting
+      // attempt instead of redisplaying the same unusable URL.
+      if (REPAIR_AUTHORIZATION_STATES.has(current.state)) {
+        let cancelled;
+        try {
+          cancelled = repairSnapshot(
+            await this.#repair.cancel(this.#repairArgs(previous)),
+            { botId: this.#botId },
+          );
+          previous.snapshot = cancelled;
+        } catch {
+          await this.#send(chatId, t('暂时无法取消旧修复任务，未生成新链接；请稍后重试。'));
+          return;
+        }
+        if (!REPAIR_TERMINAL_STATES.has(cancelled.state)) {
+          await this.#send(chatId, this.#repairStatusText(cancelled));
+          return;
+        }
+        previous.stopped = true;
+        this.#repairMonitorVersion += 1;
+        restarted = cancelled.state === 'cancelled';
+      } else if (REPAIR_TERMINAL_STATES.has(current.state)) {
+        previous.stopped = true;
+        this.#repairMonitorVersion += 1;
       }
     }
 
@@ -1225,7 +1247,7 @@ export class FeishuHarnessBridge {
       await this.#send(chatId, t('飞书未返回授权链接，已中止本次修复。'));
       return;
     }
-    await this.#sendRepairLink(chatId, attempt.verificationUrl, snapshot);
+    await this.#sendRepairLink(chatId, attempt.verificationUrl, snapshot, { restarted });
     this.#monitorRepair(attempt);
   }
 
@@ -1303,15 +1325,15 @@ export class FeishuHarnessBridge {
     });
   }
 
-  async #sendRepairLink(chatId, url, snapshot, { existing = false } = {}) {
+  async #sendRepairLink(chatId, url, snapshot, { restarted = false } = {}) {
     const remaining = snapshot.remainingSeconds
       ?? (snapshot.expiresAt ? Math.max(0, Math.ceil((snapshot.expiresAt - Date.now()) / 1000)) : null);
     const expiry = remaining === null
       ? t('链接为短期有效')
       : t('链接约 {minutes} 分钟后过期', { minutes: Math.max(1, Math.ceil(remaining / 60)) });
     await this.#send(chatId, [
-      existing ? t('已有一个修复任务在等待授权。') : t('🔧 准备修复卡片按钮。'),
-      t('本次只会增量添加 card.action.trigger。请核对确认页只显示这一项；若出现其他权限或事件，请取消。'),
+      restarted ? t('旧授权链接已作废，已生成新的修复链接。') : t('🔧 准备补全权限与回调。'),
+      t('本次最多增量添加三项：卡片回调 card.action.trigger；飞书显示为“获取单聊、群组消息”的租户权限 im:message:readonly（用于读取用户消息中的图片或文件）；以及 im:resource（用于上传机器人发送的图片或文件）。确认页只会显示当前缺少的项；若出现上述范围之外的配置，请取消。'),
       '',
       t('当前设备直接打开：'),
       url,

@@ -231,7 +231,7 @@ const EN = Object.freeze({
   '保持本页打开，等待新机器人的长连接就绪': 'Keep this page open until the bot connection is ready',
   '在飞书中打开': 'Open in Feishu',
   '取消添加': 'Cancel',
-  '使用飞书扫码修复卡片按钮': 'Scan with Feishu to repair card buttons',
+  '使用飞书扫码补全权限': 'Scan with Feishu to complete permissions',
   '使用飞书确认群消息权限': 'Confirm group-message permission with Feishu',
   '扫码会更新现有飞书应用，只增量开通“获取群组中所有消息”权限；不会创建新应用。确认后会自动启用“响应所有群消息”，其他机器人不受影响。': 'Scanning updates the existing Feishu app with only the “Read all messages in associated group chat” scope. It does not create a new app. After confirmation, “Respond to all group messages” is enabled automatically; other bots are unaffected.',
   '核对现有应用，并确认“获取群组中所有消息”权限': 'Review the existing app and confirm the “Read all messages in associated group chat” permission',
@@ -242,18 +242,20 @@ const EN = Object.freeze({
   '权限配置已提交，正在启用全部消息模式并重连此机器人；此阶段无法取消，其他机器人不会中断。': 'The permission update was submitted. Enabling all-message mode and reconnecting this bot. This stage cannot be cancelled; other bots will not be interrupted.',
   '正在为现有飞书应用申请群消息权限二维码，请稍候。': 'Requesting a group-message permission QR code for the existing Feishu app…',
   '群消息权限没有开通完成': 'Group-message permission was not granted',
-  '扫码会更新现有飞书应用，只增量补充卡片按钮回调；不会创建新应用。确认后此机器人会短暂重连，其他机器人不受影响。': 'Scanning updates the existing Feishu app with only the card-button callback. It does not create a new app. This bot reconnects briefly after confirmation; other bots are not affected.',
-  '核对现有应用名称，并确认只新增卡片回调': 'Review the existing app name and confirm that only the card callback is added',
-  '保持本页打开，等待卡片按钮修复完成': 'Keep this page open until card-button repair finishes',
-  '取消修复': 'Cancel repair',
-  '已确认，正在完成卡片按钮修复': 'Confirmed. Finishing card-button repair',
-  '正在准备修复二维码': 'Preparing the repair QR code',
-  '配置已提交，正在验证卡片按钮回调并重连此机器人；此阶段无法取消，其他机器人不会中断。': 'The update was submitted. Verifying the card callback and reconnecting this bot. This stage cannot be cancelled; other bots will not be interrupted.',
+  '扫码会更新现有飞书应用，最多增量补充卡片按钮回调、读取用户消息内图片或文件所需的 im:message:readonly（飞书显示为“获取单聊、群组消息”），以及上传机器人图片或文件所需的 im:resource；不会创建新应用。确认页只显示当前缺少项，完成后此机器人会短暂重连，其他机器人不受影响。': 'Scanning updates the existing Feishu app with up to three missing items: the card-button callback, im:message:readonly for reading images or files in user messages (shown by Feishu as “Read direct and group messages”), and im:resource for uploading images or files sent by the bot. It does not create a new app. The confirmation page shows only missing items; this bot reconnects briefly afterward, while other bots are unaffected.',
+  '核对现有应用名称，并确认只新增当前缺少的上述配置': 'Review the existing app name and confirm that only the missing items described above are added',
+  '保持本页打开，等待权限与回调补全完成': 'Keep this page open until permissions and the callback are complete',
+  '取消补全': 'Cancel setup',
+  '已确认，正在完成权限与回调配置': 'Confirmed. Completing permissions and callback setup',
+  '正在准备权限补全二维码': 'Preparing the permission-completion QR code',
+  '配置已提交，正在保存权限、验证卡片回调并重连此机器人；此阶段无法取消，其他机器人不会中断。': 'The update was submitted. Saving permissions, verifying the card callback, and reconnecting this bot. This stage cannot be cancelled; other bots will not be interrupted.',
   '正在为现有飞书应用申请一次性更新二维码，请稍候。': 'Requesting a one-time update QR code for the existing Feishu app…',
-  '卡片按钮没有修复完成': 'Card-button repair did not finish',
-  '修复卡片按钮': 'Repair card buttons',
+  '权限与回调没有补全完成': 'Permissions and callback setup did not finish',
+  '补全权限': 'Complete permissions',
+  '补全范围': 'Completion scope',
+  '最多增量添加卡片回调 card.action.trigger、读取消息内图片或文件所需的 im:message:readonly（飞书显示为“获取单聊、群组消息”），以及上传机器人图片或文件所需的 im:resource；确认页只显示当前缺少项，不会创建新应用。': 'Adds up to the missing card callback card.action.trigger, im:message:readonly for reading images or files in messages (shown by Feishu as “Read direct and group messages”), and im:resource for uploading images or files sent by the bot. The confirmation page shows only missing items; no new app is created.',
   '等待扫码…': 'Waiting for scan…',
-  '飞书服务返回了不匹配的卡片修复二维码': 'Feishu returned a repair QR code for a different bot',
+  '飞书服务返回了不匹配的权限补全二维码': 'Feishu returned a permission-completion QR code for a different bot',
   '飞书服务返回了不匹配的群消息权限二维码': 'Feishu returned a group-message permission QR code for a different bot',
   '飞书服务返回的修复信息缺少 botId': 'Feishu repair status is missing the bot ID',
   '飞书服务返回的应用更新信息缺少 botId': 'Feishu app-update status is missing the bot ID',
@@ -261,16 +263,16 @@ const EN = Object.freeze({
   '此机器人': 'this bot',
   '用于为${botName}开通群消息权限的一次性授权二维码': 'One-time QR code for granting group-message permission to ${botName}',
   '正在为「${botName}」开通群消息权限': 'Granting group-message permission to “${botName}”',
-  '${botName ?? "机器人"}的修复二维码已生成，请使用飞书扫码。': 'Repair QR code generated for ${botName ?? "bot"}. Scan it with Feishu.',
+  '${botName ?? "机器人"}的权限补全二维码已生成，请使用飞书扫码。': 'Permission-completion QR code generated for ${botName ?? "bot"}. Scan it with Feishu.',
   '${botName ?? "机器人"}的群消息权限二维码已生成，请使用飞书确认。': 'Group-message permission QR code generated for ${botName ?? "bot"}. Confirm it with Feishu.',
   '${targetBotName}已开通群消息权限，并启用“响应所有群消息”。': '${targetBotName} now has group-message permission and “Respond to all group messages” is enabled.',
   '${targetBot.bot.name}已开通群消息权限，并启用“响应所有群消息”。': '${targetBot.bot.name} now has group-message permission and “Respond to all group messages” is enabled.',
   '${targetBot.bot.name}已连接，可以在飞书中开始聊天。': '${targetBot.bot.name} is connected and ready to chat in Feishu.',
-  '已取消卡片按钮修复。': 'Card-button repair was cancelled.',
+  '已取消补全权限与回调。': 'Completing permissions and the callback was cancelled.',
   '已取消群消息权限授权。': 'Group-message permission authorization was cancelled.',
-  '卡片按钮已更新，但暂时无法确认机器人连接状态': 'The card callback was updated, but the bot connection could not be confirmed yet',
+  '权限与回调已更新，但暂时无法确认机器人连接状态': 'Permissions and the callback were updated, but the bot connection could not be confirmed yet',
   '群消息权限已更新，但暂时无法确认机器人连接状态': 'The group-message permission was updated, but the bot connection could not be confirmed yet',
-  '飞书卡片按钮修复失败': 'Could not repair the Feishu card buttons',
+  '飞书权限与回调补全失败': 'Could not complete Feishu permissions and callback setup',
   '飞书群消息权限开通失败': 'Could not grant the Feishu group-message permission',
   '请先完成当前飞书授权操作，再开通群消息权限。': 'Finish the current Feishu authorization before granting group-message permission.',
   '已确认，正在连接新机器人': 'Confirmed. Connecting the new bot',
@@ -598,22 +600,22 @@ function translateDynamic(text) {
   if (match) return `Remove ${match[1]} from DeepSeek Harness`;
   match = /^(.+)的飞书授权流程$/.exec(text);
   if (match) return `Feishu authorization flow for ${match[1]}`;
-  match = /^用于修复(.+)卡片按钮的一次性授权二维码$/.exec(text);
-  if (match) return `One-time QR code for repairing card buttons for ${match[1]}`;
+  match = /^用于为(.+)补全权限与回调的一次性授权二维码$/.exec(text);
+  if (match) return `One-time QR code for completing permissions and the callback for ${match[1]}`;
   match = /^用于为(.+)开通群消息权限的一次性授权二维码$/.exec(text);
   if (match) return `One-time QR code for granting group-message permission to ${match[1]}`;
-  match = /^正在修复「(.+)」$/.exec(text);
-  if (match) return `Repairing “${match[1]}”`;
+  match = /^正在为「(.+)」补全权限与回调$/.exec(text);
+  if (match) return `Completing permissions and the callback for “${match[1]}”`;
   match = /^正在为「(.+)」开通群消息权限$/.exec(text);
   if (match) return `Granting group-message permission to “${match[1]}”`;
-  match = /^修复(.+)的卡片按钮$/.exec(text);
-  if (match) return `Repair card buttons for ${match[1]}`;
-  match = /^(.+)的修复二维码已生成，请使用飞书扫码。$/.exec(text);
-  if (match) return `Repair QR code generated for ${match[1]}. Scan it with Feishu.`;
+  match = /^为(.+)补全权限与回调$/.exec(text);
+  if (match) return `Complete permissions and the callback for ${match[1]}`;
+  match = /^(.+)的权限补全二维码已生成，请使用飞书扫码。$/.exec(text);
+  if (match) return `Permission-completion QR code generated for ${match[1]}. Scan it with Feishu.`;
   match = /^(.+)的群消息权限二维码已生成，请使用飞书确认。$/.exec(text);
   if (match) return `Group-message permission QR code generated for ${match[1]}. Confirm it with Feishu.`;
-  match = /^(.+)的卡片按钮已修复。$/.exec(text);
-  if (match) return `Card buttons repaired for ${match[1]}.`;
+  match = /^(.+)的权限与回调已补全。$/.exec(text);
+  if (match) return `Permissions and the callback completed for ${match[1]}.`;
   match = /^(.+)已开通群消息权限，并启用“响应所有群消息”。$/.exec(text);
   if (match) return `${match[1]} now has group-message permission and “Respond to all group messages” is enabled.`;
   match = /^(检查连接|重试连接)(.+)$/.exec(text);

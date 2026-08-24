@@ -50,9 +50,9 @@ function forms(value, result = []) {
   return result;
 }
 
-test('menu exposes the increased command set and keeps repair number-only', () => {
+test('menu exposes the increased command set and keeps permission completion number-only', () => {
   const card = JSON.parse(menuCard());
-  assert.match(JSON.stringify(card), /\*\*5\*\*\S*修复/);
+  assert.match(JSON.stringify(card), /\*\*5\*\*\S*补全权限/);
   const actions = buttons(card).flatMap((button) => (
     button.behaviors?.map((behavior) => behavior?.value?.action) ?? []
   ));
@@ -60,7 +60,7 @@ test('menu exposes the increased command set and keeps repair number-only', () =
     'presets', 'models', 'new', 'sessions', 'workspaces',
     'stop', 'compact', 'archive_toggle', 'status', 'help',
   ]);
-  // 修复不占位按钮：仅通过数字兜底「5🔧」触发（见 bridge）
+  // 补全权限不占位按钮：仅通过数字兜底「5🔧」触发（见 bridge）
   assert.equal(actions.includes('repair'), false);
 });
 

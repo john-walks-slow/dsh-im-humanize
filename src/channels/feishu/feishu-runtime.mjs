@@ -267,7 +267,6 @@ export class FeishuRuntime {
         botOpenId: this.#botOpenId,
         groupResponseMode: this.#groupResponseMode,
         repair: this.#repair,
-        repairOwnerOpenIds: new Set(this.#ownerOpenIds.filter((value) => value !== '*')),
         replyTimeoutMs: this.#replyTimeoutMs,
         signal,
         logger: this.#logger,

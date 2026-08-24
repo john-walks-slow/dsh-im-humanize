@@ -58,7 +58,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 Other IM platforms can be added through the same channel-adapter structure.
 
-All nine built-in channels can send JPEG, PNG, and WebP images, plus GIFs sent as image files, with optional captions to Harness. Each image is limited to 5 MB, and images in one message are limited to 20 MB in total.
+All nine built-in channels can send JPEG, PNG, and WebP images, plus GIFs sent as image files, with optional captions to Harness. Each image is limited to 5 MB, and images in one message are limited to 20 MB in total. Downloading images or files from Feishu user messages requires the `im:message:readonly` tenant scope, shown on the confirmation page as **Read direct and group messages**; Feishu currently offers no narrower image-only scope for that download endpoint. Apps created through the built-in QR flow request it by default; for existing or manually connected apps, click **Complete permissions** in the plugin's Feishu settings and scan the QR code to incrementally add that scope, `im:resource` for uploading bot-sent images or files, and the card callback.
 
 ### Result-file and image delivery
 
@@ -69,7 +69,7 @@ After the model calls the file-return tool, the plugin hands the specified file 
 | Channel | Platform requirements |
 | --- | --- |
 | WeChat | The current binding protocol and conversation must support native file messages; the WeChat API response determines the actual range. |
-| Feishu | Feishu's file-upload API requires a non-empty file no larger than the platform's 30 MB limit. The app needs the `im:resource` tenant scope (**Read and upload images or other files**). Apps created through the built-in QR flow request it by default; existing or manually connected apps still need it added and approved. The Feishu developer console currently has no separate `im:resource:upload` scope. |
+| Feishu | Feishu's file-upload API requires a non-empty file no larger than the platform's 30 MB limit. The app needs the `im:resource` tenant scope (**Read and upload images or other files**). Apps created through the built-in QR flow request it by default; existing or manually connected apps can add it incrementally through **Complete permissions** or `/repair` in a direct chat, followed by any approval Feishu requires. The Feishu developer console currently has no separate `im:resource:upload` scope. |
 | DingTalk | The app needs `qyapi_base`, and the bot must support file messages. The current OAPI and bot capability determine the accepted formats and sizes. |
 | WeCom | The app needs media-upload and file-message capability; the WeCom API response determines the actual range. |
 | QQ | The bot needs file-message capability and remains subject to QQ's daily upload quota; the bot reports when the quota is exhausted. |
@@ -154,6 +154,7 @@ Each WhatsApp bot also has its own access mode. Existing bots migrate to **Only 
 | `/batch` | Start batch input in a direct chat and collect up to 10 text messages. |
 | `/send` | Submit the collected messages, in order, as one input. |
 | `/cancel` | Cancel batch input and discard its collected messages. |
+| `/repair` | In a Feishu direct chat, incrementally repair the card callback and permissions required to read and upload message images or files. |
 | `/compact` | Immediately compact older context in the Session bound to the current chat. |
 | `/workspace <absolute workspace path>` | Switch the current bot's Harness workspace. |
 | `/workspacelist` | List workspace absolute paths that still exist on the current Harness Host. |
@@ -182,6 +183,7 @@ If the Slack desktop app has no native Slash Command registered with the same na
 - `/stop` and `/steer` control only a running task started by this chat. Even when multiple chats bind the same Session, they do not intentionally control another chat's task. `/stop` does not delete the Session or its history, preserves queued work that has not started, and is safe to repeat.
 - `/steer` accepts text only, including multiple lines. It neither creates another Session nor starts a second task. Send an ordinary message when no task is running; while an approval or question is pending, answer it first or use `/stop`.
 - `/batch`, `/send`, and `/cancel` are available only in a direct chat with the bot. After `/batch`, subsequent text-only messages are held temporarily, up to 10 messages. The tenth is collected and prompts you to submit; later messages are rejected and the batch is never submitted automatically. `/send` processes the collected messages in their original order as one input, while `/cancel` discards them. Images, files, and other commands are not collected. An unsubmitted batch is lost if the bot restarts. Ordinary chat behavior is unchanged when batch input is not active.
+- Feishu `/repair` is available only in a direct chat and follows the current bot's channel access policy just like every other command; the plugin defines no separate administrator role. It incrementally adds up to `card.action.trigger`, `im:message:readonly`, and `im:resource`, while the confirmation page shows only items the app is currently missing. The authorization page must be opened by an account that can access the target app in Feishu Open Platform. Bare `/repair` starts repair; if an older attempt is still awaiting authorization, it invalidates that one-time link before generating a new one. Use `/repair qr` for the current link's QR code, `/repair status` to inspect the attempt, `/repair verify` to refresh verification, and `/repair cancel` to cancel it; none of these four supplemental commands starts another authorization. Once Feishu has accepted the update and the bot is waiting for the test-button callback, a second repair is not started concurrently.
 - `/compact` acts only on the Harness Session already bound to the current chat and is never sent to the model. The bot reports the applicable status when the chat has no Session yet, the Session is generating a reply, or there is no compactable history.
 - The path must be an existing absolute directory. The bot returns an actionable error and the correct usage when validation fails.
 - `/workspacelist` takes no arguments. It combines the Harness global registry with the current bot's path. When that current path still exists and is safe to display, it appears first and is marked as current. Any listed path can be copied directly into `/workspace`.

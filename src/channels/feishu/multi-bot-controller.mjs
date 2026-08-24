@@ -869,22 +869,6 @@ export class MultiBotDshFeishuController {
         'Feishu returned credentials for a different account domain.',
       );
     }
-    if (record.initiator.actorOpenId && record.initiator.actorOpenId !== ownerOpenId) {
-      throw this.#callbackRepairError(
-        record,
-        'repair_owner_mismatch',
-        'The Feishu repair was confirmed by a different operator.',
-      );
-    }
-    if (!target.ownerOpenIds.includes(ALL_VISIBLE_SENDERS)
-      && !target.ownerOpenIds.includes(ownerOpenId)) {
-      throw this.#callbackRepairError(
-        record,
-        'repair_owner_mismatch',
-        'The Feishu repair operator is not an owner of this configured bot.',
-      );
-    }
-
     record.stage = 'verifying_identity';
     let verified;
     try {
@@ -1008,7 +992,7 @@ export class MultiBotDshFeishuController {
     record.stage = 'awaiting_callback';
     try {
       const proof = await runtime.beginCardActionProbe({
-        expectedOperatorOpenId: ownerOpenId,
+        expectedOperatorOpenId: record.initiator.actorOpenId ?? ownerOpenId,
         timeoutMs: this.#callbackProbeTimeoutMs,
         ...(record.initiator.chatId ? { chatId: record.initiator.chatId } : {}),
       });

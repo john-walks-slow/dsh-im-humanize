@@ -3,7 +3,7 @@ export default {
   // feishu/bridge.mjs — welcome / help
   '北汇星河 AIOS 已连接 DeepSeek Harness。':
     'BeiHui XingHe AIOS is connected to DeepSeek Harness.',
-  '/repair  修复卡片按钮回调': '/repair  Repair the card-button callback',
+  '/repair  补全飞书权限与卡片回调': '/repair  Complete Feishu permissions and the card callback',
   '/m（或 /menu）  打开交互卡片菜单': '/m (or /menu)  Open the interactive card menu',
   '/watch [Session ID 或序号]  关注会话，任务完成自动推送':
     '/watch [Session ID or index]  Watch a session; completion is pushed automatically',
@@ -18,8 +18,8 @@ export default {
   '机器人正在移除或已重新接入，无法操作原会话的工作区。':
     'The bot is being removed or has been reconnected; the original session’s workspace cannot be changed.',
   '操作失败，请稍后重试。': 'The operation failed. Please try again later.',
-  '结果文件「{name}」已生成，但机器人缺少飞书文件上传权限。请为应用添加 im:resource 并完成必要审批后重试。':
-    'The result file "{name}" was generated, but the bot lacks Feishu file-upload permission. Add the im:resource scope to the app, complete the required approval, and try again.',
+  '结果文件「{name}」已生成，但机器人缺少飞书文件上传权限 im:resource。请私聊机器人执行 /repair 命令，或者在插件页面点击“补全权限”按钮并扫码。完成飞书要求的发布审批后重试。':
+    'The result file "{name}" was generated, but the bot lacks the Feishu file-upload scope im:resource. Run /repair in a direct chat with the bot, or click the “Complete permissions” button on the plugin page and scan the QR code. Complete any publishing approval Feishu requires, then try again.',
   '结果文件「{name}」超过飞书 30 MB 上限，未发送。':
     'The result file "{name}" exceeds the Feishu 30 MB limit and was not sent.',
   '结果文件「{name}」为空，飞书不允许发送空文件。':
@@ -41,20 +41,20 @@ export default {
   // feishu/bridge.mjs — repair flow
   '为避免授权链接暴露，请私聊机器人发送 /repair。':
     'To keep the authorization link private, send /repair to the bot in a direct message.',
-  '当前机器人没有可验证的接入者身份，不能从聊天发起修复；请先在插件页设置管理员。':
-    'This bot has no verifiable owner identity, so repair cannot be started from chat. Set an administrator on the plugin page first.',
-  '此操作只能由机器人接入者在私聊中发起，未进行任何修改。':
-    'This action can only be started by the bot owner in a direct message. Nothing was changed.',
+  '无法识别当前发送者，未发起修复。':
+    'The current sender could not be identified, so repair was not started.',
   '当前 Host 版本暂不支持聊天内修复，请先更新插件。':
     'The current Host version does not support in-chat repair. Update the plugin first.',
   '用法：/repair、/repair qr、/repair status、/repair cancel 或 /repair verify':
     'Usage: /repair, /repair qr, /repair status, /repair cancel, or /repair verify',
   '当前 Runtime 没有可恢复的修复任务记录（机器人可能刚完成密钥更新并重启）。本命令不会启动新的授权；请查看机器人发送的验证结果，确认上一次任务已结束后再发送 /repair。':
     'The current Runtime has no recoverable repair attempt (the bot may have just rotated its secret and restarted). This command starts no new authorization. Check the verification result the bot sent, then send /repair after the previous attempt has finished.',
-  '另一位管理员正在修复该机器人，本次不会显示其授权信息。':
-    'Another administrator is repairing this bot; its authorization info will not be shown this time.',
+  '另一位用户正在修复该机器人，本次不会显示其授权信息。':
+    'Another user is repairing this bot; its authorization info will not be shown this time.',
   '暂时无法取消修复任务，请稍后重试。':
     'Could not cancel the repair task right now. Please try again later.',
+  '暂时无法取消旧修复任务，未生成新链接；请稍后重试。':
+    'Could not cancel the previous repair attempt, so no new link was generated. Please try again later.',
   '暂时无法查询修复状态，请稍后重试。':
     'Could not check the repair status right now. Please try again later.',
   '修复流程暂时失败，现有机器人连接不受影响；请稍后发送 /repair 重试。':
@@ -69,10 +69,11 @@ export default {
     'The repair status query was interrupted; the existing bot connection is unaffected. Send /repair status to retry.',
   '链接为短期有效': 'The link is valid for a short time.',
   '链接约 {minutes} 分钟后过期': 'The link expires in about {minutes} minutes',
-  '已有一个修复任务在等待授权。': 'A repair task is already waiting for authorization.',
-  '🔧 准备修复卡片按钮。': '🔧 Preparing to repair the card buttons.',
-  '本次只会增量添加 card.action.trigger。请核对确认页只显示这一项；若出现其他权限或事件，请取消。':
-    'Only card.action.trigger will be added. Check that the confirmation page shows only this item; cancel if any other permission or event appears.',
+  '旧授权链接已作废，已生成新的修复链接。':
+    'The previous authorization link was invalidated and a new repair link was generated.',
+  '🔧 准备补全权限与回调。': '🔧 Preparing to complete permissions and the callback.',
+  '本次最多增量添加三项：卡片回调 card.action.trigger；飞书显示为“获取单聊、群组消息”的租户权限 im:message:readonly（用于读取用户消息中的图片或文件）；以及 im:resource（用于上传机器人发送的图片或文件）。确认页只会显示当前缺少的项；若出现上述范围之外的配置，请取消。':
+    'This may incrementally add up to three items: the card callback card.action.trigger; the tenant scope im:message:readonly, shown by Feishu as “Read direct and group messages” and used to read images or files in user messages; and im:resource, used to upload images or files sent by the bot. The confirmation page shows only items the app is currently missing; cancel if anything outside this scope appears.',
   '当前设备直接打开：': 'Open directly on this device:',
   '若要用另一台设备扫码，发送 /repair qr。{expiry}。':
     'To scan with another device, send /repair qr. {expiry}.',
@@ -199,8 +200,8 @@ export default {
   '切换归档显示': 'Toggle archived sessions',
   '📊 状态': '📊 Status',
   '📖 帮助': '📖 Help',
-  '**数字兜底**\n**1**工作区列表 · **2**新会话 · **3**会话列表 · **4**状态\n**5**🔧修复 · **6**帮助':
-    '**Number fallback**\n**1** Workspace list · **2** New session · **3** Session list · **4** Status\n**5** 🔧 Repair · **6** Help',
+  '**数字兜底**\n**1**工作区列表 · **2**新会话 · **3**会话列表 · **4**状态\n**5**🔧补全权限 · **6**帮助':
+    '**Number fallback**\n**1** Workspace list · **2** New session · **3** Session list · **4** Status\n**5** 🔧 Complete permissions · **6** Help',
   '跟随 Host 默认{default}': 'Follow Host default{default}',
   '**当前**：{value}': '**Current**: {value}',
   '**Host 默认**：{value}': '**Host default**: {value}',
@@ -241,10 +242,10 @@ export default {
   '/steer 指令  给 Agent 补充指令': '/steer INSTRUCTION  Steer the Agent',
   '**📋 卡片功能**\n\n1. 会话下拉 — 切换当前绑定会话\n2. 工作区下拉 — 切换工作区\n3. 🤖 预设下拉 — 切换 Agent 预设\n4. 🧠 模型下拉 — 切换模型\n5. 🆕 新会话 — 开启全新会话\n6. 📋 会话/关注 — 查看/绑定会话，管理关注\n7. ⏹ 停止 — 停止当前任务\n8. 📐 压缩 — 压缩当前会话上下文\n9. 补充指令 — 给 Agent 发送指令\n10. 🗄 归档切换 — 显示/隐藏归档会话\n11. 📊 状态 — 查看系统连接状态\n12. 📖 帮助 — 查看本帮助':
     '**📋 Card features**\n\n1. Session dropdown — switch the bound session\n2. Workspace dropdown — switch workspace\n3. 🤖 Preset dropdown — switch Agent Preset\n4. 🧠 Model dropdown — switch model\n5. 🆕 New session — start fresh\n6. 📋 Sessions/watches — view or bind sessions and manage watches\n7. ⏹ Stop — stop the current task\n8. 📐 Compact — compact the current session context\n9. Steer task — send an instruction to the Agent\n10. 🗄 Archived toggle — show or hide archived sessions\n11. 📊 Status — view connection status\n12. 📖 Help — view this help',
-  '**⌨️ 文本命令**\n\n`/m` — 打开菜单卡片\n`/new` — 开启全新会话\n`/session ID` — 绑定已有会话\n`/sessionlist [工作区]` — 列出会话\n`/workspace 路径` — 切换工作区\n`/workspacelist` — 列出工作区\n`/status` — 查看连接状态\n`/compact` — 压缩上下文\n`/stop` — 停止当前任务\n`/steer 指令` — 补充指令\n`/watch ID` — 关注会话\n`/watchlist` — 关注列表\n`/unwatch ID` — 取消关注\n`/archived on/off` — 归档显隐\n`/presetlist` — 列出预设\n`/preset [序号/ID]` — 切换预设\n`/preset --default` — 跟随默认\n`/models` — 列出模型\n`/reasoninglist` 或 `/reasonings` — 按序号列出当前模型可用推理等级\n`/reasoning [序号、等级ID或 --default]` — 查看或切换当前推理等级\n`/model [序号或完整模型ID] [推理等级ID]` — 查看或切换当前会话模型\n`/batch` — 开启批量输入（仅私聊，最多 10 条文字）\n`/send` — 提交当前批次\n`/cancel` — 取消当前批次\n`/repair` — 修复卡片按钮':
-    '**⌨️ Text commands**\n\n`/m` — open the menu card\n`/new` — start a new session\n`/session ID` — bind an existing session\n`/sessionlist [workspace]` — list sessions\n`/workspace PATH` — switch workspace\n`/workspacelist` — list workspaces\n`/status` — view connection status\n`/compact` — compact context\n`/stop` — stop the current task\n`/steer INSTRUCTION` — steer the task\n`/watch ID` — watch a session\n`/watchlist` — list watched sessions\n`/unwatch ID` — stop watching\n`/archived on/off` — show or hide archived sessions\n`/presetlist` — list presets\n`/preset [index/ID]` — switch preset\n`/preset --default` — follow default\n`/models` — list models\n`/reasoninglist` or `/reasonings` — list reasoning efforts for the current model\n`/reasoning [index, effort ID, or --default]` — show or switch reasoning effort\n`/model [index or full model ID] [reasoning effort ID]` — show or switch the current Session model\n`/batch` — start batch input (direct messages only, up to 10 text messages)\n`/send` — submit the current batch\n`/cancel` — cancel the current batch\n`/repair` — repair card buttons',
-  '**💡 数字兜底**\n回复数字快速操作：\n**1**工作区列表 · **2**新会话 · **3**会话/关注\n**4**状态 · **5**修复 · **6**帮助':
-    '**💡 Number fallback**\nReply with a number for a quick action:\n**1** Workspace list · **2** New session · **3** Sessions/watches\n**4** Status · **5** Repair · **6** Help',
+  '**⌨️ 文本命令**\n\n`/m` — 打开菜单卡片\n`/new` — 开启全新会话\n`/session ID` — 绑定已有会话\n`/sessionlist [工作区]` — 列出会话\n`/workspace 路径` — 切换工作区\n`/workspacelist` — 列出工作区\n`/status` — 查看连接状态\n`/compact` — 压缩上下文\n`/stop` — 停止当前任务\n`/steer 指令` — 补充指令\n`/watch ID` — 关注会话\n`/watchlist` — 关注列表\n`/unwatch ID` — 取消关注\n`/archived on/off` — 归档显隐\n`/presetlist` — 列出预设\n`/preset [序号/ID]` — 切换预设\n`/preset --default` — 跟随默认\n`/models` — 列出模型\n`/reasoninglist` 或 `/reasonings` — 按序号列出当前模型可用推理等级\n`/reasoning [序号、等级ID或 --default]` — 查看或切换当前推理等级\n`/model [序号或完整模型ID] [推理等级ID]` — 查看或切换当前会话模型\n`/batch` — 开启批量输入（仅私聊，最多 10 条文字）\n`/send` — 提交当前批次\n`/cancel` — 取消当前批次\n`/repair` — 补全飞书权限与卡片回调':
+    '**⌨️ Text commands**\n\n`/m` — open the menu card\n`/new` — start a new session\n`/session ID` — bind an existing session\n`/sessionlist [workspace]` — list sessions\n`/workspace PATH` — switch workspace\n`/workspacelist` — list workspaces\n`/status` — view connection status\n`/compact` — compact context\n`/stop` — stop the current task\n`/steer INSTRUCTION` — steer the task\n`/watch ID` — watch a session\n`/watchlist` — list watched sessions\n`/unwatch ID` — stop watching\n`/archived on/off` — show or hide archived sessions\n`/presetlist` — list presets\n`/preset [index/ID]` — switch preset\n`/preset --default` — follow default\n`/models` — list models\n`/reasoninglist` or `/reasonings` — list reasoning efforts for the current model\n`/reasoning [index, effort ID, or --default]` — show or switch reasoning effort\n`/model [index or full model ID] [reasoning effort ID]` — show or switch the current Session model\n`/batch` — start batch input (direct messages only, up to 10 text messages)\n`/send` — submit the current batch\n`/cancel` — cancel the current batch\n`/repair` — complete Feishu permissions and the card callback',
+  '**💡 数字兜底**\n回复数字快速操作：\n**1**工作区列表 · **2**新会话 · **3**会话/关注\n**4**状态 · **5**补全权限 · **6**帮助':
+    '**💡 Number fallback**\nReply with a number for a quick action:\n**1** Workspace list · **2** New session · **3** Sessions/watches\n**4** Status · **5** Complete permissions · **6** Help',
   '从下方下拉选择补充指令；最后一项可自定义输入。':
     'Choose an instruction below; the last option lets you enter a custom one.',
   '当前没有绑定会话，请先绑定会话再补充指令。':
@@ -262,8 +263,8 @@ export default {
   '3 · 新会话': '3 · New session',
   '4 · 状态': '4 · Status',
   '5 · 帮助': '5 · Help',
-  '**6 · 修复卡片按钮**（请直接回复数字 **6**）':
-    '**6 · Repair card buttons** (reply with the number **6**)',
+  '**6 · 补全权限**（请直接回复数字 **6**）':
+    '**6 · Complete permissions** (reply with the number **6**)',
   '7 · 关注列表': '7 · Watch list',
   '🧪 验证卡片按钮': '🧪 Verify card buttons',
   '授权已提交。请点击下方按钮；机器人真实收到回调后才会判定修复成功。':
@@ -290,8 +291,8 @@ export default {
   '3 · /new  开启新会话': '3 · /new  Start a new session',
   '4 · /status  连接状态': '4 · /status  Connection status',
   '5 · /help  本帮助': '5 · /help  This help',
-  '6 · /repair  修复卡片按钮（请回复数字 6）':
-    '6 · /repair  Repair card buttons (reply with the number 6)',
+  '6 · /repair  补全权限与回调（请回复数字 6）':
+    '6 · /repair  Complete permissions and callback (reply with the number 6)',
   '7 · /watchlist  关注列表': '7 · /watchlist  Watch list',
   '直接发送文字/图片即继续当前会话。':
     'Send text or an image directly to continue the current session.',
@@ -336,8 +337,8 @@ export default {
   '飞书机器人': 'Feishu bot',
 
   // feishu/message-utils.mjs
-  '飞书机器人缺少图片读取权限。请在飞书开放平台为该应用添加 im:message:readonly，发布新版本并完成必要的管理员审批后，再重新发送图片。':
-    'The Feishu bot is missing image-read permission. Add im:message:readonly to the app in Feishu Open Platform, publish a new version, complete the required admin approval, then resend the image.',
+  '飞书机器人缺少图片读取权限 im:message:readonly（飞书显示为“获取单聊、群组消息”）。请私聊机器人执行 /repair 命令，或者在插件页面点击“补全权限”按钮并扫码。按飞书提示发布新版本、完成必要审批后，再重新发送图片。':
+    'The Feishu bot is missing the image-read scope im:message:readonly, shown by Feishu as “Read direct and group messages.” Run /repair in a direct chat with the bot, or click the “Complete permissions” button on the plugin page and scan the QR code. Publish a new version and complete any approval requested by Feishu, then resend the image.',
 
   // feishu/feishu-runtime.mjs — callback probe notices
   '✅ 修复完成：已实测收到 card.action.trigger，菜单按钮现在可用。':

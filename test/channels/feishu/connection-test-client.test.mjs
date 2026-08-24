@@ -60,10 +60,19 @@ test('Feishu connection check requests and displays test-message feedback', asyn
   assert.match(footerChildren[0].props.className, /\bbxf-botActions\b/);
   assert.equal(footerChildren[1].props.role, 'status');
   assert.match(footerChildren[1].props.className, /\bdim-cardFeedback\b/);
+  const repairButton = renderer.root.findByProps({
+    'aria-label': '为飞书测试机器人补全权限与回调',
+  });
+  const repairTooltip = renderer.root.findByProps({ className: 'bxf-repairTooltip' });
+  assert.equal(repairTooltip.props.role, 'tooltip');
+  assert.equal(repairButton.props['aria-describedby'], repairTooltip.props.id);
+  assert.match(textOf(repairTooltip), /card\.action\.trigger/);
+  assert.match(textOf(repairTooltip), /im:message:readonly/);
+  assert.match(textOf(repairTooltip), /im:resource/);
   await act(async () => renderer.unmount());
 
-  assert.match(markup, /修复卡片按钮/);
-  assert.match(markup, /aria-label="修复飞书测试机器人的卡片按钮"/);
+  assert.match(markup, /补全权限/);
+  assert.match(markup, /aria-label="为飞书测试机器人补全权限与回调"/);
   assert.match(markup, /<select[^>]*aria-label="群聊响应方式"/);
   assert.match(markup, /仅在 @机器人时响应（推荐）/);
   assert.match(markup, /响应所有群消息/);
@@ -416,7 +425,7 @@ test('Feishu callback repair keeps a Host-submitted attempt when a stale QR canc
   const card = renderer.root.findByProps({ 'data-bot-id': 'bot_target' });
   await act(async () => {
     card.findAllByType('button')
-      .find((button) => textOf(button) === '修复卡片按钮').props.onClick();
+      .find((button) => textOf(button) === '补全权限').props.onClick();
     await flushMicrotasks();
   });
 
@@ -428,9 +437,13 @@ test('Feishu callback repair keeps a Host-submitted attempt when a stale QR canc
     'https://open.feishu.cn/page/launcher?tp=sdk&clientID=cli_target',
   );
   assert.match(textOf(renderer.toJSON()), /不会创建新应用/);
+  assert.match(textOf(renderer.toJSON()), /im:message:readonly/);
+  assert.match(textOf(renderer.toJSON()), /im:resource/);
+  assert.match(textOf(renderer.toJSON()), /获取单聊、群组消息/);
+  assert.match(textOf(renderer.toJSON()), /当前缺少/);
 
   const staleCancel = renderer.root.findAllByType('button')
-    .find((button) => textOf(button) === '取消修复');
+    .find((button) => textOf(button) === '取消补全');
   assert.ok(staleCancel);
   await act(async () => {
     staleCancel.props.onClick();
@@ -440,7 +453,7 @@ test('Feishu callback repair keeps a Host-submitted attempt when a stale QR canc
     && payload.attemptId === 'reg_repair'));
   assert.match(textOf(renderer.toJSON()), /此阶段无法取消/);
   assert.equal(renderer.root.findAllByType('button').some(
-    (button) => textOf(button) === '取消修复',
+    (button) => textOf(button) === '取消补全',
   ), false);
   assert.ok(timeouts.size > 0, 'submitted repair keeps polling after the refused cancel');
   await act(async () => { renderer.unmount(); });
@@ -526,7 +539,7 @@ test('Feishu callback repair recovers when a Host restart forgets the browser at
   });
   const repairButton = () => renderer.root.findByProps({ 'data-bot-id': 'bot_target' })
     .findAllByType('button')
-    .find((button) => textOf(button) === '修复卡片按钮');
+    .find((button) => textOf(button) === '补全权限');
 
   await act(async () => {
     repairButton().props.onClick();
@@ -542,7 +555,7 @@ test('Feishu callback repair recovers when a Host restart forgets the browser at
 
   await act(async () => {
     renderer.root.findAllByType('button')
-      .find((button) => textOf(button) === '取消修复').props.onClick();
+      .find((button) => textOf(button) === '取消补全').props.onClick();
     await flushMicrotasks();
   });
   assert.match(textOf(renderer.toJSON()), /The provisioning attempt is no longer active/);

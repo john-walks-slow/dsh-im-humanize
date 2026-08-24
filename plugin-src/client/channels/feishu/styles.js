@@ -450,10 +450,35 @@ const CSS = String.raw`
 .bxf-connectedFooter { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--dsw-alias-border-l1, #eef0f3); }
 .bxf-healthSummary { min-width: 0; color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; line-height: 18px; }
 .bxf-healthSummary[data-error="true"] { color: var(--bxf-error); }
-.bxf-botActions { flex: none; width: 100%; flex-wrap: wrap; gap: 8px; margin-top: 0; justify-content: flex-end; }
+.bxf-botActions { position: relative; flex: none; width: 100%; flex-wrap: wrap; gap: 8px; margin-top: 0; justify-content: flex-end; }
 .bxf-botActions .bxf-button { flex: none; white-space: nowrap; }
 .bxf-botActions .bxf-repairButton { color: var(--bxf-accent); border-color: color-mix(in srgb, var(--bxf-accent) 35%, var(--dsw-alias-border-l2, #dee0e3)); }
 .bxf-botActions .bxf-repairButton:hover:not(:disabled) { background: color-mix(in srgb, var(--bxf-accent) 7%, transparent); }
+.bxf-repairAction { display: inline-flex; }
+.bxf-repairTooltip {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  width: min(330px, 100%);
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid var(--dsw-alias-border-l2, #dfe1e5);
+  border-radius: 8px;
+  color: var(--dsw-alias-label-primary, #1f2329);
+  background: var(--dsw-alias-bg-layer-3, #fff);
+  box-shadow: 0 10px 28px rgb(31 35 41 / 16%);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(3px);
+  pointer-events: none;
+  transition: opacity .15s ease, transform .15s ease, visibility .15s ease;
+}
+.bxf-repairTooltip strong { font-size: 12px; line-height: 17px; font-weight: 650; }
+.bxf-repairTooltip > span { color: var(--dsw-alias-label-secondary, #646a73); font-size: 11px; line-height: 17px; font-weight: 400; overflow-wrap: anywhere; }
+.bxf-repairAction:hover .bxf-repairTooltip,
+.bxf-repairAction:focus-within .bxf-repairTooltip { opacity: 1; visibility: visible; transform: translateY(0); }
 
 .bxf-confirm {
   border-top: 1px solid var(--dsw-alias-border-l2, #dee0e3);

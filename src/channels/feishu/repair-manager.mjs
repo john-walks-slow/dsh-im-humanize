@@ -1,6 +1,8 @@
 import { RegistrationManager } from './registration-manager.mjs';
 
 export const CARD_ACTION_CALLBACK = 'card.action.trigger';
+export const FEISHU_MESSAGE_READ_SCOPE = 'im:message:readonly';
+export const FEISHU_RESOURCE_SCOPE = 'im:resource';
 export const CALLBACK_REPAIR_OPERATION = 'callback_repair';
 
 function accountsDomain(domain) {
@@ -71,8 +73,10 @@ export function assertCallbackRepairUrl(value, expectedAppId, domain = 'feishu')
 /**
  * One targeted update attempt for an existing Feishu app.  It intentionally
  * shares RegistrationManager's polling/state implementation while fixing the
- * update manifest in one place so callers cannot accidentally add scopes,
- * events, presets, or createOnly.
+ * update manifest in one place so callers can add only the card callback, the
+ * message-read scope needed to download user-sent media, and the resource
+ * scope needed to upload bot-sent images/files, without adding unrelated
+ * scopes, events, presets, or createOnly.
  */
 export class CallbackRepairManager {
   #manager;
@@ -106,6 +110,7 @@ export class CallbackRepairManager {
       appId: this.#appId,
       addons: {
         preset: false,
+        scopes: { tenant: [FEISHU_MESSAGE_READ_SCOPE, FEISHU_RESOURCE_SCOPE] },
         callbacks: { items: [CARD_ACTION_CALLBACK] },
       },
     });

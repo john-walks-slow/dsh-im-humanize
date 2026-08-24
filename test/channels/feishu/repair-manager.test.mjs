@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   CallbackRepairManager,
+  FEISHU_MESSAGE_READ_SCOPE,
+  FEISHU_RESOURCE_SCOPE,
   assertCallbackRepairUrl,
 } from '../../../src/channels/feishu/repair-manager.mjs';
 
@@ -15,7 +17,7 @@ async function waitFor(predicate, timeoutMs = 1000) {
   }
 }
 
-test('CallbackRepairManager targets one real app with callbacks only', async () => {
+test('CallbackRepairManager targets one real app with only the callback and media scopes', async () => {
   let observed;
   let resolveRegistration;
   const accepted = [];
@@ -37,9 +39,9 @@ test('CallbackRepairManager targets one real app with callbacks only', async () 
   assert.equal(Object.hasOwn(observed, 'appPreset'), false);
   assert.deepEqual(observed.addons, {
     preset: false,
+    scopes: { tenant: [FEISHU_MESSAGE_READ_SCOPE, FEISHU_RESOURCE_SCOPE] },
     callbacks: { items: ['card.action.trigger'] },
   });
-  assert.equal(Object.hasOwn(observed.addons, 'scopes'), false);
   assert.equal(Object.hasOwn(observed.addons, 'events'), false);
 
   observed.onQRCodeReady({

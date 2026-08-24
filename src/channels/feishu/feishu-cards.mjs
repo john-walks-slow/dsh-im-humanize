@@ -124,7 +124,7 @@ function backButton() {
  *   - presetCatalog: object|null    (预设目录, {items,defaultId,_currentId})
  *   - modelCatalog: object|null     (模型目录, {groups,current})
  * Number fallback: 1=续写 2=新会话 3=会话列表 4=状态
- * 5=修复 6=帮助.
+ * 5=补全权限 6=帮助.
  */
 export function menuCard(ctx) {
   const {
@@ -323,7 +323,7 @@ export function menuCard(ctx) {
 
   // 命令与数字兜底说明
   elements.push({ tag: 'div', text: markdown(t(
-    '**数字兜底**\n**1**工作区列表 · **2**新会话 · **3**会话列表 · **4**状态\n**5**🔧修复 · **6**帮助',
+    '**数字兜底**\n**1**工作区列表 · **2**新会话 · **3**会话列表 · **4**状态\n**5**🔧补全权限 · **6**帮助',
   )) });
   return cardWith(t('🤖 助手中心'), elements);
 }
@@ -521,7 +521,7 @@ export function menuHelpText() {
     '🎮 任务控制',
     '/stop  停止当前任务',
     '/steer 指令  给 Agent 补充指令',
-    '/repair  修复卡片按钮回调',
+    '/repair  补全飞书权限与卡片回调',
   ].map((line) => t(line)).join('\n');
 }
 
@@ -572,14 +572,14 @@ const HELP_TEXT_COMMANDS = [
   '`/batch` — 开启批量输入（仅私聊，最多 10 条文字）',
   '`/send` — 提交当前批次',
   '`/cancel` — 取消当前批次',
-  '`/repair` — 修复卡片按钮',
+  '`/repair` — 补全飞书权限与卡片回调',
 ].join('\n');
 
 const HELP_NUMBER_FALLBACK = [
   '**💡 数字兜底**',
   '回复数字快速操作：',
   '**1**工作区列表 · **2**新会话 · **3**会话/关注',
-  '**4**状态 · **5**修复 · **6**帮助',
+    '**4**状态 · **5**补全权限 · **6**帮助',
 ].join('\n');
 
 export function helpCard(extraTextLines = []) {
