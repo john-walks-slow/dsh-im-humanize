@@ -109,6 +109,18 @@ After installation, follow the built-in instructions on each channel page to sca
 
 If this machine must use a forward proxy to reach Feishu, set `HTTPS_PROXY` to a full HTTP proxy URL before starting `dsh web` (for example, `http://proxy:8080`; lowercase `https_proxy` is also supported, with `HTTP_PROXY` accepted as a fallback), then restart the Host after changing it. Feishu registration and credential verification reuse the SDK's proxy-aware HTTP client, while the message WebSocket explicitly uses that proxy; the WebSocket path does not currently read `ALL_PROXY` or `NO_PROXY`.
 
+If this machine cannot reach the Telegram Bot API directly, use Node.js 22.21 or newer and enable Node's environment proxy support before starting `dsh web`:
+
+```sh
+NODE_USE_ENV_PROXY=1 \
+HTTPS_PROXY=http://proxy:8080 \
+HTTP_PROXY=http://proxy:8080 \
+NO_PROXY=localhost,127.0.0.1 \
+dsh web
+```
+
+Use the proxy URL required by your network and restart the Host after changing it. If Telegram Bot Token binding reports that the Bot API cannot be reached, first check the proxy URL, Node.js version, and `NO_PROXY` configuration.
+
 | Default behavior | Description |
 | --- | --- |
 | Bot workspace | Each bot stores its workspace independently. New bots start with the Host's current working directory, which can later be changed from the bot card. |

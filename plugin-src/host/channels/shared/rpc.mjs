@@ -23,6 +23,11 @@ const ENDPOINTS = Object.freeze(Object.values(TOKEN_BOT_ENDPOINTS));
 const FORBIDDEN_PUBLIC_KEYS = new Set([
   'token', 'botToken', 'tokenRef', 'platformId', 'secret', 'secretRef',
 ]);
+const TELEGRAM_NETWORK_ERRORS = new Set([
+  'telegram-transport-error',
+  'telegram-timeout',
+  'telegram-response-invalid',
+]);
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -87,6 +92,12 @@ function operationError(channel, error) {
   }
   if (error?.code === 'telegram-401' || error?.code === 'discord-401') {
     return { code: 'invalid-token', message: `${channel} Bot Token 无效，请重新填写。` };
+  }
+  if (channel === 'Telegram' && TELEGRAM_NETWORK_ERRORS.has(error?.code)) {
+    return {
+      code: 'telegram-network-error',
+      message: '无法访问 Telegram Bot API。请检查网络或代理设置；Node.js 22.21+ 可设置 NODE_USE_ENV_PROXY=1，并配置 HTTPS_PROXY、HTTP_PROXY 和 NO_PROXY，然后重启 dsh web。',
+    };
   }
   if (error?.code === 'discord-intents') {
     return { code: 'discord-intents', message: error.message };

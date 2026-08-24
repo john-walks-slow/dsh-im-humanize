@@ -1317,6 +1317,30 @@ test('workspace RPC validates payloads and returns the updated public status', a
   assert.match(missing.error.message, /不存在/);
 });
 
+test('Telegram RPC explains network and proxy failures without exposing credentials', async () => {
+  const token = '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456';
+  for (const code of ['telegram-transport-error', 'telegram-timeout', 'telegram-response-invalid']) {
+    const controller = {
+      status() { return { bots: [] }; },
+      bindCredentials() {
+        const error = new Error('Telegram request failed');
+        error.code = code;
+        throw error;
+      },
+      reconnectBot() { return { bots: [] }; },
+      deleteBot() { return { bots: [] }; },
+    };
+    const handler = createTokenBotRpcHandler(controller, { channel: 'Telegram' });
+
+    const result = await handler(TOKEN_BOT_ENDPOINTS.bindCredentials, { token });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'telegram-network-error');
+    assert.match(result.error.message, /Telegram Bot API/);
+    assert.match(result.error.message, /NODE_USE_ENV_PROXY/);
+    assert.doesNotMatch(result.error.message, new RegExp(token));
+  }
+});
+
 test('BotWorkspaceStore persists per-bot agent presets without changing workspaces', async (t) => {
   const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
   const store = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
