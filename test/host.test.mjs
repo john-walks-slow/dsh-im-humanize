@@ -55,58 +55,69 @@ test('Host composes nine IM channels and the AI Office connector inside one plug
   ]);
 });
 
-test('Host does not start Weixin when Feishu activation fails', async () => {
-  let weixinStarted = false;
-  const plugin = createImHostPlugin({
-    applyFeishu: async () => { throw new Error('feishu unavailable'); },
-    applyWeixin: async () => { weixinStarted = true; },
-    applyDingtalk: async () => { throw new Error('DingTalk must not start'); },
-    applyWecom: async () => { throw new Error('Enterprise WeChat must not start'); },
-    applyQq: async () => { throw new Error('QQ must not start'); },
-  });
+const CHANNELS = [
+  ['feishu', 'applyFeishu'],
+  ['weixin', 'applyWeixin'],
+  ['dingtalk', 'applyDingtalk'],
+  ['wecom', 'applyWecom'],
+  ['qq', 'applyQq'],
+  ['slack', 'applySlack'],
+  ['telegram', 'applyTelegram'],
+  ['discord', 'applyDiscord'],
+  ['whatsapp', 'applyWhatsapp'],
+  ['office', 'applyOffice'],
+];
 
-  await assert.rejects(() => plugin.apply({}, {}), /feishu unavailable/);
-  assert.equal(weixinStarted, false);
+function activationFixture(failedChannels) {
+  const calls = [];
+  const events = [];
+  const errors = [];
+  const failures = new Map();
+  const internals = Object.fromEntries(CHANNELS.map(([channel, applyName]) => [
+    applyName,
+    async () => {
+      calls.push(channel);
+      events.push(`${channel}:start`);
+      await new Promise((resolve) => setImmediate(resolve));
+      if (failedChannels.has(channel)) {
+        const error = new Error(`${channel} unavailable`);
+        failures.set(channel, error);
+        events.push(`${channel}:failed`);
+        throw error;
+      }
+      events.push(`${channel}:end`);
+    },
+  ]));
+  const ctx = { logger: { error: (...args) => errors.push(args) } };
+  return { plugin: createImHostPlugin(internals), ctx, calls, events, errors, failures };
+}
+
+test('Host continues activating channels in order when one channel fails', async () => {
+  for (const [failedChannel] of CHANNELS) {
+    const fixture = activationFixture(new Set([failedChannel]));
+
+    await fixture.plugin.apply(fixture.ctx, {});
+
+    assert.deepEqual(fixture.calls, CHANNELS.map(([channel]) => channel));
+    assert.deepEqual(fixture.events, CHANNELS.flatMap(([channel]) => [
+      `${channel}:start`,
+      `${channel}:${channel === failedChannel ? 'failed' : 'end'}`,
+    ]));
+    assert.equal(fixture.errors.length, 1);
+    assert.match(fixture.errors[0][0], new RegExp(`activate ${failedChannel}`));
+    assert.equal(fixture.errors[0][1], fixture.failures.get(failedChannel));
+  }
 });
 
-test('Host does not start DingTalk when Weixin activation fails', async () => {
-  let dingtalkStarted = false;
-  const plugin = createImHostPlugin({
-    applyFeishu: async () => {},
-    applyWeixin: async () => { throw new Error('weixin unavailable'); },
-    applyDingtalk: async () => { dingtalkStarted = true; },
-    applyWecom: async () => { throw new Error('Enterprise WeChat must not start'); },
-    applyQq: async () => { throw new Error('QQ must not start'); },
-  });
+test('Host reports aggregate failure only after every channel was attempted', async () => {
+  const fixture = activationFixture(new Set(CHANNELS.map(([channel]) => channel)));
 
-  await assert.rejects(() => plugin.apply({}, {}), /weixin unavailable/);
-  assert.equal(dingtalkStarted, false);
-});
-
-test('Host does not start Enterprise WeChat when DingTalk activation fails', async () => {
-  let wecomStarted = false;
-  const plugin = createImHostPlugin({
-    applyFeishu: async () => {},
-    applyWeixin: async () => {},
-    applyDingtalk: async () => { throw new Error('dingtalk unavailable'); },
-    applyWecom: async () => { wecomStarted = true; },
-    applyQq: async () => { throw new Error('QQ must not start'); },
-  });
-
-  await assert.rejects(() => plugin.apply({}, {}), /dingtalk unavailable/);
-  assert.equal(wecomStarted, false);
-});
-
-test('Host does not start QQ when Enterprise WeChat activation fails', async () => {
-  let qqStarted = false;
-  const plugin = createImHostPlugin({
-    applyFeishu: async () => {},
-    applyWeixin: async () => {},
-    applyDingtalk: async () => {},
-    applyWecom: async () => { throw new Error('wecom unavailable'); },
-    applyQq: async () => { qqStarted = true; },
-  });
-
-  await assert.rejects(() => plugin.apply({}, {}), /wecom unavailable/);
-  assert.equal(qqStarted, false);
+  await assert.rejects(
+    () => fixture.plugin.apply(fixture.ctx, {}),
+    (error) => error instanceof AggregateError
+      && error.errors.length === CHANNELS.length
+      && /failed to activate every channel/.test(error.message),
+  );
+  assert.deepEqual(fixture.calls, CHANNELS.map(([channel]) => channel));
+  assert.equal(fixture.errors.length, CHANNELS.length);
 });

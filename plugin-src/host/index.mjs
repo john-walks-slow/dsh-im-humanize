@@ -37,6 +37,18 @@ export function createImHostPlugin(internals = {}) {
   const startDiscord = internals.applyDiscord ?? applyDiscord;
   const startOffice = internals.applyOffice ?? applyOffice;
   const startWhatsapp = internals.applyWhatsapp ?? applyWhatsapp;
+  const channels = [
+    ['feishu', startFeishu],
+    ['weixin', startWeixin],
+    ['dingtalk', startDingtalk],
+    ['wecom', startWecom],
+    ['qq', startQq],
+    ['slack', startSlack],
+    ['telegram', startTelegram],
+    ['discord', startDiscord],
+    ['whatsapp', startWhatsapp],
+    ['office', startOffice],
+  ];
   return Object.freeze({
     name,
     inject,
@@ -49,16 +61,21 @@ export function createImHostPlugin(internals = {}) {
       } else {
         installOutboundArtifactTool(ctx);
       }
-      await startFeishu(ctx, channelConfig(config, 'feishu'));
-      await startWeixin(ctx, channelConfig(config, 'weixin'));
-      await startDingtalk(ctx, channelConfig(config, 'dingtalk'));
-      await startWecom(ctx, channelConfig(config, 'wecom'));
-      await startQq(ctx, channelConfig(config, 'qq'));
-      await startSlack(ctx, channelConfig(config, 'slack'));
-      await startTelegram(ctx, channelConfig(config, 'telegram'));
-      await startDiscord(ctx, channelConfig(config, 'discord'));
-      await startWhatsapp(ctx, channelConfig(config, 'whatsapp'));
-      await startOffice(ctx, channelConfig(config, 'office'));
+      const logger = typeof ctx?.logger === 'function'
+        ? ctx.logger(name)
+        : (ctx?.logger ?? console);
+      const failures = [];
+      for (const [channel, start] of channels) {
+        try {
+          await start(ctx, channelConfig(config, channel));
+        } catch (error) {
+          failures.push(error);
+          logger.error?.(`[dsh-im] failed to activate ${channel}; continuing with the remaining channels`, error);
+        }
+      }
+      if (failures.length === channels.length) {
+        throw new AggregateError(failures, 'dsh-im failed to activate every channel');
+      }
     },
   });
 }

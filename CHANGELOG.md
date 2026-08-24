@@ -6,6 +6,15 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-08-24
+
+### Fixed / 修复
+
+- 机器人卡片的操作区域现在会在空间不足时自动换行，避免英文或其他较长本地化文案把操作按钮挤出可视区域。
+  Bot-card actions now wrap when space is limited, preventing English or other longer localized labels from pushing actions out of view.
+- 一个 IM 渠道激活失败时，Host 现在会记录错误并继续依次激活其他渠道，避免单个渠道的本地配置或初始化故障阻断其余渠道。
+  When one IM channel fails to activate, the Host now logs the error and continues activating the remaining channels in order, so a channel-local configuration or initialization failure cannot block the others.
+
 ## [2.0.0] - 2026-08-24
 
 ### Added / 新增
@@ -239,7 +248,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.0.1...HEAD
+[2.0.1]: https://github.com/xmanrui/dsh-im/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/xmanrui/dsh-im/compare/v1.5.0...v2.0.0
 [1.5.0]: https://github.com/xmanrui/dsh-im/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/xmanrui/dsh-im/compare/v1.3.0...v1.4.0
