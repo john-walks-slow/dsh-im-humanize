@@ -6,6 +6,27 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-24
+
+### Added / 新增
+
+- 飞书 `/m` 菜单升级为交互式助手中心，集中提供会话、工作区、Agent Preset 和模型下拉切换，以及新会话、任务停止、上下文压缩、补充指令、关注管理和归档显示控制。
+  The Feishu `/m` menu is now an interactive assistant center with dropdowns for sessions, workspaces, Agent Presets, and models, plus controls for new sessions, task stopping, context compaction, steering, watch management, and archived-session visibility.
+
+### Changed / 变更
+
+- 飞书菜单按设置、会话和任务控制重新组织；`/m` 会发送一张新菜单卡片，卡片内的导航和配置操作会尽量原位刷新，减少聊天中的重复卡片。
+  The Feishu menu is reorganized around settings, sessions, and task controls; `/m` sends a new menu card, while navigation and configuration actions refresh it in place whenever possible to reduce duplicate cards in chat.
+
+### Fixed / 修复
+
+- 加固飞书卡片回调的字段兼容、串行执行、重试去重、并发上限和超时降级，避免快速或重复点击造成重复操作、状态错乱或 Host 请求堆积。
+  Hardened Feishu card callbacks with payload compatibility, serialized execution, retry deduplication, concurrency limits, and timeout fallbacks, preventing rapid or repeated clicks from duplicating actions, corrupting state, or exhausting Host requests.
+- 改进飞书 Session 关注完成事件的基线、重连补偿和并发处理，避免错过完成通知、重复推送或阻塞无关 Session。
+  Improved baselining, reconnect compensation, and concurrent handling for Feishu Session-watch completion events, preventing missed notifications, duplicate deliveries, and blocking between unrelated Sessions.
+- 修复飞书 WebSocket 在握手阶段关闭时的清理竞态，并阻止任务或交互尚未结束时误建新 Session。
+  Fixed the Feishu WebSocket cleanup race when closing during the handshake, and prevented new Sessions from being created while a task or interaction is still pending.
+
 ## [2.0.1] - 2026-08-24
 
 ### Fixed / 修复
@@ -248,7 +269,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.0.1...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/xmanrui/dsh-im/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/xmanrui/dsh-im/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/xmanrui/dsh-im/compare/v1.5.0...v2.0.0
 [1.5.0]: https://github.com/xmanrui/dsh-im/compare/v1.4.0...v1.5.0
