@@ -2,11 +2,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   cardActionProbeCard,
+  completionCard,
   customSteerCard,
+  helpCard,
   menuCard,
   menuHelpText,
   modelCard,
+  presetCard,
+  sessionListCard,
+  statusCard,
+  steerCard,
+  watchListCard,
+  workspaceListCard,
 } from '../../../src/channels/feishu/feishu-cards.mjs';
+import { setImHostLanguage } from '../../../src/channels/shared/i18n.mjs';
 
 function buttons(value, result = []) {
   if (Array.isArray(value)) {
@@ -126,4 +135,99 @@ test('model card dropdown highlights the current model via initial_index', () =>
   // deepseek/deepseek-chat is the second option (1-based index 2), even
   // though the id itself contains a `/`.
   assert.equal(pick.initial_index, 2);
+});
+
+test('a single preset remains selectable alongside follow-default', () => {
+  const card = JSON.parse(presetCard({
+    defaultId: 'preset-one',
+    _currentId: null,
+    items: [{ id: 'preset-one', label: 'Preset One' }],
+  }));
+  const pick = selects(card).find((select) => select.name === 'preset_pick');
+  assert.deepEqual(pick?.options.map((option) => option.value), ['preset-one']);
+  const reset = buttons(card).find((button) => (
+    button.behaviors?.[0]?.value?.action === 'preset_default'
+  ));
+  assert.ok(reset, 'follow-default must remain available beside the sole preset');
+});
+
+test('menu without sessions does not emit an empty session dropdown', () => {
+  const card = JSON.parse(menuCard({ sessions: [] }));
+  const pick = selects(card).find((select) => select.name === 'session_pick');
+  assert.equal(pick, undefined, 'Feishu must not receive select_static with options: []');
+});
+
+test('quick steer dropdowns start without a preselected command', () => {
+  const menuPick = selects(JSON.parse(menuCard()))
+    .find((select) => select.name === 'steer_pick');
+  const cardPick = selects(JSON.parse(steerCard({ hasSession: true })))
+    .find((select) => select.name === 'steer_quick');
+  assert.equal(menuPick?.initial_index ?? 0, 0);
+  assert.equal(cardPick?.initial_index ?? 0, 0);
+});
+
+test('reachable Feishu cards contain no Chinese literals in English mode', () => {
+  const presetCatalog = {
+    defaultId: 'preset-one',
+    _currentId: 'preset-two',
+    items: [
+      { id: 'preset-one', label: 'Preset One' },
+      { id: 'preset-two', label: 'Preset Two' },
+    ],
+  };
+  const modelCatalog = {
+    groups: [{
+      id: 'provider',
+      name: 'Provider',
+      models: [
+        { id: 'model-one', name: 'Model One' },
+        { id: 'model-two', name: 'Model Two' },
+      ],
+    }],
+    current: { provider: 'provider', model: 'model-two' },
+  };
+  const sessions = [{ sessionId: 'session-one', title: 'Session One' }];
+  const rendered = [];
+
+  setImHostLanguage('en');
+  try {
+    rendered.push(
+      menuCard({
+        workspaces: ['/work'],
+        currentWorkspace: '/work',
+        currentSession: { id: 'session-one', title: 'Session One' },
+        sessions: [{ id: 'session-one', title: 'Session One' }],
+        archiveVisible: false,
+        presetCatalog,
+        modelCatalog,
+      }),
+      presetCard(presetCatalog),
+      modelCard(modelCatalog),
+      statusCard({
+        connected: true,
+        workspace: '/work',
+        preset: 'Preset Two',
+        model: 'provider/model-two',
+        sessionCount: 1,
+      }),
+      helpCard(['Additional help']),
+      sessionListCard('/work', sessions, 0, 1),
+      workspaceListCard(['/work'], '/work'),
+      watchListCard(
+        [{ sessionId: 'session-one', title: 'Session One' }],
+        [{ sessionId: 'session-two', title: 'Session Two' }],
+      ),
+      completionCard('session-one', 'Session One', 'completed'),
+      steerCard({ hasSession: true }),
+      customSteerCard(),
+      cardActionProbeCard('0123456789abcdef0123456789abcdef'),
+      menuHelpText(),
+    );
+  } finally {
+    setImHostLanguage('zh');
+  }
+
+  for (const output of rendered) {
+    assert.doesNotMatch(output, /[\u3400-\u9fff]/u);
+  }
 });
