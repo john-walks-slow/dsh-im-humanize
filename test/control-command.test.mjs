@@ -88,7 +88,7 @@ test('/stop and /steer return friendly no-session messages without creating one'
   );
   assert.match(
     (await runControlCommand('/steer 补充', harness, state, 'direct:one')).message,
-    /普通消息/,
+    /没有绑定会话/,
   );
   assert.equal(calls.some(([method]) => method === 'workspaceSession'), false);
 });
@@ -135,7 +135,7 @@ test('/steer reports a lost active-turn race instead of starting new work', asyn
   const result = await runControlCommand('/steer continue', harness, state, 'direct:one', {
     control: { owner: {}, key: 'direct:one' },
   });
-  assert.match(result.message, /普通消息/);
+  assert.match(result.message, /没有正在运行/);
   assert.equal(calls.filter(([method]) => method === 'steerActiveTurn').length, 1);
 });
 

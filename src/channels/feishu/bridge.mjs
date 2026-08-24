@@ -44,10 +44,19 @@ import {
 } from '../shared/semantic/delivery.mjs';
 import {
   MENU_PAGE_SIZE,
+  PRESET_FOLLOW_DEFAULT_SENTINEL,
+  STEER_CUSTOM_SENTINEL,
   completionCard,
+  customSteerCard,
+  helpCard,
   menuCard,
   menuHelpText,
+  modelCard,
+  presetCard,
   sessionListCard,
+  settingsCard,
+  statusCard,
+  steerCard,
   watchListCard,
   workspaceListCard,
 } from './feishu-cards.mjs';
@@ -89,39 +98,16 @@ const REPAIR_URL_HOSTS = new Set([
   'open.larksuite.com',
 ]);
 
-// Built lazily: t() must run after setImHostLanguage, not at import time.
-function helpText() {
-  return [
-    t('北汇星河 AIOS 已连接 DeepSeek Harness。'),
-    '',
-    t('直接发送文字、图片或文件即可继续当前会话。'),
-    t('/new  开启一个全新会话'),
-    t('/compact  压缩当前会话的较早上下文'),
-    t('/workspace 工作区绝对路径  切换工作区'),
-    t('/workspacelist  列出工作区绝对路径'),
-    t('/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题'),
-    t('/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话'),
-    t('/models  按序号列出所有可用模型'),
-    t('/model [序号或完整模型ID]  查看或切换当前会话模型'),
-    t('示例：先发 /models，再发 /model 2'),
-    t('/presetlist  按序号列出可用 Agent Preset'),
-    t('/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset'),
-    t('纯数字 ID：/preset id:<ID>'),
-    t('/preset --default  跟随 Host 默认'),
-    t('/stop  停止当前任务'),
-    t('/steer 补充指令  纠偏当前任务'),
-    t('/status  检查连接状态'),
-    t('/repair  修复卡片按钮回调'),
-    t('/m（或 /menu）  打开交互卡片菜单'),
-    t('/watch [Session ID 或序号]  关注会话，任务完成自动推送'),
-    t('/unwatch [Session ID 或序号]  取消关注'),
-    t('/watchlist  查看关注列表'),
-    t('/archived on|off  会话列表是否包含归档会话'),
-    t('/help  显示本帮助'),
-  ].join('\n');
-}
-
 const ARCHIVED_COMMAND = /^\/archived(?:\s+(on|off))?$/i;
+/** Matches fast card commands that should not be queued behind a running task. */
+const CARD_COMMAND = /^\/(?:m(?:enu)?|help|new|status|compact|sessionlist(?:\s|$)|workspacelist|watchlist|archived(?:\s+(on|off))?)$/i;
+
+/** Canonical workspace/session help advertised by every bridge family. */
+const WORKSPACE_HELP_LINES = [
+  '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
+  '/workspacelist  列出工作区绝对路径',
+  '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
+];
 
 /** Safe user-facing text for bind/workspace failures (no raw messages). */
 function safeErrorText(error) {
@@ -313,12 +299,16 @@ export class FeishuHarnessBridge {
   #menus = new Map();
   /** Interactive-card message id → route context for button callbacks. */
   #cardKeys = new Map();
+  /** chatId → last card message id (for in-place update). */
+  #lastCardMessages = new Map();
   /** The global event-mux watcher (one per bridge). */
   #eventWatcher = null;
   /** Serializes live completions and reconnect compensation. */
   #eventTail = Promise.resolve();
   /** Earliest completion that still needs delivery for each watch. */
   #failedWatchSeqs = new Map();
+  /** 临时保存最近一次多选下拉（watch_add/watch_remove）的选中项，供批处理消费。 */
+  #lastMultiSelection = [];
 
   constructor({
     client,
@@ -435,6 +425,21 @@ export class FeishuHarnessBridge {
     const processingReaction = this.#addReaction(messageId, 'OnIt');
     const commandMessage = extractInboundMessage(event, this.#client);
     const commandText = nonEmptyString(commandMessage.content) ?? '';
+    // Card commands (/m, /help, /status, etc.) bypass the queue so they
+    // respond immediately even when a harness task is still streaming.
+    if (CARD_COMMAND.test(commandText)) {
+      const processing = Promise.resolve()
+        .then(() => this.#handle(event, key, { alreadyRecorded: false }))
+        .then(() => this.#finishReaction(messageId, processingReaction, 'DONE'))
+        .catch((error) => this.#handleMessageFailure(
+          event,
+          messageId,
+          processingReaction,
+          error,
+        ))
+        .finally(() => this.#acceptedMessageIds.delete(messageId));
+      return processing;
+    }
     const commandRunner = hasInboundFiles(commandMessage) ? null : isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText)
@@ -689,22 +694,28 @@ export class FeishuHarnessBridge {
       return;
     }
     if (commandText === '/help') {
-      await this.#send(event.message.chat_id, helpText());
+      await this.#send(event.message.chat_id, menuHelpText());
       return;
     }
     if (MENU_COMMAND.test(commandText)) {
-      this.#rememberMenu(key, { kind: 'menu', chatId: event.message.chat_id });
-      await this.#sendCard(event.message.chat_id, menuCard(), { key });
+      await this.#sendMenuCard(key, event.message.chat_id, { newCard: true });
       return;
     }
     if (commandText === '/new') {
       await this.#state.clearSession(key);
       await this.#send(event.message.chat_id, t('已开启全新 Harness 会话。'));
+      await this.#sendMenuCard(key, event.message.chat_id);
       return;
     }
     if (commandText === '/status') {
-      await this.#harness.ensureRunning({ signal: this.#signal });
-      await this.#send(event.message.chat_id, t('飞书机器人与 DeepSeek Harness 连接正常。'));
+      await this.#showStatusText(key, event.message.chat_id);
+      return;
+    }
+    if (commandText === '/compact') {
+      const compactCommand = await runCompactCommand(commandText, this.#harness, this.#state, key, { signal: this.#signal });
+      if (compactCommand) {
+        await this.#send(event.message.chat_id, compactCommand.message);
+      }
       return;
     }
     if (SESSION_LIST_PREFIX.test(commandText)) {
@@ -1135,6 +1146,31 @@ export class FeishuHarnessBridge {
       ? event.action.value.action
       : null;
     if (!action) return Promise.resolve();
+    // select_static dropdown: resolve pickers to their target actions
+    const option = event?.action?.option;
+    // multi_select_static: selected option values arrive as an array in
+    // value.options (or echoed option). Capture them for batch handlers.
+    const multiValues = Array.isArray(event?.action?.value?.options)
+      ? event.action.value.options.map((opt) => (opt?.value ?? opt)).filter((v) => typeof v === 'string')
+      : Array.isArray(event?.action?.options)
+        ? event.action.options.map((opt) => (opt?.value ?? opt)).filter((v) => typeof v === 'string')
+        : [];
+    if (action === 'watch_add' || action === 'watch_remove') {
+      this.#lastMultiSelection = multiValues;
+    }
+    const resolvedAction = action === 'workspace_pick' && typeof option === 'string'
+      ? `workspace:${option}`
+      : action === 'session_pick' && typeof option === 'string'
+        ? `use:${option}`
+        : action === 'preset_pick' && typeof option === 'string'
+          ? `preset:select:${option}`
+          : action === 'model_pick' && typeof option === 'string'
+            ? `model:select:${option}`
+            : action === 'archive_pick' && typeof option === 'string'
+              ? `archive:${option}`
+              : action === 'steer_pick' && typeof option === 'string'
+                ? `steer:${option}`
+                : action;
     const messageId = nonEmptyString(event?.context?.open_message_id);
     const entry = messageId ? this.#cardKeys.get(messageId) : null;
     if (!entry) {
@@ -1146,9 +1182,33 @@ export class FeishuHarnessBridge {
       }
       return Promise.resolve();
     }
+    // 补充指令卡片：快捷下拉(source=quick, option=指令) / 表单提交(source=form)
+    if (action === 'steer') {
+      const source = event?.action?.value?.source;
+      if (source === 'quick' && typeof option === 'string') {
+        if (option === STEER_CUSTOM_SENTINEL) {
+          return this.#sendCard(entry.chatId, customSteerCard(), entry).catch((error) => {
+            this.#logger.warn?.('[dsh-feishu] steer custom card failed:', error.message);
+          });
+        }
+        return this.#sendSteer(entry, option).catch((error) => {
+          this.#logger.warn?.('[dsh-feishu] steer (quick) failed:', error.message);
+        });
+      }
+      if (source === 'form') {
+        const text = nonEmptyString(event?.action?.form_value?.steer_text);
+        if (text) {
+          return this.#sendSteer(entry, text).catch((error) => {
+            this.#logger.warn?.('[dsh-feishu] steer (form) failed:', error.message);
+          });
+        }
+        this.#send(entry.chatId, '请输入补充指令后再提交。').catch(() => undefined);
+        return Promise.resolve();
+      }
+    }
     // The promise is returned so tests (and future callers) can await the
     // action; the runtime dispatcher ignores it.
-    return this.#handleCardAction(action, entry).catch((error) => {
+    return this.#handleCardAction(resolvedAction, entry).catch((error) => {
       this.#logger.warn?.('[dsh-feishu] card action failed:', error.message);
     });
   }
@@ -1167,18 +1227,124 @@ export class FeishuHarnessBridge {
       await this.#showWatchList(key, chatId);
       return;
     }
+    // 多选关注下拉：action=watch_add / watch_remove，选中项在 selections 数组
+    if (action === 'watch_add' || action === 'watch_remove') {
+      const selections = this.#lastMultiSelection ?? [];
+      this.#lastMultiSelection = null;
+      if (action === 'watch_add') {
+        let added = 0;
+        let skipped = 0;
+        for (const sessionId of selections) {
+          try {
+            await this.#runWatch(key, chatId, sessionId);
+            added += 1;
+          } catch {
+            skipped += 1;
+          }
+        }
+        await this.#send(chatId, added > 0 ? `已批量关注 ${added} 个会话。` : '已关注（或已达关注上限）。');
+      } else {
+        let removed = 0;
+        for (const sessionId of selections) {
+          try {
+            await this.#runUnwatch(key, chatId, sessionId);
+            removed += 1;
+          } catch { /* skip individual failure */ }
+        }
+        await this.#send(chatId, removed > 0 ? `已取消关注 ${removed} 个会话。` : '未取消任何关注。');
+      }
+      await this.#showWatchList(key, chatId);
+      return;
+    }
     if (action === 'new') {
       await this.#state.clearSession(key);
       await this.#send(chatId, t('已开启全新 Harness 会话。'));
+      await this.#sendMenuCard(key, chatId);
+      return;
+    }
+    if (action === 'use:current') {
+      const sessionId = this.#state.sessionFor(key);
+      if (typeof sessionId !== 'string' || !sessionId) {
+        await this.#send(chatId, '当前没有绑定的会话，请先从会话列表选择。');
+        return;
+      }
+      await this.#send(chatId, '已就绪，直接发消息即可继续当前会话。');
+      return;
+    }
+    if (action === 'archive_toggle' || action === 'archive:on' || action === 'archive:off') {
+      const next = action === 'archive:on' ? true : action === 'archive:off' ? false : !(this.#state?.includesArchivedSessions?.() ?? false);
+      await this.#state?.setIncludeArchivedSessions?.(next);
+      await this.#send(chatId, next ? '已开启：会话列表包含归档会话。' : '已关闭：会话列表隐藏归档会话。');
+      await this.#sendMenuCard(key, chatId);
+      return;
+    }
+    if (action === 'repair') {
+      await this.#send(chatId, '修复需在私聊中验证接入者身份，请直接发送 /repair 开始。');
+      return;
+    }
+    if (action === 'compact') {
+      await this.#handleCompact(key, chatId);
+      return;
+    }
+    if (action === 'stop') {
+      await this.#handleStop(key, chatId);
+      return;
+    }
+    if (action === 'steer') {
+      await this.#showSteerCard(key, chatId);
+      return;
+    }
+    // 主菜单「补充指令」下拉：option = steer:<指令> / steer:custom
+    if (action.startsWith('steer:')) {
+      const raw = action.slice('steer:'.length);
+      if (raw === 'custom') {
+        await this.#sendCard(chatId, customSteerCard(), { key });
+        return;
+      }
+      await this.#sendSteer({ key, chatId }, raw);
+      return;
+    }
+    if (action === 'presets') {
+      await this.#showPresetCard(key, chatId);
+      return;
+    }
+    if (action === 'settings') {
+      await this.#showSettingsCard(key, chatId);
+      return;
+    }
+    if (action === 'models') {
+      await this.#showModelCard(key, chatId);
       return;
     }
     if (action === 'status') {
-      await this.#harness.ensureRunning({ signal: this.#signal });
-      await this.#send(chatId, t('飞书机器人与 DeepSeek Harness 连接正常。'));
+      await this.#showStatusCard(key, chatId);
       return;
     }
     if (action === 'help') {
-      await this.#send(chatId, menuHelpText());
+      await this.#showHelpCard(key, chatId);
+      return;
+    }
+    if (action === 'back_to_menu') {
+      await this.#sendMenuCard(key, chatId);
+      return;
+    }
+    if (action === 'preset_default') {
+      await this.#handlePresetDefault(key, chatId);
+      return;
+    }
+    if (action.startsWith('preset:select:')) {
+      const presetId = action.slice('preset:select:'.length);
+      // 哨兵值 = 用户在预设下拉里选了「跟随默认」
+      if (presetId === PRESET_FOLLOW_DEFAULT_SENTINEL) {
+        await this.#handlePresetDefault(key, chatId);
+        return;
+      }
+      await this.#handlePresetSelect(key, chatId, presetId);
+      return;
+    }
+    if (action.startsWith('model:select:')) {
+      const modelId = action.slice('model:select:'.length);
+      await this.#handleModelSelect(key, chatId, modelId);
       return;
     }
     if (action.startsWith('use:')) {
@@ -1219,7 +1385,10 @@ export class FeishuHarnessBridge {
 
   async #handleMenuPick(menu, number, { chatId, key, event }) {
     if (menu.kind === 'menu') {
-      const action = ['sessions', 'workspaces', 'new', 'status', 'help', 'repair', 'watchlist'][number - 1];
+      // Number fallback for the total menu:
+      // 1=工作区列表 2=新会话 3=会话列表 4=状态 5=修复 6=帮助
+      const actions = ['workspaces', 'new', 'sessions', 'status', 'repair', 'help'];
+      const action = actions[number - 1];
       if (!action) {
         await this.#send(chatId, t('菜单没有这个编号，回复 /m 重新打开。'));
         return;
@@ -1324,6 +1493,7 @@ export class FeishuHarnessBridge {
       const bound = await this.#harness.bindWorkspaceSession(key, sessionId);
       const title = String(bound?.title ?? '').replace(/\s+/gu, ' ').trim() || t('暂无标题');
       await this.#send(chatId, t('已绑定会话「{title}」\nID：{id}', { title, id: bound?.sessionId ?? sessionId }));
+      await this.#sendMenuCard(key, chatId);
     } catch (error) {
       await this.#send(chatId, t('绑定失败：{message}', { message: safeErrorText(error) }));
     }
@@ -1333,12 +1503,32 @@ export class FeishuHarnessBridge {
     try {
       const current = await this.#harness.switchWorkspace(workspace);
       await this.#send(chatId, t('工作区已切换为：{workspace}', { workspace: current }));
+      await this.#sendMenuCard(key, chatId);
     } catch (error) {
       await this.#send(chatId, t('切换失败：{message}', { message: safeErrorText(error) }));
     }
   }
 
   async #sendCard(chatId, cardJson, options = {}) {
+    const { update = false } = options;
+
+    // 尝试更新已有卡片（不发送新消息）
+    if (update) {
+      const existingId = this.#lastCardMessages.get(chatId);
+      if (existingId) {
+        try {
+          await this.#client.request({
+            method: 'PATCH',
+            url: `/open-apis/im/v1/messages/${existingId}`,
+            data: { content: cardJson },
+          });
+          return existingId;
+        } catch (error) {
+          this.#logger.warn?.('[dsh-feishu] card update failed:', error?.code ?? error?.message ?? error, 'sending new');
+        }
+      }
+    }
+
     const response = await this.#client.im.v1.message.create({
       params: { receive_id_type: 'chat_id' },
       data: { receive_id: chatId, msg_type: 'interactive', content: cardJson },
@@ -1360,7 +1550,408 @@ export class FeishuHarnessBridge {
         if (oldest !== undefined) this.#cardKeys.delete(oldest);
       }
     }
+    if (messageId) {
+      this.#lastCardMessages.set(chatId, messageId);
+    }
     return messageId;
+  }
+
+  async #sendMenuCard(key, chatId, { newCard = false } = {}) {
+    let workspaces = [];
+    let currentWorkspace = null;
+    try {
+      const snapshot = await workspacePathSnapshot(this.#harness);
+      workspaces = snapshot.paths;
+      currentWorkspace = snapshot.current ?? null;
+    } catch {
+      // workspace query failed; render menu without dropdown
+    }
+    // Current bound session (标题尽力获取,失败退化为 id) — 用于续写入口
+    let currentSessionTitle = null;
+    let currentSessionId = null;
+    try {
+      const sessionId = this.#state.sessionFor(key);
+      if (typeof sessionId === 'string' && sessionId) {
+        currentSessionId = sessionId;
+        currentSessionTitle = await this.#resolveSessionTitle(key, sessionId) || sessionId;
+      }
+    } catch {
+      currentSessionId = this.#state.sessionFor(key);
+      currentSessionTitle = currentSessionId;
+    }
+    // 最近会话列表（会话下拉切换用；失败则留空数组 → 菜单回退按钮）
+    let sessions = [];
+    try {
+      const current = typeof this.#harness.currentWorkspace === 'function'
+        ? this.#harness.currentWorkspace()
+        : null;
+      if (current && typeof this.#harness.listWorkspaceSessions === 'function') {
+        const listed = await this.#harness.listWorkspaceSessions(current);
+        sessions = (Array.isArray(listed?.sessions) ? listed.sessions : [])
+          .map((s) => ({ id: s.sessionId, title: s.title ?? s.name ?? s.sessionId }))
+          .slice(0, 20);
+      }
+    } catch { /* session dropdown unavailable; fall back to buttons */ }
+    // 确保当前绑定会话始终出现在下拉最前（它可能不在最近列表里），
+    // 否则 initial_index 找不到默认展示项，下拉会显示占位文本。
+    if (currentSessionId) {
+      sessions = sessions.filter((s) => s.id !== currentSessionId);
+      sessions.unshift({ id: currentSessionId, title: currentSessionTitle ?? currentSessionId });
+      sessions = sessions.slice(0, 20);
+    }
+    // 未绑定会话时：默认展示最近会话的第一个（选定才真正绑定），
+    // 避免会话下拉 initial_index=0 显示空白占位。
+    if (!currentSessionId && sessions.length > 0) {
+      currentSessionId = sessions[0].id;
+      currentSessionTitle = sessions[0].title ?? sessions[0].id;
+    }
+    const archiveVisible = this.#state?.includesArchivedSessions?.() ?? false;
+    // 加载预设/模型目录供主卡内联配置使用
+    let presetCatalog = null;
+    let modelCatalog = null;
+    try {
+      const settings = await this.#harness.agentPresetSettings({ signal: this.#signal });
+      presetCatalog = settings.agentPresetCatalog;
+      presetCatalog._currentId = settings.agentPreset;
+    } catch { /* preset section degrades to button */ }
+    try {
+      await this.#harness.ensureRunning({ signal: this.#signal });
+      const sessionId = this.#state?.sessionFor?.(key);
+      let catalog;
+      if (typeof sessionId === 'string' && sessionId) {
+        const session = this.#harness.workspaceSession(sessionId);
+        if (session?.models) catalog = await session.models({ signal: this.#signal });
+      }
+      if (!catalog) catalog = await this.#harness.listModels({ signal: this.#signal });
+      modelCatalog = catalog;
+    } catch { /* model section degrades to button */ }
+    this.#rememberMenu(key, { kind: 'menu', chatId });
+    await this.#sendCard(
+      chatId,
+      menuCard({
+        workspaces, currentWorkspace,
+        currentSession: currentSessionId ? { id: currentSessionId, title: currentSessionTitle } : null,
+        sessions, archiveVisible, presetCatalog, modelCatalog,
+      }),
+      { key, update: !newCard },
+    );
+  }
+
+  /**
+   * Resolve a human-readable title for a bound session when available.
+   * Attempts the workspace-session object first, then falls back to the
+   * current workspace's session list. Returns null on any failure.
+   */
+  async #resolveSessionTitle(key, sessionId) {
+    try {
+      if (typeof this.#harness.workspaceSession === 'function') {
+        const session = this.#harness.workspaceSession(sessionId);
+        if (session && typeof session === 'object') {
+          const direct = nonEmptyString(session.title)
+            ?? nonEmptyString(session.name)
+            ?? nonEmptyString(session.displayName);
+          if (direct) return direct;
+        }
+      }
+      // Fallback: scan the current workspace session list for this id
+      const current = typeof this.#harness.currentWorkspace === 'function'
+        ? this.#harness.currentWorkspace()
+        : null;
+      if (current && typeof this.#harness.listWorkspaceSessions === 'function') {
+        const listed = await this.#harness.listWorkspaceSessions(current);
+        const match = (Array.isArray(listed?.sessions) ? listed.sessions : [])
+          .find((s) => s.sessionId === sessionId);
+        if (match) {
+          const title = nonEmptyString(match.title) ?? nonEmptyString(match.name);
+          if (title) return title;
+        }
+      }
+    } catch { /* best-effort */ }
+    return null;
+  }
+
+  // ── Sub-card handlers: preset, model, status, help, compact ──────────────
+
+  /**
+   * Show the collapsed low-frequency configuration panel ("更多设置").
+   * Bundles the current preset / model catalogs so the panel can render its
+   * in-place dropdowns; any fetch failure degrades that section to a button.
+   */
+  async #showSettingsCard(key, chatId) {
+    const archiveVisible = this.#state?.includesArchivedSessions?.() ?? false;
+    let presetCatalog = null;
+    let modelCatalog = null;
+    let workspaces = [];
+    let currentWorkspace = null;
+    try {
+      const snapshot = await workspacePathSnapshot(this.#harness);
+      workspaces = snapshot.paths;
+      currentWorkspace = snapshot.current ?? null;
+    } catch { /* workspace section degrades to button */ }
+    try {
+      const settings = await this.#harness.agentPresetSettings({ signal: this.#signal });
+      presetCatalog = settings.agentPresetCatalog;
+      presetCatalog._currentId = settings.agentPreset;
+    } catch { /* preset section degrades to button */ }
+    try {
+      await this.#harness.ensureRunning({ signal: this.#signal });
+      const sessionId = this.#state?.sessionFor?.(key);
+      let catalog;
+      if (typeof sessionId === 'string' && sessionId) {
+        const session = this.#harness.workspaceSession(sessionId);
+        if (session?.models) catalog = await session.models({ signal: this.#signal });
+      }
+      if (!catalog) catalog = await this.#harness.listModels({ signal: this.#signal });
+      modelCatalog = catalog;
+    } catch { /* model section degrades to button */ }
+    await this.#sendCard(
+      chatId,
+      settingsCard({ archiveVisible, presetCatalog, modelCatalog, workspaces, currentWorkspace }),
+      { key },
+    );
+  }
+
+  /**
+   * Fetch the preset catalog and show the preset selection card.
+   */
+  async #showPresetCard(key, chatId) {
+    try {
+      const settings = await this.#harness.agentPresetSettings({ signal: this.#signal });
+      const catalog = settings.agentPresetCatalog;
+      // Inject the current preset id so the card can render the selection
+      catalog._currentId = settings.agentPreset;
+      await this.#sendCard(chatId, presetCard(catalog), { key });
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] preset card failed:', error.message);
+      await this.#send(chatId, '暂时无法获取预设列表，请稍后重试。');
+    }
+  }
+
+  /**
+   * Fetch the model catalog and show the model selection card.
+   */
+  async #showModelCard(key, chatId) {
+    try {
+      await this.#harness.ensureRunning({ signal: this.#signal });
+      // Try to get the session-bound catalog first, fall back to harness-level
+      const sessionId = this.#state?.sessionFor?.(key);
+      let catalog;
+      if (typeof sessionId === 'string' && sessionId) {
+        const session = this.#harness.workspaceSession(sessionId);
+        if (session?.models) {
+          catalog = await session.models({ signal: this.#signal });
+        }
+      }
+      if (!catalog) {
+        catalog = await this.#harness.listModels({ signal: this.#signal });
+      }
+      await this.#sendCard(chatId, modelCard(catalog), { key });
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] model card failed:', error.message);
+      await this.#send(chatId, '暂时无法获取模型列表，请稍后重试。');
+    }
+  }
+
+  /**
+   * Gather system status and show the status card.
+   */
+  async #showStatusText(key, chatId) {
+    try {
+      await this.#harness.ensureRunning({ signal: this.#signal });
+      const lines = ['连接正常'];
+      const ws = typeof this.#harness.currentWorkspace === 'function'
+        ? this.#harness.currentWorkspace()
+        : null;
+      if (ws) lines.push(`工作区：${ws}`);
+      const settings = typeof this.#harness.agentPresetSettings === 'function'
+        ? await this.#harness.agentPresetSettings({ signal: this.#signal }).catch(() => null)
+        : null;
+      if (settings) {
+        const item = settings.agentPresetCatalog?.items?.find((i) => i.id === settings.agentPreset);
+        lines.push(`预设：${item ? `${item.label}（${item.id}）` : (settings.agentPreset || '跟随默认')}`);
+      }
+      await this.#send(chatId, lines.join('\n'));
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] status text failed:', error.message);
+      await this.#send(chatId, '暂时无法获取系统状态，请稍后重试。');
+    }
+  }
+
+  async #showStatusCard(key, chatId) {
+    try {
+      await this.#harness.ensureRunning({ signal: this.#signal });
+      const info = { connected: true, workspace: null, preset: null, model: null, sessionCount: 0 };
+
+      // Current workspace
+      try {
+        const ws = typeof this.#harness.currentWorkspace === 'function'
+          ? this.#harness.currentWorkspace()
+          : null;
+        info.workspace = ws || '未知';
+      } catch { /* ignore */ }
+
+      // Preset
+      try {
+        const settings = await this.#harness.agentPresetSettings({ signal: this.#signal });
+        const item = settings.agentPresetCatalog.items.find((i) => i.id === settings.agentPreset);
+        info.preset = item ? `${item.label}（${item.id}）` : (settings.agentPreset || '跟随默认');
+      } catch { /* ignore */ }
+
+      // Model (from bound session or harness)
+      try {
+        const sessionId = this.#state?.sessionFor?.(key);
+        if (typeof sessionId === 'string' && sessionId) {
+          const session = this.#harness.workspaceSession(sessionId);
+          if (session?.models) {
+            const cat = await session.models({ signal: this.#signal });
+            if (cat.current) info.model = `${cat.current.provider}/${cat.current.model}`;
+          }
+        }
+      } catch { /* ignore */ }
+
+      // Session count
+      try {
+        const ws = typeof this.#harness.currentWorkspace === 'function'
+          ? this.#harness.currentWorkspace()
+          : null;
+        if (ws) {
+          const listed = await this.#harness.listWorkspaceSessions(ws);
+          if (Array.isArray(listed?.sessions)) info.sessionCount = listed.sessions.length;
+        }
+      } catch { /* ignore */ }
+
+      await this.#sendCard(chatId, statusCard(info), { key });
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] status card failed:', error.message);
+      await this.#send(chatId, '暂时无法获取系统状态，请稍后重试。');
+    }
+  }
+
+  /**
+   * Show the help card with all command descriptions.
+   */
+  async #showHelpCard(key, chatId) {
+    await this.#sendCard(chatId, helpCard(WORKSPACE_HELP_LINES), { key });
+  }
+
+  /**
+   * Run the /compact command and show the result.
+   */
+  async #handleCompact(key, chatId) {
+    try {
+      const compactCommand = await runCompactCommand(
+        '/compact', this.#harness, this.#state, key, { signal: this.#signal },
+      );
+      const text = compactCommand?.message || '上下文压缩失败。';
+      await this.#send(chatId, text);
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] compact failed:', error.message, error.code);
+      await this.#send(chatId, compactCommand?.message || '上下文压缩失败，请稍后重试。');
+    }
+  }
+
+  /**
+   * Stop the running task in the bound session (mirrors `/stop`).
+   */
+  async #handleStop(key, chatId) {
+    try {
+      const result = await runControlCommand(
+        '/stop', this.#harness, this.#state, key, {
+          signal: this.#signal,
+          control: { owner: this, key },
+        },
+      );
+      await this.#send(chatId, result?.message || '/stop 执行完成。');
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] stop failed:', error.message);
+      await this.#send(chatId, '停止任务失败，请稍后重试。');
+    }
+  }
+
+  /**
+   * Show the steer card (quick-select dropdown + free-text input).
+   */
+  async #showSteerCard(key, chatId) {
+    const hasSession = Boolean(this.#state.sessionFor?.(key));
+    this.#rememberMenu(key, { kind: 'steer' });
+    await this.#sendCard(chatId, steerCard({ hasSession }), { key });
+  }
+
+  /**
+   * Send a steer instruction to the bound session (mirrors `/steer <text>`).
+   */
+  async #sendSteer(entry, text) {
+    const { key, chatId } = entry;
+    const result = await runControlCommand(
+      `/steer ${text}`, this.#harness, this.#state, key, {
+        signal: this.#signal,
+        control: { owner: this, key },
+      },
+    );
+    const message = result?.message || '已提交补充指令。';
+    this.#send(chatId, message).catch(() => undefined);
+  }
+
+  /**
+   * Reset the preset to follow the Host default.
+   */
+  async #handlePresetDefault(key, chatId) {
+    try {
+      if (typeof this.#harness?.updateAgentPreset !== 'function') {
+        await this.#send(chatId, '当前 Host 暂不支持修改 Agent Preset。');
+        return;
+      }
+      await this.#harness.updateAgentPreset(null, { signal: this.#signal });
+      await this.#send(chatId, '已恢复跟随 Host 默认预设。');
+      await this.#sendMenuCard(key, chatId);
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] preset default failed:', error.message);
+      await this.#send(chatId, '预设重置失败，请稍后重试。');
+    }
+  }
+
+  /**
+   * Handle preset selection from the preset dropdown.
+   */
+  async #handlePresetSelect(key, chatId, presetId) {
+    try {
+      if (typeof this.#harness?.updateAgentPreset !== 'function') {
+        await this.#send(chatId, '当前 Host 暂不支持修改 Agent Preset。');
+        return;
+      }
+      await this.#harness.updateAgentPreset(presetId, { signal: this.#signal });
+      await this.#send(chatId, `预设已切换为：${presetId}`);
+      await this.#sendMenuCard(key, chatId);
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] preset select failed:', error.message);
+      await this.#send(chatId, `预设切换失败：${error.message}`);
+    }
+  }
+
+  /**
+   * Handle model selection from the model dropdown.
+   *
+   * Reuses `runModelCommand` (the same path as the `/model <id>` text
+   * command) so model IDs containing `/` (e.g.
+   * `openrouter/anthropic/claude-sonnet-4`) keep working, and all the
+   * catalog validation, busy checks, pending-interaction checks and the
+   * session binding lock stay in one place.
+   */
+  async #handleModelSelect(key, chatId, modelId) {
+    try {
+      const result = await runModelCommand(
+        `/model ${modelId}`, this.#harness, this.#state, key, {
+          signal: this.#signal,
+          control: { owner: this, key },
+        },
+      );
+      const message = result?.message || '模型切换失败，请稍后重试。';
+      await this.#send(chatId, message);
+      await this.#sendMenuCard(key, chatId);
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] model select failed:', error.message);
+      await this.#send(chatId, `模型切换失败：${error.message}`);
+    }
   }
 
   // ── Watches: read-only session tracking + completion pushes ─────────────
@@ -1509,8 +2100,20 @@ export class FeishuHarnessBridge {
 
   async #showWatchList(key, chatId) {
     const entries = this.#state.watchEntries?.(key) ?? [];
+    // 收集可选会话（用于「添加关注」多选下拉）；失败则传空数组 → 只渲染移除/列表。
+    let availableSessions = [];
+    try {
+      const current = typeof this.#harness?.currentWorkspace === 'function'
+        ? this.#harness.currentWorkspace()
+        : null;
+      if (current && typeof this.#harness?.listWorkspaceSessions === 'function') {
+        const listed = await this.#harness.listWorkspaceSessions(current);
+        availableSessions = (Array.isArray(listed?.sessions) ? listed.sessions : [])
+          .map((s) => ({ sessionId: s.sessionId, title: s.title ?? s.name ?? s.sessionId }));
+      }
+    } catch { /* add-select section degrades to remove-only */ }
     this.#rememberMenu(key, { kind: 'watches', entries });
-    await this.#sendCard(chatId, watchListCard(entries), { key });
+    await this.#sendCard(chatId, watchListCard(entries, availableSessions), { key });
   }
 
   /** Queue live turn completions behind any reconnect compensation. */

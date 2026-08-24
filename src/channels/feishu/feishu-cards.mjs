@@ -18,6 +18,9 @@ import { t } from '../shared/i18n.mjs';
 
 export const MENU_PAGE_SIZE = 10;
 
+/** 预设下拉中「跟随默认」(null) 的哨兵值，供 initial_index 命中与回调识别。 */
+export const PRESET_FOLLOW_DEFAULT_SENTINEL = '__preset_follow_default__';
+
 function plainText(content) {
   return { tag: 'plain_text', content: String(content) };
 }
@@ -26,6 +29,7 @@ function markdown(content) {
   return { tag: 'lark_md', content: String(content) };
 }
 
+/** Full-width button wrapped in a column_set. */
 function button(content, actionValue) {
   return {
     tag: 'column_set',
@@ -56,6 +60,33 @@ function buttonElement(content, actionValue) {
   };
 }
 
+/**
+ * Two buttons side by side in a `column_set`.
+ * `leftContent` / `leftAction` and `rightContent` / `rightAction` define
+ * each button's label and callback action value.
+ */
+function buttonPair(leftContent, leftAction, rightContent, rightAction) {
+  return {
+    tag: 'column_set',
+    flex_mode: 'none',
+    columns: [
+      { tag: 'column', width: 'weighted', weight: 1, elements: [buttonElement(leftContent, leftAction)] },
+      { tag: 'column', width: 'weighted', weight: 1, elements: [buttonElement(rightContent, rightAction)] },
+    ],
+  };
+}
+
+/**
+ * Feishu schema 2.0 single-select (`select_static`) does NOT support a
+ * `selected` field on options (that triggers 230099 parse json err). The
+ * supported way to show a default value is `initial_index` (1-based option
+ * order; 0 = show none). Build it from the option array + current value.
+ */
+function initialIndex(options, currentValue) {
+  const idx = options.findIndex((o) => o.value === currentValue);
+  return idx >= 0 ? idx + 1 : 0;
+}
+
 function safeTitle(value) {
   const title = String(value ?? '').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').replace(/\s+/gu, ' ').trim();
   return title || t('暂无标题');
@@ -69,22 +100,581 @@ function cardWith(headerText, elements) {
   });
 }
 
-/** The main command menu (buttons + number-reply fallback). */
-export function menuCard() {
-  return cardWith(t('🤖 助手菜单'), [
-    { tag: 'div', text: markdown(t('**点击按钮或直接回复数字**')) },
-    button(t('1 · 会话列表'), 'sessions'),
-    button(t('2 · 工作区'), 'workspaces'),
-    button(t('3 · 新会话'), 'new'),
-    button(t('4 · 状态'), 'status'),
-    button(t('5 · 帮助'), 'help'),
-    // Repair must remain number-driven. Apps that need this command do not
-    // have card.action.trigger yet, so rendering it as a callback button would
-    // send the user straight back to Feishu's broken callback setup popup.
-    { tag: 'div', text: markdown(t('**6 · 修复卡片按钮**（请直接回复数字 **6**）')) },
-    button(t('7 · 关注列表'), 'watchlist'),
-  ]);
+// ── Shared helper: a "back to menu" button ────────────────────────────────
+
+function backButton() {
+  return button('🔙 返回菜单', 'back_to_menu');
 }
+
+// ── Main menu card ────────────────────────────────────────────────────────
+
+/**
+ * The hub menu card — a single entry point covering every command, organized
+ * by operating flow:
+ *   1. 会话 · 工作区（高频率）→ 会话下拉 · 工作区下拉 · 新会话 · 全部会话
+ *   2. 任务控制 → 停止 · 压缩 · 补充指令下拉
+ *   3. 配置 → 预设下拉 · 模型下拉 · 归档切换
+ *   4. 系统 → 状态 · 帮助
+ * `ctx` bundle:
+ *   - workspaces: string[]          (工作区下拉选项)
+ *   - currentWorkspace: string|null (当前工作区,下拉高亮)
+ *   - currentSession: {id,title}|null (当前绑定会话,续写目标)
+ *   - sessions: {id,title}[]        (最近会话,供会话下拉切换)
+ *   - archiveVisible: boolean       (归档显隐开关当前值)
+ *   - presetCatalog: object|null    (预设目录, {items,defaultId,_currentId})
+ *   - modelCatalog: object|null     (模型目录, {groups,current})
+ * Number fallback: 1=续写 2=新会话 3=会话列表 4=状态
+ * 5=修复 6=帮助.
+ */
+export function menuCard(ctx) {
+  const {
+    workspaces = [],
+    currentWorkspace = null,
+    currentSession = null,
+    sessions = [],
+    archiveVisible = false,
+    presetCatalog = null,
+    modelCatalog = null,
+  } = ctx || {};
+
+  // currentSession 提供 id/title；为兼容旧调用，也接受 currentSessionTitle
+  const currentSessionId = currentSession?.id ?? null;
+  const currentSessionTitle = currentSession?.title ?? ctx?.currentSessionTitle ?? null;
+
+  const sessionOptions = (Array.isArray(sessions) ? sessions : []).slice(0, 20);
+  const hasSessions = sessionOptions.length > 0;
+  const hasWorkspaces = Array.isArray(workspaces) && workspaces.length > 0;
+  const elements = [];
+
+  // ── 设置区 ──────────────────────────────────────────────────
+  elements.push({ tag: 'div', text: markdown('**设置**') });
+
+  // ── 四个下拉菜单 2×2 网格 ────────────────────────────────────
+
+  // 第 1 行：会话 + 工作区
+  let sessionDropdown = null;
+  if (hasSessions) {
+    const sessionPickOptions = sessionOptions.map((s) => ({
+      text: { tag: 'plain_text', content: `${s.id === currentSessionId ? '✓ ' : ''}${safeTitle(s.title)}` },
+      value: s.id,
+    }));
+    sessionDropdown = {
+      tag: 'select_static',
+      name: 'session_pick',
+      placeholder: { tag: 'plain_text', content: '切换会话' },
+      initial_index: initialIndex(sessionPickOptions, currentSessionId),
+      options: sessionPickOptions,
+      behaviors: [{ type: 'callback', value: { action: 'session_pick' } }],
+    };
+  } else {
+    sessionDropdown = {
+      tag: 'select_static',
+      name: 'session_pick',
+      placeholder: { tag: 'plain_text', content: '无可用会话' },
+      initial_index: 0,
+      options: [],
+      disabled: true,
+    };
+  }
+
+  let workspaceDropdown = null;
+  if (hasWorkspaces) {
+    const wsOptions = workspaces.slice(0, 20).map((path) => ({
+      text: { tag: 'plain_text', content: `${path === currentWorkspace ? '✓ ' : ''}${path}` },
+      value: path,
+    }));
+    workspaceDropdown = {
+      tag: 'select_static',
+      name: 'workspace_pick',
+      placeholder: { tag: 'plain_text', content: '切换工作区' },
+      initial_index: initialIndex(wsOptions, currentWorkspace),
+      options: wsOptions,
+      behaviors: [{ type: 'callback', value: { action: 'workspace_pick' } }],
+    };
+  }
+
+  // 第 2 行：预设 + 模型
+  const presetItems = Array.isArray(presetCatalog?.items) ? presetCatalog.items : [];
+  const curPresetId = presetCatalog?._currentId ?? null;
+  const presetFollowDefault = curPresetId === null;
+  let presetDropdown = null;
+  if (presetItems.length >= 1) {
+    const setPresetOptions = presetItems.slice(0, 30).map((item) => ({
+      text: { tag: 'plain_text', content: `${item.id === curPresetId ? '✓ ' : ''}${item.label}` },
+      value: item.id,
+    }));
+    const presetSelected = presetFollowDefault ? PRESET_FOLLOW_DEFAULT_SENTINEL : curPresetId;
+    setPresetOptions.unshift({
+      text: { tag: 'plain_text', content: `${presetFollowDefault ? '✓ ' : ''}跟随默认` },
+      value: PRESET_FOLLOW_DEFAULT_SENTINEL,
+    });
+    presetDropdown = {
+      tag: 'select_static',
+      name: 'preset_pick',
+      placeholder: { tag: 'plain_text', content: '切换预设' },
+      initial_index: initialIndex(setPresetOptions, presetSelected),
+      options: setPresetOptions,
+      behaviors: [{ type: 'callback', value: { action: 'preset_pick' } }],
+    };
+  }
+
+  const groups = Array.isArray(modelCatalog?.groups) ? modelCatalog.groups : [];
+  const curModel = modelCatalog?.current;
+  const curModelId = curModel ? `${curModel.provider}/${curModel.model}` : null;
+  const flat = [];
+  for (const group of groups) {
+    for (const model of (group.models || [])) flat.push({ id: `${group.id}/${model.id}`, name: `${group.name} - ${model.name}` });
+  }
+  let modelDropdown = null;
+  if (flat.length > 1) {
+    const setModelOptions = flat.slice(0, 30).map((opt) => ({
+      text: { tag: 'plain_text', content: `${opt.id === curModelId ? '✓ ' : ''}${opt.name}` },
+      value: opt.id,
+    }));
+    modelDropdown = {
+      tag: 'select_static',
+      name: 'model_pick',
+      placeholder: { tag: 'plain_text', content: '切换模型' },
+      initial_index: initialIndex(setModelOptions, curModelId),
+      options: setModelOptions,
+      behaviors: [{ type: 'callback', value: { action: 'model_pick' } }],
+    };
+  }
+
+  // 渲染 2×2 网格：图标 + 下拉并列
+  // 每一行用 4 列 column_set：图标 | 下拉 | 图标 | 下拉
+  function iconCol(icon) {
+    return { tag: 'column', width: 'weighted', weight: 0.1, vertical_align: 'center', elements: [{ tag: 'div', text: { tag: 'plain_text', content: icon } }] };
+  }
+  function dropdownCol(el) {
+    return { tag: 'column', width: 'weighted', weight: 1, elements: [el] };
+  }
+
+  const row1 = [];
+  if (sessionDropdown) row1.push(sessionDropdown);
+  if (workspaceDropdown) row1.push(workspaceDropdown);
+  if (row1.length === 2) {
+    elements.push({
+      tag: 'column_set', flex_mode: 'none',
+      columns: [iconCol('💬'), dropdownCol(row1[0]), iconCol('📂'), dropdownCol(row1[1])],
+    });
+  } else if (row1[0]) {
+    elements.push(row1[0]);
+  }
+
+  const row2 = [];
+  const presetBtn = button('🤖 切换预设', 'presets');
+  const modelBtn = button('🧠 切换模型', 'models');
+  if (presetDropdown) row2.push(presetDropdown); else row2.push(presetBtn);
+  if (modelDropdown) row2.push(modelDropdown); else row2.push(modelBtn);
+  elements.push({
+    tag: 'column_set', flex_mode: 'none',
+    columns: [iconCol('🤖'), dropdownCol(row2[0]), iconCol('🧠'), dropdownCol(row2[1])],
+  });
+
+  // 新会话 + 全部会话按钮
+  elements.push(buttonPair('🆕 新会话', 'new', '📋 会话/关注', 'sessions'));
+  if (!hasSessions && !hasWorkspaces) {
+    elements.push(button('🗂 工作区列表', 'workspaces'));
+  }
+  elements.push({ tag: 'hr' });
+
+  // ── 任务控制（对运行中任务的操作）────────────────────────
+  elements.push({ tag: 'div', text: markdown('**任务控制**') });
+  elements.push(buttonPair('⏹ 停止', 'stop', '📐 压缩', 'compact'));
+  elements.push({ tag: 'hr' });
+
+  // ── 补充指令 + 归档切换（并列）────────────────────────────
+  elements.push({
+    tag: 'column_set', flex_mode: 'none',
+    columns: [
+      {
+        tag: 'column', width: 'weighted', weight: 1,
+        elements: [
+          { tag: 'div', text: markdown('**补充指令**') },
+          {
+            tag: 'select_static',
+            name: 'steer_pick',
+            placeholder: { tag: 'plain_text', content: '选择补充指令' },
+            initial_index: 1,
+            options: [
+              ...QUICK_STEER_OPTIONS.map((text) => ({
+                text: { tag: 'plain_text', content: text },
+                value: text,
+              })),
+              { text: { tag: 'plain_text', content: '✏️ 更多 / 自定义…' }, value: 'custom' },
+            ],
+            behaviors: [{ type: 'callback', value: { action: 'steer_pick' } }],
+          },
+        ],
+      },
+      {
+        tag: 'column', width: 'weighted', weight: 1,
+        elements: [
+          { tag: 'div', text: markdown(`🗄 归档：${archiveVisible ? '已显示' : '已隐藏'}`) },
+          button('切换归档显示', 'archive_toggle'),
+        ],
+      },
+    ],
+  });
+  elements.push({ tag: 'hr' });
+
+  // ── 底部操作（系统功能）────────────────────────────────────
+  elements.push(buttonPair('📊 状态', 'status', '📖 帮助', 'help'));
+
+  // 命令与数字兜底说明
+  elements.push({ tag: 'div', text: markdown(
+    '**数字兜底**\n'
+    + '**1**工作区列表 · **2**新会话 · **3**会话列表 · **4**状态\n'
+    + '**5**🔧修复 · **6**帮助',
+  ) });
+  return cardWith('🤖 助手中心', elements);
+}
+
+// ── Settings card (低频配置收敛面板) ───────────────────────────────────────
+
+/**
+ * The collapsed low-frequency configuration panel opened from the main menu's
+ * "更多设置" button. Setting-type commands are exposed directly as dropdowns
+ * (预设 / 模型 / 工作区) so they apply in place; 归档 is a simple two-state
+ * toggle. `presetCatalog` matches the shape presetCard accepts
+ * ({ items, defaultId, _currentId }); `modelCatalog` matches modelCard
+ * ({ groups, current }).
+ */
+export function settingsCard({ archiveVisible, presetCatalog, modelCatalog, workspaces, currentWorkspace }) {
+  const elements = [
+    { tag: 'div', text: markdown('低频配置：直接在下拉中选择，即改即用。') },
+    { tag: 'hr' },
+  ];
+
+  // ── 工作区下拉 ──────────────────────────────────────────────
+  const wsList = Array.isArray(workspaces) ? workspaces : [];
+  elements.push({ tag: 'div', text: markdown(`**🗂 工作区**：${currentWorkspace || '未设置'}`) });
+  if (wsList.length > 0) {
+    const wsSetOptions = wsList.slice(0, 20).map((path) => ({
+      text: { tag: 'plain_text', content: `${path === currentWorkspace ? '✓ ' : ''}${path}` },
+      value: path,
+    }));
+    elements.push({
+      tag: 'select_static',
+      name: 'workspace_pick',
+      placeholder: { tag: 'plain_text', content: '切换工作区' },
+      initial_index: initialIndex(wsSetOptions, currentWorkspace),
+      options: wsSetOptions,
+      behaviors: [{ type: 'callback', value: { action: 'workspace_pick' } }],
+    });
+  } else {
+    elements.push(button('查看工作区列表', 'workspaces'));
+  }
+  elements.push({ tag: 'hr' });
+
+  // ── 预设下拉 ────────────────────────────────────────────────
+  const presetItems = Array.isArray(presetCatalog?.items) ? presetCatalog.items : [];
+  const curPresetId = presetCatalog?._currentId ?? null;
+  const presetFollowDefault = curPresetId === null;
+  const defaultPresetItem = presetItems.find((i) => i.id === presetCatalog?.defaultId);
+  const curPresetLabel = presetItems.find((i) => i.id === curPresetId)?.label
+    ?? (presetFollowDefault
+      ? `跟随默认（${defaultPresetItem ? `${defaultPresetItem.label}·${presetCatalog?.defaultId}` : '未设置'}）`
+      : String(curPresetId));
+  elements.push({ tag: 'div', text: markdown(`**🤖 预设**：${curPresetLabel}`) });
+  if (presetItems.length >= 1) {
+    // 「跟随默认」当前仅在一项时仍是有效选择；null 用 __default 哨兵值承载，
+    // 保证下拉始终有一项能命中 initial_index（否则会显示占位文本）。
+    const setPresetOptions = presetItems.slice(0, 30).map((item) => ({
+      text: { tag: 'plain_text', content: `${item.id === curPresetId ? '✓ ' : ''}${item.label}` },
+      value: item.id,
+    }));
+    const presetSelected = presetFollowDefault ? PRESET_FOLLOW_DEFAULT_SENTINEL : curPresetId;
+    setPresetOptions.unshift({
+      text: { tag: 'plain_text', content: `${presetFollowDefault ? '✓ ' : ''}跟随默认` },
+      value: PRESET_FOLLOW_DEFAULT_SENTINEL,
+    });
+    elements.push({
+      tag: 'select_static',
+      name: 'preset_pick',
+      placeholder: { tag: 'plain_text', content: '切换预设' },
+      initial_index: initialIndex(setPresetOptions, presetSelected),
+      options: setPresetOptions,
+      behaviors: [{ type: 'callback', value: { action: 'preset_pick' } }],
+    });
+  } else {
+    elements.push(button('🤖 切换预设', 'presets'));
+  }
+  elements.push({ tag: 'hr' });
+
+  // ── 模型下拉 ────────────────────────────────────────────────
+  const groups = Array.isArray(modelCatalog?.groups) ? modelCatalog.groups : [];
+  const curModel = modelCatalog?.current;
+  const curModelId = curModel ? `${curModel.provider}/${curModel.model}` : null;
+  const flat = [];
+  for (const group of groups) {
+    for (const model of (group.models || [])) flat.push({ id: `${group.id}/${model.id}`, name: `${group.name} - ${model.name}` });
+  }
+  elements.push({ tag: 'div', text: markdown(`**🧠 模型**：${curModelId || '未设置'}`) });
+  if (flat.length > 1) {
+    const setModelOptions = flat.slice(0, 30).map((opt) => ({
+      text: { tag: 'plain_text', content: `${opt.id === curModelId ? '✓ ' : ''}${opt.name}` },
+      value: opt.id,
+    }));
+    elements.push({
+      tag: 'select_static',
+      name: 'model_pick',
+      placeholder: { tag: 'plain_text', content: '切换模型' },
+      initial_index: initialIndex(setModelOptions, curModelId),
+      options: setModelOptions,
+      behaviors: [{ type: 'callback', value: { action: 'model_pick' } }],
+    });
+  } else {
+    elements.push(button('🧠 切换模型', 'models'));
+  }
+  elements.push({ tag: 'hr' });
+
+  // ── 归档切换（二选一 → 点击切换）──────────────────────────
+  elements.push({ tag: 'div', text: markdown(`**🗄 归档**：${archiveVisible ? '已显示' : '已隐藏'}`) });
+  elements.push(button('切换归档显示', 'archive_toggle'));
+  elements.push({ tag: 'hr' });
+  elements.push(buttonPair('🔙 返回菜单', 'back_to_menu', '📖 帮助', 'help'));
+  return cardWith('⚙ 更多设置', elements);
+}
+
+// ── Preset management card ────────────────────────────────────────────────
+
+/**
+ * Preset selection card with a dropdown of available presets.
+ * The catalog comes from `harness.agentPresetSettings()`.
+ */
+export function presetCard(catalog) {
+  const { items, defaultId } = catalog;
+  const current = catalog._currentId; // injected by the caller
+  const currentItem = items.find((i) => i.id === current);
+  const defaultItem = items.find((i) => i.id === defaultId);
+
+  const currentText = current === null
+    ? `跟随 Host 默认${defaultItem ? `（${defaultItem.label}）` : ''}`
+    : currentItem ? `${currentItem.label}（${currentItem.id}）` : `${current}（已不可用）`;
+
+  const elements = [
+    { tag: 'div', text: markdown(`**当前**：${currentText}`) },
+    { tag: 'div', text: markdown(`**Host 默认**：${defaultItem ? `${defaultItem.label}（${defaultItem.id}）` : '未设置'}`) },
+    { tag: 'hr' },
+  ];
+
+  if (items.length > 1) {
+    const presetCardOptions = items.map((item) => ({
+      text: { tag: 'plain_text', content: `${item.label}（${item.id}）${item.id === current ? ' ✓' : ''}` },
+      value: item.id,
+    }));
+    elements.push(
+      {
+        tag: 'select_static',
+        name: 'preset_pick',
+        placeholder: { tag: 'plain_text', content: '选择预设' },
+        initial_index: current === null ? 0 : initialIndex(presetCardOptions, current),
+        options: presetCardOptions,
+        behaviors: [{ type: 'callback', value: { action: 'preset_pick' } }],
+      },
+      { tag: 'hr' },
+      buttonPair('🔄 跟随默认', 'preset_default', '🔙 返回菜单', 'back_to_menu'),
+    );
+  } else {
+    elements.push(
+      { tag: 'div', text: markdown('当前没有可选择的预设。') },
+      backButton(),
+    );
+  }
+  return cardWith('🤖 预设列表', elements);
+}
+
+// ── Model management card ─────────────────────────────────────────────────
+
+/**
+ * Model selection card with a dropdown of available models.
+ * The catalog comes from `harness.listModels()` or `session.models()`.
+ * Groups are shown as text, then a flat dropdown for selection.
+ */
+export function modelCard(catalog) {
+  const { groups, current } = catalog;
+  const currentId = current ? `${current.provider}/${current.model}` : null;
+
+  const elements = [
+    { tag: 'div', text: markdown(`**当前模型**：${currentId || '未设置'}`) },
+    { tag: 'hr' },
+  ];
+
+  // Count total models
+  let total = 0;
+  for (const group of groups) total += group.models.length;
+
+  if (total === 0) {
+    elements.push(
+      { tag: 'div', text: markdown('当前没有可用模型。') },
+      backButton(),
+    );
+  } else {
+    // Show groups as text
+    for (const group of groups) {
+      const modelLines = group.models.map((m) => {
+        const id = `${group.id}/${m.id}`;
+        return `${id}${id === currentId ? ' ✓' : ''}`;
+      });
+      elements.push(
+        { tag: 'div', text: markdown(`**${group.name}**\n${modelLines.join('\n')}`) },
+      );
+    }
+
+    // Flatten all models into a dropdown
+    const allOptions = [];
+    for (const group of groups) {
+      for (const model of group.models) {
+        allOptions.push({
+          value: `${group.id}/${model.id}`,
+          text: { tag: 'plain_text', content: `${group.name} - ${model.name}` },
+        });
+      }
+    }
+
+    elements.push(
+      { tag: 'hr' },
+      {
+        tag: 'select_static',
+        name: 'model_pick',
+        placeholder: { tag: 'plain_text', content: '选择模型' },
+        initial_index: currentId === null ? 0 : initialIndex(allOptions, currentId),
+        options: allOptions.map((opt) => ({
+          text: { tag: 'plain_text', content: `${opt.text.content}${opt.value === currentId ? ' ✓' : ''}` },
+          value: opt.value,
+        })),
+        behaviors: [{ type: 'callback', value: { action: 'model_pick' } }],
+      },
+      { tag: 'hr' },
+      backButton(),
+    );
+  }
+  return cardWith('🧠 模型列表', elements);
+}
+
+// ── Status card ───────────────────────────────────────────────────────────
+
+/**
+ * System status card showing connection, workspace, preset, model and session
+ * count. `info` is an object with keys:
+ *   - connected: boolean
+ *   - workspace: string | null
+ *   - preset: string | null
+ *   - model: string | null
+ *   - sessionCount: number
+ */
+export function statusCard(info) {
+  const elements = [
+    { tag: 'div', text: markdown(`${info.connected ? '✅' : '❌'} 飞书机器人${info.connected ? '已连接' : '未连接'}`) },
+    { tag: 'div', text: markdown(`📂 工作区：\`${info.workspace || '未设置'}\``) },
+    { tag: 'div', text: markdown(`🤖 预设：${info.preset || '未设置'}`) },
+    { tag: 'div', text: markdown(`🧠 模型：${info.model || '未设置'}`) },
+    { tag: 'div', text: markdown(`💬 会话：${info.sessionCount} 个`) },
+    { tag: 'hr' },
+    backButton(),
+  ];
+  return cardWith('📊 系统状态', elements);
+}
+
+// ── Help card ─────────────────────────────────────────────────────────────
+
+/**
+ * Plain-text command reference advertised when no interactive card is
+ * available (e.g. non-interactive clients), so every command stays
+ * discoverable without card callbacks.
+ */
+export function menuHelpText() {
+  return [
+    '🤖 助手菜单（回复数字即可，无需记命令）',
+    '',
+    '📋 会话 / 工作区',
+    '/sessionlist  列出工作区会话',
+    '/session ID  绑定已有会话',
+    '/workspacelist  列出工作区',
+    '/workspace 路径  切换工作区',
+    '/new  开启全新会话',
+    '',
+    '📊 状态 / 压缩',
+    '/status  连接状态',
+    '/compact  压缩当前会话上下文',
+    '/archived on/off  会话列表显示/隐藏归档',
+    '',
+    '👁 关注',
+    '/watch ID  关注会话（完成后推送）',
+    '/watchlist  关注列表',
+    '/unwatch ID  取消关注',
+    '',
+    '🤖 预设 / 模型',
+    '/presetlist  列出可用 Agent Preset',
+    '/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset',
+    '纯数字 ID：/preset id:<ID>',
+    '/preset --default  跟随 Host 默认',
+    '/models  列出模型',
+    '/model 2  按序号切换模型',
+    '',
+    '🎮 任务控制',
+    '/stop  停止当前任务',
+    '/steer 指令  给 Agent 补充指令',
+    '/repair  修复卡片按钮回调',
+  ].join('\n');
+}
+
+/**
+ * Help card with all available commands and their descriptions.
+ */
+export function helpCard(extraTextLines = []) {
+  const extraText = Array.isArray(extraTextLines) && extraTextLines.length > 0
+    ? ('\n' + extraTextLines.join('\n'))
+    : '';
+  const elements = [
+    { tag: 'div', text: markdown('**📋 卡片功能**\n\n' +
+      '1. 会话下拉 — 切换当前绑定会话\n' +
+      '2. 工作区下拉 — 切换工作区\n' +
+      '3. 🤖 预设下拉 — 切换 Agent 预设\n' +
+      '4. 🧠 模型下拉 — 切换模型\n' +
+      '5. 🆕 新会话 — 开启全新会话\n' +
+      '6. 📋 会话/关注 — 查看/绑定会话，管理关注\n' +
+      '7. ⏹ 停止 — 停止当前任务\n' +
+      '8. 📐 压缩 — 压缩当前会话上下文\n' +
+      '9. 补充指令 — 给 Agent 发送指令\n' +
+      '10. 🗄 归档切换 — 显示/隐藏归档会话\n' +
+      '11. 📊 状态 — 查看系统连接状态\n' +
+      '12. 📖 帮助 — 查看本帮助') },
+    { tag: 'hr' },
+    { tag: 'div', text: markdown('**⌨️ 文本命令**\n\n' +
+      '`/m` — 打开菜单卡片\n' +
+      '`/new` — 开启全新会话\n' +
+      '`/session ID` — 绑定已有会话\n' +
+      '`/sessionlist [工作区]` — 列出会话\n' +
+      '`/workspace 路径` — 切换工作区\n' +
+      '`/workspacelist` — 列出工作区\n' +
+      '`/status` — 查看连接状态\n' +
+      '`/compact` — 压缩上下文\n' +
+      '`/stop` — 停止当前任务\n' +
+      '`/steer 指令` — 补充指令\n' +
+      '`/watch ID` — 关注会话\n' +
+      '`/watchlist` — 关注列表\n' +
+      '`/unwatch ID` — 取消关注\n' +
+      '`/archived on/off` — 归档显隐\n' +
+      '`/presetlist` — 列出预设\n' +
+      '`/preset [序号/ID]` — 切换预设\n' +
+      '`/preset --default` — 跟随默认\n' +
+      '`/models` — 列出模型\n' +
+      '`/model 2` — 切换模型\n' +
+      '`/repair` — 修复卡片按钮') },
+    { tag: 'hr' },
+    { tag: 'div', text: markdown('**💡 数字兜底**\n回复数字快速操作：\n' +
+      '**1**工作区列表 · **2**新会话 · **3**会话/关注\n' +
+      '**4**状态 · **5**修复 · **6**帮助') },
+    { tag: 'hr' },
+    backButton(),
+  ];
+  return cardWith('📖 帮助', elements);
+}
+
+// ── One-shot callback probe (repair verification) ─────────────────────────
 
 /** One-shot callback probe used only after an existing app was re-authorized. */
 export function cardActionProbeCard(nonce) {
@@ -117,6 +707,8 @@ export function cardActionProbeCard(nonce) {
     },
   ]);
 }
+
+// ── Session list card (preserved, with back button) ───────────────────────
 
 /**
  * One page of the workspace's sessions. Each row is a `column_set` pair:
@@ -154,69 +746,104 @@ export function sessionListCard(workspace, sessions, page, total, watchedSession
       const label = `${offset + 1}. ${safeTitle(session.title)}${session.archived === true ? t('（已归档）') : ''}`;
       const watching = watched(session.sessionId);
       return row(
-        buttonElement(watching ? t('⭐取关') : t('⭐关注'), watching ? `unwatch:${session.sessionId}` : `watch:${session.sessionId}`),
+        buttonElement(watching ? t('⭐ 取消关注') : t('☆ 关注'), watching ? `unwatch:${session.sessionId}` : `watch:${session.sessionId}`),
         buttonElement(label, `use:${session.sessionId}`),
       );
     }),
   ];
-  if (page > 0) elements.push(button(t('◀ 上一页'), `sessions:${page - 1}`));
+  if (page > 0) elements.push(button('◀ 上一页', `sessions:${page - 1}`));
   if (page + 1 < pageCount) elements.push(button(t('下一页 ▶'), `sessions:${page + 1}`));
-  elements.push({ tag: 'div', text: markdown(t('回复数字（1~N）绑定本页会话。')) });
-  return cardWith(t('📂 会话列表'), elements);
+  elements.push(
+    { tag: 'hr' },
+    buttonPair('🔙 返回菜单', 'back_to_menu', t('🔍 关注列表'), 'watchlist'),
+    { tag: 'div', text: markdown(t('回复数字（1~N）绑定本页会话。')) },
+  );
+  return cardWith('📂 会话列表', elements);
 }
+
+// ── Workspace list card (preserved, with back button) ─────────────────────
 
 /** The workspace list card (switch-workspace buttons + reply fallback). */
 export function workspaceListCard(paths, current) {
   const elements = paths.length === 0
-    ? [{ tag: 'div', text: markdown(t('当前 Host 上没有已登记的工作区。')) }]
+    ? [
+        { tag: 'div', text: markdown(t('当前 Host 上没有已登记的工作区。')) },
+        backButton(),
+      ]
     : [
         { tag: 'div', text: markdown(t('回复数字切换工作区，或点击按钮：')) },
         ...paths.map((path, index) => button(
           `${index + 1}. ${path}${path === current ? t('（当前）') : ''}`,
           `workspace:${path}`,
         )),
+        { tag: 'hr' },
+        backButton(),
       ];
   return cardWith(t('🗂 工作区'), elements);
 }
 
-/** The card-menu help text (number-driven, no command memorization). */
-export function menuHelpText() {
-  return [
-    t('🤖 助手菜单（回复数字即可，无需记命令）'),
-    '',
-    t('1 · /sessionlist  列出会话（回复数字绑定）'),
-    t('2 · /workspacelist  列出工作区（回复数字切换）'),
-    t('3 · /new  开启新会话'),
-    t('4 · /status  连接状态'),
-    t('5 · /help  本帮助'),
-    t('6 · /repair  修复卡片按钮（请回复数字 6）'),
-    t('7 · /watchlist  关注列表'),
-    '',
-    t('直接发送文字/图片即继续当前会话。'),
-    t('/session ID 或序号  绑定已有会话'),
-    t('/watch ID 或序号  关注会话（完成后推送）'),
-    t('/compact  压缩上下文'),
-    t('/workspace 绝对路径  切换工作区'),
-    t('/presetlist  列出可用 Agent Preset'),
-    t('/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset'),
-    t('纯数字 ID：/preset id:<ID>'),
-    t('/preset --default  跟随 Host 默认'),
-  ].join('\n');
+// ── Watch list card (multi-select add/remove + back button) ──────────────
+
+/** Dropdown (multi-select) of sessions not yet watched, to add them in bulk. */
+function watchAddSelect(entries, availableSessions) {
+  const watched = new Set(entries.map((e) => e.sessionId));
+  const options = (Array.isArray(availableSessions) ? availableSessions : [])
+    .filter((s) => s?.sessionId && !watched.has(s.sessionId))
+    .slice(0, 30)
+    .map((s) => ({
+      text: { tag: 'plain_text', content: safeTitle(s.title ?? s.sessionId) },
+      value: s.sessionId,
+    }));
+  if (options.length === 0) return null;
+  return {
+    tag: 'multi_select_static',
+    name: 'watch_add',
+    placeholder: { tag: 'plain_text', content: t('勾选要关注的会话') },
+    options,
+    behaviors: [{ type: 'callback', value: { action: 'watch_add', kind: 'multi' } }],
+  };
 }
 
-/** The watch list for one conversation (unwatch buttons + reply fallback). */
-export function watchListCard(entries) {
-  const elements = entries.length === 0
-    ? [{ tag: 'div', text: markdown(t('当前没有关注的会话。\n`/watch <ID|序号>` 关注后，任务完成会自动推送。')) }]
-    : [
-        { tag: 'div', text: markdown(t('任务完成会自动推送，回复数字或点按钮取消关注：')) },
-        ...entries.map((entry, index) => button(
-          `${index + 1}. ${safeTitle(entry.title)}`,
-          `unwatch:${entry.sessionId}`,
-        )),
-      ];
+/** Dropdown (multi-select) of currently watched sessions, to remove in bulk. */
+function watchRemoveSelect(entries) {
+  const options = entries.slice(0, 30).map((entry) => ({
+    text: { tag: 'plain_text', content: safeTitle(entry.title) },
+    value: entry.sessionId,
+  }));
+  if (options.length === 0) return null;
+  return {
+    tag: 'multi_select_static',
+    name: 'watch_remove',
+    placeholder: { tag: 'plain_text', content: t('勾选要取消关注的会话') },
+    options,
+    behaviors: [{ type: 'callback', value: { action: 'watch_remove', kind: 'multi' } }],
+  };
+}
+
+/** The watch list for one conversation (multi-select add/remove + buttons). */
+export function watchListCard(entries, availableSessions) {
+  const watching = Array.isArray(entries) ? entries : [];
+  const addSelect = watchAddSelect(watching, availableSessions);
+  const removeSelect = watchRemoveSelect(watching);
+
+  const elements = [];
+  if (watching.length === 0) {
+    elements.push({ tag: 'div', text: markdown(t('当前没有关注的会话。任务完成会自动推送结果。')) });
+  } else {
+    elements.push({ tag: 'div', text: markdown(t('当前关注 **{count}** 个会话：', { count: watching.length })) });
+  }
+
+  if (addSelect) {
+    elements.push({ tag: 'hr' }, { tag: 'div', text: markdown(t('**➕ 添加关注**（多选下拉勾选）')) }, addSelect);
+  }
+  if (removeSelect) {
+    elements.push({ tag: 'hr' }, { tag: 'div', text: markdown(t('**➖ 取消关注**（多选下拉勾选）')) }, removeSelect);
+  }
+  elements.push({ tag: 'hr' }, buttonPair(t('📋 会话列表'), 'sessions', t('🔙 返回菜单'), 'back_to_menu'));
   return cardWith(t('👁 关注列表'), elements);
 }
+
+// ── Completion push card ──────────────────────────────────────────────────
 
 /**
  * The completion push card. `title` is the session title, `reason` the
@@ -235,8 +862,73 @@ export function completionCard(sessionId, title, reason) {
   return cardWith(t('✅ 任务完成'), [
     { tag: 'div', text: markdown(`**${safeTitle(title)}**\n\`${sessionId}\``) },
     { tag: 'div', text: markdown(t('**状态**：{reason}', { reason: reasonText })) },
-    button(t('打开会话列表'), 'sessions'),
-    button(t('工作区'), 'workspaces'),
+    { tag: 'hr' },
+    buttonPair(t('📋 会话列表'), 'sessions', t('🔙 返回菜单'), 'back_to_menu'),
     { tag: 'div', text: markdown(t('绑定该会话后可继续追问，输入文字即可。')) },
   ]);
+}
+
+// ── Steer card (补充指令) ─────────────────────────────────────────────────
+
+/** 常用补充指令的快捷选项，供下拉秒选。 */
+const QUICK_STEER_OPTIONS = ['继续', '加速运行', '总结当前进展', '更简洁些', '更详细些'];
+
+/** 快捷下拉的最后一项：切换到自定义输入卡片。 */
+export const STEER_CUSTOM_SENTINEL = '__steer_custom__';
+
+/** 补充指令卡片：单个下拉，快捷指令 + 「更多/自定义」。 */
+export function steerCard({ hasSession }) {
+  const hint = hasSession
+    ? '从下方下拉选择补充指令；最后一项可自定义输入。'
+    : '当前没有绑定会话，请先绑定会话再补充指令。';
+  const options = QUICK_STEER_OPTIONS.map((text) => ({
+    text: { tag: 'plain_text', content: text },
+    value: text,
+  }));
+  options.push({ text: { tag: 'plain_text', content: '✏️ 更多 / 自定义…' }, value: STEER_CUSTOM_SENTINEL });
+  const elements = [
+    { tag: 'div', text: markdown(hint) },
+    { tag: 'hr' },
+    {
+      tag: 'select_static',
+      name: 'steer_quick',
+      placeholder: { tag: 'plain_text', content: '选择补充指令' },
+      initial_index: 1,
+      options,
+      behaviors: [{ type: 'callback', value: { action: 'steer', source: 'quick' } }],
+    },
+    { tag: 'hr' },
+    button('🔙 返回菜单', 'back_to_menu'),
+  ];
+  return cardWith('➕ 补充指令', elements);
+}
+
+/** 自定义输入卡：输入框 + 提交（从下拉「更多/自定义」切过来）。 */
+export function customSteerCard() {
+  const elements = [
+    { tag: 'div', text: markdown('输入补充指令后点「提交」，发送给当前运行的任务。') },
+    { tag: 'hr' },
+    {
+      tag: 'form',
+      name: 'steer_form',
+      elements: [
+        {
+          tag: 'input',
+          name: 'steer_text',
+          placeholder: { tag: 'plain_text', content: '输入你的补充指令' },
+        },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '提交' },
+          type: 'primary',
+          width: 'fill',
+          form_action_type: 'submit',
+          behaviors: [{ type: 'callback', value: { action: 'steer', source: 'form' } }],
+        },
+      ],
+    },
+    { tag: 'hr' },
+    button('🔙 返回菜单', 'back_to_menu'),
+  ];
+  return cardWith('➕ 自定义指令', elements);
 }

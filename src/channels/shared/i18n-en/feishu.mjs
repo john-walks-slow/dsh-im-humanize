@@ -182,6 +182,18 @@ export default {
   '任务完成会自动推送，回复数字或点按钮取消关注：':
     'Completion is pushed automatically. Reply with a number or tap a button to unwatch:',
   '👁 关注列表': '👁 Watch list',
+  '⭐ 取消关注': '⭐ Unwatch',
+  '☆ 关注': '☆ Watch',
+  '🔍 关注列表': '🔍 Watch list',
+  '勾选要关注的会话': 'Select sessions to watch',
+  '勾选要取消关注的会话': 'Select sessions to unwatch',
+  '当前没有关注的会话。任务完成会自动推送结果。':
+    'No sessions are being watched. Results are pushed automatically when tasks complete.',
+  '当前关注 **{count}** 个会话：': 'Currently watching **{count}** sessions:',
+  '**➕ 添加关注**（多选下拉勾选）': '**➕ Add watch** (select from the multi-select dropdown)',
+  '**➖ 取消关注**（多选下拉勾选）': '**➖ Remove watch** (select from the multi-select dropdown)',
+  '📋 会话列表': '📋 Session list',
+  '🔙 返回菜单': '🔙 Back to menu',
   '已完成': 'Completed',
   '已停止': 'Stopped',
   '已中止': 'Aborted',
