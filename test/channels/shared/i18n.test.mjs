@@ -44,6 +44,10 @@ test('t() translates known keys and fills placeholders in English mode', () => {
   }
   assert.equal(t('未收录的中文'), '未收录的中文');
   assert.equal(t('{value} 测试', { value: 'x' }), EN['{value} 测试'] ?? 'x 测试');
+  assert.equal(
+    t('示例：先发 /models，再发 /model 2 [推理等级ID]'),
+    'Example: send /models first, then /model 2 [reasoning effort ID]',
+  );
   assert.equal(t(42), 42);
 });
 

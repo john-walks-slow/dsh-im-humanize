@@ -104,7 +104,26 @@ function validModelSelection(value) {
     && Boolean(value.provider)
     && typeof value.model === 'string'
     && Boolean(value.model)
-    && (value.reasoningEffort === undefined || typeof value.reasoningEffort === 'string');
+    && (value.reasoningEffort === undefined
+      || (typeof value.reasoningEffort === 'string' && Boolean(value.reasoningEffort)));
+}
+
+function validModelReasoning(value) {
+  return value !== null
+    && typeof value === 'object'
+    && Array.isArray(value.efforts)
+    && value.efforts.length > 0
+    && value.efforts.every((effort) => (
+      effort !== null
+      && typeof effort === 'object'
+      && typeof effort.id === 'string'
+      && Boolean(effort.id)
+      && typeof effort.name === 'string'
+      && Boolean(effort.name)
+      && (effort.description === undefined || typeof effort.description === 'string')
+    ))
+    && (value.defaultEffort === undefined
+      || (typeof value.defaultEffort === 'string' && Boolean(value.defaultEffort)));
 }
 
 function validateModelCatalog(value, method, { session = false } = {}) {
@@ -123,7 +142,9 @@ function validateModelCatalog(value, method, { session = false } = {}) {
     for (const model of group.models) {
       if (!model || typeof model !== 'object'
         || typeof model.id !== 'string' || !model.id
-        || typeof model.name !== 'string' || !model.name) {
+        || typeof model.name !== 'string' || !model.name
+        || (model.description !== undefined && typeof model.description !== 'string')
+        || (model.reasoning !== undefined && !validModelReasoning(model.reasoning))) {
         throw new Error(`Harness returned an invalid response for ${method}`);
       }
     }
@@ -728,6 +749,9 @@ export class HarnessClient {
         sessionId,
         provider: selection.provider,
         model: selection.model,
+        ...(selection.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: selection.reasoningEffort }),
       }, 30_000, signal ? { ...options, signal } : options);
     };
     const value = this.#sessionMaintenanceExecutor

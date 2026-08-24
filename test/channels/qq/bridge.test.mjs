@@ -633,6 +633,12 @@ test('QQ lists models and presets without prompting and advertises fast commands
   assert.equal(creates, 0);
   assert.equal(fixture.sessions.size, 0);
 
+  await bridge.accept(message({ messageId: 'reasoning-qq', content: '/reasoninglist' }));
+  assert.match(sent.at(-1), /还没有会话/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+  assert.equal(fixture.sessions.size, 0);
+
   const presetReplyStart = sent.length;
   await bridge.accept(message({ messageId: 'presets-qq', content: '/presetlist' }));
   const presetReplies = sent.slice(presetReplyStart);
@@ -664,10 +670,15 @@ test('QQ lists models and presets without prompting and advertises fast commands
 
   await bridge.accept(message({ messageId: 'help-models-qq', content: '/help' }));
   const help = sent.at(-1);
-  for (const command of ['/models', '/model', '/presetlist', '/preset', '/preset --default', '/stop', '/steer']) {
+  for (const command of [
+    '/models', '/model', '/reasoninglist', '/reasonings', '/reasoning',
+    '/presetlist', '/preset', '/preset --default', '/stop', '/steer',
+  ]) {
     assert.equal(help.includes(command), true, command);
   }
-  assert.match(help, /\/model 2/);
+  assert.match(help, /\/model .*\[推理等级ID\]/);
+  assert.match(help, /示例：先发 \/models，再发 \/model 2 \[推理等级ID\]/);
+  assert.doesNotMatch(help, /\/model 2 high\b/);
   assert.match(help, /\/preset id:<ID>/);
 });
 

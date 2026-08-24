@@ -344,6 +344,13 @@ test('Feishu lists models and presets without prompting and advertises fast comm
   assert.equal(creates, 0);
   assert.equal(fixture.sessions.size, 0);
 
+  await bridge.accept(event('reasoning-feishu', '/reasoninglist'));
+  await bridge.waitForIdle();
+  assert.match(sent.at(-1), /还没有会话/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+  assert.equal(fixture.sessions.size, 0);
+
   const presetReplyStart = sent.length;
   await bridge.accept(event('presets-feishu', '/presetlist'));
   await bridge.waitForIdle();
@@ -380,10 +387,13 @@ test('Feishu lists models and presets without prompting and advertises fast comm
   await bridge.accept(event('help-feishu', '/help'));
   await bridge.waitForIdle();
   const help = sent.at(-1);
-  for (const command of ['/models', '/model', '/presetlist', '/preset', '/preset --default', '/stop', '/steer']) {
+  for (const command of [
+    '/models', '/model', '/reasoninglist', '/reasonings', '/reasoning',
+    '/presetlist', '/preset', '/preset --default', '/stop', '/steer',
+  ]) {
     assert.equal(help.includes(command), true, command);
   }
-  assert.match(help, /\/model 2/);
+  assert.match(help, /\/model .*\[推理等级ID\]/);
   assert.match(help, /\/preset id:<ID>/);
 });
 

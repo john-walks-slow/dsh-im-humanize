@@ -509,7 +509,9 @@ export function menuHelpText() {
     '纯数字 ID：/preset id:<ID>',
     '/preset --default  跟随 Host 默认',
     '/models  列出模型',
-    '/model 2  按序号切换模型',
+    '/reasoninglist 或 /reasonings  按序号列出当前模型可用推理等级',
+    '/reasoning [序号、等级ID或 --default]  查看或切换当前推理等级',
+    '/model [序号或完整模型ID] [推理等级ID]  查看或切换当前会话模型',
     '',
     '🎮 任务控制',
     '/stop  停止当前任务',
@@ -559,7 +561,9 @@ const HELP_TEXT_COMMANDS = [
   '`/preset [序号/ID]` — 切换预设',
   '`/preset --default` — 跟随默认',
   '`/models` — 列出模型',
-  '`/model 2` — 切换模型',
+  '`/reasoninglist` 或 `/reasonings` — 按序号列出当前模型可用推理等级',
+  '`/reasoning [序号、等级ID或 --default]` — 查看或切换当前推理等级',
+  '`/model [序号或完整模型ID] [推理等级ID]` — 查看或切换当前会话模型',
   '`/repair` — 修复卡片按钮',
 ].join('\n');
 

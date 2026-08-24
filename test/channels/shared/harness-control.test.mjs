@@ -93,9 +93,79 @@ test('HarnessClient exposes and validates model and run-state RPCs', async () =>
   assert.ok(calls.filter(([type]) => type === 'ensureRunning').every(([, value]) => value === options));
 });
 
+test('HarnessClient preserves reasoning metadata and forwards an optional reasoning effort', async () => {
+  const { calls, client, responses } = modelClient();
+  const reasoningCatalog = {
+    groups: [{
+      id: 'deepseek-official',
+      name: 'DeepSeek',
+      models: [{
+        id: 'deepseek-v4',
+        name: 'DeepSeek V4',
+        description: 'Reasoning model',
+        reasoning: {
+          efforts: [
+            { id: 'off', name: 'Off' },
+            { id: 'high', name: 'High', description: 'More thinking' },
+          ],
+          defaultEffort: 'high',
+        },
+      }],
+    }],
+    failures: [],
+  };
+  responses.set('llm.models', reasoningCatalog);
+  responses.set('session.models', {
+    ...reasoningCatalog,
+    current: {
+      provider: 'deepseek-official',
+      model: 'deepseek-v4',
+      reasoningEffort: 'high',
+    },
+    routable: true,
+  });
+  responses.set('session.selectModel', {
+    selected: {
+      provider: 'deepseek-official',
+      model: 'deepseek-v4',
+      reasoningEffort: 'off',
+    },
+  });
+
+  assert.equal((await client.listModels()).groups[0].models[0].reasoning.defaultEffort, 'high');
+  assert.equal((await client.getSessionModels('session-one')).current.reasoningEffort, 'high');
+  await client.selectSessionModel('session-one', {
+    provider: 'deepseek-official',
+    model: 'deepseek-v4',
+    reasoningEffort: 'off',
+  });
+
+  assert.deepEqual(
+    calls.find((entry) => entry[0] === 'rpc' && entry[1] === 'session.selectModel')?.[2],
+    {
+      sessionId: 'session-one',
+      provider: 'deepseek-official',
+      model: 'deepseek-v4',
+      reasoningEffort: 'off',
+    },
+  );
+});
+
 test('HarnessClient rejects malformed model and run-state responses', async () => {
   const { client, responses } = modelClient();
   responses.set('llm.models', { groups: null, failures: [] });
+  await assert.rejects(client.listModels(), /invalid response for llm\.models/);
+
+  responses.set('llm.models', {
+    ...CATALOG,
+    groups: [{
+      ...CATALOG.groups[0],
+      models: [{
+        ...CATALOG.groups[0].models[0],
+        reasoning: { efforts: [] },
+      }],
+    }],
+  });
   await assert.rejects(client.listModels(), /invalid response for llm\.models/);
 
   responses.set('session.models', {
@@ -108,10 +178,33 @@ test('HarnessClient rejects malformed model and run-state responses', async () =
     /invalid response for session\.models/,
   );
 
+  responses.set('session.models', {
+    ...CATALOG,
+    current: {
+      provider: 'deepseek-official',
+      model: 'deepseek-v4',
+      reasoningEffort: '',
+    },
+    routable: true,
+  });
+  await assert.rejects(
+    client.getSessionModels('session-one'),
+    /invalid response for session\.models/,
+  );
+
   responses.set('session.selectModel', { selected: { provider: '', model: 'bad' } });
   await assert.rejects(
     client.selectSessionModel('session-one', { provider: 'p', model: 'm' }),
     /invalid response for session\.selectModel/,
+  );
+
+  await assert.rejects(
+    client.selectSessionModel('session-one', {
+      provider: 'deepseek-official',
+      model: 'deepseek-v4',
+      reasoningEffort: '',
+    }),
+    /provider and model are required/,
   );
 
   responses.set('session.list', { items: [{ sessionId: 'session-one', running: 'yes' }] });

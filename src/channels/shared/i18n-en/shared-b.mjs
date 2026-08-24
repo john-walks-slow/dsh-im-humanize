@@ -134,17 +134,39 @@ export default {
 
   // model-command.mjs
   '用法：/model <序号> 或 /model <provider>/<model>': 'Usage: /model <index> or /model <provider>/<model>',
+  '用法：/model <序号或 provider/model> [推理等级ID]':
+    'Usage: /model <index or provider/model> [reasoning effort ID]',
   '用法：/models（不带参数）': 'Usage: /models (no arguments)',
+  '用法：/reasoning [序号、等级ID或 --default]':
+    'Usage: /reasoning [index, effort ID, or --default]',
+  '用法：/reasoninglist 或 /reasonings（不带参数）':
+    'Usage: /reasoninglist or /reasonings (no arguments)',
   '模型序号无效：{input}': 'Invalid model index: {input}',
   '请发送 /models 查看并输入有效的正整数序号。':
     'Please send /models to view the list and enter a valid positive integer index.',
+  '推理等级序号无效：{input}': 'Invalid reasoning effort index: {input}',
+  '请发送 /reasoninglist 查看并输入有效的正整数序号。':
+    'Please send /reasoninglist and enter a valid positive integer index.',
   '可用模型：': 'Available models:',
+  '可用推理等级：': 'Available reasoning efforts:',
+  '可用推理等级：{efforts}': 'Available reasoning efforts: {efforts}',
   '当前没有可用模型。': 'No models are currently available.',
   '以下模型提供方暂时不可用：': 'The following model providers are temporarily unavailable:',
   '切换模型：/model <序号>': 'To switch models: /model <index>',
+  '切换模型：/model <序号> [推理等级ID]':
+    'Switch model: /model <index> [reasoning effort ID]',
   '当前模型：': 'Current model:',
+  '当前推理等级：{effort}': 'Current reasoning effort: {effort}',
+  'Default（由模型或 Provider 决定）': 'Default (determined by the model or Provider)',
+  '（当前、默认）': ' (current, default)',
+  '（默认）': ' (default)',
   '查看全部模型：/models': 'See all models: /models',
+  '查看可用推理等级：/reasoninglist': 'See reasoning efforts: /reasoninglist',
+  '切换推理等级：/reasoning <序号或等级ID>':
+    'Switch reasoning effort: /reasoning <index or effort ID>',
+  '恢复默认等级：/reasoning --default': 'Restore the default effort: /reasoning --default',
   '当前聊天还没有会话。': 'This chat has no Session yet.',
+  '请先发送一条普通消息创建会话。': 'Send a regular message first to create a Session.',
   '查看模型：/models': 'View models: /models',
   '选择模型：/model <序号>': 'Select a model: /model <index>',
   '当前任务正在运行，请等待完成或先发送 /stop。':
@@ -153,22 +175,39 @@ export default {
     'The Session bound to this chat no longer exists; please try again.',
   '无法切换到该模型。模型当前不可用，或不支持当前会话中的图片。':
     'Cannot switch to that model. It is currently unavailable, or does not support the images in this Session.',
+  '无法切换推理等级。当前模型或推理等级不可用。':
+    'Cannot switch the reasoning effort. The current model or effort is unavailable.',
   '当前聊天绑定的会话已发生变化，请重试。':
     'The Session bound to this chat has changed; please try again.',
   '获取模型列表已取消。': 'Fetching the model list was cancelled.',
+  '获取推理等级列表已取消。': 'Fetching the reasoning effort list was cancelled.',
   '模型切换已取消。': 'The model switch was cancelled.',
+  '推理等级切换已取消。': 'The reasoning effort switch was cancelled.',
   '暂时无法获取模型列表，请稍后重试。':
     'Unable to get the model list right now; please try again later.',
+  '暂时无法获取推理等级，请稍后重试。':
+    'Unable to get reasoning efforts right now; please try again later.',
   '模型切换失败，请稍后重试。': 'Failed to switch the model; please try again later.',
+  '推理等级切换失败，请稍后重试。':
+    'Failed to switch the reasoning effort; please try again later.',
   '模型命令仅支持纯文字，请移除图片后重试。':
     'Model commands support text only; please remove images and try again.',
+  '模型和推理等级命令仅支持纯文字，请移除图片后重试。':
+    'Model and reasoning effort commands support text only; please remove images and try again.',
   '当前任务正在等待你的回答或审批。': 'The current task is waiting for your answer or approval.',
   '请先处理当前请求，或者发送 /stop 停止任务。':
     'Please handle the current request first, or send /stop to stop the task.',
   '没有找到模型：{model}': 'Model not found: {model}',
   '请发送 /models 查看可用模型。': 'Please send /models to view available models.',
+  '模型不支持推理等级：{effort}': 'The model does not support reasoning effort: {effort}',
+  '该模型不提供可切换的推理等级。':
+    'This model does not provide switchable reasoning efforts.',
   '模型已切换为：\n{model}\n\n后续消息将使用该模型。':
     'Model switched to:\n{model}\n\nSubsequent messages will use this model.',
+  '模型已切换为：\n{model}\n推理等级：{effort}\n\n后续消息将使用该模型和推理等级。':
+    'Model switched to:\n{model}\nReasoning effort: {effort}\n\nSubsequent messages will use this model and reasoning effort.',
+  '推理等级已切换为：\n{effort}\n\n当前模型：{model}\n后续消息将使用该推理等级。':
+    'Reasoning effort switched to:\n{effort}\n\nCurrent model: {model}\nSubsequent messages will use this reasoning effort.',
 
   // compact-command.mjs
   '用法：/compact（不带参数）': 'Usage: /compact (no arguments)',

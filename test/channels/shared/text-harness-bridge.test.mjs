@@ -420,6 +420,12 @@ test('all four shared text channels list models and presets locally and advertis
     assert.equal(creates, 0, `${name} create`);
     assert.equal(fixture.sessions.size, 0, `${name} session binding`);
 
+    await bridge.accept(message(`reasoning-${name}`, '/reasoninglist'));
+    assert.match(sent.at(-1), /还没有会话/, `${name} reasoning command`);
+    assert.equal(asks, 0, `${name} reasoning ask`);
+    assert.equal(creates, 0, `${name} reasoning create`);
+    assert.equal(fixture.sessions.size, 0, `${name} reasoning session binding`);
+
     const presetReplyStart = sent.length;
     await bridge.accept(message(`presets-${name}`, '/presetlist'));
     const presetReplies = sent.slice(presetReplyStart);
@@ -451,10 +457,15 @@ test('all four shared text channels list models and presets locally and advertis
 
     await bridge.accept(message(`help-${name}`, '/help'));
     const help = sent.at(-1);
-    for (const command of ['/models', '/model', '/presetlist', '/preset', '/preset --default', '/stop', '/steer']) {
+    for (const command of [
+      '/models', '/model', '/reasoninglist', '/reasonings', '/reasoning',
+      '/presetlist', '/preset', '/preset --default', '/stop', '/steer',
+    ]) {
       assert.match(help, new RegExp(`\\${command}`), `${name} ${command}`);
     }
-    assert.match(help, /\/model 2/, `${name} numbered model selection`);
+    assert.match(help, /\/model .*\[推理等级ID\]/, `${name} optional model reasoning effort`);
+    assert.match(help, /示例：先发 \/models，再发 \/model 2 \[推理等级ID\]/, `${name} model effort placeholder`);
+    assert.doesNotMatch(help, /\/model 2 high\b/, `${name} does not assume a reasoning effort ID`);
     assert.match(help, /\/preset id:<ID>/, `${name} numeric preset ID selection`);
   }
 });

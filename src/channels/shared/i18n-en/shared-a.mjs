@@ -50,9 +50,17 @@ export default {
   '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话':
     '/session <Session ID or workspace index>  Bind this chat to the specified session',
   '/models  按序号列出所有可用模型': '/models  List all available models by index',
+  '/reasoninglist 或 /reasonings  按序号列出当前模型可用推理等级':
+    '/reasoninglist or /reasonings  List reasoning efforts for the current model by index',
+  '/reasoning [序号、等级ID或 --default]  查看或切换当前推理等级':
+    '/reasoning [index, effort ID, or --default]  Show or switch the current reasoning effort',
   '/model [序号或完整模型ID]  查看或切换当前会话模型':
     '/model [index or full model ID]  Show or switch the model of the current session',
+  '/model [序号或完整模型ID] [推理等级ID]  查看或切换当前会话模型':
+    '/model [index or full model ID] [reasoning effort ID]  Show or switch the current Session model',
   '示例：先发 /models，再发 /model 2': 'Example: send /models first, then /model 2',
+  '示例：先发 /models，再发 /model 2 [推理等级ID]':
+    'Example: send /models first, then /model 2 [reasoning effort ID]',
   '/presetlist  按序号列出可用 Agent Preset': '/presetlist  List available Agent Presets by index',
   '/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset':
     '/preset [index or full ID]  Show or set the Agent Preset of this bot',

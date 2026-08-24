@@ -421,6 +421,11 @@ test('Enterprise WeChat lists models and presets without prompting and advertise
   assert.equal(asks, 0);
   assert.equal(creates, 0);
 
+  await bridge.accept(frame({ msgid: 'reasoning-wecom', text: { content: '/reasoninglist' } }));
+  assert.match(transport.streamed.at(-1).content, /还没有会话/);
+  assert.equal(asks, 0);
+  assert.equal(creates, 0);
+
   const presetReplyStart = transport.streamed.length;
   await bridge.accept(frame({ msgid: 'presets-wecom', text: { content: '/presetlist' } }));
   const presetReplies = transport.streamed
@@ -454,10 +459,15 @@ test('Enterprise WeChat lists models and presets without prompting and advertise
 
   await bridge.accept(frame({ msgid: 'help-models-wecom', text: { content: '/help' } }));
   const help = transport.streamed.at(-1).content;
-  for (const command of ['/models', '/model', '/presetlist', '/preset', '/preset --default', '/stop', '/steer']) {
+  for (const command of [
+    '/models', '/model', '/reasoninglist', '/reasonings', '/reasoning',
+    '/presetlist', '/preset', '/preset --default', '/stop', '/steer',
+  ]) {
     assert.equal(help.includes(command), true, command);
   }
-  assert.match(help, /\/model 2/);
+  assert.match(help, /\/model .*\[推理等级ID\]/);
+  assert.match(help, /示例：先发 \/models，再发 \/model 2 \[推理等级ID\]/);
+  assert.doesNotMatch(help, /\/model 2 high\b/);
   assert.match(help, /\/preset id:<ID>/);
 });
 

@@ -25,6 +25,54 @@ const CATALOG = Object.freeze({
   failures: [],
 });
 
+const REASONING_CATALOG = Object.freeze({
+  groups: [
+    {
+      id: 'deepseek-official',
+      name: 'DeepSeek',
+      models: [
+        {
+          id: 'deepseek-v4-flash',
+          name: 'DeepSeek V4 Flash',
+          reasoning: {
+            efforts: [
+              { id: 'off', name: 'Off' },
+              { id: 'high', name: 'High', description: '复杂任务' },
+              { id: 'max', name: 'Max' },
+            ],
+            defaultEffort: 'high',
+          },
+        },
+        {
+          id: 'deepseek-v4-pro',
+          name: 'DeepSeek V4 Pro',
+          reasoning: {
+            efforts: [
+              { id: 'medium', name: 'Medium' },
+              { id: 'xhigh', name: 'XHigh' },
+            ],
+            defaultEffort: 'medium',
+          },
+        },
+      ],
+    },
+    CATALOG.groups[1],
+  ],
+  failures: [],
+});
+
+function reasoningSessionCatalog(current = {
+  provider: 'deepseek-official',
+  model: 'deepseek-v4-flash',
+  reasoningEffort: 'high',
+}) {
+  return {
+    ...REASONING_CATALOG,
+    current,
+    routable: true,
+  };
+}
+
 function deferred() {
   let resolve;
   const promise = new Promise((settle) => { resolve = settle; });
@@ -113,13 +161,17 @@ function fixture({
   return { calls, harness, state, boundId: () => boundId };
 }
 
-test('isModelCommand recognizes only /models and /model command prefixes', () => {
+test('isModelCommand recognizes model and reasoning command prefixes', () => {
   for (const command of [
     '/models', ' /MODELS ', '/models ignored', '/model', '/MoDeL openai/gpt-5',
+    '/reasoning', '/REASONING high', '/reasoninglist', '/ReAsOnInGs',
   ]) {
     assert.equal(isModelCommand(command), true, command);
   }
-  for (const value of [null, '', 'model', '/modelx', '/modelsx', 'hello /models']) {
+  for (const value of [
+    null, '', 'model', '/modelx', '/modelsx', 'hello /models',
+    '/reasoningx', '/reasoninglists', 'hello /reasoning',
+  ]) {
     assert.equal(isModelCommand(value), false, String(value));
   }
 });
@@ -209,6 +261,310 @@ test('/model reports current state without creating or selecting', async () => {
   assert.equal(existingFixture.calls.some(([name]) => name === 'selectModel'), false);
 });
 
+test('/reasoninglist and /reasonings are identical read-only aliases', async () => {
+  const first = fixture({
+    initialSessionId: 'session-one',
+    sessionCatalog: reasoningSessionCatalog(),
+  });
+  const second = fixture({
+    initialSessionId: 'session-one',
+    sessionCatalog: reasoningSessionCatalog(),
+  });
+  const listed = await runModelCommand(
+    '/reasoninglist', first.harness, first.state, 'direct:one',
+  );
+  const aliased = await runModelCommand(
+    '/REASONINGS', second.harness, second.state, 'direct:one',
+  );
+
+  assert.equal(aliased.message, listed.message);
+  assert.match(listed.message, /deepseek-official\/deepseek-v4-flash/);
+  assert.match(listed.message, /2\. High \(high\)（当前、默认）/);
+  assert.match(listed.message, /复杂任务/);
+  assert.match(listed.message, /\/reasoning --default/);
+  assert.equal(first.calls.some(([name]) => name === 'selectModel'), false);
+  assert.equal(second.calls.some(([name]) => name === 'selectModel'), false);
+});
+
+test('/reasoninglist keeps default reset available without current-model metadata', async () => {
+  for (const sessionCatalog of [
+    {
+      ...CATALOG,
+      current: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+      routable: true,
+    },
+    {
+      ...CATALOG,
+      current: {
+        provider: 'private-provider',
+        model: 'private-model',
+        reasoningEffort: 'custom-high',
+      },
+      routable: true,
+    },
+  ]) {
+    const current = fixture({ initialSessionId: 'session-one', sessionCatalog });
+    const listed = await runModelCommand(
+      '/reasoninglist', current.harness, current.state, 'direct:one',
+    );
+
+    assert.match(listed.message, /不提供可切换的推理等级/);
+    assert.match(listed.message, /恢复默认等级：\/reasoning --default/);
+    assert.equal(current.calls.some(([name]) => name === 'selectModel'), false);
+  }
+});
+
+test('reasoning read commands require an existing Session and validate syntax', async () => {
+  const missing = fixture();
+  for (const command of ['/reasoning', '/reasoninglist', '/reasonings']) {
+    const result = await runModelCommand(command, missing.harness, missing.state, 'direct:one');
+    assert.match(result.message, /还没有会话/, command);
+  }
+  assert.equal(missing.calls.some(([name]) => name === 'createSession'), false);
+
+  const existing = fixture({
+    initialSessionId: 'session-one',
+    sessionCatalog: reasoningSessionCatalog(),
+  });
+  assert.match(
+    (await runModelCommand(
+      '/reasoninglist extra', existing.harness, existing.state, 'direct:one',
+    )).message,
+    /不带参数/,
+  );
+  assert.match(
+    (await runModelCommand(
+      '/reasoning high extra', existing.harness, existing.state, 'direct:one',
+    )).message,
+    /用法/,
+  );
+});
+
+test('/reasoning reports the explicit or model-default effort without selecting', async () => {
+  const explicit = fixture({
+    initialSessionId: 'session-one',
+    sessionCatalog: reasoningSessionCatalog(),
+  });
+  const explicitResult = await runModelCommand(
+    '/reasoning', explicit.harness, explicit.state, 'direct:one',
+  );
+  assert.match(explicitResult.message, /当前推理等级：High \(high\)/);
+
+  const inherited = fixture({
+    initialSessionId: 'session-one',
+    sessionCatalog: reasoningSessionCatalog({
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+    }),
+  });
+  const inheritedResult = await runModelCommand(
+    '/reasoning', inherited.harness, inherited.state, 'direct:one',
+  );
+  assert.match(inheritedResult.message, /当前推理等级：High \(high\)/);
+  assert.equal(explicit.calls.some(([name]) => name === 'selectModel'), false);
+  assert.equal(inherited.calls.some(([name]) => name === 'selectModel'), false);
+});
+
+test('/reasoning preserves an unknown current effort and represents Provider Default', async () => {
+  const groups = structuredClone(REASONING_CATALOG.groups);
+  delete groups[0].models[0].reasoning.defaultEffort;
+  const raw = fixture({
+    initialSessionId: 'session-one',
+    sessionCatalog: {
+      groups,
+      failures: [],
+      current: {
+        provider: 'deepseek-official',
+        model: 'deepseek-v4-flash',
+        reasoningEffort: 'gateway-ultra',
+      },
+      routable: true,
+    },
+  });
+  const listed = await runModelCommand(
+    '/reasoninglist', raw.harness, raw.state, 'direct:one',
+  );
+  assert.match(listed.message, /当前推理等级：gateway-ultra/);
+  assert.doesNotMatch(listed.message, /（当前/);
+
+  const providerDefault = fixture({
+    initialSessionId: 'session-one',
+    sessionCatalog: {
+      groups,
+      failures: [],
+      current: {
+        provider: 'deepseek-official',
+        model: 'deepseek-v4-flash',
+      },
+      routable: true,
+    },
+  });
+  const current = await runModelCommand(
+    '/reasoning', providerDefault.harness, providerDefault.state, 'direct:one',
+  );
+  assert.match(current.message, /Default（由模型或 Provider 决定）/);
+});
+
+test('/reasoning switches the current model effort by index or exact ID', async () => {
+  for (const [requested, expected] of [['3', 'max'], ['off', 'off']]) {
+    const { calls, harness, state } = fixture({
+      initialSessionId: 'session-one',
+      sessionCatalog: reasoningSessionCatalog(),
+    });
+    const result = await runModelCommand(
+      `/reasoning ${requested}`, harness, state, 'direct:one',
+    );
+
+    assert.match(result.message, new RegExp(`推理等级已切换为：[\\s\\S]*${expected}`));
+    assert.deepEqual(calls.find(([name]) => name === 'selectModel'), [
+      'selectModel',
+      'session-one',
+      {
+        provider: 'deepseek-official',
+        model: 'deepseek-v4-flash',
+        reasoningEffort: expected,
+      },
+      {},
+    ]);
+  }
+});
+
+test('/reasoning prefers an exact opaque numeric effort ID before an index', async () => {
+  const groups = structuredClone(REASONING_CATALOG.groups);
+  groups[0].models[0].reasoning = {
+    efforts: [
+      { id: '3', name: 'Literal Three' },
+      { id: '0', name: 'Literal Zero' },
+      { id: '9007199254740992', name: 'Huge Numeric' },
+    ],
+    defaultEffort: '3',
+  };
+
+  for (const requested of ['3', '0', '9007199254740992']) {
+    const { calls, harness, state } = fixture({
+      initialSessionId: 'session-one',
+      sessionCatalog: {
+        groups,
+        failures: [],
+        current: {
+          provider: 'deepseek-official',
+          model: 'deepseek-v4-flash',
+          reasoningEffort: '3',
+        },
+        routable: true,
+      },
+    });
+    const result = await runModelCommand(
+      `/reasoning ${requested}`, harness, state, 'direct:one',
+    );
+
+    assert.match(result.message, /推理等级已切换为/);
+    assert.equal(
+      calls.find(([name]) => name === 'selectModel')?.[2]?.reasoningEffort,
+      requested,
+    );
+  }
+});
+
+test('/reasoning --default restores the current model default effort', async () => {
+  const { calls, harness, state } = fixture({
+    initialSessionId: 'session-one',
+    sessionCatalog: reasoningSessionCatalog({
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'max',
+    }),
+    selectionResult: {
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'high',
+    },
+    selectionReadback: {
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'high',
+    },
+  });
+  const result = await runModelCommand(
+    '/reasoning --default', harness, state, 'direct:one',
+  );
+
+  assert.match(result.message, /推理等级已切换为：[\s\S]*High \(high\)/);
+  assert.deepEqual(calls.find(([name]) => name === 'selectModel')?.[2], {
+    provider: 'deepseek-official',
+    model: 'deepseek-v4-flash',
+  });
+});
+
+test('/reasoning --default can reset an advisory-unlisted current model', async () => {
+  const sessionCatalog = {
+    ...CATALOG,
+    current: {
+      provider: 'private-provider',
+      model: 'private-model',
+      reasoningEffort: 'custom-high',
+    },
+    routable: true,
+  };
+  const { calls, harness, state } = fixture({
+    initialSessionId: 'session-one',
+    sessionCatalog,
+  });
+  const result = await runModelCommand(
+    '/reasoning --default', harness, state, 'direct:one',
+  );
+
+  assert.match(result.message, /推理等级已切换为/);
+  assert.match(result.message, /Default/);
+  assert.deepEqual(calls.find(([name]) => name === 'selectModel')?.[2], {
+    provider: 'private-provider',
+    model: 'private-model',
+  });
+});
+
+test('/reasoning rejects unsupported levels without changing the selection', async () => {
+  for (const requested of ['0', '4', '9007199254740992', 'medium']) {
+    const { calls, harness, state } = fixture({
+      initialSessionId: 'session-one',
+      sessionCatalog: reasoningSessionCatalog(),
+    });
+    const result = await runModelCommand(
+      `/reasoning ${requested}`, harness, state, 'direct:one',
+    );
+    assert.match(result.message, /序号无效|不支持推理等级/, requested);
+    assert.equal(calls.some(([name]) => name === 'selectModel'), false, requested);
+  }
+
+  const unsupported = fixture({ initialSessionId: 'session-one' });
+  const result = await runModelCommand(
+    '/reasoning high', unsupported.harness, unsupported.state, 'direct:one',
+  );
+  assert.match(result.message, /不提供可切换的推理等级/);
+  assert.equal(unsupported.calls.some(([name]) => name === 'selectModel'), false);
+
+  const noSession = fixture({ globalCatalog: REASONING_CATALOG });
+  const noSessionResult = await runModelCommand(
+    '/reasoning high', noSession.harness, noSession.state, 'direct:one',
+  );
+  assert.match(noSessionResult.message, /还没有会话/);
+  assert.equal(noSession.calls.some(([name]) => name === 'createSession'), false);
+});
+
+test('reasoning commands reject image-bearing control messages', async () => {
+  const current = fixture({
+    initialSessionId: 'session-one',
+    sessionCatalog: reasoningSessionCatalog(),
+  });
+  for (const command of ['/reasoning', '/reasoninglist', '/reasonings', '/reasoning high']) {
+    const result = await runModelCommand(
+      command, current.harness, current.state, 'direct:one', { hasImages: true },
+    );
+    assert.match(result.message, /仅支持纯文字/, command);
+  }
+  assert.equal(current.calls.some(([name]) => name === 'models'), false);
+  assert.equal(current.calls.some(([name]) => name === 'selectModel'), false);
+});
+
 test('/model uses an exact catalog ID and preserves slashes inside the model ID', async () => {
   const { calls, harness, state } = fixture({ initialSessionId: 'session-one' });
   const control = Object.freeze({ route: 'direct:one' });
@@ -240,6 +596,71 @@ test('/model accepts the current catalog\'s global 1-based model number', async 
     { provider: 'openrouter', model: 'anthropic/claude-sonnet-4' },
     {},
   ]);
+});
+
+test('/model accepts an optional effort and otherwise applies the target model default', async () => {
+  for (const [command, expectedEffort] of [
+    ['/model 2 xhigh', 'xhigh'],
+    ['/model deepseek-official/deepseek-v4-pro', 'medium'],
+  ]) {
+    const resolvedDefault = command.includes(' xhigh') ? undefined : {
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-pro',
+      reasoningEffort: 'medium',
+    };
+    const { calls, harness, state } = fixture({
+      initialSessionId: 'session-one',
+      globalCatalog: REASONING_CATALOG,
+      sessionCatalog: reasoningSessionCatalog(),
+      selectionResult: resolvedDefault,
+      selectionReadback: resolvedDefault,
+    });
+    const result = await runModelCommand(command, harness, state, 'direct:one');
+
+    assert.match(result.message, /deepseek-official\/deepseek-v4-pro/);
+    assert.match(result.message, new RegExp(`推理等级：.*${expectedEffort}`));
+    assert.deepEqual(calls.find(([name]) => name === 'selectModel')?.[2], {
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-pro',
+      ...(command.includes(' xhigh') ? { reasoningEffort: expectedEffort } : {}),
+    });
+  }
+});
+
+test('/model validates an optional effort against the target model atomically', async () => {
+  const invalid = fixture({ globalCatalog: REASONING_CATALOG });
+  const failed = await runModelCommand(
+    '/model 2 high', invalid.harness, invalid.state, 'direct:one',
+  );
+
+  assert.match(failed.message, /不支持推理等级：high/);
+  assert.match(failed.message, /medium, xhigh/);
+  assert.equal(invalid.calls.some(([name]) => name === 'createSession'), false);
+  assert.equal(invalid.calls.some(([name]) => name === 'selectModel'), false);
+
+  const valid = fixture({ globalCatalog: REASONING_CATALOG });
+  const switched = await runModelCommand(
+    '/model 2 xhigh', valid.harness, valid.state, 'direct:one',
+  );
+  assert.match(switched.message, /模型已切换为/);
+  assert.equal(valid.boundId(), 'session-created');
+  assert.deepEqual(valid.calls.find(([name]) => name === 'selectModel')?.[2], {
+    provider: 'deepseek-official',
+    model: 'deepseek-v4-pro',
+    reasoningEffort: 'xhigh',
+  });
+});
+
+test('/model reports the current reasoning effort when the Session exposes it', async () => {
+  const current = fixture({
+    initialSessionId: 'session-one',
+    sessionCatalog: reasoningSessionCatalog(),
+  });
+  const result = await runModelCommand('/model', current.harness, current.state, 'direct:one');
+
+  assert.match(result.message, /当前推理等级：High \(high\)/);
+  assert.match(result.message, /\/reasoninglist/);
+  assert.equal(current.calls.some(([name]) => name === 'selectModel'), false);
 });
 
 test('/model rejects invalid model numbers without creating or selecting a Session', async () => {
@@ -467,6 +888,78 @@ test('/model refuses pending interactions and active or running Sessions', async
     assert.equal(active.calls.some(([name]) => name === 'models'), false);
     assert.equal(active.calls.some(([name]) => name === 'selectModel'), false);
   }
+});
+
+test('/reasoning mutations refuse pending or busy Sessions while reads remain available', async () => {
+  const pending = fixture({
+    initialSessionId: 'session-one',
+    sessionCatalog: reasoningSessionCatalog(),
+  });
+  const pendingResult = await runModelCommand(
+    '/reasoning off', pending.harness, pending.state, 'direct:one',
+    { pendingInteraction: true },
+  );
+  assert.match(pendingResult.message, /等待你的回答或审批/);
+  assert.equal(pending.calls.some(([name]) => name === 'selectModel'), false);
+
+  for (const runState of [{ running: true }, { activeTurn: true }]) {
+    const active = fixture({
+      initialSessionId: 'session-one',
+      sessionCatalog: reasoningSessionCatalog(),
+      ...runState,
+    });
+    const failed = await runModelCommand(
+      '/reasoning off', active.harness, active.state, 'direct:one',
+      { control: 'owner-one' },
+    );
+    assert.match(failed.message, /当前任务正在运行/);
+    assert.equal(active.calls.some(([name]) => name === 'selectModel'), false);
+
+    const listed = await runModelCommand(
+      '/reasoninglist', active.harness, active.state, 'direct:one',
+    );
+    assert.match(listed.message, /可用推理等级/);
+  }
+});
+
+test('/reasoning verifies both the selected effort and authoritative readback', async () => {
+  const wrongSelection = fixture({
+    initialSessionId: 'session-one',
+    sessionCatalog: reasoningSessionCatalog(),
+    selectionResult: {
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'high',
+    },
+  });
+  const selectionFailure = await runModelCommand(
+    '/reasoning max',
+    wrongSelection.harness,
+    wrongSelection.state,
+    'direct:one',
+  );
+  assert.match(selectionFailure.message, /推理等级切换失败/);
+  assert.match(selectionFailure.message, /reasoningEffort=max/);
+  assert.match(selectionFailure.message, /reasoningEffort=high/);
+
+  const wrongReadback = fixture({
+    initialSessionId: 'session-one',
+    sessionCatalog: reasoningSessionCatalog(),
+    selectionReadback: {
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'off',
+    },
+  });
+  const readbackFailure = await runModelCommand(
+    '/reasoning max',
+    wrongReadback.harness,
+    wrongReadback.state,
+    'direct:one',
+  );
+  assert.match(readbackFailure.message, /推理等级切换失败/);
+  assert.match(readbackFailure.message, /reasoningEffort=max/);
+  assert.match(readbackFailure.message, /reasoningEffort=off/);
 });
 
 test('a missing bound Session is cleared and /models falls back to the global catalog', async () => {

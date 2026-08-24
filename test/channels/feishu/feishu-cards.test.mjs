@@ -64,12 +64,21 @@ test('menu exposes the increased command set and keeps repair number-only', () =
   assert.equal(actions.includes('repair'), false);
 });
 
-test('menu help advertises Agent Preset commands', () => {
+test('menu and card help advertise Agent Preset and reasoning commands', () => {
   const help = menuHelpText();
   assert.match(help, /\/presetlist/);
   assert.match(help, /\/preset \[序号或完整ID\]/);
   assert.match(help, /\/preset id:<ID>/);
   assert.match(help, /\/preset --default/);
+  assert.match(help, /\/reasoninglist 或 \/reasonings/);
+  assert.match(help, /\/reasoning \[序号、等级ID或 --default\]/);
+  assert.match(help, /\/model \[序号或完整模型ID\] \[推理等级ID\]/);
+
+  const card = helpCard();
+  assert.match(card, /\/reasoninglist/);
+  assert.match(card, /\/reasonings/);
+  assert.match(card, /\/reasoning \[序号、等级ID或 --default\]/);
+  assert.match(card, /\/model \[序号或完整模型ID\] \[推理等级ID\]/);
 });
 
 test('card-action probe carries only its action and opaque nonce', () => {
