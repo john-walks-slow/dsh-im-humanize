@@ -6,6 +6,13 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-08-25
+
+### Added / 新增
+
+- 九种内置聊天渠道新增私聊批量输入命令：使用 `/batch` 暂存最多 10 条纯文字消息，使用 `/send` 按原顺序合并为一次 Harness 输入，或使用 `/cancel` 放弃当前批次；提交失败时会保留内容以便重试。
+  Added private-chat batch input commands to all nine built-in chat channels: `/batch` collects up to 10 text-only messages, `/send` submits them in order as one Harness input, and `/cancel` discards the batch; failed submissions retain their content for retry.
+
 ## [2.2.1] - 2026-08-25
 
 ### Fixed / 修复
@@ -292,7 +299,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.2.1...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/xmanrui/dsh-im/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/xmanrui/dsh-im/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/xmanrui/dsh-im/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/xmanrui/dsh-im/compare/v2.0.1...v2.1.0
