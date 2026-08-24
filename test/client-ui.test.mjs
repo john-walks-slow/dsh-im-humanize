@@ -510,7 +510,7 @@ test('DingTalk bot cards omit the redundant received and replied metric', () => 
   assert.doesNotMatch(markup, /收到 \/ 回复/);
 });
 
-test('all IM channel cards place one-row actions above full-width feedback', async () => {
+test('all IM channel cards keep localized actions visible above full-width feedback', async () => {
   const [imStyles, feishuStyles, weixinStyles, dingtalkStyles] = await Promise.all([
     readFile(STYLES_URL, 'utf8'),
     readFile(FEISHU_STYLES_URL, 'utf8'),
@@ -518,12 +518,13 @@ test('all IM channel cards place one-row actions above full-width feedback', asy
     readFile(DINGTALK_STYLES_URL, 'utf8'),
   ]);
 
-  assert.match(feishuStyles, /\.bxf-botActions \{[^}]*flex-wrap: nowrap;/);
+  assert.match(feishuStyles, /\.bxf-botActions \{[^}]*width: 100%;[^}]*flex-wrap: wrap;/);
   assert.match(weixinStyles, /\.dxw-accountFooter \.dxw-actions \{[^}]*flex-wrap: nowrap;/);
   assert.match(dingtalkStyles, /\.ddt-accountFooter \.ddt-actions \{[^}]*flex-wrap: nowrap;/);
   assert.match(imStyles, /\.dim-panel \.dim-cardFooter \{[^}]*gap: 12px;[^}]*padding-top: 6px;[^}]*border-top: 1px solid/);
   assert.match(imStyles, /\.dim-panel \.dim-cardFooterLayout \{[^}]*width: 100%;[^}]*flex-direction: column;[^}]*align-items: stretch;/);
-  assert.match(imStyles, /\.dim-panel \.dim-cardFooterLayout > \.dim-cardActions \{[^}]*align-self: flex-end;/);
+  assert.match(imStyles, /\.dim-panel \.dim-cardFooterLayout > \.dim-cardActions \{[^}]*align-self: stretch;/);
+  assert.match(imStyles, /\.dim-panel \.dim-cardActions \{[^}]*width: 100%;[^}]*justify-content: flex-end;[^}]*flex-wrap: wrap;/);
   assert.match(imStyles, /\.dim-panel \.dim-cardFeedback \{[^}]*width: 100%;[^}]*overflow-wrap: anywhere;[^}]*white-space: normal;/);
   assert.match(imStyles, /\.dim-panel \.dim-cardActions \.dim-cardAction \{[^}]*min-height: 32px;[^}]*border-radius: 8px;[^}]*font-size: 13px;/);
   assert.match(imStyles, /\.dim-panel \.dim-cardActions \.dim-cardAction\[data-kind="danger"\] \{[^}]*#d54941/);
