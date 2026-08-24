@@ -6,6 +6,22 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-08-25
+
+### Added / 新增
+
+- 所有聊天渠道新增 `/reasoninglist`、`/reasonings` 和 `/reasoning` 命令，可查看当前模型支持的推理等级、切换指定等级或恢复模型默认值；`/model` 也支持在切换模型时同时指定推理等级。
+  Added `/reasoninglist`, `/reasonings`, and `/reasoning` commands across all chat channels for listing the current model's reasoning efforts, selecting an effort, or restoring the model default; `/model` can also select a reasoning effort while switching models.
+
+### Fixed / 修复
+
+- 当浏览器使用不兼容的回环地址访问 Web 设置页并触发 RPC 403 时，插件现在会提供保留当前端口的 `localhost` 恢复入口，避免各 IM 渠道配置页面持续请求失败。
+  When an incompatible loopback address causes RPC 403 responses in the Web settings UI, the plugin now offers a `localhost` recovery link that preserves the current port, preventing persistent request failures across IM channel settings.
+- 微信长回复现在在桥接层和运行时统一按腾讯 iLink 的 1,800 字符限制分段发送，避免超长回复被平台拒绝或截断。
+  Long WeChat replies are now split consistently at Tencent iLink's 1,800-character limit across the bridge and runtime, preventing oversized replies from being rejected or truncated.
+- Telegram Bot API 无法连接时会给出明确的代理诊断提示，并补充 Node 环境代理、`HTTPS_PROXY` 和 `NO_PROXY` 的中英文配置说明。
+  Telegram Bot API connection failures now provide actionable proxy diagnostics, with bilingual setup guidance for Node environment proxy support, `HTTPS_PROXY`, and `NO_PROXY`.
+
 ## [2.1.0] - 2026-08-24
 
 ### Added / 新增
@@ -269,7 +285,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/xmanrui/dsh-im/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/xmanrui/dsh-im/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/xmanrui/dsh-im/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/xmanrui/dsh-im/compare/v1.5.0...v2.0.0
