@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Added / 新增
+
+- 微信机器人现在会在 Harness 处理消息期间显示“正在输入”，并在最终回复、交互问题、错误或任务停止前自动取消；输入状态接口不可用时仍会正常发送最终回答。
+  WeChat bots now show a typing indicator while Harness processes a message and automatically cancel it before final replies, interaction questions, errors, or stopped turns; final answers still work when the typing API is unavailable.
+
 ## [2.4.0] - 2026-08-25
 
 ### Added / 新增

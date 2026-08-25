@@ -833,6 +833,337 @@ test('bridge maps the scanning Weixin user to one persistent Harness session and
   assert.equal(status.messagesReplied, 2);
 });
 
+test('Weixin keeps the typing indicator alive until the final reply with one ticket lookup', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-typing');
+  const releaseAnswer = deferred();
+  const events = [];
+  let configCalls = 0;
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      getConfig: async ({ toUserId, contextToken }) => {
+        configCalls += 1;
+        events.push(`config:${toUserId}:${contextToken}`);
+        return { typingTicket: 'typing-ticket' };
+      },
+      sendTyping: async ({ status }) => events.push(`typing:${status}`),
+      sendText: async ({ text }) => events.push(`text:${text}`),
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    typingKeepaliveMs: 5,
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => releaseAnswer.promise,
+    },
+    state: fixture.state,
+  });
+
+  const turn = bridge.accept(message('typing', '慢一点回答'));
+  await eventually(() => events.filter((event) => event === 'typing:1').length >= 2);
+  releaseAnswer.resolve('回答完成');
+  await turn;
+
+  assert.equal(configCalls, 1);
+  assert.equal(events[0], 'config:owner-user:context-typing');
+  assert.equal(events[1], 'typing:1');
+  assert.equal(events.filter((event) => event === 'typing:1').length >= 2, true);
+  assert.deepEqual(events.slice(-2), ['typing:2', 'text:回答完成']);
+
+  const startsAfterFirstTurn = events.filter((event) => event === 'typing:1').length;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(
+    events.filter((event) => event === 'typing:1').length,
+    startsAfterFirstTurn,
+    'a completed turn must not leave a keepalive timer behind',
+  );
+
+  const secondTurnStart = events.length;
+  await bridge.accept(message('typing-again', '再次回答'));
+  assert.equal(configCalls, 1, 'the typing ticket should be reused across turns');
+  assert.deepEqual(events.slice(secondTurnStart), [
+    'typing:1',
+    'typing:2',
+    'text:回答完成',
+  ]);
+});
+
+test('Weixin typing failures never prevent the Harness reply', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-typing-fallback');
+  const sent = [];
+  const warnings = [];
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      getConfig: async () => { throw new Error('typing unavailable'); },
+      sendTyping: async () => assert.fail('typing cannot start without a ticket'),
+      sendText: async ({ text }) => sent.push(text),
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => '仍然正常回答',
+    },
+    state: fixture.state,
+    logger: { warn: (...args) => warnings.push(args), error() {} },
+  });
+
+  await bridge.accept(message('typing-fallback', '测试降级'));
+
+  assert.deepEqual(sent, ['仍然正常回答']);
+  assert.equal(warnings.length, 1);
+});
+
+test('Weixin best-effort cancels after a typing start or keepalive failure', async (suite) => {
+  for (const failAtStart of [1, 2]) {
+    await suite.test(`status 1 attempt ${failAtStart}`, async () => {
+      const fixture = stateFixture();
+      fixture.sessions.set('p2p:owner-user', `session-typing-failure-${failAtStart}`);
+      const releaseAnswer = deferred();
+      const askStarted = deferred();
+      const statuses = [];
+      const sent = [];
+      const warnings = [];
+      let starts = 0;
+      const bridge = new WeixinHarnessBridge({
+        api: {
+          getConfig: async () => ({ typingTicket: 'typing-ticket' }),
+          sendTyping: async ({ status }) => {
+            statuses.push(status);
+            if (status === 1) {
+              starts += 1;
+              if (starts === failAtStart) throw new Error('typing status failed');
+            }
+          },
+          sendText: async ({ text }) => sent.push(text),
+        },
+        baseUrl: 'https://ilinkai.weixin.qq.com/',
+        token: 'host-token',
+        ownerUserId: 'owner-user',
+        typingKeepaliveMs: 5,
+        harness: {
+          sessionExists: async () => true,
+          ask: async () => {
+            askStarted.resolve();
+            return releaseAnswer.promise;
+          },
+        },
+        state: fixture.state,
+        logger: { warn: (...args) => warnings.push(args), error() {} },
+      });
+
+      const turn = bridge.accept(message(`typing-failure-${failAtStart}`, '测试输入状态失败'));
+      await askStarted.promise;
+      await eventually(() => warnings.length === 1);
+      releaseAnswer.resolve('最终回答仍然发送');
+      await turn;
+
+      assert.deepEqual(statuses, failAtStart === 1 ? [1, 2] : [1, 1, 2]);
+      assert.deepEqual(sent, ['最终回答仍然发送']);
+    });
+  }
+});
+
+test('Weixin stops typing while a Harness question is visible', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-typing-question');
+  const events = [];
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      getConfig: async () => ({ typingTicket: 'typing-ticket' }),
+      sendTyping: async ({ status }) => events.push(`typing:${status}`),
+      sendText: async ({ text }) => events.push(`text:${text}`),
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, _text, options) => {
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'typing-question',
+          rpcId: 'typing-question',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [{ id: 'answer', question: '需要你的回答' }],
+          },
+          respond: async () => ({ accepted: true }),
+        });
+        await options.onUpdate({ type: 'text', text: '不应在待回答时恢复' });
+        return '任务结束';
+      },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('typing-question', '触发问题'));
+
+  assert.equal(events[0], 'typing:1');
+  assert.equal(events[1], 'typing:2');
+  assert.match(events[2], /^text:DeepSeek Harness 需要你补充信息/);
+  assert.equal(events.filter((event) => event === 'typing:1').length, 1);
+  assert.equal(events.at(-1), 'text:任务结束');
+});
+
+test('Weixin resumes typing after the visible Harness question is resolved', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-typing-question-resolved');
+  const events = [];
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      getConfig: async () => ({ typingTicket: 'typing-ticket' }),
+      sendTyping: async ({ status }) => events.push(`typing:${status}`),
+      sendText: async ({ text }) => events.push(`text:${text}`),
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, _text, options) => {
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'typing-question-resolved',
+          rpcId: 'typing-question-resolved',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [{ id: 'answer', question: '需要你的回答' }],
+          },
+          respond: async () => ({ accepted: true }),
+        });
+        await options.onInteractionResolved({
+          kind: 'question',
+          interactionId: 'typing-question-resolved',
+        });
+        return '继续处理完成';
+      },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('typing-question-resolved', '触发后解决问题'));
+
+  assert.deepEqual(
+    events.filter((event) => event.startsWith('typing:')),
+    ['typing:1', 'typing:2', 'typing:1', 'typing:2'],
+  );
+  assert.equal(events.at(-1), 'text:继续处理完成');
+});
+
+test('Weixin restarts typing when an out-of-band notice races an in-flight keepalive', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-typing-race');
+  const releaseAnswer = deferred();
+  const askStarted = deferred();
+  const releaseHeartbeat = deferred();
+  const events = [];
+  let askOptions;
+  let starts = 0;
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      getConfig: async () => ({ typingTicket: 'typing-ticket' }),
+      sendTyping: async ({ status }) => {
+        events.push(`typing:${status}`);
+        if (status === 1) {
+          starts += 1;
+          if (starts === 2) {
+            await releaseHeartbeat.promise;
+          }
+        }
+      },
+      sendText: async ({ text }) => events.push(`text:${text}`),
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    typingKeepaliveMs: 5,
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        askOptions = options;
+        askStarted.resolve();
+        return releaseAnswer.promise;
+      },
+    },
+    state: fixture.state,
+  });
+
+  const turn = bridge.accept(message('typing-race', '执行一个长任务'));
+  await askStarted.promise;
+  await eventually(() => starts === 2);
+
+  const busyNotice = bridge.accept(message('typing-race-batch', '/batch'));
+  await new Promise((resolve) => setImmediate(resolve));
+  let startsWhenProgressResolved = 0;
+  const progressUpdate = askOptions.onUpdate({ type: 'text', text: '继续处理' }).then((result) => {
+    startsWhenProgressResolved = starts;
+    return result;
+  });
+  releaseHeartbeat.resolve();
+  await Promise.all([busyNotice, progressUpdate]);
+
+  assert.deepEqual(
+    events.filter((event) => event.startsWith('typing:')),
+    ['typing:1', 'typing:1', 'typing:2', 'typing:1'],
+  );
+  assert.equal(
+    startsWhenProgressResolved,
+    3,
+    'the concurrent progress update must wait for cancellation and actually restart typing',
+  );
+
+  releaseAnswer.resolve('长任务完成');
+  await turn;
+  assert.deepEqual(
+    events.filter((event) => event.startsWith('typing:')),
+    ['typing:1', 'typing:1', 'typing:2', 'typing:1', 'typing:2'],
+  );
+  assert.equal(events.at(-1), 'text:长任务完成');
+});
+
+test('Weixin cancels typing with an independent signal when the runtime aborts', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-typing-abort');
+  const controller = new AbortController();
+  const typingCalls = [];
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      getConfig: async () => ({ typingTicket: 'typing-ticket' }),
+      sendTyping: async ({ status, signal }) => typingCalls.push({ status, signal }),
+      sendText: async () => assert.fail('an aborted turn must not send a reply'),
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    signal: controller.signal,
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => new Promise((resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+      }),
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+  });
+
+  const turn = bridge.accept(message('typing-abort', '启动后关闭'));
+  await eventually(() => typingCalls.some(({ status }) => status === 1));
+  controller.abort(new Error('runtime stopped'));
+  await Promise.all([bridge.close(), turn]);
+
+  assert.deepEqual(typingCalls.map(({ status }) => status), [1, 2]);
+  assert.notEqual(typingCalls[1].signal, controller.signal);
+  assert.equal(typingCalls[1].signal.aborted, false);
+});
+
 test('Weixin answers a multi-question interaction before the original turn queue', async () => {
   const fixture = stateFixture();
   fixture.sessions.set('p2p:owner-user', 'session-question');

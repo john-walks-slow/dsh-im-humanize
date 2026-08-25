@@ -285,6 +285,7 @@ export class WeixinRuntime {
     this.#abortController?.abort();
     this.#abortController = null;
     this.#monitor = null;
+    await bridge?.close?.();
     await monitor?.catch(() => undefined);
     await bridge?.waitForIdle();
     this.#bridge = null;
