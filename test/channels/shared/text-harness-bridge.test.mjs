@@ -141,9 +141,10 @@ function createBridge({
   bot,
   signal,
   logger,
+  reactions,
 } = {}) {
   return new TextHarnessBridge({
-    descriptor: { key: 'test', label: 'Test' },
+    descriptor: { key: 'test', label: 'Test', reactions },
     bot,
     harness,
     state,
@@ -2264,11 +2265,22 @@ test('deduplicates replays and safely closes recovered questions and approvals',
 test('keeps a failed interaction response pending so the actor can retry', async () => {
   const fixture = stateFixture();
   const sent = [];
+  const reactions = [];
   const completed = deferred();
   const submittedAnswers = [];
   const bridge = createBridge({
     state: fixture.state,
-    bot: { sendText: async (target, text) => sent.push({ target, text }) },
+    reactions: { processing: 'eyes', success: 'done', error: 'error' },
+    bot: {
+      addReaction: async (target, emoji) => {
+        reactions.push(['add', target.id, emoji]);
+        return emoji;
+      },
+      removeReaction: async (target, emoji) => {
+        reactions.push(['remove', target.id, emoji]);
+      },
+      sendText: async (target, text) => sent.push({ target, text }),
+    },
     harness: {
       createSession: async () => 'session-one',
       ask: async (sessionId, _text, options) => {
@@ -2290,13 +2302,21 @@ test('keeps a failed interaction response pending so the actor can retry', async
 
   const processing = bridge.accept(message('retry-start', '启动可重试交互'));
   await eventually(() => sent.some(({ text }) => text.includes('请回答')));
-  await bridge.accept(message('retry-first', '第一次答案'));
+  await bridge.accept(message('retry-first', '第一次答案', {
+    reactionTarget: { id: 'source-retry-first' },
+  }));
+  await eventually(() => reactions.length === 3);
   assert.equal(sent.some(({ text }) => text.includes('回答提交失败')), true);
   await bridge.accept(message('retry-second', '重试后的答案'));
   await processing;
 
   assert.deepEqual(submittedAnswers, ['第一次答案', '重试后的答案']);
   assert.equal(sent.at(-1).text, '重试成功');
+  assert.deepEqual(reactions, [
+    ['add', 'source-retry-first', 'eyes'],
+    ['remove', 'source-retry-first', 'eyes'],
+    ['add', 'source-retry-first', 'error'],
+  ]);
 });
 
 test('notifies the actor when an in-flight response resolves elsewhere before rejection', async () => {

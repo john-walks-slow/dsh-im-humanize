@@ -866,6 +866,7 @@ export class TextHarnessBridge {
       try {
         await this.#presentInteraction(pending);
       } catch (error) {
+        message.statusReaction?.error();
         this.#status.lastError = t('{label}交互问题发送失败。', { label: this.#descriptor.label });
         this.#logger.error?.(
           `[dsh-im:${this.#descriptor.key}] failed to retry an interaction question:`,
@@ -904,6 +905,7 @@ export class TextHarnessBridge {
       try {
         await this.#presentInteraction(pending);
       } catch (error) {
+        message.statusReaction?.error();
         this.#status.lastError = t('{label}交互问题发送失败。', { label: this.#descriptor.label });
         this.#logger.error?.(
           `[dsh-im:${this.#descriptor.key}] failed to send the next interaction question:`,
@@ -946,7 +948,11 @@ export class TextHarnessBridge {
         message.statusReaction?.clear();
         return;
       }
-      if (this.#pendingInteractions.get(key) !== pending) return;
+      if (this.#pendingInteractions.get(key) !== pending) {
+        message.statusReaction?.clear();
+        return;
+      }
+      message.statusReaction?.error();
       pending.submitting = false;
       pending.answers.pop();
       pending.index -= 1;
