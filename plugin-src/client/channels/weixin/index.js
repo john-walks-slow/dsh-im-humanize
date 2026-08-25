@@ -5,7 +5,6 @@ import { QrActionIcon } from '../../credential-binding.js';
 import { h } from '../../i18n.js';
 import {
   WEIXIN_ENDPOINTS,
-  WEIXIN_RPC_CHANNEL,
   formatRemaining,
   normalizeProvisioning,
   normalizeSnapshot,
@@ -27,11 +26,6 @@ import {
   ChannelListHeading,
   LastMessageErrorSummary,
 } from '../../channel-card-meta.js';
-import { installWeixinStyles } from './styles.js';
-
-export const name = 'weixin-settings';
-export const inject = ['slots', 'connection'];
-
 const Button = React.forwardRef(function Button(
   { children, kind = 'secondary', className = '', ...props },
   ref,
@@ -716,17 +710,4 @@ export function WeixinSettingsTab({ rpcCall }) {
                 })
               : null),
   ));
-}
-
-export function apply(ctx) {
-  ctx.effect(() => installWeixinStyles(), 'weixin-settings: install client styles');
-  const rpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(WEIXIN_RPC_CHANNEL, endpoint, payload, signal);
-  ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
-    name: 'settings.plugins.tab',
-    id: 'weixin',
-    order: 30,
-    label: '微信',
-    inject: () => ({ rpcCall }),
-  }, WeixinSettingsTab));
 }

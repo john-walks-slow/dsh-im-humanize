@@ -664,7 +664,21 @@ test('every shipped Chinese client string has an English projection', async () =
   }
 });
 
-test('client registers a live bilingual locale seat and directory picker for the IM settings tab', async () => {
+test('client source contains no legacy Plugins-tab settings registrations', async () => {
+  const paths = (await readdir(CLIENT_SOURCE_DIRECTORY_URL, { recursive: true }))
+    .filter((path) => path.endsWith('.js'));
+  const sources = await Promise.all(paths.map(async (path) => ({
+    path,
+    source: await readFile(new URL(path, CLIENT_SOURCE_DIRECTORY_URL), 'utf8'),
+  })));
+  const legacy = sources
+    .filter(({ source }) => source.includes('settings.plugins.tab'))
+    .map(({ path }) => path);
+
+  assert.deepEqual(legacy, []);
+});
+
+test('client registers one top-level bilingual IM settings section with a directory picker', async () => {
   const effects = [];
   const registrations = [];
   const dictionaries = [];
@@ -697,7 +711,7 @@ test('client registers a live bilingual locale seat and directory picker for the
     },
     slots: {
       inject(name, install) {
-        assert.equal(name, 'settings.plugins.tab');
+        assert.equal(name, 'settings.section');
         install();
       },
       register(options, component) {
@@ -717,8 +731,12 @@ test('client registers a live bilingual locale seat and directory picker for the
     assert.equal(dictionaries[0].namespace, IM_LOCALE_NAMESPACE);
     assert.deepEqual(Object.keys(dictionaries[0].value.en).sort(), Object.keys(dictionaries[0].value.zh).sort());
     assert.equal(registrations.length, 1);
+    assert.equal(registrations[0].options.name, 'settings.section');
+    assert.equal(registrations[0].options.id, 'xmanrui-dsh-im');
+    assert.equal(registrations[0].options.order, 21);
     assert.equal(registrations[0].options.locale, IM_LOCALE_NAMESPACE);
     assert.equal(registrations[0].options.label(), 'IM bots');
+    assert.equal(registrations[0].component, IMSettingsTab);
 
     const injected = registrations[0].options.inject();
     const signal = new AbortController().signal;

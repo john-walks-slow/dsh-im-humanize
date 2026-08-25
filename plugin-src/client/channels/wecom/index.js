@@ -18,7 +18,6 @@ import {
 import { installDingtalkStyles } from '../dingtalk/styles.js';
 import {
   WECOM_ENDPOINTS,
-  WECOM_RPC_CHANNEL,
   formatRemaining,
   normalizeProvisioning,
   normalizeSnapshot,
@@ -545,12 +544,4 @@ export function WecomSettingsTab({ rpcCall }) {
             model.bots.length === 0 && !provision && !credentialOpen
               ? h(EmptyView, { busy, onStart: () => void startProvisioning() }) : null,
             botList)));
-}
-
-export function apply(ctx) {
-  ctx.effect(() => installWecomStyles(), 'wecom-settings: install client styles');
-  const rpcCall = (endpoint, payload, signal) => ctx.connection.rpc.call(WECOM_RPC_CHANNEL, endpoint, payload, signal);
-  ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
-    name: 'settings.plugins.tab', id: 'wecom', order: 45, label: '企业微信', inject: () => ({ rpcCall }),
-  }, WecomSettingsTab));
 }

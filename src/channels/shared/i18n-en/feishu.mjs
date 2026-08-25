@@ -18,8 +18,8 @@ export default {
   '机器人正在移除或已重新接入，无法操作原会话的工作区。':
     'The bot is being removed or has been reconnected; the original session’s workspace cannot be changed.',
   '操作失败，请稍后重试。': 'The operation failed. Please try again later.',
-  '结果文件「{name}」已生成，但机器人缺少飞书文件上传权限 im:resource。请私聊机器人执行 /repair 命令，或者在插件页面点击“补全权限”按钮并扫码。完成飞书要求的发布审批后重试。':
-    'The result file "{name}" was generated, but the bot lacks the Feishu file-upload scope im:resource. Run /repair in a direct chat with the bot, or click the “Complete permissions” button on the plugin page and scan the QR code. Complete any publishing approval Feishu requires, then try again.',
+  '结果文件「{name}」已生成，但机器人缺少飞书文件上传权限 im:resource。请私聊机器人执行 /repair 命令，或者在「IM机器人」设置页点击“补全权限”按钮并扫码。完成飞书要求的发布审批后重试。':
+    'The result file "{name}" was generated, but the bot lacks the Feishu file-upload scope im:resource. Run /repair in a direct chat with the bot, or click the “Complete permissions” button on the IM Bot settings page and scan the QR code. Complete any publishing approval Feishu requires, then try again.',
   '结果文件「{name}」超过飞书 30 MB 上限，未发送。':
     'The result file "{name}" exceeds the Feishu 30 MB limit and was not sent.',
   '结果文件「{name}」为空，飞书不允许发送空文件。':
@@ -28,8 +28,8 @@ export default {
     'The result file "{name}" was temporarily rate-limited by Feishu and could not be sent. Please try again later.',
   '结果文件「{name}」已生成，但暂时未能发送，请稍后重试。':
     'The result file "{name}" was generated but could not be sent right now. Please try again later.',
-  '处理失败，请稍后重试。如果问题持续，请在 DeepSeek Harness 的飞书插件页面检查连接状态。':
-    'Message processing failed. Please try again later. If the problem persists, check the connection status on the Feishu plugin page in DeepSeek Harness.',
+  '处理失败，请稍后重试。如果问题持续，请在 DeepSeek Harness 的「IM机器人」设置页检查飞书连接状态。':
+    'Message processing failed. Please try again later. If the problem persists, check the Feishu connection status on the IM Bot settings page in DeepSeek Harness.',
   '已开启全新 Harness 会话。': 'A brand-new Harness session has started.',
   '飞书机器人与 DeepSeek Harness 连接正常。':
     'The Feishu bot is connected to DeepSeek Harness and working normally.',
@@ -338,8 +338,8 @@ export default {
   '飞书机器人': 'Feishu bot',
 
   // feishu/message-utils.mjs
-  '飞书机器人缺少图片读取权限 im:message:readonly（飞书显示为“获取单聊、群组消息”）。请私聊机器人执行 /repair 命令，或者在插件页面点击“补全权限”按钮并扫码。按飞书提示发布新版本、完成必要审批后，再重新发送图片。':
-    'The Feishu bot is missing the image-read scope im:message:readonly, shown by Feishu as “Read direct and group messages.” Run /repair in a direct chat with the bot, or click the “Complete permissions” button on the plugin page and scan the QR code. Publish a new version and complete any approval requested by Feishu, then resend the image.',
+  '飞书机器人缺少图片读取权限 im:message:readonly（飞书显示为“获取单聊、群组消息”）。请私聊机器人执行 /repair 命令，或者在「IM机器人」设置页点击“补全权限”按钮并扫码。按飞书提示发布新版本、完成必要审批后，再重新发送图片。':
+    'The Feishu bot is missing the image-read scope im:message:readonly, shown by Feishu as “Read direct and group messages.” Run /repair in a direct chat with the bot, or click the “Complete permissions” button on the IM Bot settings page and scan the QR code. Publish a new version and complete any approval requested by Feishu, then resend the image.',
 
   // feishu/feishu-runtime.mjs — callback probe notices
   '✅ 修复完成：已实测收到 card.action.trigger，菜单按钮现在可用。':

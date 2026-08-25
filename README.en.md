@@ -58,7 +58,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 Other IM platforms can be added through the same channel-adapter structure.
 
-All nine built-in channels can send JPEG, PNG, and WebP images, plus GIFs sent as image files, with optional captions to Harness. Each image is limited to 5 MB, and images in one message are limited to 20 MB in total. Downloading images or files from Feishu user messages requires the `im:message:readonly` tenant scope, shown on the confirmation page as **Read direct and group messages**; Feishu currently offers no narrower image-only scope for that download endpoint. Apps created through the built-in QR flow request it by default; for existing or manually connected apps, click **Complete permissions** in the plugin's Feishu settings and scan the QR code to incrementally add that scope, `im:resource` for uploading bot-sent images or files, and the card callback.
+All nine built-in channels can send JPEG, PNG, and WebP images, plus GIFs sent as image files, with optional captions to Harness. Each image is limited to 5 MB, and images in one message are limited to 20 MB in total. Downloading images or files from Feishu user messages requires the `im:message:readonly` tenant scope, shown on the confirmation page as **Read direct and group messages**; Feishu currently offers no narrower image-only scope for that download endpoint. Apps created through the built-in QR flow request it by default; for existing or manually connected apps, click **Complete permissions** on the IM Bot settings page and scan the QR code to incrementally add that scope, `im:resource` for uploading bot-sent images or files, and the card callback.
 
 ### Result-file and image delivery
 
@@ -96,7 +96,7 @@ Install the published stable release from npm (recommended):
 dsh plugin --profile web add -w @xmanrui/dsh-im
 ```
 
-Restart `dsh web`, then open **Settings → Plugins → IM Bot**.
+Restart `dsh web`, refresh the browser, then open **Settings → IM Bot**. The top-level IM Bot entry uses `order: 21` to follow **Agent Presets**, and the Plugins page no longer retains the old entry. Upgrading preserves existing bots, credentials, workspaces, Agent Presets, and Session bindings.
 
 To try the latest code before it is published to npm, use the GitHub-source installer instead:
 
@@ -214,7 +214,7 @@ If the Slack desktop app has no native Slash Command registered with the same na
 
 ## Design
 
-- Registers one **IM Bot** settings page containing nine IM channels and one AI Office Connector.
+- Registers one top-level **IM Bot** settings page containing nine IM channels and one AI Office Connector.
 - Maintains the Host, client, and runtime sources for all nine channels and the Office Connector in this repository without external standalone plugins.
 - Follows the DeepSeek Harness language preference and switches the settings UI live between Chinese and English. Bot chat messages follow the Host's `language` config (Chinese by default; `en` switches them to English), with Chinese always as the fallback so untranslated text is sent verbatim.
 - Uses logos for WeChat, Feishu, DingTalk, WeCom, QQ, Slack, Telegram, Discord, WhatsApp, and AI Office navigation without enable/disable switches.

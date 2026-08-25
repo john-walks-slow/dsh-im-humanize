@@ -159,7 +159,7 @@ function artifactFailureText(fileName, error) {
   const name = String(fileName ?? t('结果文件')).replace(/[\r\n]+/g, ' ').trim() || t('结果文件');
   switch (error?.code) {
     case 'artifact-permission-required':
-      return t('结果文件「{name}」已生成，但机器人缺少飞书文件上传权限 im:resource。请私聊机器人执行 /repair 命令，或者在插件页面点击“补全权限”按钮并扫码。完成飞书要求的发布审批后重试。', { name });
+      return t('结果文件「{name}」已生成，但机器人缺少飞书文件上传权限 im:resource。请私聊机器人执行 /repair 命令，或者在「IM机器人」设置页点击“补全权限”按钮并扫码。完成飞书要求的发布审批后重试。', { name });
     case 'artifact-too-large':
       return t('结果文件「{name}」超过飞书 30 MB 上限，未发送。', { name });
     case 'artifact-empty':

@@ -333,10 +333,10 @@ export function apply(ctx) {
     pickDirectory: () => ctx.workspaces.pickDirectory(),
   });
 
-  ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
-    name: 'settings.plugins.tab',
-    id: 'im',
-    order: 20,
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'xmanrui-dsh-im',
+    order: 21,
     label: () => t('IM机器人'),
     locale: IM_LOCALE_NAMESPACE,
     inject: () => ({

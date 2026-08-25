@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Changed / 变更
+
+- 「IM机器人」设置页已从插件页签迁移到一级设置菜单，并以 `order: 21` 尽量排在「Agent 预设」之后；新版不再注册旧二级入口。升级后重启 `dsh web` 并刷新浏览器即可使用，已有机器人配置和页面内的渠道专属 Logo 保持不变。
+  The **IM Bot** settings page has moved from a Plugins tab to the top-level settings menu and uses `order: 21` to follow **Agent Presets**. The new release no longer registers the legacy nested entry. Restart `dsh web` and refresh the browser after upgrading; existing bot configuration and channel-specific logos inside the page are preserved.
+
 ## [2.6.0] - 2026-08-25
 
 ### Added / 新增

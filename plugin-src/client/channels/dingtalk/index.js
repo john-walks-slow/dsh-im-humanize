@@ -16,7 +16,6 @@ import {
 } from '../../channel-card-meta.js';
 import {
   DINGTALK_ENDPOINTS,
-  DINGTALK_RPC_CHANNEL,
   connectionTestFeedback,
   formatRemaining,
   normalizeProvisioning,
@@ -28,9 +27,6 @@ import {
 import { installDingtalkStyles } from './styles.js';
 
 const ACTIVE_PROVISION_STATES = new Set(['pending', 'scanned', 'authorizing', 'creating', 'connecting']);
-
-export const name = 'dingtalk-settings';
-export const inject = ['slots', 'connection'];
 
 function DingtalkIcon({ size = 28 }) {
   return h('svg', {
@@ -863,17 +859,4 @@ export function DingtalkSettingsTab({ rpcCall }) {
                   onCancelRemove: () => setRemoveTarget(null),
                 })
               : null)));
-}
-
-export function apply(ctx) {
-  ctx.effect(() => installDingtalkStyles(), 'dingtalk-settings: install client styles');
-  const rpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(DINGTALK_RPC_CHANNEL, endpoint, payload, signal);
-  ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
-    name: 'settings.plugins.tab',
-    id: 'dingtalk',
-    order: 40,
-    label: '钉钉',
-    inject: () => ({ rpcCall }),
-  }, DingtalkSettingsTab));
 }

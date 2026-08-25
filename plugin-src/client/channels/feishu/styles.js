@@ -1,4 +1,4 @@
-export const FEISHU_STYLE_ID = "beihuixinghe-dsh-feishu-settings";
+export const FEISHU_STYLE_ID = "xmanrui-dsh-im-feishu-settings";
 
 const CSS = String.raw`
 .bxf-page {
@@ -562,7 +562,7 @@ export function installFeishuStyles() {
   }
 
   const style = document.createElement("style");
-  style.dataset.plugin = "@xmanrui/dsh-feishu";
+  style.dataset.plugin = "@xmanrui/dsh-im";
   style.dataset.pluginCss = FEISHU_STYLE_ID;
   style.textContent = CSS;
   document.head.appendChild(style);

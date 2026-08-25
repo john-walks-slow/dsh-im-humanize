@@ -993,7 +993,7 @@ test('bridge tells users to grant im:message:readonly when Feishu rejects image 
   assert.match(sent[0], /im:message:readonly/);
   assert.match(sent[0], /\/repair/);
   assert.match(sent[0], /发布新版本/);
-  assert.match(sent[0], /插件页面/);
+  assert.match(sent[0], /「IM机器人」设置页/);
   assert.match(sent[0], /补全权限/);
   assert.doesNotMatch(sent[0], /99991672|HTTP 400|secret-shaped|private\/path/);
 });

@@ -6,7 +6,6 @@ import { h } from "../../i18n.js";
 import {
   FEISHU_ENDPOINTS,
   FEISHU_REGISTRATION_OPERATIONS,
-  FEISHU_RPC_CHANNEL,
   formatRemaining,
   normalizeBotsSnapshot,
   normalizeGroupResponseMode,
@@ -28,11 +27,6 @@ import {
   ChannelListHeading,
   LastMessageErrorSummary,
 } from "../../channel-card-meta.js";
-import { installFeishuStyles } from "./styles.js";
-
-export const name = "feishu-settings";
-export const inject = ["slots", "connection"];
-
 const CALLBACK_REPAIR_OPERATION = FEISHU_REGISTRATION_OPERATIONS.CALLBACK_REPAIR;
 const GROUP_MESSAGE_PERMISSION_OPERATION = FEISHU_REGISTRATION_OPERATIONS.GROUP_MESSAGE_PERMISSION;
 
@@ -1539,27 +1533,4 @@ export function FeishuSettingsTab({ rpcCall }) {
               : null,
           ),
   ));
-}
-
-export function apply(ctx) {
-  ctx.effect(
-    () => installFeishuStyles(),
-    "feishu-settings: install client styles",
-  );
-
-  const rpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(FEISHU_RPC_CHANNEL, endpoint, payload, signal);
-
-  ctx.slots.inject("settings.plugins.tab", () =>
-    ctx.slots.register(
-      {
-        name: "settings.plugins.tab",
-        id: "feishu",
-        order: 20,
-        label: "飞书",
-        inject: () => ({ rpcCall }),
-      },
-      FeishuSettingsTab,
-    ),
-  );
 }

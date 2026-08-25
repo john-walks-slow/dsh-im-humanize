@@ -184,7 +184,7 @@ test('Feishu image loading maps the missing message scope to an actionable error
     assert.equal(error.code, 'feishu-image-permission-required');
     assert.match(error.userMessage, /im:message:readonly/);
     assert.match(error.userMessage, /\/repair/);
-    assert.match(error.userMessage, /插件页面/);
+    assert.match(error.userMessage, /「IM机器人」设置页/);
     assert.match(error.userMessage, /补全权限/);
     assert.match(error.userMessage, /发布新版本/);
     assert.equal(error.cause, providerError);

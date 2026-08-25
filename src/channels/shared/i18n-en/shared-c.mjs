@@ -73,8 +73,8 @@ export default {
   // connection-test.mjs
   '✅ DeepSeek Harness 连接测试成功':
     '✅ DeepSeek Harness connection test succeeded',
-  '这条消息由插件页面中的“{name}”机器人卡片发出。':
-    'This message was sent from the "{name}" bot card on the plugin page.',
+  '这条消息由「IM机器人」设置页中的“{name}”机器人卡片发出。':
+    'This message was sent from the "{name}" bot card on the IM Bot settings page.',
   '{channelLabel}尚未收到可用于测试的私聊消息。':
     'The {channelLabel} has not received a direct message that can be used for testing yet.',
   '机器人': 'bot',

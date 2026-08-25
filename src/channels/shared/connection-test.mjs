@@ -29,7 +29,7 @@ export function connectionTestTarget(state) {
 
 export function connectionTestMessage(botName, channelLabel = t('机器人')) {
   const name = cleanText(botName) ?? channelLabel;
-  return `${t('✅ DeepSeek Harness 连接测试成功')}\n${t('这条消息由插件页面中的“{name}”机器人卡片发出。', { name })}`;
+  return `${t('✅ DeepSeek Harness 连接测试成功')}\n${t('这条消息由「IM机器人」设置页中的“{name}”机器人卡片发出。', { name })}`;
 }
 
 export function connectionTestTargetUnavailable(channelLabel = t('机器人')) {

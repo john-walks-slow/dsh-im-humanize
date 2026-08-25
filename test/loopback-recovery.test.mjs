@@ -20,11 +20,11 @@ const WEIXIN_FORBIDDEN = new Error(
 
 test('creates a localhost recovery target for the known loopback transport 403', () => {
   const recovery = createLoopbackRecovery(WEIXIN_FORBIDDEN, {
-    href: 'http://127.0.0.1:3080/settings?tab=plugins#im',
+    href: 'http://127.0.0.1:3080/settings',
   });
 
   assert.deepEqual(recovery, {
-    url: 'http://localhost:3080/settings?tab=plugins#im',
+    url: 'http://localhost:3080/settings',
     origin: 'http://localhost:3080',
   });
   assert.deepEqual(createLoopbackRecovery(WEIXIN_FORBIDDEN, {
@@ -103,7 +103,7 @@ test('RPC wrappers preserve successful results, unrelated errors, and missing op
 
 test('recovery notice exposes one localized navigation action', () => {
   const recovery = {
-    url: 'http://localhost:3080/settings?tab=plugins#im',
+    url: 'http://localhost:3080/settings',
     origin: 'http://localhost:3080',
   };
   const element = LoopbackRecoveryNotice({ recovery, onNavigate() {} });

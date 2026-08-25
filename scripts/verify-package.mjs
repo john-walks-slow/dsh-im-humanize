@@ -1,8 +1,23 @@
-import { access, readFile, stat } from 'node:fs/promises';
+import { access, readFile, readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const root = resolve(import.meta.dirname, '..');
+
+async function readSourceTree(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const chunks = [];
+  for (const entry of entries) {
+    const path = resolve(directory, entry.name);
+    if (entry.isDirectory()) {
+      chunks.push(await readSourceTree(path));
+    } else if (entry.isFile() && /\.m?js$/u.test(entry.name)) {
+      chunks.push(await readFile(path, 'utf8'));
+    }
+  }
+  return chunks.join('\n');
+}
+
 const required = [
   'lib/index.js',
   'lib/client.js',
@@ -35,7 +50,17 @@ const required = [
 ];
 await Promise.all(required.map((path) => access(resolve(root, path))));
 
-const [client, host, patch, manifestText, lockText, hostSource, clientSource, executable] = await Promise.all([
+const [
+  client,
+  host,
+  patch,
+  manifestText,
+  lockText,
+  hostSource,
+  clientEntrySource,
+  clientSources,
+  executable,
+] = await Promise.all([
   readFile(resolve(root, 'lib/client.js'), 'utf8'),
   readFile(resolve(root, 'lib/index.js'), 'utf8'),
   readFile(resolve(root, 'cordis.patch.yml'), 'utf8'),
@@ -43,6 +68,7 @@ const [client, host, patch, manifestText, lockText, hostSource, clientSource, ex
   readFile(resolve(root, 'package-lock.json'), 'utf8'),
   readFile(resolve(root, 'plugin-src/host/index.mjs'), 'utf8'),
   readFile(resolve(root, 'plugin-src/client/index.js'), 'utf8'),
+  readSourceTree(resolve(root, 'plugin-src/client')),
   stat(resolve(root, 'bin/dsh-im.mjs')),
 ]);
 const manifest = JSON.parse(manifestText);
@@ -82,17 +108,28 @@ if (forbiddenDshLockPaths.length > 0) {
   );
 }
 
-if (!client.includes('id: "@xmanrui/dsh-im"')) {
+if (!/\bid\s*:\s*["']@xmanrui\/dsh-im["']/u.test(client)) {
   throw new Error('client bundle does not register the dsh-im loader id');
 }
-if (!client.includes('id: "im"')
-  || !client.includes('label: () => t("IM\\u673A\\u5668\\u4EBA")')
-  || !client.includes('locale: IM_LOCALE_NAMESPACE')
-  || !client.includes('IM_LOCALE_NAMESPACE = "dsh-im"')) {
-  throw new Error('client bundle does not register the localized IM settings tab');
+const sourceSectionMarkers = [
+  /ctx\.slots\.inject\(\s*["']settings\.section["']/u,
+  /name\s*:\s*["']settings\.section["']/u,
+  /id\s*:\s*["']xmanrui-dsh-im["']/u,
+  /order\s*:\s*21\b/u,
+  /label\s*:\s*\(\)\s*=>\s*t\(\s*["']IM机器人["']\s*\)/u,
+  /locale\s*:\s*IM_LOCALE_NAMESPACE\b/u,
+];
+const bundleSectionPattern = /name\s*:\s*["']settings\.section["']\s*,\s*id\s*:\s*["']xmanrui-dsh-im["']\s*,\s*order\s*:\s*21\s*,\s*label\s*:\s*\(\)\s*=>\s*[$A-Z_a-z][$\w]*\(\s*["']IM(?:机器人|\\u673A\\u5668\\u4EBA)["']\s*\)\s*,\s*locale\s*:\s*(?:[$A-Z_a-z][$\w]*|["']dsh-im["'])/u;
+if (sourceSectionMarkers.some((pattern) => !pattern.test(clientEntrySource))
+  || !/IM_LOCALE_NAMESPACE\s*=\s*["']dsh-im["']/u.test(clientSources)
+  || !bundleSectionPattern.test(client)) {
+  throw new Error('client bundle does not register the localized top-level IM settings section');
 }
-if ((client.match(/ctx\.slots\.inject\("settings\.plugins\.tab"/g) ?? []).length !== 1) {
-  throw new Error('client bundle must register exactly one settings tab');
+if ((client.match(/\.slots\.inject\(\s*["']settings\.section["']/gu) ?? []).length !== 1) {
+  throw new Error('client bundle must register exactly one top-level settings section');
+}
+if (client.includes('settings.plugins.tab') || clientSources.includes('settings.plugins.tab')) {
+  throw new Error('client source or bundle still contains the legacy Plugins-tab settings entry');
 }
 if (/role:\s*["']switch|type:\s*["']checkbox/.test(client)) {
   throw new Error('client bundle contains a channel enable switch');
@@ -115,7 +152,7 @@ if (/@xmanrui\/dsh-(?:feishu|weixin|dingtalk)/.test(host)) {
   throw new Error('host bundle still imports an external channel plugin');
 }
 if (/@xmanrui\/dsh-(?:feishu|weixin|dingtalk)/.test(
-  manifestText + lockText + hostSource + clientSource,
+  manifestText + lockText + hostSource + clientSources,
 )) {
   throw new Error('source or package metadata still depends on an external channel plugin');
 }

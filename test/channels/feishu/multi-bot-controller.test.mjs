@@ -791,7 +791,7 @@ test('connection test uses the selected bot runtime and shared message copy', as
   await fx.controller.initialize();
   assert.deepEqual(await fx.controller.sendConnectionTest(healthy.id), { sent: true });
   assert.deepEqual(fx.runtimes.get(healthy.id)[0].sentTests, [
-    '✅ DeepSeek Harness 连接测试成功\n这条消息由插件页面中的“机器人 healthy（cli_heal••••7890）”机器人卡片发出。',
+    '✅ DeepSeek Harness 连接测试成功\n这条消息由「IM机器人」设置页中的“机器人 healthy（cli_heal••••7890）”机器人卡片发出。',
   ]);
   await fx.controller.close();
 });
