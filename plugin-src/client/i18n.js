@@ -8,6 +8,7 @@ const EN = Object.freeze({
   'IM机器人设置': 'IM bot settings',
   'IM 渠道': 'IM channels',
   '让 DeepSeek Harness 触手可及': 'DeepSeek Harness, always within reach',
+  '当前版本': 'Current version',
   'AI Office': 'AI Office',
   '（实验功能）': '(Experimental)',
   'AI Office 设置': 'AI Office settings',

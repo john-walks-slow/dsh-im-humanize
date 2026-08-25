@@ -1,4 +1,5 @@
 import * as React from 'react';
+import manifest from '../../package.json' with { type: 'json' };
 
 import {
   DingtalkLogoGlyph,
@@ -51,6 +52,7 @@ import { WorkspaceDirectoryPickerContext } from './workspace-editor.js';
 
 export const name = 'im-settings';
 export const inject = ['slots', 'connection', 'locale', 'workspaces'];
+export const IM_PLUGIN_VERSION = manifest.version;
 
 const CHANNELS = Object.freeze([
   { id: 'weixin', label: '微信' },
@@ -159,6 +161,7 @@ export function IMSettingsTab({
 }) {
   const [selected, setSelected] = React.useState('weixin');
   const [loopbackRecovery, setLoopbackRecovery] = React.useState(null);
+  const versionTooltipId = React.useId();
   const githubTooltipId = React.useId();
   const active = CHANNELS.find((channel) => channel.id === selected) ?? CHANNELS[0];
   const reportLoopbackRecovery = React.useCallback((recovery) => {
@@ -195,9 +198,20 @@ export function IMSettingsTab({
   return h(WorkspaceDirectoryPickerContext.Provider, { value: workspaceDirectoryPicker },
     h('section', { className: 'dim-page', 'aria-label': 'IM机器人设置' },
     h('header', { className: 'dim-title' },
-      h('div', { className: 'dim-brand' },
+      h('div', {
+        className: 'dim-brand',
+        tabIndex: 0,
+        'aria-describedby': versionTooltipId,
+      },
         h('strong', { className: 'dim-brandName' }, 'DSH-IM'),
-        h('p', null, '让 DeepSeek Harness 触手可及')),
+        h('p', null, '让 DeepSeek Harness 触手可及'),
+        h('span', {
+          id: versionTooltipId,
+          className: 'dim-versionTooltip',
+          role: 'tooltip',
+        },
+        h('span', null, '当前版本'),
+        h('strong', null, `v${IM_PLUGIN_VERSION}`))),
       h('span', { className: 'dim-githubAction' },
         h('a', {
           className: 'dim-githubLink',
