@@ -142,7 +142,7 @@ test('IM settings renders nine IM channels plus the AI Office connector', async 
   assert.match(styles, /\.dim-brand:hover \.dim-versionTooltip, \.dim-brand:focus \.dim-versionTooltip \{[^}]*opacity: 1;[^}]*visibility: visible;/);
   assert.doesNotMatch(styles, /\.dim-brandLogo/);
   assert.match(styles, /\.dim-githubLink \{[^}]*border: 1px solid var\(--dsw-alias-border-l2, #dfe1e5\);[^}]*text-decoration: none;/);
-  assert.match(styles, /\.dim-githubTooltip \{[^}]*bottom: calc\(100% \+ 8px\);[^}]*transform: translateY\(3px\);/);
+  assert.match(styles, /\.dim-githubTooltip \{[^}]*top: calc\(100% \+ 8px\);[^}]*transform: translateY\(-3px\);/);
   assert.match(styles, /\.dim-githubAction:hover \.dim-githubTooltip, \.dim-githubAction:focus-within \.dim-githubTooltip \{[^}]*opacity: 1;[^}]*visibility: visible;/);
   assert.doesNotMatch(markup, /\d+ 个渠道|dim-channelCount/);
   assert.match(markup, />微信</);
@@ -754,7 +754,7 @@ test('client registers one top-level bilingual IM settings section with a direct
       registrations[0].component,
       injected,
     ));
-    assert.match(markup, /DeepSeek Harness, always within reach/);
+    assert.match(markup, /Connecting DeepSeek Harness/);
     assert.match(markup, new RegExp(
       `<span>Current version<\\/span><strong>v${IM_PLUGIN_VERSION.replaceAll('.', '\\.')}`,
     ));
@@ -839,6 +839,22 @@ test('all nine channel settings and connected cards render English copy', () => 
     assert.match(cardMarkup, /Check connection/);
     assert.match(cardMarkup, /Remove connection/);
     assert.doesNotMatch(cardMarkup, /[\p{Script=Han}]/u);
+
+    const qqRetryMarkup = renderToStaticMarkup(React.createElement(QqAccountCard, {
+      ...sharedCardProps,
+      removing: false,
+      account: {
+        ...account,
+        state: 'error',
+        connected: false,
+        error: {
+          code: 'connection-failed',
+          message: 'QQ 连接未就绪，插件会自动重试。',
+        },
+      },
+    }));
+    assert.match(qqRetryMarkup, /The QQ connection is not ready; the plugin will retry automatically\./);
+    assert.doesNotMatch(qqRetryMarkup, /[\p{Script=Han}]/u);
   } finally {
     setImTranslator(null);
   }
