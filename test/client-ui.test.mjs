@@ -602,13 +602,13 @@ test('all channel bot cards use the DingTalk card treatment', async () => {
   assert.doesNotMatch(styles, /\.dim-panel \.dim-botMetrics|\.dim-panel \.dim-botMetric/);
 });
 
-test('bot cards keep the full workspace path on its own single line', async () => {
+test('bot cards wrap full workspace paths without horizontal scrolling', async () => {
   const styles = await readFile(STYLES_URL, 'utf8');
 
   assert.match(styles, /\.dim-panel \.dim-workspace \{[^}]*grid-template-columns: minmax\(0, 1fr\) max-content;[^}]*row-gap: 4px;[^}]*margin-top: 6px;[^}]*padding: 6px 10px;/);
   assert.match(styles, /\.dim-panel \.dim-workspaceHeader \{[^}]*display: contents;/);
-  assert.match(styles, /\.dim-panel \.dim-workspacePath \{[^}]*grid-column: 1 \/ -1;[^}]*grid-row: 2;[^}]*overflow-x: auto;[^}]*white-space: nowrap;/);
-  assert.doesNotMatch(styles, /\.dim-panel \.dim-workspacePath \{[^}]*text-overflow: ellipsis;/);
+  assert.match(styles, /\.dim-panel \.dim-workspacePath \{[^}]*grid-column: 1 \/ -1;[^}]*grid-row: 2;[^}]*overflow: hidden;[^}]*overflow-wrap: anywhere;[^}]*white-space: normal;/);
+  assert.doesNotMatch(styles, /\.dim-panel \.dim-workspacePath \{[^}]*overflow-x: auto;/);
   assert.match(styles, /\.dim-panel \.dim-workspaceEdit \{[^}]*grid-column: 2;[^}]*grid-row: 1;[^}]*white-space: nowrap;/);
 });
 

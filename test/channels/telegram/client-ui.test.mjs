@@ -148,8 +148,31 @@ test('Telegram access mode help opens for pointer hover and keyboard focus', asy
     new URL('../../../plugin-src/client/channels/telegram/styles.js', import.meta.url),
     'utf8',
   );
+  assert.match(styles, /\.dtg-accessHeading \{[^}]*position: relative;/);
+  assert.match(styles, /\.dtg-accessHelp \{[^}]*position: static;/);
+  assert.match(styles, /\.dtg-accessTooltip \{[^}]*right: 0;[^}]*width: min\(300px, 100%\);[^}]*max-width: 100%;/);
   assert.match(styles, /\.dtg-accessHelpButton:focus-visible \{/);
   assert.match(styles, /\.dtg-accessHelp:hover \.dtg-accessTooltip, \.dtg-accessHelp:focus-within \.dtg-accessTooltip \{[^}]*opacity: 1;[^}]*visibility: visible;/);
+});
+
+test('Telegram cards shrink to a narrow English panel without horizontal scrolling', async () => {
+  const [sharedStyles, telegramStyles] = await Promise.all([
+    readFile(new URL('../../../plugin-src/client/styles.js', import.meta.url), 'utf8'),
+    readFile(
+      new URL('../../../plugin-src/client/channels/telegram/styles.js', import.meta.url),
+      'utf8',
+    ),
+  ]);
+
+  assert.match(sharedStyles, /\.dim-panel \.dim-botList \{[^}]*grid-template-columns: minmax\(0, 1fr\);/);
+  assert.match(sharedStyles, /\.dim-panel \.dim-botCard \{[^}]*min-width: 0;[^}]*width: 100%;[^}]*max-width: 100%;[^}]*overflow: hidden;/);
+  assert.match(sharedStyles, /@container \(max-width: 680px\)[^]*\.dim-panel \.dim-botCardTop \{ flex-direction: column; align-items: stretch; \}/);
+  assert.match(sharedStyles, /\.dim-panel \.dim-workspacePath \{[^}]*overflow: hidden;[^}]*overflow-wrap: anywhere;[^}]*white-space: normal;/);
+  assert.doesNotMatch(sharedStyles, /\.dim-panel \.dim-workspacePath \{[^}]*overflow-x: auto;/);
+  assert.match(telegramStyles, /\.dtg-access \{[^}]*min-width: 0;[^}]*width: 100%;[^}]*max-width: 100%;/);
+  assert.match(telegramStyles, /\.dtg-accessHeading \{[^}]*flex-wrap: wrap;/);
+  assert.match(telegramStyles, /\.dtg-accessStatus \{[^}]*max-width: 100%;[^}]*flex-wrap: wrap;/);
+  assert.match(telegramStyles, /\.dtg-accessField select, \.dtg-accessField textarea \{[^}]*min-width: 0;[^}]*max-width: 100%;/);
 });
 
 test('Telegram access settings warns when safe mode has an empty allowlist', () => {
