@@ -6,6 +6,13 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-08-25
+
+### Added / 新增
+
+- 九种内置聊天渠道新增 `/version` 命令，可直接查看当前运行的 dsh-im 插件版本；该命令不会连接 Harness、创建 Session 或调用模型。
+  Added a `/version` command across all nine built-in chat channels for displaying the running dsh-im plugin version without contacting Harness, creating a Session, or invoking the model.
+
 ### Changed / 变更
 
 - 飞书原“修复卡片按钮”操作已更名为“补全权限”，并会同时增量申请读取用户消息内图片或文件所需的 `im:message:readonly`、上传机器人图片或文件所需的 `im:resource`，以及卡片回调；缺权提示会引导用户私聊执行 `/repair`，或在插件页面点击“补全权限”。界面会说明各自用途，并明确确认页只展示应用当前缺少的配置。
@@ -308,7 +315,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.4.0...HEAD
+[2.4.0]: https://github.com/xmanrui/dsh-im/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/xmanrui/dsh-im/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/xmanrui/dsh-im/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/xmanrui/dsh-im/compare/v2.1.0...v2.2.0
