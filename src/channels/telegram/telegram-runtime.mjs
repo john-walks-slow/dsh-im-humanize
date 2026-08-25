@@ -168,6 +168,7 @@ export function normalizeTelegramUpdate(update, {
     images: image ? [image] : [],
     files: file ? [file] : [],
     addressed,
+    reactionTarget: { chatId, messageId },
     replyTarget: {
       chatId,
       chatType: message.chat.type,
@@ -301,6 +302,25 @@ export class TelegramBotClient {
       }
     }
     return { providerMessageIds };
+  }
+
+  async addReaction(target, emoji, { signal } = {}) {
+    const reactionKey = String(emoji ?? '').trim();
+    await this.#api.setMessageReaction({
+      chatId: target.chatId,
+      messageId: target.messageId,
+      emoji: reactionKey,
+      signal: signal ?? this.#signal,
+    });
+    return reactionKey;
+  }
+
+  removeReaction(target, _reactionKey, { signal } = {}) {
+    return this.#api.setMessageReaction({
+      chatId: target.chatId,
+      messageId: target.messageId,
+      signal: signal ?? this.#signal,
+    });
   }
 
   sendTyping(target) {

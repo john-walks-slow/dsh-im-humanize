@@ -127,6 +127,10 @@ export function normalizeSlackEvent(payload, botUserId, {
       ? event.files.map((file) => slackFileSource(file, loadFileStream, loadFileInfo)).filter(Boolean)
       : [],
     addressed: direct || mentioned,
+    reactionTarget: {
+      channelId: String(event.channel),
+      messageTs: String(event.ts),
+    },
     replyTarget: {
       channelId: String(event.channel),
       threadTs,
@@ -282,6 +286,26 @@ export class SlackBotClient {
       if (typeof result?.ts === 'string' && result.ts) providerMessageIds.push(result.ts);
     }
     return { providerMessageIds };
+  }
+
+  async addReaction(target, emoji, { signal } = {}) {
+    const reactionKey = String(emoji ?? '').trim();
+    await this.#api.addReaction({
+      channelId: target.channelId,
+      messageTs: target.messageTs,
+      emojiName: reactionKey,
+      signal: signal ?? this.#signal,
+    });
+    return reactionKey;
+  }
+
+  removeReaction(target, reactionKey, { signal } = {}) {
+    return this.#api.removeReaction({
+      channelId: target.channelId,
+      messageTs: target.messageTs,
+      emojiName: reactionKey,
+      signal: signal ?? this.#signal,
+    });
   }
 
   openStream(target) {

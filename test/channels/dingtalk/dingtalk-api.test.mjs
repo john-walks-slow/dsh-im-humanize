@@ -5,6 +5,9 @@ import {
   createDingtalkApi,
   DINGTALK_AI_CARD_TEMPLATE_ID,
   DINGTALK_API_BASE_URL,
+  DINGTALK_DONE_REACTION_NAME,
+  DINGTALK_ERROR_REACTION_NAME,
+  DINGTALK_THINKING_REACTION_NAME,
   DingtalkApiError,
   normalizeDingtalkCardMarkdown,
   normalizeDingtalkSessionWebhook,
@@ -112,6 +115,120 @@ test('session replies use the fixed token endpoint, reject redirects, and cache 
     msgtype: 'text',
     text: { content: '继续' },
   });
+});
+
+test('DingTalk adds, recalls, and replaces its native status reactions', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url: url.toString(), options });
+    if (url.pathname.endsWith('/oauth2/accessToken')) {
+      return jsonResponse({ accessToken: 'reaction-access-token', expireIn: 7_200 });
+    }
+    return jsonResponse({});
+  };
+  const api = createDingtalkApi({ fetchImpl });
+  const request = {
+    clientId: 'ding-client',
+    clientSecret: 'host-only-secret',
+    robotCode: 'robot-from-callback',
+    messageId: 'open-message-one',
+    conversationId: 'open-conversation-one',
+  };
+
+  await api.addReaction({ ...request, reactionName: DINGTALK_THINKING_REACTION_NAME });
+  await api.recallReaction({ ...request, reactionName: DINGTALK_THINKING_REACTION_NAME });
+  await api.addReaction({ ...request, reactionName: DINGTALK_DONE_REACTION_NAME });
+  await api.addReaction({ ...request, reactionName: DINGTALK_ERROR_REACTION_NAME });
+
+  assert.equal(calls.filter(({ url }) => url.includes('/oauth2/accessToken')).length, 1);
+  assert.deepEqual(calls.slice(1).map(({ url, options }) => ({
+    path: new URL(url).pathname,
+    token: options.headers['x-acs-dingtalk-access-token'],
+    body: JSON.parse(options.body),
+  })), [
+    ['reply', DINGTALK_THINKING_REACTION_NAME],
+    ['recall', DINGTALK_THINKING_REACTION_NAME],
+    ['reply', DINGTALK_DONE_REACTION_NAME],
+    ['reply', DINGTALK_ERROR_REACTION_NAME],
+  ].map(([action, reactionName]) => ({
+    path: `/v1.0/robot/emotion/${action}`,
+    token: 'reaction-access-token',
+    body: {
+      robotCode: 'robot-from-callback',
+      openMsgId: 'open-message-one',
+      openConversationId: 'open-conversation-one',
+      emotionType: 2,
+      emotionName: reactionName,
+      textEmotion: {
+        emotionId: '2659900',
+        emotionName: reactionName,
+        text: reactionName,
+        backgroundId: 'im_bg_1',
+      },
+    },
+  })));
+});
+
+test('DingTalk treats a success=false emotion response as rejected', async () => {
+  const api = createDingtalkApi({
+    fetchImpl: async (url) => url.pathname.endsWith('/oauth2/accessToken')
+      ? jsonResponse({ accessToken: 'reaction-access-token', expireIn: 7_200 })
+      : jsonResponse({ success: false, code: 'emotion_not_supported' }),
+  });
+
+  await assert.rejects(
+    api.addReaction({
+      clientId: 'ding-client',
+      clientSecret: 'host-only-secret',
+      robotCode: 'robot-from-callback',
+      messageId: 'open-message-one',
+      conversationId: 'open-conversation-one',
+      reactionName: DINGTALK_DONE_REACTION_NAME,
+    }),
+    (error) => error instanceof DingtalkApiError
+      && error.code === 'reaction-rejected'
+      && error.providerCode === 'emotion_not_supported',
+  );
+});
+
+test('cold reactions share their token request without delaying the normal reply token request', async () => {
+  const firstToken = deferred();
+  const calls = [];
+  let tokenRequests = 0;
+  const fetchImpl = async (url, options) => {
+    calls.push({ url: url.toString(), options });
+    if (new URL(url).pathname.endsWith('/oauth2/accessToken')) {
+      tokenRequests += 1;
+      if (tokenRequests === 1) return firstToken.promise;
+      return jsonResponse({ accessToken: 'normal-access-token', expireIn: 7_200 });
+    }
+    return jsonResponse({});
+  };
+  const api = createDingtalkApi({ fetchImpl });
+  const reactions = Array.from({ length: 10 }, (_unused, index) => (
+    api.addReaction({
+      clientId: 'ding-client',
+      clientSecret: 'host-only-secret',
+      messageId: `open-message-${index + 1}`,
+      conversationId: 'open-conversation-one',
+      reactionName: DINGTALK_THINKING_REACTION_NAME,
+    })
+  ));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(tokenRequests, 1, 'concurrent reactions must share their own cold token request');
+
+  await api.sendText({
+    clientId: 'ding-client',
+    clientSecret: 'host-only-secret',
+    sessionWebhook: 'https://oapi.dingtalk.com/robot/reply?ticket=normal',
+    text: '正常回复',
+  });
+  assert.equal(tokenRequests, 2);
+
+  firstToken.resolve(jsonResponse({ accessToken: 'reaction-access-token', expireIn: 7_200 }));
+  await Promise.all(reactions);
+  const normalSend = calls.find(({ url }) => url.includes('ticket=normal'));
+  assert.equal(normalSend.options.headers['x-acs-dingtalk-access-token'], 'normal-access-token');
 });
 
 test('DingTalk uploads and sends a native file message to the exact robot conversation', async () => {

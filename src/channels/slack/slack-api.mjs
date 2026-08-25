@@ -276,6 +276,34 @@ export class SlackApi {
     });
   }
 
+  addReaction({ channelId, messageTs, emojiName, signal, timeoutMs }) {
+    return this.#request('reactions.add', {
+      tokenKind: 'bot',
+      signal,
+      timeoutMs,
+      retry: false,
+      body: {
+        channel: slackId(channelId, 'channel id'),
+        timestamp: requiredString(messageTs, 'message timestamp'),
+        name: requiredString(emojiName, 'reaction name'),
+      },
+    });
+  }
+
+  removeReaction({ channelId, messageTs, emojiName, signal, timeoutMs }) {
+    return this.#request('reactions.remove', {
+      tokenKind: 'bot',
+      signal,
+      timeoutMs,
+      retry: false,
+      body: {
+        channel: slackId(channelId, 'channel id'),
+        timestamp: requiredString(messageTs, 'message timestamp'),
+        name: requiredString(emojiName, 'reaction name'),
+      },
+    });
+  }
+
   startStream({ channelId, threadTs, recipientTeamId, recipientUserId, markdownText, signal }) {
     return this.#request('chat.startStream', {
       tokenKind: 'bot',

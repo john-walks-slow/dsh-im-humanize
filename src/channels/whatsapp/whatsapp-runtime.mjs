@@ -246,6 +246,7 @@ export function normalizeWhatsappMessage(message, accountJid, {
     addressed: !group || fromMe || mentioned || replyToSelf,
     selfChat,
     replyTarget: { jid: remoteJid, quoted: message, selfChat },
+    reactionTarget: { jid: remoteJid, key: message.key },
   };
 }
 
@@ -409,6 +410,41 @@ export class WhatsappBotClient {
       image: file.bytes,
       mimetype: file.mediaType ?? 'image/jpeg',
     }, 'image');
+  }
+
+  async addReaction(target, emoji, { signal } = {}) {
+    if (typeof emoji !== 'string' || !emoji.trim()) {
+      throw new TypeError('A WhatsApp reaction emoji is required');
+    }
+    const reactionKey = emoji.trim();
+    await this.#sendReaction(target, reactionKey, signal);
+    return reactionKey;
+  }
+
+  removeReaction(target, _reactionKey, { signal } = {}) {
+    return this.#sendReaction(target, '', signal);
+  }
+
+  async #sendReaction(target, text, signal) {
+    if (typeof target?.jid !== 'string' || !target.jid || !target.key?.id) {
+      throw new TypeError('A WhatsApp reaction target is required');
+    }
+    const operationSignal = signal ?? this.#signal;
+    operationSignal?.throwIfAborted();
+    const messageId = randomBytes(10).toString('hex').toUpperCase();
+    if (typeof this.#outboundIds.reserve === 'function') {
+      this.#outboundIds.reserve(messageId);
+    } else {
+      this.#outboundIds.remember(messageId);
+    }
+    const pending = this.#socket.sendMessage(
+      target.jid,
+      { react: { text, key: target.key } },
+      { messageId },
+    );
+    const result = await waitWithSignal(pending, operationSignal);
+    this.#outboundIds.remember(result?.key?.id);
+    return result;
   }
 
   async #sendArtifact(target, file, content, presentation) {

@@ -187,6 +187,163 @@ async function committedArtifact(t, fileName, content, suffix) {
   return artifact;
 }
 
+test('status reactions never delay safe errors, the conversation queue, or waitForIdle', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let asks = 0;
+  let reactionAdds = 0;
+  const bridge = new TextHarnessBridge({
+    descriptor: {
+      key: 'test',
+      label: 'Test',
+      reactions: { processing: 'eyes', success: 'done', error: 'error' },
+    },
+    state: fixture.state,
+    status: createTextBridgeStatus(),
+    bot: {
+      addReaction: () => {
+        reactionAdds += 1;
+        return new Promise(() => {});
+      },
+      removeReaction: async () => undefined,
+      sendText: async (_target, text) => sent.push(text),
+    },
+    harness: {
+      sessionExists: async () => false,
+      createSession: async () => 'session-reaction-sidecar',
+      ask: async () => {
+        asks += 1;
+        if (asks === 1) throw new Error('private failure detail');
+        return '第二条正常完成';
+      },
+    },
+    logger: { warn() {}, error() {} },
+  });
+
+  const first = bridge.accept(message('reaction-hang-one', '第一条', {
+    reactionTarget: { id: 'source-one' },
+  }));
+  const second = bridge.accept(message('reaction-hang-two', '第二条', {
+    reactionTarget: { id: 'source-two' },
+  }));
+
+  await within(Promise.all([first, second, bridge.waitForIdle()]), 100,
+    'a hanging status reaction blocked normal message processing');
+
+  assert.equal(asks, 2);
+  assert.equal(reactionAdds, 2);
+  assert.equal(sent.some((text) => text.includes('第二条正常完成')), true);
+  assert.equal(sent.some((text) => text.includes('private failure detail')), false);
+});
+
+test('shared status reactions replace processing with success without joining the main task', async () => {
+  const fixture = stateFixture();
+  const reactions = [];
+  const bridge = new TextHarnessBridge({
+    descriptor: {
+      key: 'test',
+      label: 'Test',
+      reactions: { processing: 'eyes', success: 'done', error: 'error' },
+    },
+    state: fixture.state,
+    bot: {
+      addReaction: async (target, emoji) => {
+        reactions.push(['add', target.id, emoji]);
+        return emoji;
+      },
+      removeReaction: async (target, emoji) => {
+        reactions.push(['remove', target.id, emoji]);
+      },
+      sendText: async () => undefined,
+    },
+    harness: {
+      sessionExists: async () => false,
+      createSession: async () => 'session-reaction-success',
+      ask: async () => '完成',
+    },
+    logger: { warn() {}, error() {} },
+  });
+
+  await bridge.accept(message('reaction-success', '执行', {
+    reactionTarget: { id: 'source-success' },
+  }));
+  await eventually(() => reactions.length === 3);
+
+  assert.deepEqual(reactions, [
+    ['add', 'source-success', 'eyes'],
+    ['remove', 'source-success', 'eyes'],
+    ['add', 'source-success', 'done'],
+  ]);
+});
+
+test('runtime abort clears a queued interaction reply reaction instead of marking success', async () => {
+  const fixture = stateFixture();
+  const controller = new AbortController();
+  const invalidStarted = deferred();
+  const releaseInvalid = deferred();
+  const originalMarkSeen = fixture.state.markSeen.bind(fixture.state);
+  fixture.state.markSeen = async (messageId) => {
+    await originalMarkSeen(messageId);
+    if (messageId === 'blocking-invalid') {
+      invalidStarted.resolve();
+      await releaseInvalid.promise;
+    }
+  };
+  const sent = [];
+  const reactions = [];
+  const bridge = new TextHarnessBridge({
+    descriptor: {
+      key: 'test',
+      label: 'Test',
+      reactions: { processing: 'eyes', success: 'done', error: 'error' },
+    },
+    state: fixture.state,
+    signal: controller.signal,
+    bot: {
+      addReaction: async (target, emoji) => {
+        reactions.push(['add', target.id, emoji]);
+        return emoji;
+      },
+      removeReaction: async (target, emoji) => {
+        reactions.push(['remove', target.id, emoji]);
+      },
+      sendText: async (_target, text) => sent.push(text),
+    },
+    harness: {
+      sessionExists: async () => false,
+      createSession: async () => 'session-reaction-abort',
+      ask: async (sessionId, _text, options) => {
+        await options.onInteraction(questionInteraction({ sessionId }));
+        await new Promise((resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), {
+            once: true,
+          });
+        });
+      },
+    },
+    logger: { warn() {}, error() {} },
+  });
+
+  const processing = bridge.accept(message('interaction-start', '启动交互'));
+  await eventually(() => sent.some((text) => text.includes('请回答')));
+  const invalid = bridge.accept(message('blocking-invalid', ''));
+  await invalidStarted.promise;
+  const answer = bridge.accept(message('queued-answer', '有效回答', {
+    reactionTarget: { id: 'source-answer' },
+  }));
+  await eventually(() => reactions.some((call) => call[0] === 'add'));
+
+  controller.abort(new DOMException('runtime stopped', 'AbortError'));
+  releaseInvalid.resolve();
+  await Promise.all([processing, invalid, answer]);
+  await eventually(() => reactions.some((call) => call[0] === 'remove'));
+
+  assert.deepEqual(reactions, [
+    ['add', 'source-answer', 'eyes'],
+    ['remove', 'source-answer', 'eyes'],
+  ]);
+});
+
 test('all four shared text channels execute /compact outside the model prompt path', async () => {
   for (const [name, Bridge] of [
     ['slack', SlackHarnessBridge],

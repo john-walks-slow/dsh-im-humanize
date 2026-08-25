@@ -8,8 +8,14 @@ export const DINGTALK_REGISTRATION_BASE_URL = 'https://oapi.dingtalk.com/';
 export const DINGTALK_API_BASE_URL = 'https://api.dingtalk.com/';
 export const DINGTALK_REGISTRATION_SOURCE = 'DING_DWS_CLAW';
 export const DINGTALK_AI_CARD_TEMPLATE_ID = '02fcf2f4-5e02-4a85-b672-46d1f715543e.schema';
+export const DINGTALK_THINKING_REACTION_NAME = '🤔思考中';
+export const DINGTALK_DONE_REACTION_NAME = '✅已完成';
+export const DINGTALK_ERROR_REACTION_NAME = '❌处理失败';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+const REACTION_TIMEOUT_MS = 5_000;
+const TEXT_REACTION_ID = '2659900';
+const TEXT_REACTION_BACKGROUND_ID = 'im_bg_1';
 const REGISTRATION_STATUSES = new Set(['WAITING', 'SUCCESS', 'FAIL', 'EXPIRED']);
 
 export class DingtalkApiError extends Error {
@@ -406,18 +412,20 @@ export function createDingtalkApi({
   if (!source) throw new TypeError('registrationSource is required');
   const tokenCache = new Map();
   const tokenRequests = new Map();
+  const reactionTokenRequests = new Map();
   let cardSlotTail = Promise.resolve();
   let nextCardRequestAt = 0;
 
   const endpoint = (base, pathname) => new URL(pathname.replace(/^\//, ''), base);
 
-  async function accessToken({ clientId, clientSecret, signal }) {
+  async function accessToken({ clientId, clientSecret, signal, requestKind = 'normal' }) {
     const appKey = nonEmptyString(clientId);
     const appSecret = nonEmptyString(clientSecret);
     if (!appKey || !appSecret) throw new TypeError('clientId and clientSecret are required');
     const cached = tokenCache.get(appKey);
     if (cached && cached.expiresAt > now()) return cached.token;
-    if (tokenRequests.has(appKey)) return tokenRequests.get(appKey);
+    const requests = requestKind === 'reaction' ? reactionTokenRequests : tokenRequests;
+    if (requests.has(appKey)) return requests.get(appKey);
 
     const request = (async () => {
       const value = await requestJson(fetchImpl, endpoint(apiBase, 'v1.0/oauth2/accessToken'), {
@@ -431,9 +439,75 @@ export function createDingtalkApi({
       const refreshAfterMs = Math.max(1_000, (expiresInSeconds - 60) * 1_000);
       tokenCache.set(appKey, { token, expiresAt: now() + refreshAfterMs });
       return token;
-    })().finally(() => tokenRequests.delete(appKey));
-    tokenRequests.set(appKey, request);
-    return request;
+    })();
+    const shared = request.finally(() => requests.delete(appKey));
+    requests.set(appKey, shared);
+    return shared;
+  }
+
+  async function changeReaction({
+    clientId,
+    clientSecret,
+    robotCode,
+    messageId,
+    conversationId,
+    reactionName = DINGTALK_THINKING_REACTION_NAME,
+    signal,
+  }, action) {
+    const appKey = nonEmptyString(clientId);
+    const appSecret = nonEmptyString(clientSecret);
+    const botCode = nonEmptyString(robotCode) ?? appKey;
+    const openMsgId = nonEmptyString(messageId);
+    const openConversationId = nonEmptyString(conversationId);
+    const emotionName = nonEmptyString(reactionName);
+    if (!appKey || !appSecret) throw new TypeError('clientId and clientSecret are required');
+    if (!botCode) throw new TypeError('robotCode is required');
+    if (!openMsgId || !openConversationId) {
+      throw new TypeError('messageId and conversationId are required');
+    }
+    if (!emotionName) throw new TypeError('reactionName is required');
+    // Reactions deduplicate with each other but never own the normal reply's
+    // in-flight token request. Both paths may still reuse a cached token.
+    const token = await accessToken({
+      clientId: appKey,
+      clientSecret: appSecret,
+      signal,
+      requestKind: 'reaction',
+    });
+    const response = await requestJson(
+      fetchImpl,
+      endpoint(apiBase, `v1.0/robot/emotion/${action}`),
+      {
+        body: {
+          robotCode: botCode,
+          openMsgId,
+          openConversationId,
+          emotionType: 2,
+          emotionName,
+          textEmotion: {
+            emotionId: TEXT_REACTION_ID,
+            emotionName,
+            text: emotionName,
+            backgroundId: TEXT_REACTION_BACKGROUND_ID,
+          },
+        },
+        headers: { 'x-acs-dingtalk-access-token': token },
+        signal,
+        timeoutMs: REACTION_TIMEOUT_MS,
+        action: action === 'reply' ? '消息状态添加' : '消息状态撤回',
+      },
+    );
+    const rejection = response?.success === false
+      ? safeProviderCode(response?.code ?? response?.errcode) ?? 'rejected'
+      : rejectedProviderResponse(response);
+    if (rejection) {
+      throw new DingtalkApiError(
+        'reaction-rejected',
+        '钉钉服务拒绝了消息状态请求。',
+        { providerCode: rejection },
+      );
+    }
+    return true;
   }
 
   async function messageFileDownloadUrl({
@@ -689,6 +763,28 @@ export function createDingtalkApi({
     },
 
     accessToken,
+
+    async addReaction(request) {
+      return changeReaction(request, 'reply');
+    },
+
+    async recallReaction(request) {
+      return changeReaction(request, 'recall');
+    },
+
+    async addThinkingReaction(request) {
+      return changeReaction({
+        ...request,
+        reactionName: DINGTALK_THINKING_REACTION_NAME,
+      }, 'reply');
+    },
+
+    async recallThinkingReaction(request) {
+      return changeReaction({
+        ...request,
+        reactionName: DINGTALK_THINKING_REACTION_NAME,
+      }, 'recall');
+    },
 
     async downloadImage({
       clientId,

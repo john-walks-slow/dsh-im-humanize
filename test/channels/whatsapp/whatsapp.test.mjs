@@ -66,6 +66,15 @@ async function within(promise, timeoutMs, message) {
   }
 }
 
+async function eventually(predicate, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail('condition was not met before timeout');
+}
+
 async function committedArtifact(t, {
   suffix,
   fileName = 'result.txt',
@@ -323,13 +332,26 @@ test('WhatsApp media downloader supplies Baileys reupload context', async () => 
 });
 
 test('WhatsApp normalizes direct, linked-account, and explicitly mentioned group messages', () => {
+  const directKey = {
+    remoteJid: '16505550999@s.whatsapp.net',
+    remoteJidAlt: '987654321098765@lid',
+    participantAlt: '123456789012345@lid',
+    addressingMode: 'lid',
+    id: 'direct-1',
+    fromMe: false,
+  };
   const direct = normalizeWhatsappMessage({
-    key: { remoteJid: '16505550999@s.whatsapp.net', id: 'direct-1', fromMe: false },
+    key: directKey,
     message: { conversation: 'hello' },
   }, ACCOUNT_JID);
   assert.equal(direct.kind, 'direct');
   assert.equal(direct.addressed, true);
   assert.equal(direct.content, 'hello');
+  assert.equal(direct.reactionTarget.key, directKey);
+  assert.deepEqual(direct.reactionTarget, {
+    jid: '16505550999@s.whatsapp.net',
+    key: directKey,
+  });
 
   const group = normalizeWhatsappMessage({
     key: {
@@ -660,10 +682,12 @@ test('WhatsApp open mode answers linked-account group messages without processin
     readMessages: async () => {},
     sendMessage: async (jid, content, options = {}) => {
       sent.push({ jid, content, options });
-      replyEchoTask = callbacks.onMessage({
-        key: { remoteJid: groupJid, id: options.messageId, fromMe: true },
-        message: { conversation: content.text },
-      });
+      if (typeof content.text === 'string') {
+        replyEchoTask = callbacks.onMessage({
+          key: { remoteJid: groupJid, id: options.messageId, fromMe: true },
+          message: { conversation: content.text },
+        });
+      }
       return { key: { id: options.messageId } };
     },
   };
@@ -698,13 +722,19 @@ test('WhatsApp open mode answers linked-account group messages without processin
   };
   await callbacks.onMessage(inbound);
   await replyEchoTask;
+  await eventually(() => sent.filter(({ content }) => content.react).length === 2);
 
   assert.equal(askCount, 1);
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].jid, groupJid);
-  assert.equal(sent[0].content.text, 'Harness group answer');
-  assert.equal(sent[0].options.quoted, inbound);
-  assert.match(sent[0].options.messageId, /^[0-9A-F]{20}$/);
+  const textSends = sent.filter(({ content }) => typeof content.text === 'string');
+  assert.equal(textSends.length, 1);
+  assert.equal(textSends[0].jid, groupJid);
+  assert.equal(textSends[0].content.text, 'Harness group answer');
+  assert.equal(textSends[0].options.quoted, inbound);
+  assert.match(textSends[0].options.messageId, /^[0-9A-F]{20}$/);
+  const reactionSends = sent.filter(({ content }) => content.react);
+  assert.deepEqual(reactionSends.map(({ content }) => content.react.text), ['👀', '']);
+  assert.equal(reactionSends.every(({ jid }) => jid === groupJid), true);
+  assert.equal(reactionSends.every(({ content }) => content.react.key === inbound.key), true);
 });
 
 test('WhatsApp runtime sends result files with native metadata, quote, stable id, and upload timeout', async (t) => {
@@ -816,6 +846,67 @@ test('WhatsApp bot client sends native images with stable id and early echo supp
   assert.equal(calls[0].options.messageId, expectedMessageId);
   assert.equal(calls[0].options.mediaUploadTimeoutMs, 120_000);
   assert.deepEqual(remembered, [expectedMessageId, 'provider-image-message']);
+});
+
+test('WhatsApp bot client adds and clears a reaction against the full source key', async () => {
+  const calls = [];
+  const reserved = [];
+  const remembered = [];
+  const sourceKey = {
+    remoteJid: '120363000000000000@g.us',
+    participant: '16505550999@s.whatsapp.net',
+    participantAlt: '987654321098765@lid',
+    addressingMode: 'lid',
+    id: 'reaction-source-1',
+    fromMe: false,
+  };
+  const socket = {
+    sendMessage: async (jid, content, options) => {
+      calls.push({ jid, content, options });
+      return { key: { id: `reaction-result-${calls.length}` } };
+    },
+  };
+  const client = new WhatsappBotClient(socket, {
+    reserve: (id) => reserved.push(id),
+    remember: (id) => remembered.push(id),
+  });
+  const target = { jid: sourceKey.remoteJid, key: sourceKey };
+
+  const reactionKey = await client.addReaction(target, '👀');
+  await client.removeReaction(target, reactionKey);
+
+  assert.equal(reactionKey, '👀');
+  assert.deepEqual(calls.map(({ jid, content }) => ({ jid, content })), [{
+    jid: sourceKey.remoteJid,
+    content: { react: { text: '👀', key: sourceKey } },
+  }, {
+    jid: sourceKey.remoteJid,
+    content: { react: { text: '', key: sourceKey } },
+  }]);
+  assert.equal(calls.every(({ content }) => content.react.key === sourceKey), true);
+  assert.equal(calls.every(({ options }) => /^[0-9A-F]{20}$/.test(options.messageId)), true);
+  assert.notEqual(calls[0].options.messageId, calls[1].options.messageId);
+  assert.deepEqual(reserved, calls.map(({ options }) => options.messageId));
+  assert.deepEqual(remembered, ['reaction-result-1', 'reaction-result-2']);
+});
+
+test('WhatsApp reaction operations obey an upper-layer hard timeout', async () => {
+  const socket = {
+    sendMessage: async () => new Promise(() => {}),
+  };
+  const client = new WhatsappBotClient(socket, {
+    reserve() {},
+    remember() {},
+  });
+
+  await assert.rejects(() => client.addReaction({
+    jid: '16505550999@s.whatsapp.net',
+    key: {
+      remoteJid: '16505550999@s.whatsapp.net',
+      id: 'reaction-timeout-source',
+      fromMe: false,
+    },
+  }, '👀', { signal: AbortSignal.timeout(10) }), (error) => error.name === 'TimeoutError');
 });
 
 test('WhatsApp classifies a definite image rejection and uses a distinct fallback file id', async () => {
@@ -1189,16 +1280,25 @@ test('WhatsApp runtime answers self-chat without processing its own reply echo',
     },
   });
   await runtime.start();
-  await callbacks.onMessage({
+  const inbound = {
     key: { remoteJid: ACCOUNT_JID, id: 'owner-message-1', fromMe: true },
     message: { conversation: 'hello from message yourself' },
-  });
+  };
+  await callbacks.onMessage(inbound);
   await callbacks.onMessage({
     key: { remoteJid: ACCOUNT_JID, id: 'bot-reply-1', fromMe: true },
     message: { conversation: 'Harness self-chat answer' },
   });
+  await eventually(() => sent.filter(([, content]) => content.react).length === 2);
   assert.equal(askCount, 1);
-  assert.deepEqual(sent, [[ACCOUNT_JID, { text: 'Harness self-chat answer' }]]);
+  assert.deepEqual(
+    sent.filter(([, content]) => typeof content.text === 'string'),
+    [[ACCOUNT_JID, { text: 'Harness self-chat answer' }]],
+  );
+  const reactionSends = sent.filter(([, content]) => content.react);
+  assert.deepEqual(reactionSends.map(([, content]) => content.react.text), ['👀', '']);
+  assert.equal(reactionSends.every(([jid]) => jid === ACCOUNT_JID), true);
+  assert.equal(reactionSends.every(([, content]) => content.react.key === inbound.key), true);
   await runtime.stop();
 });
 

@@ -88,6 +88,12 @@ function snowflake(value, name) {
   return id;
 }
 
+function reactionEmoji(value) {
+  const emoji = cleanString(value);
+  if (!emoji) throw new TypeError('A Discord reaction emoji is required');
+  return emoji;
+}
+
 export function validDiscordToken(value) {
   return typeof value === 'string'
     && /^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{20,}$/.test(value.trim());
@@ -227,6 +233,35 @@ export class DiscordApi {
       signal,
       expectBody: false,
     });
+  }
+
+  async addOwnReaction({ channelId, messageId, emoji, signal } = {}) {
+    const normalizedEmoji = reactionEmoji(emoji);
+    await this.#request(
+      `channels/${snowflake(channelId, 'channel id')}/messages/${snowflake(messageId, 'message id')}`
+        + `/reactions/${encodeURIComponent(normalizedEmoji)}/@me`,
+      {
+        method: 'PUT',
+        signal,
+        expectBody: false,
+        retry: false,
+      },
+    );
+    return normalizedEmoji;
+  }
+
+  removeOwnReaction({ channelId, messageId, emoji, signal } = {}) {
+    const normalizedEmoji = reactionEmoji(emoji);
+    return this.#request(
+      `channels/${snowflake(channelId, 'channel id')}/messages/${snowflake(messageId, 'message id')}`
+        + `/reactions/${encodeURIComponent(normalizedEmoji)}/@me`,
+      {
+        method: 'DELETE',
+        signal,
+        expectBody: false,
+        retry: false,
+      },
+    );
   }
 
   async #request(path, {

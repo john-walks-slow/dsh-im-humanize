@@ -52,6 +52,7 @@ import {
   messageFailureText,
   setLastMessageFailure,
 } from './message-failure.mjs';
+import { beginStatusReaction } from './status-reaction.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
 const FILE_ONLY_COMPLETION_TEXT = '任务已完成。';
@@ -114,6 +115,9 @@ export function createTextBridgeStatus() {
     lastRejectedAt: null,
     lastError: null,
     lastMessageError: null,
+    reactionsAdded: 0,
+    reactionsRemoved: 0,
+    reactionErrors: 0,
   };
 }
 
@@ -178,6 +182,27 @@ export class TextHarnessBridge {
       return Promise.resolve();
     }
     this.#acceptedMessageIds.add(messageId);
+    const statusReaction = beginStatusReaction({
+      adapter: this.#bot,
+      target: normalized.kind === 'direct' || normalized.addressed === true
+        ? normalized.reactionTarget
+        : null,
+      reactions: this.#descriptor.reactions,
+      status: this.#status,
+      logger: this.#logger,
+      label: this.#descriptor.key,
+    });
+    normalized.statusReaction = statusReaction;
+
+    const processing = this.#acceptAcceptedMessage(normalized, messageId, senderId);
+    void processing.then(
+      () => statusReaction.success(),
+      () => statusReaction.error(),
+    );
+    return processing;
+  }
+
+  #acceptAcceptedMessage(normalized, messageId, senderId) {
     if (normalized.kind === 'direct') {
       rememberConnectionTestTarget(
         this.#state,
@@ -185,7 +210,7 @@ export class TextHarnessBridge {
       );
     }
 
-    const key = `${kind}:${conversationId}`;
+    const key = `${normalized.kind}:${normalized.conversationId}`;
     const pending = this.#pendingInteractions.get(key);
     const text = cleanText(normalized.content);
     const batchCommand = isBatchInputCommand(text);
@@ -326,7 +351,11 @@ export class TextHarnessBridge {
       if (reply) await this.#bot.sendText(message.replyTarget, reply);
       this.#status.lastError = null;
     })().catch(async (error) => {
-      if (this.#signal?.aborted) return;
+      if (this.#signal?.aborted) {
+        message.statusReaction?.clear();
+        return;
+      }
+      message.statusReaction?.error();
       this.#status.lastError = error?.message ?? String(error);
       const failure = setLastMessageFailure(this.#status, error);
       this.#logger.error?.(
@@ -406,7 +435,11 @@ export class TextHarnessBridge {
       }
       this.#status.lastError = null;
     } catch (error) {
-      if (error?.code === 'turn-stopped' || this.#signal?.aborted) return;
+      if (error?.code === 'turn-stopped' || this.#signal?.aborted) {
+        message.statusReaction?.clear();
+        return;
+      }
+      message.statusReaction?.error();
       this.#status.lastError = error?.message ?? String(error);
       const failure = setLastMessageFailure(this.#status, error);
       this.#logger.error?.(
@@ -706,6 +739,7 @@ export class TextHarnessBridge {
         ? this.#batches.fail(conversationKey, batchSubmission.token)
         : null;
       if (turnStopped) {
+        message.statusReaction?.clear();
         if (stream) {
           try {
             await stream.finish(t('已停止。'));
@@ -716,9 +750,11 @@ export class TextHarnessBridge {
         return;
       }
       if (this.#signal?.aborted) {
+        message.statusReaction?.clear();
         stream?.cancel?.();
         return;
       }
+      message.statusReaction?.error();
       this.#status.lastError = error?.message ?? String(error);
       const presentStreamFailure = async (text) => {
         const method = typeof stream?.fail === 'function'
@@ -773,7 +809,10 @@ export class TextHarnessBridge {
   }
 
   async #processInteractionReply(message, messageId, senderId, key, expected) {
-    if (this.#signal?.aborted) return;
+    if (this.#signal?.aborted) {
+      message.statusReaction?.clear();
+      return;
+    }
     const current = this.#pendingInteractions.get(key);
     const claimed = expected.claimedReplyMessageId === messageId;
     if (!current || current !== expected || current.submitting) {
@@ -889,7 +928,10 @@ export class TextHarnessBridge {
     } catch (error) {
       if (error?.code === 'interaction-not-pending') {
         this.#clearPendingInteraction(key, pending.interactionId);
-        if (this.#signal?.aborted) return;
+        if (this.#signal?.aborted) {
+          message.statusReaction?.clear();
+          return;
+        }
         try {
           await this.#bot.sendText(target, t(INTERACTION_RESOLVED_TEXT));
         } catch (sendError) {
@@ -900,7 +942,11 @@ export class TextHarnessBridge {
         }
         return;
       }
-      if (this.#signal?.aborted || this.#pendingInteractions.get(key) !== pending) return;
+      if (this.#signal?.aborted) {
+        message.statusReaction?.clear();
+        return;
+      }
+      if (this.#pendingInteractions.get(key) !== pending) return;
       pending.submitting = false;
       pending.answers.pop();
       pending.index -= 1;

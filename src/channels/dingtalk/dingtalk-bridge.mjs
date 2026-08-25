@@ -1,4 +1,7 @@
 import {
+  DINGTALK_DONE_REACTION_NAME,
+  DINGTALK_ERROR_REACTION_NAME,
+  DINGTALK_THINKING_REACTION_NAME,
   normalizeDingtalkSessionWebhook,
   splitDingtalkText,
 } from './dingtalk-api.mjs';
@@ -309,7 +312,15 @@ function canClaimInteractionReply(message, pending, sender) {
 
 function ensureStats(status) {
   status.stats ??= {};
-  for (const key of ['messagesReceived', 'messagesReplied', 'messagesRejected', 'messagesIgnored']) {
+  for (const key of [
+    'messagesReceived',
+    'messagesReplied',
+    'messagesRejected',
+    'messagesIgnored',
+    'reactionsAdded',
+    'reactionsRemoved',
+    'reactionErrors',
+  ]) {
     status[key] ??= 0;
     status.stats[key] = status[key];
   }
@@ -328,6 +339,9 @@ export function createDingtalkBridgeStatus({ pendingSenders = [] } = {}) {
     messagesReplied: 0,
     messagesRejected: 0,
     messagesIgnored: 0,
+    reactionsAdded: 0,
+    reactionsRemoved: 0,
+    reactionErrors: 0,
     lastMessageAt: null,
     lastReplyAt: null,
     lastRejectedAt: null,
@@ -339,6 +353,9 @@ export function createDingtalkBridgeStatus({ pendingSenders = [] } = {}) {
       messagesReplied: 0,
       messagesRejected: 0,
       messagesIgnored: 0,
+      reactionsAdded: 0,
+      reactionsRemoved: 0,
+      reactionErrors: 0,
     },
   };
 }
@@ -352,6 +369,7 @@ export class DingtalkHarnessBridge {
   #status;
   #logger;
   #replyTimeoutMs;
+  #reactionTimeoutMs;
   #maxMessageChars;
   #signal;
   #queues = new Map();
@@ -372,6 +390,7 @@ export class DingtalkHarnessBridge {
     status = createDingtalkBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
+    reactionTimeoutMs = 5_000,
     maxMessageChars = 4_000,
     signal,
   }) {
@@ -389,6 +408,9 @@ export class DingtalkHarnessBridge {
     this.#logger = logger;
     this.#approvals = new HarnessApprovalQueue({ label: 'DingTalk', logger });
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#reactionTimeoutMs = Number.isFinite(reactionTimeoutMs) && reactionTimeoutMs > 0
+      ? Math.floor(reactionTimeoutMs)
+      : 5_000;
     this.#maxMessageChars = maxMessageChars;
     this.#signal = signal;
     ensureStats(this.#status);
@@ -436,15 +458,35 @@ export class DingtalkHarnessBridge {
     const commandText = nonEmptyString(promptMessage.content) ?? '';
     const addressed = String(message.conversationType) !== '2' || message?.isInAtList === true;
     const direct = String(message.conversationType) !== '2';
+    const statusReaction = sessionWebhook && addressed ? this.#startStatusReaction(message) : null;
+    const finish = (task) => Promise.resolve(task).then(
+      (value) => {
+        this.#finishStatusReaction(
+          statusReaction,
+          this.#signal?.aborted ? 'clear' : 'success',
+        );
+        return value;
+      },
+      (error) => {
+        this.#finishStatusReaction(
+          statusReaction,
+          this.#signal?.aborted || error?.name === 'AbortError' || error?.code === 'turn-stopped'
+            ? 'clear'
+            : 'error',
+        );
+        throw error;
+      },
+    );
     const batchCommand = String(message?.msgtype).toLowerCase() === 'text'
       && isBatchInputCommand(commandText);
     const batchStatus = this.#batchInputs.status(key);
     if (batchCommand && !direct && sessionWebhook && addressed) {
-      return this.#finishBatchResult(
+      return finish(this.#finishBatchResult(
         messageId,
         sessionWebhook,
         { message: batchInputGroupUnsupportedMessage() },
-      );
+        statusReaction,
+      ));
     }
     if (direct && sessionWebhook && (batchCommand || batchStatus.phase === 'collecting')) {
       const exactBatchStart = /^\/batch$/iu.test(commandText);
@@ -460,7 +502,7 @@ export class DingtalkHarnessBridge {
           });
       if (result.handled) {
         if (result.kind === 'submit') {
-          return this.#enqueueMessage(
+          return finish(this.#enqueueMessage(
             {
               ...message,
               msgtype: 'text',
@@ -469,10 +511,15 @@ export class DingtalkHarnessBridge {
             messageId,
             sender,
             key,
-            { batchSubmission: result },
-          );
+            { batchSubmission: result, statusReaction },
+          ));
         }
-        return this.#finishBatchResult(messageId, sessionWebhook, result);
+        return finish(this.#finishBatchResult(
+          messageId,
+          sessionWebhook,
+          result,
+          statusReaction,
+        ));
       }
     }
     const commandRunner = hasInboundFiles(promptMessage) ? null : isControlCommand(commandText)
@@ -490,7 +537,11 @@ export class DingtalkHarnessBridge {
         promptMessage,
         commandRunner,
       ).catch((error) => {
-        if (error?.code === 'turn-stopped' || this.#signal?.aborted) return;
+        if (error?.code === 'turn-stopped' || this.#signal?.aborted) {
+          this.#finishStatusReaction(statusReaction, 'clear');
+          return;
+        }
+        this.#finishStatusReaction(statusReaction, 'error');
         this.#status.lastError = error?.message ?? String(error);
         const failure = setLastMessageFailure(this.#status, error);
         this.#logger.error?.(
@@ -503,7 +554,7 @@ export class DingtalkHarnessBridge {
         this.#commandTasks.delete(task);
       });
       this.#commandTasks.add(task);
-      return task;
+      return finish(task);
     }
     const approvalReply = this.#approvals.claimReply({
       key,
@@ -537,7 +588,11 @@ export class DingtalkHarnessBridge {
           return true;
         })
         .catch((error) => {
-          if (this.#signal?.aborted) return;
+          if (this.#signal?.aborted) {
+            this.#finishStatusReaction(statusReaction, 'clear');
+            return;
+          }
+          this.#finishStatusReaction(statusReaction, 'error');
           this.#status.lastError = t('钉钉审批处理失败。');
           this.#logger.error?.('[dsh-dingtalk] failed to process an approval reply', error);
         })
@@ -546,18 +601,18 @@ export class DingtalkHarnessBridge {
           this.#interactionTasks.delete(current);
         });
       this.#interactionTasks.add(current);
-      return current;
+      return finish(current);
     }
 
     if (pending && pending.actor !== sender) {
-      return this.#enqueueMessage(message, messageId, sender, key);
+      return finish(this.#enqueueMessage(message, messageId, sender, key, { statusReaction }));
     }
     // Once one valid answer has been claimed, later messages are subsequent
     // prompts even if the network submission eventually needs a retry. Invalid
     // replies do not claim the question, so the next valid answer can still
     // pass through this interaction queue.
     if (pending?.submitting || pending?.claimedReplyMessageId) {
-      return this.#enqueueMessage(message, messageId, sender, key);
+      return finish(this.#enqueueMessage(message, messageId, sender, key, { statusReaction }));
     }
     if (pending) {
       if (canClaimInteractionReply(message, pending, sender)) {
@@ -566,7 +621,14 @@ export class DingtalkHarnessBridge {
       const previous = pending.queue ?? Promise.resolve();
       const current = previous
         .catch(() => undefined)
-        .then(() => this.#processInteractionReply(message, messageId, sender, key, pending))
+        .then(() => this.#processInteractionReply(
+          message,
+          messageId,
+          sender,
+          key,
+          pending,
+          statusReaction,
+        ))
         .finally(() => {
           this.#acceptedMessageIds.delete(messageId);
           if (pending.claimedReplyMessageId === messageId) {
@@ -575,15 +637,101 @@ export class DingtalkHarnessBridge {
           if (pending.queue === current) pending.queue = null;
         });
       pending.queue = current;
-      return current;
+      return finish(current);
     }
-    return this.#enqueueMessage(message, messageId, sender, key);
+    return finish(this.#enqueueMessage(message, messageId, sender, key, { statusReaction }));
+  }
+
+  #runReactionCall(method, target, reactionName, kind) {
+    const controller = new AbortController();
+    const operation = Promise.resolve().then(() => this.#api[method]({
+      clientId: this.#clientId,
+      clientSecret: this.#clientSecret,
+      ...target,
+      reactionName,
+      signal: controller.signal,
+    }));
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new DOMException('DingTalk reaction timed out', 'TimeoutError');
+        controller.abort(error);
+        reject(error);
+      }, this.#reactionTimeoutMs);
+      timer.unref?.();
+    });
+    return Promise.race([operation, timeout])
+      .then(() => {
+        increment(this.#status, kind === 'add' ? 'reactionsAdded' : 'reactionsRemoved');
+        return true;
+      })
+      .catch((error) => {
+        increment(this.#status, 'reactionErrors');
+        this.#logger.debug?.(`[dsh-dingtalk] ${method} failed`, safeErrorDiagnostic(error));
+        return false;
+      })
+      .finally(() => clearTimeout(timer));
+  }
+
+  #startStatusReaction(message) {
+    if (typeof this.#api.addReaction !== 'function'
+      || typeof this.#api.recallReaction !== 'function') return null;
+    const messageId = nonEmptyString(message?.msgId);
+    const conversationId = nonEmptyString(message?.conversationId);
+    if (!messageId || !conversationId) return null;
+    const target = {
+      messageId,
+      conversationId,
+      robotCode: nonEmptyString(message?.robotCode) ?? this.#clientId,
+    };
+    return {
+      target,
+      attached: this.#runReactionCall(
+        'addReaction',
+        target,
+        DINGTALK_THINKING_REACTION_NAME,
+        'add',
+      ),
+      terminal: false,
+    };
+  }
+
+  #finishStatusReaction(reaction, outcome) {
+    if (!reaction || reaction.terminal) return;
+    reaction.terminal = true;
+    const terminalName = outcome === 'success'
+      ? DINGTALK_DONE_REACTION_NAME
+      : outcome === 'error' ? DINGTALK_ERROR_REACTION_NAME : null;
+    // Preserve attach -> recall -> terminal ordering without extending the message task.
+    void reaction.attached.then(async (attached) => {
+      let cleaned = await this.#runReactionCall(
+        'recallReaction',
+        reaction.target,
+        DINGTALK_THINKING_REACTION_NAME,
+        'remove',
+      );
+      if (!attached || !cleaned) {
+        await new Promise((resolve) => {
+          const retry = setTimeout(resolve, Math.min(1_000, this.#reactionTimeoutMs));
+          retry.unref?.();
+        });
+        cleaned = await this.#runReactionCall(
+          'recallReaction',
+          reaction.target,
+          DINGTALK_THINKING_REACTION_NAME,
+          'remove',
+        ) || cleaned;
+      }
+      if (!cleaned || !terminalName || this.#signal?.aborted) return;
+      await this.#runReactionCall('addReaction', reaction.target, terminalName, 'add');
+    }).catch(() => undefined);
   }
 
   #enqueueMessage(message, messageId, sender, key, {
     releaseMessageId = true,
     alreadyRecorded = false,
     batchSubmission = null,
+    statusReaction = null,
   } = {}) {
     let hasSafeReplyRoute = false;
     try {
@@ -607,6 +755,7 @@ export class DingtalkHarnessBridge {
         alreadyRecorded,
         preparedMessage,
         batchSubmission,
+        statusReaction,
       }))
       .finally(() => {
         if (releaseMessageId) this.#acceptedMessageIds.delete(messageId);
@@ -659,7 +808,7 @@ export class DingtalkHarnessBridge {
     this.#status.lastError = null;
   }
 
-  #finishBatchResult(messageId, sessionWebhook, result) {
+  #finishBatchResult(messageId, sessionWebhook, result, statusReaction) {
     let task;
     task = Promise.resolve().then(async () => {
       if (this.#state.hasSeen(messageId)) return;
@@ -669,7 +818,11 @@ export class DingtalkHarnessBridge {
       if (result.message) await this.#send(sessionWebhook, result.message);
       this.#status.lastError = null;
     }).catch(async (error) => {
-      if (this.#signal?.aborted) return;
+      if (this.#signal?.aborted) {
+        this.#finishStatusReaction(statusReaction, 'clear');
+        return;
+      }
+      this.#finishStatusReaction(statusReaction, 'error');
       this.#status.lastError = error?.message ?? String(error);
       const failure = setLastMessageFailure(this.#status, error);
       this.#logger.error?.(
@@ -689,6 +842,7 @@ export class DingtalkHarnessBridge {
     alreadyRecorded = false,
     preparedMessage,
     batchSubmission = null,
+    statusReaction = null,
   } = {}) {
     this.#signal?.throwIfAborted();
     if (!alreadyRecorded) {
@@ -865,10 +1019,15 @@ export class DingtalkHarnessBridge {
         batchSettled = true;
       }
       if (error?.code === 'turn-stopped') {
+        this.#finishStatusReaction(statusReaction, 'clear');
         if (cardStarted) await cardStream.finish(t('已停止。')).catch(() => undefined);
         return;
       }
-      if (this.#signal?.aborted) return;
+      if (this.#signal?.aborted) {
+        this.#finishStatusReaction(statusReaction, 'clear');
+        return;
+      }
+      this.#finishStatusReaction(statusReaction, 'error');
       this.#status.lastError = error?.message ?? String(error);
       const userMessage = inboundFileUserMessage(error)
         ?? dingtalkImageErrorUserMessage(error);
@@ -896,7 +1055,14 @@ export class DingtalkHarnessBridge {
     }
   }
 
-  async #processInteractionReply(message, messageId, sender, key, expected) {
+  async #processInteractionReply(
+    message,
+    messageId,
+    sender,
+    key,
+    expected,
+    statusReaction,
+  ) {
     this.#signal?.throwIfAborted();
     const current = this.#pendingInteractions.get(key);
     const claimed = expected.claimedReplyMessageId === messageId;
@@ -904,7 +1070,10 @@ export class DingtalkHarnessBridge {
       if (claimed && (!current || current !== expected)) {
         return this.#discardResolvedInteractionReply(message, messageId);
       }
-      return this.#enqueueMessage(message, messageId, sender, key, { releaseMessageId: false });
+      return this.#enqueueMessage(message, messageId, sender, key, {
+        releaseMessageId: false,
+        statusReaction,
+      });
     }
     if (this.#state.hasSeen(messageId)) return;
     await this.#state.markSeen(messageId);
@@ -949,6 +1118,7 @@ export class DingtalkHarnessBridge {
       return this.#enqueueMessage(message, messageId, sender, key, {
         releaseMessageId: false,
         alreadyRecorded: true,
+        statusReaction,
       });
     }
     pending.sessionWebhook = sessionWebhook;
@@ -956,6 +1126,7 @@ export class DingtalkHarnessBridge {
       try {
         await this.#presentInteraction(pending);
       } catch {
+        this.#finishStatusReaction(statusReaction, 'error');
         this.#status.lastError = t('钉钉交互问题发送失败。');
         this.#logger.error?.('[dsh-dingtalk] failed to retry an interaction question');
         pending.interaction.reconnect?.();
@@ -975,6 +1146,7 @@ export class DingtalkHarnessBridge {
       try {
         await this.#presentInteraction(pending);
       } catch {
+        this.#finishStatusReaction(statusReaction, 'error');
         this.#status.lastError = t('钉钉交互问题发送失败。');
         this.#logger.error?.('[dsh-dingtalk] failed to send the next interaction question');
         pending.interaction.reconnect?.();
@@ -994,7 +1166,10 @@ export class DingtalkHarnessBridge {
       this.#clearPendingInteraction(key, pending.interactionId);
       this.#status.lastError = null;
     } catch (error) {
-      if (this.#signal?.aborted) return;
+      if (this.#signal?.aborted) {
+        this.#finishStatusReaction(statusReaction, 'clear');
+        return;
+      }
       if (this.#pendingInteractions.get(key) !== pending) return;
       if (error?.code === 'interaction-not-pending') {
         this.#clearPendingInteraction(key, pending.interactionId);
@@ -1005,6 +1180,7 @@ export class DingtalkHarnessBridge {
         }
         return;
       }
+      this.#finishStatusReaction(statusReaction, 'error');
       pending.submitting = false;
       pending.answers.pop();
       pending.index -= 1;

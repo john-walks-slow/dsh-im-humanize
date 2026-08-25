@@ -165,6 +165,32 @@ test('Discord API gets a channel and starts one thread from a source message', a
   assert.equal(requests.length, 2);
 });
 
+test('Discord API adds and removes the current bot reaction with an encoded emoji', async () => {
+  const requests = [];
+  const api = new DiscordApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return new Response(null, { status: 204 });
+    },
+  });
+  const target = {
+    channelId: '123456789012345678',
+    messageId: '987654321012345678',
+  };
+
+  assert.equal(await api.addOwnReaction({ ...target, emoji: '👀' }), '👀');
+  await api.removeOwnReaction({ ...target, emoji: '👀' });
+
+  assert.deepEqual(requests.map(({ options }) => options.method), ['PUT', 'DELETE']);
+  assert.equal(
+    decodeURIComponent(requests[0].url.pathname),
+    '/api/v10/channels/123456789012345678/messages/987654321012345678/reactions/👀/@me',
+  );
+  assert.equal(requests[1].url.pathname, requests[0].url.pathname);
+  assert.equal(requests[0].options.body, undefined);
+});
+
 test('Discord API uploads a result file as a native attachment and preserves the reply', async () => {
   let request;
   const api = new DiscordApi({
@@ -440,6 +466,10 @@ test('Discord normalizes DMs and only addressed server messages', () => {
   assert.equal(direct.addressed, true);
   assert.equal(direct.plainText, true);
   assert.deepEqual(direct.connectionTestTarget, { channelId: '222222222222222222' });
+  assert.deepEqual(direct.reactionTarget, {
+    channelId: '222222222222222222',
+    messageId: '111111111111111111',
+  });
 
   const sticker = normalizeDiscordMessage({
     id: '111111111111111115',
@@ -599,6 +629,10 @@ test('Discord routes mentioned text and announcement messages into native thread
     });
     assert.equal(route.conversationId, message.id);
     assert.deepEqual(route.replyTarget, { channelId: message.id });
+    assert.deepEqual(route.reactionTarget, {
+      channelId: message.channel_id,
+      messageId: message.id,
+    });
     assert.deepEqual(route.conversationRoute, {
       peerId: message.channel_id,
       threadId: message.id,
@@ -910,6 +944,37 @@ test('Discord merges a deterministic Thread fallback notice into one delivered a
   await stream.finish('streamed answer');
   assert.equal(creates[2].content, `${streamTarget.notice}\n\n正在处理…`);
   assert.equal(edits[0].content, `${streamTarget.notice}\n\nstreamed answer`);
+});
+
+test('Discord bot client exposes cancellable add and remove reaction operations', async () => {
+  const operations = [];
+  const api = {
+    async addOwnReaction(options) {
+      operations.push({ operation: 'add', ...options });
+      return options.emoji;
+    },
+    async removeOwnReaction(options) {
+      operations.push({ operation: 'remove', ...options });
+    },
+  };
+  const client = new DiscordBotClient({ api });
+  const target = {
+    channelId: '222222222222222266',
+    messageId: '111111111111111166',
+  };
+  const controller = new AbortController();
+
+  const reactionKey = await client.addReaction(target, '👀', { signal: controller.signal });
+  await client.removeReaction(target, reactionKey, { signal: controller.signal });
+
+  assert.equal(reactionKey, '👀');
+  assert.deepEqual(operations.map(({ operation, channelId, messageId, emoji, signal }) => ({
+    operation, channelId, messageId, emoji, signal,
+  })), [{
+    operation: 'add', ...target, emoji: '👀', signal: controller.signal,
+  }, {
+    operation: 'remove', ...target, emoji: '👀', signal: controller.signal,
+  }]);
 });
 
 test('Discord keeps streamed text and result files on the final created Thread target', async () => {

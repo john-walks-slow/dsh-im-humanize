@@ -305,6 +305,68 @@ test('Telegram API preserves the legacy plain send and edit payloads', async () 
   assert.equal(Object.hasOwn(calls[1].body, 'parse_mode'), false);
 });
 
+test('Telegram API and bot client set and clear one reaction on the source message', async () => {
+  const calls = [];
+  const requestAbort = new AbortController();
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      calls.push({
+        method: url.pathname.split('/').at(-1),
+        body: JSON.parse(options.body),
+        signal: options.signal,
+      });
+      return jsonResponse({ ok: true, result: true });
+    },
+  });
+  await api.setMessageReaction({
+    chatId: -100123,
+    messageId: 44,
+    emoji: ' 👀 ',
+    signal: requestAbort.signal,
+    timeoutMs: 5_000,
+  });
+  await api.setMessageReaction({
+    chatId: -100123,
+    messageId: 44,
+    signal: requestAbort.signal,
+    timeoutMs: 5_000,
+  });
+  assert.deepEqual(calls.map(({ method, body }) => ({ method, body })), [{
+    method: 'setMessageReaction',
+    body: {
+      chat_id: -100123,
+      message_id: 44,
+      reaction: [{ type: 'emoji', emoji: '👀' }],
+    },
+  }, {
+    method: 'setMessageReaction',
+    body: { chat_id: -100123, message_id: 44, reaction: [] },
+  }]);
+  requestAbort.abort();
+  assert.equal(calls.every(({ signal }) => signal.aborted), true);
+
+  const adapterCalls = [];
+  const runtimeAbort = new AbortController();
+  const sidecarAbort = new AbortController();
+  const client = new TelegramBotClient({
+    api: {
+      setMessageReaction: async (payload) => adapterCalls.push(payload),
+    },
+    signal: runtimeAbort.signal,
+  });
+  const target = { chatId: -100123, messageId: 45 };
+  assert.equal(await client.addReaction(target, '👍', { signal: sidecarAbort.signal }), '👍');
+  await client.removeReaction(target, '👍', { signal: sidecarAbort.signal });
+  assert.deepEqual(adapterCalls.map(({ chatId, messageId, emoji }) => ({
+    chatId, messageId, emoji,
+  })), [{ chatId: -100123, messageId: 45, emoji: '👍' }, {
+    chatId: -100123, messageId: 45, emoji: undefined,
+  }]);
+  sidecarAbort.abort();
+  assert.equal(adapterCalls.every(({ signal }) => signal.aborted), true);
+});
+
 test('Telegram plain delivery keeps the 4000 boundary, reply, topic, and content', async () => {
   const calls = [];
   let nextMessageId = 600;
@@ -967,6 +1029,7 @@ test('Telegram normalizes private messages and requires an explicit group addres
   assert.equal(privateMessage.kind, 'direct');
   assert.equal(privateMessage.addressed, true);
   assert.equal(privateMessage.replyTarget.chatType, 'private');
+  assert.deepEqual(privateMessage.reactionTarget, { chatId: 88, messageId: 4 });
   assert.deepEqual(privateMessage.connectionTestTarget, { chatId: 88, messageThreadId: undefined });
 
   const groupMessage = normalizeTelegramUpdate({
@@ -1011,6 +1074,8 @@ test('Telegram normalizes private messages and requires an explicit group addres
   assert.notEqual(topicOne.conversationId, topicTwo.conversationId);
   assert.equal(topicOne.replyTarget.messageThreadId, 100);
   assert.equal(topicTwo.replyTarget.messageThreadId, 200);
+  assert.deepEqual(topicOne.reactionTarget, { chatId: -1001, messageId: 6 });
+  assert.deepEqual(topicTwo.reactionTarget, { chatId: -1001, messageId: 7 });
 });
 
 test('Telegram compatible mode preserves old routing and private allowlist mode restricts inbound messages', () => {

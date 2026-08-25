@@ -16,6 +16,7 @@ import {
   validSlackBotToken,
 } from '../../../src/channels/slack/slack-api.mjs';
 import {
+  SlackBotClient,
   SlackRuntime,
   isSlackToolProgress,
   normalizeSlackEvent,
@@ -148,6 +149,79 @@ test('Slack API uses native streaming methods and suppresses generated mass ment
   ]);
   assert.equal(calls[1].body.markdown_text, 'hello ');
   assert.equal(calls[3].body.text, '请通知 @channel 和 @U99999999');
+});
+
+test('Slack API and bot client add and remove reactions on the source message', async () => {
+  const calls = [];
+  const requestAbort = new AbortController();
+  const api = new SlackApi({
+    botToken: BOT_TOKEN,
+    fetchImpl: async (url, options) => {
+      calls.push({
+        method: url.pathname.split('/').pop(),
+        body: JSON.parse(options.body),
+        signal: options.signal,
+      });
+      return jsonResponse({ ok: true });
+    },
+  });
+  await api.addReaction({
+    channelId: 'C12345678',
+    messageTs: '1700000000.123',
+    emojiName: 'eyes',
+    signal: requestAbort.signal,
+    timeoutMs: 5_000,
+  });
+  await api.removeReaction({
+    channelId: 'C12345678',
+    messageTs: '1700000000.123',
+    emojiName: 'eyes',
+    signal: requestAbort.signal,
+    timeoutMs: 5_000,
+  });
+  assert.deepEqual(calls.map(({ method, body }) => ({ method, body })), [{
+    method: 'reactions.add',
+    body: { channel: 'C12345678', timestamp: '1700000000.123', name: 'eyes' },
+  }, {
+    method: 'reactions.remove',
+    body: { channel: 'C12345678', timestamp: '1700000000.123', name: 'eyes' },
+  }]);
+  requestAbort.abort();
+  assert.equal(calls.every(({ signal }) => signal.aborted), true);
+
+  const adapterCalls = [];
+  const runtimeAbort = new AbortController();
+  const sidecarAbort = new AbortController();
+  const client = new SlackBotClient({
+    api: {
+      addReaction: async (payload) => adapterCalls.push({ action: 'add', ...payload }),
+      removeReaction: async (payload) => adapterCalls.push({ action: 'remove', ...payload }),
+    },
+    signal: runtimeAbort.signal,
+  });
+  const target = { channelId: 'C12345678', messageTs: '1700000000.456' };
+  assert.equal(await client.addReaction(target, 'white_check_mark', {
+    signal: sidecarAbort.signal,
+  }), 'white_check_mark');
+  await client.removeReaction(target, 'white_check_mark', { signal: sidecarAbort.signal });
+  assert.deepEqual(adapterCalls.map(({ action, channelId, messageTs, emojiName }) => ({
+    action, channelId, messageTs, emojiName,
+  })), [{
+    action: 'add',
+    channelId: 'C12345678',
+    messageTs: '1700000000.456',
+    emojiName: 'white_check_mark',
+  }, {
+    action: 'remove',
+    channelId: 'C12345678',
+    messageTs: '1700000000.456',
+    emojiName: 'white_check_mark',
+  }]);
+  runtimeAbort.abort();
+  assert.equal(adapterCalls.every(({ signal }) => signal.aborted), false);
+  sidecarAbort.abort();
+  assert.equal(adapterCalls.every(({ signal }) => signal.aborted), true);
+  assert.match(SLACK_APP_MANIFEST_YAML, /\n\s+- reactions:write\n/);
 });
 
 test('Slack API completes the native external-upload flow in the original thread', async () => {
@@ -791,6 +865,24 @@ test('Slack normalizes direct messages and addressed channel events', () => {
   assert.equal(group.content, 'run this');
   assert.equal(group.conversationId, 'C12345678:1700000000.002');
   assert.equal(group.replyTarget.threadTs, '1700000000.002');
+
+  const threaded = normalizeSlackEvent({
+    event_id: 'Ev002-threaded',
+    team_id: 'T12345678',
+    event: {
+      type: 'app_mention',
+      channel: 'C12345678',
+      user: 'U87654321',
+      ts: '1700000000.003',
+      thread_ts: '1700000000.002',
+      text: '<@U12345678> continue',
+    },
+  }, 'U12345678');
+  assert.equal(threaded.replyTarget.threadTs, '1700000000.002');
+  assert.deepEqual(threaded.reactionTarget, {
+    channelId: 'C12345678',
+    messageTs: '1700000000.003',
+  });
 
   const botMessage = normalizeSlackEvent({
     event_id: 'Ev003',

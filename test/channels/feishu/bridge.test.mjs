@@ -2349,6 +2349,7 @@ test('reaction failures do not block streaming replies', async () => {
     client: {},
     channel: {
       addReaction: async () => { throw new Error('reaction unavailable'); },
+      removeReaction: async () => undefined,
       stream: async (_chatId, input) => input.markdown({ setContent: async () => undefined }),
     },
     harness: {
@@ -2371,8 +2372,49 @@ test('reaction failures do not block streaming replies', async () => {
   await bridge.waitForIdle();
 
   assert.equal(status.messagesReplied, 1);
+  await eventually(() => status.reactionErrors === 2);
   assert.equal(status.reactionErrors, 2);
   assert.equal(status.streamResponses, 1);
+});
+
+test('a hanging Feishu reaction does not delay the message promise or the next queued turn', async () => {
+  const seen = new Set();
+  const status = { messagesReceived: 0, messagesReplied: 0, messagesRejected: 0 };
+  let asks = 0;
+  const bridge = new FeishuHarnessBridge({
+    client: {},
+    channel: {
+      addReaction: () => new Promise(() => {}),
+      removeReaction: async () => undefined,
+      stream: async (_chatId, input) => input.markdown({ setContent: async () => undefined }),
+    },
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => `正常回答 ${++asks}`,
+    },
+    state: {
+      hasSeen: (id) => seen.has(id),
+      markSeen: async (id) => seen.add(id),
+      sessionFor: () => 'session-existing',
+    },
+    status,
+    logger: { debug() {}, error() {}, warn() {} },
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  await Promise.race([
+    Promise.all([
+      bridge.accept(event('reaction-hang-one', '第一条')),
+      bridge.accept(event('reaction-hang-two', '第二条')),
+    ]),
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error('Feishu message flow waited for a reaction request')),
+      100,
+    )),
+  ]);
+
+  assert.equal(asks, 2);
+  assert.equal(status.messagesReplied, 2);
 });
 
 test('Feishu routes Artifact images natively and preserves the shared fallback boundary', async (t) => {
@@ -2737,7 +2779,7 @@ test('Feishu still delivers a file-only result when CardKit and fallback text bo
   assert.match(status.lastMessageError.referenceId, /^MF-[A-F0-9]{8}$/);
 });
 
-test('Feishu returns the receipt after reaction finalization and one safe notice when text and file delivery fail', async (t) => {
+test('Feishu returns the receipt independently and emits one safe notice when text and file delivery fail', async (t) => {
   for (const errorCode of ['artifact-invalid', 'artifact-unavailable']) {
     await t.test(errorCode, async (subtest) => {
       const artifact = await committedArtifact(subtest, `${errorCode}.txt`, 'file bytes', errorCode);

@@ -231,6 +231,10 @@ export function normalizeDiscordMessage(message, botId, { fetchImpl = fetch } = 
       channelId: String(message.channel_id),
       replyToMessageId: String(message.id),
     },
+    reactionTarget: {
+      channelId: String(message.channel_id),
+      messageId: String(message.id),
+    },
     connectionTestTarget: { channelId: String(message.channel_id) },
   };
 }
@@ -350,6 +354,24 @@ export class DiscordBotClient {
     });
   }
 
+  addReaction(target, emoji, { signal } = {}) {
+    return this.#api.addOwnReaction({
+      channelId: target.channelId,
+      messageId: target.messageId,
+      emoji,
+      signal: this.#operationSignal(signal),
+    });
+  }
+
+  removeReaction(target, reactionKey, { signal } = {}) {
+    return this.#api.removeOwnReaction({
+      channelId: target.channelId,
+      messageId: target.messageId,
+      emoji: reactionKey,
+      signal: this.#operationSignal(signal),
+    });
+  }
+
   async openStream(target) {
     const notice = !this.#deliveredNotices.has(target) && target?.notice
       ? String(target.notice) : null;
@@ -380,6 +402,10 @@ export class DiscordBotClient {
       messageIdForResult: (message) => message?.id,
     });
     return stream.start();
+  }
+
+  #operationSignal(signal) {
+    return signal ?? this.#signal;
   }
 }
 

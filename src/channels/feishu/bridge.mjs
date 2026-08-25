@@ -55,6 +55,7 @@ import {
   messageFailureText,
   setLastMessageFailure,
 } from '../shared/message-failure.mjs';
+import { beginStatusReaction } from '../shared/status-reaction.mjs';
 import {
   MENU_PAGE_SIZE,
   PRESET_FOLLOW_DEFAULT_SENTINEL,
@@ -549,7 +550,7 @@ export class FeishuHarnessBridge {
     }
 
     this.#acceptedMessageIds.add(messageId);
-    const processingReaction = this.#addReaction(messageId, 'OnIt');
+    const processingReaction = this.#beginReaction(messageId);
     const commandMessage = extractInboundMessage(event, this.#client);
     const commandText = nonEmptyString(commandMessage.content) ?? '';
     const batchText = event.message.message_type === 'text'
@@ -3603,35 +3604,24 @@ export class FeishuHarnessBridge {
     return t('_{text}_', { text: update.text || t('正在处理…') });
   }
 
-  async #addReaction(messageId, emojiType) {
-    if (!this.#channel?.addReaction) return null;
-    try {
-      const reactionId = await this.#channel.addReaction(messageId, emojiType);
-      this.#status.reactionsAdded = (this.#status.reactionsAdded ?? 0) + 1;
-      return reactionId;
-    } catch (error) {
-      this.#status.reactionErrors = (this.#status.reactionErrors ?? 0) + 1;
-      this.#logger.warn?.(`[dsh-feishu] unable to add ${emojiType} reaction:`, error.message);
-      return null;
-    }
+  #beginReaction(messageId) {
+    return beginStatusReaction({
+      adapter: this.#channel,
+      target: messageId,
+      reactions: { processing: 'OnIt', success: 'DONE', error: 'ERROR' },
+      status: this.#status,
+      logger: this.#logger,
+      label: 'feishu',
+    });
   }
 
-  async #removeProcessingReaction(messageId, processingReaction) {
-    const reactionId = await processingReaction;
-    if (reactionId && this.#channel?.removeReaction) {
-      try {
-        await this.#channel.removeReaction(messageId, reactionId);
-        this.#status.reactionsRemoved = (this.#status.reactionsRemoved ?? 0) + 1;
-      } catch (error) {
-        this.#status.reactionErrors = (this.#status.reactionErrors ?? 0) + 1;
-        this.#logger.warn?.('[dsh-feishu] unable to remove processing reaction:', error.message);
-      }
-    }
+  #removeProcessingReaction(_messageId, processingReaction) {
+    processingReaction.clear();
   }
 
-  async #finishReaction(messageId, processingReaction, finalEmojiType) {
-    await this.#removeProcessingReaction(messageId, processingReaction);
-    await this.#addReaction(messageId, finalEmojiType);
+  #finishReaction(_messageId, processingReaction, finalEmojiType) {
+    if (finalEmojiType === 'ERROR') processingReaction.error();
+    else processingReaction.success();
   }
 
   async #send(chatId, text) {

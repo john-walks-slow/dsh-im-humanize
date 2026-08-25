@@ -73,7 +73,7 @@ After the model calls the file-return tool, the plugin hands the specified file 
 | DingTalk | The app needs `qyapi_base`, and the bot must support file messages. The current OAPI and bot capability determine the accepted formats and sizes. |
 | WeCom | The app needs media-upload and file-message capability; the WeCom API response determines the actual range. |
 | QQ | The bot needs file-message capability and remains subject to QQ's daily upload quota; the bot reports when the quota is exhausted. |
-| Slack | The Bot Token needs `files:write`; the Workspace's current policy determines the actual size limit. After changing scopes, re-authorize/reinstall the App and reconnect the bot. |
+| Slack | The Bot Token needs `files:read`, `files:write`, and `reactions:write`; the Workspace's current policy determines the actual file-size limit. After changing scopes, re-authorize/reinstall the App and reconnect the bot. |
 | Telegram | The bot must be allowed to send documents in the current chat; the Bot API response determines the actual range. |
 | Discord | Enable **Message Content Intent** in the Developer Portal. The bot needs **Send Messages**, **Create Public Threads**, **Send Messages in Threads**, and **Read Message History**; result-file delivery also requires **Attach Files**. The current account and server capability determine the actual attachment allowance. |
 | WhatsApp | The linked session must support Document Messages; the WhatsApp/Baileys response determines the actual range. |
