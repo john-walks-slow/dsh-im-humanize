@@ -138,7 +138,7 @@ test('IM settings renders nine IM channels plus the AI Office connector', async 
   assert.match(styles, /\.dim-brand \{[^}]*position: relative;[^}]*display: flex;[^}]*flex-direction: column;[^}]*align-items: flex-start;[^}]*gap: 1px;[^}]*cursor: help;/);
   assert.doesNotMatch(styles, /\.dim-brand:hover\s*\{[^}]*background:/);
   assert.match(styles, /\.dim-brandName \{[^}]*font-size: 20px;[^}]*font-weight: 800;[^}]*letter-spacing: \.04em;/);
-  assert.match(styles, /\.dim-versionTooltip \{[^}]*bottom: calc\(100% \+ 8px\);[^}]*display: inline-flex;[^}]*opacity: 0;[^}]*visibility: hidden;/);
+  assert.match(styles, /\.dim-versionTooltip \{[^}]*top: calc\(100% \+ 8px\);[^}]*display: inline-flex;[^}]*opacity: 0;[^}]*visibility: hidden;[^}]*transform: translateY\(-3px\);/);
   assert.match(styles, /\.dim-brand:hover \.dim-versionTooltip, \.dim-brand:focus \.dim-versionTooltip \{[^}]*opacity: 1;[^}]*visibility: visible;/);
   assert.doesNotMatch(styles, /\.dim-brandLogo/);
   assert.match(styles, /\.dim-githubLink \{[^}]*border: 1px solid var\(--dsw-alias-border-l2, #dfe1e5\);[^}]*text-decoration: none;/);
