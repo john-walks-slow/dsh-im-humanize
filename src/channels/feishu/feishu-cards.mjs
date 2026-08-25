@@ -495,6 +495,7 @@ export function menuHelpText() {
     '',
     '📊 状态 / 压缩',
     '/status  连接状态',
+    '/version  查看插件版本',
     '/compact  压缩当前会话上下文',
     '/archived on/off  会话列表显示/隐藏归档',
     '',
@@ -589,7 +590,10 @@ export function helpCard(extraTextLines = []) {
   const elements = [
     { tag: 'div', text: markdown(t(HELP_CARD_FEATURES)) },
     { tag: 'hr' },
-    { tag: 'div', text: markdown(t(HELP_TEXT_COMMANDS) + extraText) },
+    { tag: 'div', text: markdown([
+      t(HELP_TEXT_COMMANDS),
+      t('`/version` — 查看插件版本'),
+    ].join('\n') + extraText) },
     { tag: 'hr' },
     { tag: 'div', text: markdown(t(HELP_NUMBER_FALLBACK)) },
     { tag: 'hr' },

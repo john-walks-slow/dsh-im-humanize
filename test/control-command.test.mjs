@@ -36,12 +36,29 @@ function fixture({ sessionId = 'session-one', stopped = true, steered = true } =
 test('isControlCommand reserves valid and malformed control command forms', () => {
   for (const value of [
     '/stop', ' /STOP ', '/stop now', '/steer', '/StEeR do this', '/steer line one\nline two',
+    '/version', ' /VERSION ', '/version now',
   ]) {
     assert.equal(isControlCommand(value), true, value);
   }
-  for (const value of [null, '', 'stop', '/stopping', '/steering', 'hello /stop']) {
+  for (const value of [null, '', 'stop', '/stopping', '/steering', '/versions', 'hello /stop']) {
     assert.equal(isControlCommand(value), false, String(value));
   }
+});
+
+test('/version returns the package version without touching Harness or Session state', async () => {
+  const { calls, harness, state } = fixture();
+  const { version } = await import('../package.json', { with: { type: 'json' } })
+    .then((module) => module.default);
+
+  assert.deepEqual(
+    await runControlCommand('/VERSION', harness, state, 'direct:one'),
+    { message: `dsh-im v${version}` },
+  );
+  assert.match(
+    (await runControlCommand('/version details', harness, state, 'direct:one')).message,
+    /用法/,
+  );
+  assert.equal(calls.length, 0);
 });
 
 test('/stop is exact, text-only, and never creates a Session', async () => {

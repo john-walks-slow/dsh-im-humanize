@@ -229,6 +229,7 @@ export default {
   '/new  开启全新会话': '/new  Start a new session',
   '📊 状态 / 压缩': '📊 Status / compact',
   '/status  连接状态': '/status  Connection status',
+  '`/version` — 查看插件版本': '`/version` — show the plugin version',
   '/compact  压缩当前会话上下文': '/compact  Compact the current session context',
   '/archived on/off  会话列表显示/隐藏归档': '/archived on/off  Show/hide archived sessions',
   '👁 关注': '👁 Watches',

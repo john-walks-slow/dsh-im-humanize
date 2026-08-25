@@ -462,6 +462,7 @@ test('Enterprise WeChat lists models and presets without prompting and advertise
   for (const command of [
     '/models', '/model', '/reasoninglist', '/reasonings', '/reasoning',
     '/presetlist', '/preset', '/preset --default', '/stop', '/steer',
+    '/version',
     '/batch', '/send', '/cancel',
   ]) {
     assert.equal(help.includes(command), true, command);

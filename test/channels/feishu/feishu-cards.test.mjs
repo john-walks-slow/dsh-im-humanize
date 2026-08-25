@@ -76,6 +76,7 @@ test('menu and card help advertise Agent Preset, reasoning, and batch commands',
   assert.match(help, /\/batch/);
   assert.match(help, /\/send/);
   assert.match(help, /\/cancel/);
+  assert.match(help, /\/version/);
 
   const card = helpCard();
   assert.match(card, /\/reasoninglist/);

@@ -73,6 +73,7 @@ function helpText() {
     t('/send  提交当前批次'),
     t('/cancel  取消当前批次'),
     t('/status  检查连接状态'),
+    t('/version  查看插件版本'),
     t('/help  显示本帮助'),
   ].join('\n');
 }

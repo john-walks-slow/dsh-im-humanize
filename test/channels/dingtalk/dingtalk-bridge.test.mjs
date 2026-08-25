@@ -841,6 +841,7 @@ test('DingTalk lists models and presets without prompting and advertises fast co
   for (const command of [
     '/models', '/model', '/reasoninglist', '/reasonings', '/reasoning',
     '/presetlist', '/preset', '/preset --default', '/stop', '/steer',
+    '/version',
   ]) {
     assert.equal(help.includes(command), true, command);
   }

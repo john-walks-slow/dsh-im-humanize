@@ -77,6 +77,7 @@ const HELP_TEXT_LINES = [
   '/send  提交当前批次',
   '/cancel  取消当前批次',
   '/status  检查连接状态',
+  '/version  查看插件版本',
   '/help  显示本帮助',
 ];
 

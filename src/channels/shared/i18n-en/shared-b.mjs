@@ -242,6 +242,7 @@ export default {
 
   // control-command.mjs
   '用法：/stop（不带参数）': 'Usage: /stop (no arguments)',
+  '用法：/version（不带参数）': 'Usage: /version (no arguments)',
   '用法：/steer <补充指令>': 'Usage: /steer <additional instruction>',
   '控制命令仅支持纯文字，请移除图片后重试。':
     'Control commands support text only; please remove images and try again.',

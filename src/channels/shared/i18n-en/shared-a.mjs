@@ -69,6 +69,7 @@ export default {
   '/stop  停止当前任务': '/stop  Stop the current task',
   '/steer 补充指令  纠偏当前任务': '/steer <additional instruction>  Steer the current task',
   '/status  检查连接状态': '/status  Check the connection status',
+  '/version  查看插件版本': '/version  Show the plugin version',
   '/help  显示本帮助': '/help  Show this help',
   '{label}机器人与 DeepSeek Harness 连接正常。':
     'The {label} bot is connected to DeepSeek Harness and working normally.',

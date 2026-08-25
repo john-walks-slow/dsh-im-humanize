@@ -1,8 +1,11 @@
 import { t } from './i18n.mjs';
+import manifest from '../../../package.json' with { type: 'json' };
 
-const CONTROL_COMMAND = /^\/(?:stop|steer)(?=$|\s)/iu;
+const CONTROL_COMMAND = /^\/(?:stop|steer|version)(?=$|\s)/iu;
 const STOP_COMMAND = /^\/stop(?=$|\s)/iu;
+const VERSION_COMMAND = /^\/version(?=$|\s)/iu;
 const STOP_USAGE = '用法：/stop（不带参数）';
+const VERSION_USAGE = '用法：/version（不带参数）';
 const STEER_USAGE = '用法：/steer <补充指令>';
 const TEXT_ONLY = '控制命令仅支持纯文字，请移除图片后重试。';
 
@@ -41,8 +44,15 @@ export async function runControlCommand(text, harness, state, key, {
   if (!isControlCommand(text)) return null;
   const command = text.trim();
   const stop = STOP_COMMAND.test(command);
+  const version = VERSION_COMMAND.test(command);
 
   if (hasImages) return commandResult(t(TEXT_ONLY));
+
+  if (version) {
+    return /^\/version$/iu.test(command)
+      ? commandResult(`dsh-im v${manifest.version}`)
+      : commandResult(t(VERSION_USAGE));
+  }
 
   if (stop) {
     if (!/^\/stop$/iu.test(command)) return commandResult(t(STOP_USAGE));

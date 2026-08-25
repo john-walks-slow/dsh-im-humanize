@@ -141,6 +141,7 @@ dsh web
 | `/help` | 显示机器人支持的命令和用法。 |
 | `/new` | 解除当前聊天的会话绑定，让下一条普通消息开启全新 Harness 会话。 |
 | `/status` | 检查当前机器人与 DeepSeek Harness 的连接状态。 |
+| `/version` | 查看当前运行的 dsh-im 插件版本。 |
 | `/models` | 按序号列出当前配置的全部可用模型。 |
 | `/model` | 查看当前聊天绑定会话正在使用的模型和推理等级。 |
 | `/model <序号或 Provider/模型ID> [推理等级ID]` | 切换当前会话模型，并可同时指定目标模型支持的推理等级。 |
@@ -166,7 +167,7 @@ dsh web
 | 交互式提问 | 回复选项序号、选项文字或自定义文字；多选时用逗号分隔。 |
 | 远程审批 | 回复 `批准` / `拒绝` / `同意` / `不同意` / `yes` / `no`。 |
 
-示例：先发送 `/models`，再发送 `/model 2` 切换到列表中的第 2 个模型；先发送 `/reasoninglist`，再发送 `/reasoning 2` 切换到当前模型的第 2 个推理等级；先发送 `/presetlist`，再发送 `/preset 2` 为当前机器人选择第 2 个 Agent Preset。其他命令示例：`/help`、`/new`、`/status`、`/model deepseek-official/deepseek-v4-pro max`、`/reasoning --default`、`/preset marketing-jeep`、`/preset --default`、`/steer 只检查配置文件`、`/stop`、`/compact`、`/workspace /Users/alice/projects/my-app`、`/sessionlist 2`、`/sessionlist /Users/alice/projects/my-app` 或 `/session session-id`
+示例：先发送 `/models`，再发送 `/model 2` 切换到列表中的第 2 个模型；先发送 `/reasoninglist`，再发送 `/reasoning 2` 切换到当前模型的第 2 个推理等级；先发送 `/presetlist`，再发送 `/preset 2` 为当前机器人选择第 2 个 Agent Preset。其他命令示例：`/help`、`/new`、`/status`、`/version`、`/model deepseek-official/deepseek-v4-pro max`、`/reasoning --default`、`/preset marketing-jeep`、`/preset --default`、`/steer 只检查配置文件`、`/stop`、`/compact`、`/workspace /Users/alice/projects/my-app`、`/sessionlist 2`、`/sessionlist /Users/alice/projects/my-app` 或 `/session session-id`
 
 Slack 桌面端若未注册同名的原生 Slash Command，会拦截直接以 `/` 开头的消息。此时请加一个前导空格发送，例如 ` /presetlist` 或 ` /preset 2`；插件命令层会去除首尾空白，执行效果与无空格命令相同。
 
@@ -174,6 +175,7 @@ Slack 桌面端若未注册同名的原生 Slash Command，会拦截直接以 `/
 
 - `/help` 不需要参数，也不会创建会话；它会返回当前机器人支持的完整命令列表。
 - `/status` 不需要参数，也不会向模型发送消息或改变会话绑定；它用于确认当前机器人能够连接 DeepSeek Harness。
+- `/version` 不需要参数，也不会访问 Harness、创建会话或调用模型；它返回当前运行的 dsh-im 插件版本。
 - `/new` 只解除当前聊天在 dsh-im 中保存的会话绑定，不会删除、清空或归档旧 Session。下一条普通消息会在当前工作区创建并绑定一个新 Session。任务正在运行或等待问题、审批时，应先完成交互或使用 `/stop`，再使用 `/new`。
 - `/models` 不需要参数，也不会创建会话。它为 Harness 当前配置的全部可用模型分配序号，同时显示可稳定复制的 `Provider/模型ID`；某个 Provider 查询失败时，其他 Provider 的结果仍会显示。
 - `/model` 不带参数时查看当前会话的模型和推理等级；带参数时接受 `/models` 列出的序号或精确完整模型 ID，并可追加目标模型元数据公布的精确推理等级 ID，例如 `/model 2 max`。省略推理等级时，由 Harness 解析目标模型的当前默认值。聊天尚无会话时，有效的切换命令会创建并绑定一个空白会话，但不会触发模型回复。

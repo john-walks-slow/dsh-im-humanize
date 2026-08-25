@@ -778,6 +778,7 @@ test('Weixin lists models and presets without prompting and advertises fast comm
   for (const command of [
     '/models', '/model', '/reasoninglist', '/reasonings', '/reasoning',
     '/presetlist', '/preset', '/preset --default', '/stop', '/steer',
+    '/version',
     '/batch', '/send', '/cancel',
   ]) {
     assert.equal(help.includes(command), true, command);

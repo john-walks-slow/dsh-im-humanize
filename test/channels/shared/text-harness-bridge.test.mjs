@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import manifest from '../../../package.json' with { type: 'json' };
 
 import { DiscordHarnessBridge } from '../../../src/channels/discord/discord-bridge.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
@@ -794,7 +795,7 @@ test('all four shared text channels list models and presets locally and advertis
     const help = sent.at(-1);
     for (const command of [
       '/models', '/model', '/reasoninglist', '/reasonings', '/reasoning',
-      '/presetlist', '/preset', '/preset --default', '/stop', '/steer',
+      '/presetlist', '/preset', '/preset --default', '/stop', '/steer', '/version',
     ]) {
       assert.match(help, new RegExp(`\\${command}`), `${name} ${command}`);
     }
@@ -803,6 +804,21 @@ test('all four shared text channels list models and presets locally and advertis
     assert.doesNotMatch(help, /\/model 2 high\b/, `${name} does not assume a reasoning effort ID`);
     assert.match(help, /\/preset id:<ID>/, `${name} numeric preset ID selection`);
   }
+});
+
+test('/version uses the shared command fast lane without accessing Harness', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: { sendText: async (_target, text) => sent.push(text) },
+    harness: {},
+  });
+
+  await bridge.accept(message('plugin-version', '/version'));
+
+  assert.deepEqual(sent, [`dsh-im v${manifest.version}`]);
+  assert.equal(fixture.sessions.size, 0);
 });
 
 test('/stop uses the shared command fast lane without waiting for the running prompt', async () => {

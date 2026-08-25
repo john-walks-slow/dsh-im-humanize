@@ -13,6 +13,7 @@ export default {
   '停止当前任务': 'Stop the current task',
   '纠偏当前任务': 'Steer the current task',
   '检查连接状态': 'Check connection status',
+  '查看插件版本': 'Show plugin version',
   '显示帮助': 'Show help',
   '该 Telegram 机器人已配置 Webhook，请先在原服务中移除 Webhook 后重试。':
     'This Telegram bot already has a Webhook configured. Remove the Webhook from the original service and try again.',

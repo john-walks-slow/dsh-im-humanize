@@ -32,6 +32,7 @@ export const TELEGRAM_COMMAND_MENU = Object.freeze([
   { command: 'send', description: '提交当前批次' },
   { command: 'cancel', description: '取消当前批次' },
   { command: 'status', description: '检查连接状态' },
+  { command: 'version', description: '查看插件版本' },
   { command: 'help', description: '显示帮助' },
 ]);
 

@@ -138,6 +138,7 @@ Each WhatsApp bot also has its own access mode. Existing bots migrate to **Only 
 | `/help` | Show the commands and usage supported by the bot. |
 | `/new` | Unbind the current chat so its next ordinary message starts a new Harness Session. |
 | `/status` | Check the connection between the current bot and DeepSeek Harness. |
+| `/version` | Show the version of the running dsh-im plugin. |
 | `/models` | List every currently configured model with a number. |
 | `/model` | Show the model and reasoning effort used by the Session bound to this chat. |
 | `/model <number or provider/model-id> [reasoning effort ID]` | Switch the Session model and optionally select an effort supported by the target model. |
@@ -163,7 +164,7 @@ Each WhatsApp bot also has its own access mode. Existing bots migrate to **Only 
 | Interactive question | Reply with an option number, option label, or custom text; separate multiple choices with commas. |
 | Remote approval | Reply with `批准` / `拒绝` / `同意` / `不同意` / `yes` / `no`. |
 
-Example: send `/models`, then `/model 2` to switch to the second model in the list; send `/reasoninglist`, then `/reasoning 2` to switch to the current model's second reasoning effort; send `/presetlist`, then `/preset 2` to select the second Agent Preset for this bot. Other examples: `/help`, `/new`, `/status`, `/model deepseek-official/deepseek-v4-pro max`, `/reasoning --default`, `/preset marketing-jeep`, `/preset --default`, `/steer inspect only the configuration file`, `/stop`, `/compact`, `/workspace /Users/alice/projects/my-app`, `/sessionlist 2`, `/sessionlist /Users/alice/projects/my-app`, or `/session session-id`
+Example: send `/models`, then `/model 2` to switch to the second model in the list; send `/reasoninglist`, then `/reasoning 2` to switch to the current model's second reasoning effort; send `/presetlist`, then `/preset 2` to select the second Agent Preset for this bot. Other examples: `/help`, `/new`, `/status`, `/version`, `/model deepseek-official/deepseek-v4-pro max`, `/reasoning --default`, `/preset marketing-jeep`, `/preset --default`, `/steer inspect only the configuration file`, `/stop`, `/compact`, `/workspace /Users/alice/projects/my-app`, `/sessionlist 2`, `/sessionlist /Users/alice/projects/my-app`, or `/session session-id`
 
 If the Slack desktop app has no native Slash Command registered with the same name, it intercepts messages that begin directly with `/`. Send the command with one leading space instead, for example ` /presetlist` or ` /preset 2`; the plugin command layer trims surrounding whitespace, so it executes exactly like the unspaced form.
 
@@ -171,6 +172,7 @@ If the Slack desktop app has no native Slash Command registered with the same na
 
 - `/help` takes no arguments and never creates a Session. It returns the complete command list supported by the current bot.
 - `/status` takes no arguments, never prompts the model, and does not change the Session binding. It confirms that the current bot can reach DeepSeek Harness.
+- `/version` takes no arguments and never contacts Harness, creates a Session, or prompts the model. It returns the version of the running dsh-im plugin.
 - `/new` only removes the current chat's saved dsh-im Session binding; it never deletes, empties, or archives the old Session. The next ordinary message creates and binds a new Session in the current workspace. If a task is running or waiting for a question or approval, finish the interaction or use `/stop` before `/new`.
 - `/models` takes no arguments and never creates a Session. It assigns a number to every currently configured Harness model and also shows its stable, copyable `provider/model-id`. If one provider fails, models from the remaining providers are still shown.
 - Bare `/model` shows the current Session model and reasoning effort. With arguments, it accepts a number from `/models` or an exact full model ID, followed optionally by an exact reasoning effort ID published in that target model's metadata, for example `/model 2 max`. When the effort is omitted, Harness resolves the target model's current default. If the chat has no Session yet, a valid switch creates and binds a blank Session without prompting the model.
