@@ -6,8 +6,14 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-08-25
+
 ### Added / 新增
 
+- 插件设置页的 DSH-IM 品牌标题现在支持悬停或键盘聚焦显示当前插件版本。
+  The DSH-IM brand heading in plugin settings now displays the current plugin version on hover or keyboard focus.
+- 九种内置聊天渠道新增结构化消息失败报告：会针对 Harness 连接、模型、会话、输入和渠道投递等故障给出可执行的中英文提示，并附带错误码与参考号；机器人设置卡片也会显示最近一次消息处理失败。
+  Added structured message failure reporting across all nine built-in chat channels, with actionable bilingual guidance for Harness connectivity, model, Session, input, and channel-delivery failures, plus an error code and reference ID; bot cards also show the latest message-processing failure.
 - 微信机器人现在会在 Harness 处理消息期间显示“正在输入”，并在最终回复、交互问题、错误或任务停止前自动取消；输入状态接口不可用时仍会正常发送最终回答。
   WeChat bots now show a typing indicator while Harness processes a message and automatically cancel it before final replies, interaction questions, errors, or stopped turns; final answers still work when the typing API is unavailable.
 
@@ -320,7 +326,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.4.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/xmanrui/dsh-im/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/xmanrui/dsh-im/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/xmanrui/dsh-im/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/xmanrui/dsh-im/compare/v2.2.0...v2.2.1
