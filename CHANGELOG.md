@@ -6,10 +6,17 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-25
+
 ### Changed / 变更
 
 - 「IM机器人」设置页已从插件页签迁移到一级设置菜单，并以 `order: 21` 尽量排在「Agent 预设」之后；新版不再注册旧二级入口。升级后重启 `dsh web` 并刷新浏览器即可使用，已有机器人配置和页面内的渠道专属 Logo 保持不变。
   The **IM Bot** settings page has moved from a Plugins tab to the top-level settings menu and uses `order: 21` to follow **Agent Presets**. The new release no longer registers the legacy nested entry. Restart `dsh web` and refresh the browser after upgrading; existing bot configuration and channel-specific logos inside the page are preserved.
+
+### Fixed / 修复
+
+- 飞书中不含附件且仅有一个文本段落的富文本消息，如果内容是插件命令，现在会按普通文本命令处理，不再转发给 Harness。
+  In Feishu, attachment-free rich-text messages containing a single text paragraph are now handled as ordinary plugin commands instead of being forwarded to Harness.
 
 ## [2.6.0] - 2026-08-25
 
@@ -343,7 +350,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/xmanrui/dsh-im/compare/v2.6.0...v3.0.0
 [2.6.0]: https://github.com/xmanrui/dsh-im/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/xmanrui/dsh-im/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/xmanrui/dsh-im/compare/v2.3.0...v2.4.0
