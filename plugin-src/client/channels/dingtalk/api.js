@@ -1,4 +1,5 @@
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
+import { normalizeLastMessageError } from '../../last-message-error.js';
 
 export const DINGTALK_RPC_CHANNEL = '/dingtalk';
 
@@ -178,6 +179,7 @@ function normalizeBot(value) {
       messagesReceived: nonNegativeInteger(stats.messagesReceived),
       messagesReplied: nonNegativeInteger(stats.messagesReplied),
     },
+    lastMessageError: normalizeLastMessageError(value.lastMessageError),
     error: normalizeError(value.error, 'DINGTALK_ACCOUNT_ERROR', '钉钉连接尚未就绪') ?? null,
   };
 }

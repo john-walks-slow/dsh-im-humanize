@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { connectionTestMessage } from '../shared/connection-test.mjs';
 import { t } from '../shared/i18n.mjs';
+import { publicMessageFailure } from '../shared/message-failure.mjs';
 import { deriveQqBotIdentity, maskQqAppId } from './config-store.mjs';
 
 const ACTIVE_ATTEMPT_STATES = new Set(['starting', 'pending', 'refreshing', 'connecting']);
@@ -319,6 +320,7 @@ export class QqController {
           messagesReceived: runtimeStatus?.messagesReceived ?? 0,
           messagesReplied: runtimeStatus?.messagesReplied ?? 0,
         },
+        lastMessageError: publicMessageFailure(runtimeStatus?.lastMessageError),
         error: structuredClone(this.#errors.get(config.botId) ?? null),
       };
     });

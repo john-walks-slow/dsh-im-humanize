@@ -7,6 +7,7 @@
  */
 
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId } from "../../agent-preset.js";
+import { normalizeLastMessageError } from "../../last-message-error.js";
 
 export const FEISHU_RPC_CHANNEL = "/feishu";
 
@@ -206,6 +207,7 @@ export function normalizeBotConnection(value, fallbackBotId) {
     groupMessagePermissionGranted: value.groupMessagePermissionGranted === true,
     bot: normalizeBot(value.bot),
     health: normalizeHealth(value.health, connected),
+    lastMessageError: normalizeLastMessageError(value.lastMessageError),
     error: normalizeError(value.error),
   };
 }
@@ -226,6 +228,7 @@ export function normalizeBotsSnapshot(value) {
       configured: true,
       bot: value.bot,
       health: value.health,
+      lastMessageError: value.lastMessageError,
       error: value.error,
     }];
   }

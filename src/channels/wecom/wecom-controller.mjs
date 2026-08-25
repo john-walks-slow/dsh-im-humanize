@@ -6,6 +6,7 @@ import {
   connectionTestTargetUnavailable,
 } from '../shared/connection-test.mjs';
 import { t } from '../shared/i18n.mjs';
+import { publicMessageFailure } from '../shared/message-failure.mjs';
 
 const ACTIVE_ATTEMPT_STATES = new Set(['pending', 'connecting']);
 const TERMINAL_ATTEMPT_STATES = new Set(['connected', 'failed', 'cancelled', 'expired']);
@@ -308,6 +309,7 @@ export class WecomController {
           messagesReceived: runtimeStatus?.messagesReceived ?? 0,
           messagesReplied: runtimeStatus?.messagesReplied ?? 0,
         },
+        lastMessageError: publicMessageFailure(runtimeStatus?.lastMessageError),
         error: structuredClone(this.#errors.get(config.botId) ?? null),
       };
     });

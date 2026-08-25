@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  createQqBridgeStatus,
   qqInboundMessage,
   QqHarnessBridge,
   sendQqImage,
@@ -500,8 +501,93 @@ test('QQ rejects non-platform image URLs without fetching and returns a retryabl
   }));
 
   assert.equal(downloads, 0);
-  assert.deepEqual(sent, ['图片下载失败，请重新发送后再试。']);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /^图片下载失败，请重新发送后再试。/);
+  assert.match(sent[0], /错误码：INPUT_INVALID；参考号：MF-[A-F0-9]{8}$/);
   assert.equal(fixture.seen.has('qq-image-untrusted'), true);
+});
+
+test('QQ exposes a structured model rate limit without changing connection state', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-rate-limit']]);
+  const sent = [];
+  const status = {
+    ...createQqBridgeStatus(),
+    connected: true,
+    connectionState: 'connected',
+  };
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => {
+        sent.push(text);
+        return { id: 'qq-rate-limit-reply' };
+      },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        const error = new Error('private QQ provider rate-limit detail');
+        error.code = 'harness-turn-failed';
+        error.providerCode = 'RATE_LIMIT';
+        throw error;
+      },
+    },
+    state: fixture.state,
+    status,
+    logger: { error() {} },
+  });
+
+  await bridge.accept(message({
+    messageId: 'qq-rate-limit',
+    content: '触发模型限流',
+    replyTarget: {
+      scope: 'c2c',
+      targetId: 'owner-openid',
+      msgId: 'qq-rate-limit',
+    },
+  }));
+
+  const failure = status.lastMessageError;
+  assert.equal(failure.code, 'MODEL_RATE_LIMIT');
+  assert.equal(failure.reason, 'MODEL_RATE_LIMIT');
+  assert.match(failure.referenceId, /^MF-[A-F0-9]{8}$/);
+  assert.match(sent.at(-1), /模型服务正在限流，本次任务未完成。请稍后重试。/);
+  assert.equal(sent.at(-1).endsWith(`参考号：${failure.referenceId}`), true);
+  assert.doesNotMatch(sent.at(-1), /private QQ provider rate-limit detail/);
+  assert.equal(status.connected, true);
+  assert.equal(status.connectionState, 'connected');
+});
+
+test('QQ does not submit a redelivered message twice when the safe failure reply cannot send', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-redelivery']]);
+  let asks = 0;
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async () => {
+        throw new Error('QQ reply transport unavailable');
+      },
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        asks += 1;
+        const error = new Error('private provider failure');
+        error.code = 'harness-turn-failed';
+        error.providerCode = 'RATE_LIMIT';
+        throw error;
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+  });
+  const inbound = message({ messageId: 'qq-redelivered-after-failure' });
+
+  await bridge.accept(inbound);
+  await bridge.accept(inbound);
+
+  assert.equal(asks, 1);
+  assert.equal(fixture.seen.has(inbound.messageId), true);
 });
 
 test('QQ does not use an image caption as a pending Harness answer', async () => {
@@ -836,7 +922,7 @@ test('QQ group messages suppress every successful progress update', async () => 
   assert.equal(streamCalls, 0);
 });
 
-test('QQ group messages append tool failures to one final answer', async () => {
+test('QQ group messages append a stable tool failure notice without exposing provider details', async () => {
   const sent = [];
   const bridge = new QqHarnessBridge({
     bot: {
@@ -877,8 +963,9 @@ test('QQ group messages append tool failures to one final answer', async () => {
     replyTarget: { scope: 'group', targetId: 'group-error', msgId: 'msg-tool-error' },
   }));
   assert.deepEqual(sent, [
-    '已存入两套记忆。\n\n---\n\nTool call add_observations\nError: Error calling add_observations. Status code: 404.',
+    '已存入两套记忆。\n\n---\n\n工具调用「add_observations」未成功，请检查工具配置或稍后重试。',
   ]);
+  assert.doesNotMatch(sent[0], /Error calling|Status code|404/);
 });
 
 test('QQ delivers final group answers as markdown messages', async () => {
@@ -2005,6 +2092,12 @@ test('QQ sends registered files after text with the native SDK and continues aft
   assert.equal(files[1].source.buffer.toString(), '<h1>second</h1>');
   assert.equal(files[1].options.fileName, 'second.html');
   assert.match(sentTexts[1].text, /first\.txt.*上传额度/);
+  assert.equal(status.lastMessageError.code, 'CHANNEL_RATE_LIMIT');
+  assert.equal(status.lastMessageError.reason, 'ARTIFACT_RATE_LIMITED');
+  assert.equal(
+    sentTexts[1].text.endsWith(`参考号：${status.lastMessageError.referenceId}`),
+    true,
+  );
   assert.doesNotMatch(sentTexts[1].text, /private quota detail/);
   assert.equal(status.artifactsSent, 1);
   assert.equal(status.artifactSendErrors, 1);
@@ -2041,6 +2134,8 @@ test('QQ still delivers registered files when every final text delivery attempt 
 
   assert.deepEqual(files, [{ bytes: Buffer.from('file bytes'), fileName: 'survives-text-failure.txt' }]);
   assert.equal(textAttempts, 1, 'must not send a generic retry notice after the file succeeds');
+  assert.equal(bridge.status.lastMessageError.code, 'CHANNEL_DELIVERY_UNCERTAIN');
+  assert.match(bridge.status.lastMessageError.referenceId, /^MF-[A-F0-9]{8}$/);
 });
 
 test('QQ returns the authoritative receipt and sends one safe notice when text and file delivery fail', async (t) => {
@@ -2122,7 +2217,8 @@ test('QQ keeps the generic error when neither the answer nor the file failure no
   await bridge.accept(message({ messageId: 'qq-no-visible-failure' }));
 
   assert.equal(attemptedTexts.length, 3);
-  assert.equal(attemptedTexts.at(-1), '消息处理失败，请稍后重试。');
+  assert.match(attemptedTexts.at(-1), /^回复发送结果未能确认/);
+  assert.match(attemptedTexts.at(-1), /错误码：CHANNEL_DELIVERY_UNCERTAIN；参考号：MF-[A-F0-9]{8}$/);
 });
 
 test('QQ reports an unacknowledged native file send as uncertain instead of inviting a blind retry', async (t) => {

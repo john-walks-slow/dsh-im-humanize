@@ -532,6 +532,41 @@ export class HarnessInteractionError extends Error {
   }
 }
 
+export class HarnessTurnError extends Error {
+  constructor(code, { reason, providerCode } = {}) {
+    super(`Harness turn failed (${code})`);
+    this.name = 'HarnessTurnError';
+    this.code = code;
+    this.promptAccepted = true;
+    if (reason && typeof reason === 'object') this.reason = reason;
+    if (typeof providerCode === 'string' && providerCode) this.providerCode = providerCode;
+  }
+}
+
+function harnessTurnError(reason) {
+  const kind = nonEmptyText(reason?.kind) ?? nonEmptyText(reason);
+  if (kind === 'error') {
+    const failure = reason?.error ?? reason?.failure;
+    return new HarnessTurnError('harness-turn-failed', {
+      reason,
+      providerCode: nonEmptyText(failure?.code) ?? undefined,
+    });
+  }
+  if (kind === 'max-tokens') return new HarnessTurnError('model-max-tokens', { reason });
+  if (kind === 'blocked') return new HarnessTurnError('turn-blocked', { reason });
+  if (['interrupted', 'stopped', 'cancelled', 'canceled'].includes(kind)) {
+    return new HarnessTurnError('turn-interrupted', { reason });
+  }
+  if (kind === 'aborted') return new HarnessTurnError('turn-aborted', { reason });
+  if (kind === 'completed') return new HarnessTurnError('model-empty-response', { reason });
+  return new HarnessTurnError('harness-turn-failed', { reason });
+}
+
+function harnessTurnSucceeded(reason) {
+  if (reason === null || reason === undefined) return true;
+  return (nonEmptyText(reason?.kind) ?? nonEmptyText(reason)) === 'completed';
+}
+
 export class HarnessClient {
   #baseUrl;
   #workspace;
@@ -1282,6 +1317,9 @@ export class HarnessClient {
           }
           if (!tracker.finished) continue;
           turnFinished = true;
+          if (!ownership?.stopRequested && !harnessTurnSucceeded(tracker.reason)) {
+            throw harnessTurnError(tracker.reason);
+          }
           // An accepted /stop revokes attachment delivery even when Harness
           // preserved a useful partial text answer for the existing UX.
           const artifactCount = ownership?.stopRequested
@@ -1292,11 +1330,9 @@ export class HarnessClient {
           }
           if (artifactCount > 0) return '';
           if (ownership?.stopRequested) throw turnStoppedError();
-          throw new Error(
-            `Harness turn ended without a text reply${tracker.reason ? ` (${JSON.stringify(tracker.reason)})` : ''}`,
-          );
+          throw harnessTurnError(tracker.reason);
         }
-        throw new Error(`Harness reply timed out after ${Math.round(timeoutMs / 1_000)} seconds`);
+        throw new HarnessTurnError('harness-reply-timeout');
       } catch (error) {
         // Once cancellation was accepted, transport/poll failures and timeouts
         // describe the convergence of that stop, not an unrelated ask failure.

@@ -23,7 +23,11 @@ import {
   EMPTY_AGENT_PRESET_CATALOG,
 } from "../../agent-preset.js";
 import { useWorkspaceSnapshotFence } from "../../workspace-snapshot-fence.js";
-import { BotStatusMeta, ChannelListHeading } from "../../channel-card-meta.js";
+import {
+  BotStatusMeta,
+  ChannelListHeading,
+  LastMessageErrorSummary,
+} from "../../channel-card-meta.js";
 import { installFeishuStyles } from "./styles.js";
 
 export const name = "feishu-settings";
@@ -661,6 +665,10 @@ export function BotCard({
             }, "移除接入")),
           summary ? h("div", { className: "bxf-healthSummary dim-cardSummary", "data-error": actionError || connection.error ? "true" : undefined },
             summary) : null,
+          connection.lastMessageError ? h(LastMessageErrorSummary, {
+            className: "bxf-healthSummary",
+            error: connection.lastMessageError,
+          }) : null,
           testNotice ? h("div", {
             className: "bxf-healthSummary dim-cardFeedback",
             role: "status",

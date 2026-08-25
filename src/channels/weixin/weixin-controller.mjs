@@ -10,6 +10,7 @@ import {
   connectionTestMessage,
   connectionTestTargetUnavailable,
 } from '../shared/connection-test.mjs';
+import { publicMessageFailure } from '../shared/message-failure.mjs';
 import { t } from '../shared/i18n.mjs';
 
 const ACTIVE_ATTEMPT_STATES = new Set([
@@ -72,20 +73,6 @@ function publicAttempt(record) {
 
 function safeAccountError(code, message) {
   return Object.freeze({ code, message });
-}
-
-function publicMessageError(value) {
-  if (!value || typeof value !== 'object'
-    || typeof value.code !== 'string' || !value.code
-    || typeof value.reason !== 'string' || !value.reason
-    || typeof value.message !== 'string' || !value.message
-    || !Number.isFinite(value.at)) return null;
-  return {
-    code: value.code.slice(0, 64),
-    reason: value.reason.slice(0, 128),
-    message: value.message.slice(0, 500),
-    at: value.at,
-  };
 }
 
 function activationStageError(code, cause) {
@@ -377,7 +364,7 @@ export class WeixinController {
           messagesReceived: runtimeStatus?.messagesReceived ?? 0,
           messagesReplied: runtimeStatus?.messagesReplied ?? 0,
         },
-        lastMessageError: publicMessageError(runtimeStatus?.lastMessageError),
+        lastMessageError: publicMessageFailure(runtimeStatus?.lastMessageError),
         error: error ? structuredClone(error) : null,
       };
     });

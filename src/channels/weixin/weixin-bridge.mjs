@@ -49,10 +49,15 @@ import {
   createDeliveryReceipt,
   providerMessageIdsFor,
 } from '../shared/semantic/delivery.mjs';
+import {
+  channelDeliveryFailure,
+  clearLastMessageFailure,
+  messageFailureText,
+  setLastMessageFailure,
+} from '../shared/message-failure.mjs';
 import { t } from '../shared/i18n.mjs';
 
 const INTERACTION_RESOLVED_TEXT = () => t('这个问题已在其他客户端处理，无需再次回答。');
-const GENERIC_PROCESSING_ERROR = () => t('消息处理失败，请稍后重试。');
 
 const HELP_TEXT = () => [
   t('微信已连接 DeepSeek Harness。'),
@@ -128,16 +133,6 @@ function canClaimInteractionReply(message, pending) {
     && !hasWeixinImageItems(message)
     && !hasWeixinFileItems(message)
     && nonEmptyString(extractWeixinText(message));
-}
-
-function safeMessageError(error, userMessage = GENERIC_PROCESSING_ERROR()) {
-  const diagnostic = imagePromptDiagnostic(error);
-  return {
-    code: diagnostic?.code ?? 'message-processing-failed',
-    reason: diagnostic?.reason ?? 'UNKNOWN',
-    message: diagnostic?.userMessage ?? userMessage,
-    at: Date.now(),
-  };
 }
 
 function artifactFailureText(fileName, error) {
@@ -294,9 +289,12 @@ export class WeixinHarnessBridge {
       ).catch((error) => {
         if (error?.code === 'turn-stopped' || this.#signal?.aborted) return;
         this.#status.lastError = error?.message ?? String(error);
-        this.#status.lastMessageError = safeMessageError(error);
-        this.#logger.error?.('[dsh-weixin] failed to process a command:', error);
-        return this.#send(sender, GENERIC_PROCESSING_ERROR(), contextToken, runId)
+        const failure = setLastMessageFailure(this.#status, error);
+        this.#logger.error?.(
+          `[dsh-weixin] failed to process a command [${failure.referenceId}]:`,
+          error,
+        );
+        return this.#send(sender, messageFailureText(failure), contextToken, runId)
           .catch(() => undefined);
       }).finally(() => {
         this.#acceptedMessageIds.delete(messageId);
@@ -397,13 +395,15 @@ export class WeixinHarnessBridge {
         await this.#send(sender, result.message, contextToken, runId);
       }
       this.#status.lastError = null;
-      this.#status.lastMessageError = null;
     }).catch(async (error) => {
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);
-      this.#status.lastMessageError = safeMessageError(error);
-      this.#logger.error?.('[dsh-weixin] failed to process a batch input message:', error);
-      await this.#send(sender, GENERIC_PROCESSING_ERROR(), contextToken, runId)
+      const failure = setLastMessageFailure(this.#status, error);
+      this.#logger.error?.(
+        `[dsh-weixin] failed to process a batch input message [${failure.referenceId}]:`,
+        error,
+      );
+      await this.#send(sender, messageFailureText(failure), contextToken, runId)
         .catch(() => undefined);
     }).finally(() => {
       this.#acceptedMessageIds.delete(messageId);
@@ -457,7 +457,6 @@ export class WeixinHarnessBridge {
       if (reply) await this.#send(sender, reply, contextToken, runId);
     }
     this.#status.lastError = null;
-    this.#status.lastMessageError = null;
   }
 
   async #process(message, key, {
@@ -483,6 +482,7 @@ export class WeixinHarnessBridge {
     const contextToken = typeof message.context_token === 'string' ? message.context_token : undefined;
     const runId = typeof message.run_id === 'string' ? message.run_id : undefined;
     let batchSettled = batchSubmission === null;
+    let promptRecorded = false;
     try {
       const promptMessage = preparedMessage ?? weixinInboundMessage(message, this.#api);
       const text = promptMessage.content;
@@ -543,6 +543,8 @@ export class WeixinHarnessBridge {
       let answer;
       let artifacts = [];
       try {
+        await this.#state.markSeen(messageId);
+        promptRecorded = true;
         ({ answer, artifacts = [] } = await askInWorkspaceSession({
           harness: this.#harness,
           state: this.#state,
@@ -586,7 +588,7 @@ export class WeixinHarnessBridge {
           providerMessageIds: await this.#send(sender, answerText, contextToken, runId),
         });
       } catch (error) {
-        textDeliveryError = error;
+        textDeliveryError = channelDeliveryFailure(error);
       }
       const delivery = await this.#deliverArtifacts(
         sender,
@@ -597,11 +599,16 @@ export class WeixinHarnessBridge {
         textReceipt,
       );
       if (textDeliveryError && !delivery.userVisible) throw textDeliveryError;
-      await this.#state.markSeen(messageId);
+      if (textDeliveryError && delivery.artifactSendErrors === 0) {
+        setLastMessageFailure(this.#status, textDeliveryError);
+      }
+      if (!promptRecorded) await this.#state.markSeen(messageId);
       this.#status.messagesReplied += 1;
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
-      this.#status.lastMessageError = null;
+      if (!textDeliveryError && delivery.artifactSendErrors === 0) {
+        clearLastMessageFailure(this.#status);
+      }
       return delivery.receipt;
     } catch (error) {
       let batchFailureMessage = null;
@@ -614,24 +621,32 @@ export class WeixinHarnessBridge {
         batchSettled = true;
       }
       if (error?.code === 'turn-stopped') {
-        await this.#state.markSeen(messageId);
+        if (!promptRecorded) await this.#state.markSeen(messageId);
         return;
       }
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);
       const userMessage = inboundFileUserMessage(error)
-        ?? imagePromptUserMessage(error)
-        ?? GENERIC_PROCESSING_ERROR();
-      this.#status.lastMessageError = safeMessageError(error, userMessage);
-      this.#logger.error?.('[dsh-weixin] failed to process an inbound message:', error);
+        ?? imagePromptUserMessage(error);
+      const imageDiagnostic = imagePromptDiagnostic(error);
+      const failure = setLastMessageFailure(this.#status, error, {
+        userMessage,
+        reason: imageDiagnostic?.reason,
+      });
+      this.#logger.error?.(
+        `[dsh-weixin] failed to process an inbound message [${failure.referenceId}]:`,
+        error,
+      );
       try {
         await this.#send(
           sender,
-          batchFailureMessage ? `${userMessage}\n\n${batchFailureMessage}` : userMessage,
+          batchFailureMessage
+            ? `${messageFailureText(failure)}\n\n${batchFailureMessage}`
+            : messageFailureText(failure),
           contextToken,
           runId,
         );
-        await this.#state.markSeen(messageId);
+        if (!promptRecorded) await this.#state.markSeen(messageId);
       } catch (sendError) {
         this.#logger.error?.('[dsh-weixin] failed to send the safe error reply:', sendError);
       }
@@ -741,7 +756,6 @@ export class WeixinHarnessBridge {
       });
       this.#clearPendingInteraction(key, pending.interactionId);
       this.#status.lastError = null;
-      this.#status.lastMessageError = null;
     } catch (error) {
       if (this.#signal?.aborted) return;
       if (error?.code === 'interaction-not-pending') {
@@ -935,14 +949,17 @@ export class WeixinHarnessBridge {
   async #handleInteractionFailure(message, messageId, error) {
     if (this.#signal?.aborted) return;
     this.#status.lastError = error?.message ?? String(error);
-    this.#status.lastMessageError = safeMessageError(error);
-    this.#logger.error?.('[dsh-weixin] failed to process an interaction reply:', error);
+    const failure = setLastMessageFailure(this.#status, error);
+    this.#logger.error?.(
+      `[dsh-weixin] failed to process an interaction reply [${failure.referenceId}]:`,
+      error,
+    );
     if (!this.#state.hasSeen(messageId)) {
       await this.#state.markSeen(messageId).catch(() => undefined);
     }
     await this.#send(
       nonEmptyString(message?.from_user_id),
-      GENERIC_PROCESSING_ERROR(),
+      messageFailureText(failure),
       nonEmptyString(message?.context_token) ?? undefined,
       nonEmptyString(message?.run_id) ?? undefined,
     ).catch(() => undefined);
@@ -988,9 +1005,13 @@ export class WeixinHarnessBridge {
       sendFile: typeof this.#api.sendFile === 'function'
         ? (file) => sendArtifact('sendFile', file)
         : undefined,
-      sendFailureNotice: (artifact, error) => this.#send(
+      onFailure: (artifact, error) => setLastMessageFailure(this.#status, error, {
+        userMessage: artifactFailureText(artifact?.fileName, error),
+        reason: error?.code,
+      }),
+      sendFailureNotice: (_artifact, _error, failure) => this.#send(
         toUserId,
-        artifactFailureText(artifact?.fileName, error),
+        messageFailureText(failure),
         contextToken,
         runId,
       ),
@@ -1000,6 +1021,10 @@ export class WeixinHarnessBridge {
       + delivery.artifactsSent;
     this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0)
       + delivery.artifactSendErrors;
-    return { receipt: delivery.receipt, userVisible: delivery.userVisible };
+    return {
+      receipt: delivery.receipt,
+      userVisible: delivery.userVisible,
+      artifactSendErrors: delivery.artifactSendErrors,
+    };
   }
 }

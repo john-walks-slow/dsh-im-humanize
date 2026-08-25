@@ -1,4 +1,5 @@
 import { connectionTestMessage } from '../shared/connection-test.mjs';
+import { publicMessageFailure } from '../shared/message-failure.mjs';
 import { t } from '../shared/i18n.mjs';
 import { deriveSlackBotIdentity, maskSlackBotId } from './config-store.mjs';
 import { inspectSlackCredentials } from './slack-api.mjs';
@@ -254,6 +255,7 @@ export class SlackController {
           messagesReceived: runtimeStatus?.messagesReceived ?? 0,
           messagesReplied: runtimeStatus?.messagesReplied ?? 0,
         },
+        lastMessageError: publicMessageFailure(runtimeStatus?.lastMessageError),
         error: structuredClone(this.#errors.get(config.botId) ?? null),
       };
     });

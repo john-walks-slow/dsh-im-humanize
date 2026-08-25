@@ -479,6 +479,8 @@ test('DingTalk still attempts a registered file when the final text transport fa
   assert.deepEqual(files, ['dingtalk-text-failed.pdf']);
   assert.equal(textAttempts, 1, 'must not send a generic retry notice after the file succeeds');
   assert.equal(bridge.status.artifactsSent, 1);
+  assert.equal(bridge.status.lastMessageError.code, 'CHANNEL_DELIVERY_UNCERTAIN');
+  assert.match(bridge.status.lastMessageError.referenceId, /^MF-[A-F0-9]{8}$/);
   assert.deepEqual(receipt.providerMessageIds, ['dingtalk-file-after-text-failure']);
   assert.deepEqual(receipt.artifacts, [{
     artifactId: 'dingtalk-artifact-one',
@@ -537,7 +539,16 @@ test('DingTalk gives safe, actionable file delivery failure guidance', async (t)
         robotCode: 'robot-code',
       }));
 
-      assert.equal(sent.at(-1), scenario.expected);
+      const failure = bridge.status.lastMessageError;
+      assert.equal(sent.at(-1).startsWith(`${scenario.expected}\n\n`), true);
+      assert.equal(
+        failure.code,
+        scenario.code === 'artifact-delivery-uncertain'
+          ? 'CHANNEL_DELIVERY_UNCERTAIN'
+          : 'CHANNEL_PERMISSION',
+      );
+      assert.equal(failure.reason, scenario.code.toUpperCase().replaceAll('-', '_'));
+      assert.equal(sent.at(-1).endsWith(`参考号：${failure.referenceId}`), true);
       assert.doesNotMatch(sent.join('\n'), /private provider rejection detail/);
       assert.equal(bridge.status.artifactSendErrors, 1);
       assert.deepEqual(receipt.artifacts, [{
@@ -691,7 +702,48 @@ test('DingTalk returns a specific retry message when picture download fails', as
     robotCode: 'robot-from-callback',
   }));
 
-  assert.equal(sent.at(-1).text, '图片下载失败，请重新发送后再试。');
+  assert.match(sent.at(-1).text, /^图片下载失败，请重新发送后再试。/);
+  assert.match(sent.at(-1).text, /错误码：INPUT_INVALID；参考号：MF-[A-F0-9]{8}$/);
+});
+
+test('DingTalk exposes a structured model rate limit without changing connection state', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:staff-approved', 'session-rate-limit');
+  const sent = [];
+  const status = {
+    ...createDingtalkBridgeStatus(),
+    connected: true,
+    connectionState: 'connected',
+  };
+  const bridge = new DingtalkHarnessBridge({
+    api: { sendText: async (request) => sent.push(request.text) },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        const error = new Error('private DingTalk provider rate-limit detail');
+        error.code = 'harness-turn-failed';
+        error.providerCode = 'RATE_LIMIT';
+        throw error;
+      },
+    },
+    state: fixture.state,
+    status,
+    logger: { error() {} },
+  });
+
+  await bridge.accept(message('dingtalk-rate-limit', '触发模型限流'));
+
+  const failure = status.lastMessageError;
+  assert.equal(failure.code, 'MODEL_RATE_LIMIT');
+  assert.equal(failure.reason, 'MODEL_RATE_LIMIT');
+  assert.match(failure.referenceId, /^MF-[A-F0-9]{8}$/);
+  assert.match(sent.at(-1), /模型服务正在限流，本次任务未完成。请稍后重试。/);
+  assert.equal(sent.at(-1).endsWith(`参考号：${failure.referenceId}`), true);
+  assert.doesNotMatch(sent.at(-1), /private DingTalk provider rate-limit detail/);
+  assert.equal(status.connected, true);
+  assert.equal(status.connectionState, 'connected');
 });
 
 test('DingTalk distinguishes download-address failures from temporary-file failures', async () => {
@@ -727,7 +779,8 @@ test('DingTalk distinguishes download-address failures from temporary-file failu
       robotCode: 'robot-from-callback',
     }));
 
-    assert.equal(sent.at(-1).text, expected);
+    assert.equal(sent.at(-1).text.startsWith(expected), true);
+    assert.match(sent.at(-1).text, /错误码：INPUT_INVALID；参考号：MF-[A-F0-9]{8}$/);
   }
 });
 

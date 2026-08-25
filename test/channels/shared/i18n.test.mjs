@@ -48,6 +48,14 @@ test('t() translates known keys and fills placeholders in English mode', () => {
     t('示例：先发 /models，再发 /model 2 [推理等级ID]'),
     'Example: send /models first, then /model 2 [reasoning effort ID]',
   );
+  assert.equal(
+    t('卡片已结束，请查看后续消息。'),
+    'This card has ended. Please check the next message.',
+  );
+  assert.equal(
+    t('工具调用「{name}」未成功，请检查工具配置或稍后重试。', { name: 'search' }),
+    'Tool call "search" did not succeed. Check the tool configuration or try again later.',
+  );
   assert.equal(t(42), 42);
 });
 

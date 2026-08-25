@@ -604,6 +604,7 @@ test('Feishu retains a batch after an ask failure and retries the same snapshot'
   const sent = [];
   const asked = [];
   const finalReactions = [];
+  const status = bridgeStatus();
   const bridge = new FeishuHarnessBridge({
     client: textClient(async ({ text }) => sent.push(text)),
     channel: {
@@ -617,12 +618,17 @@ test('Feishu retains a batch after an ask failure and retries the same snapshot'
       sessionExists: async () => true,
       ask: async (_sessionId, text) => {
         asked.push(text);
-        if (asked.length === 1) throw new Error('transient batch failure');
+        if (asked.length === 1) {
+          const error = new Error('private transient batch rate-limit detail');
+          error.code = 'harness-turn-failed';
+          error.providerCode = 'RATE_LIMIT';
+          throw error;
+        }
         return '重试成功';
       },
     },
     state: fixture.state,
-    status: bridgeStatus(),
+    status,
     allowedSenderOpenIds: new Set(['ou_user']),
     logger: { info() {}, warn() {}, error() {} },
   });
@@ -630,7 +636,12 @@ test('Feishu retains a batch after an ask failure and retries the same snapshot'
   await bridge.accept(event('batch-retry-open', '/batch'));
   await bridge.accept(event('batch-retry-content', '需要重试'));
   await bridge.accept(event('batch-retry-first-send', '/send'));
+  assert.match(sent.at(-1), /模型服务正在限流，本次任务未完成。请稍后重试。/);
+  assert.match(sent.at(-1), /错误码：MODEL_RATE_LIMIT；参考号：MF-[A-F0-9]{8}/);
   assert.match(sent.at(-1), /提交失败，已保留 1 条消息/);
+  assert.equal(status.lastMessageError.code, 'MODEL_RATE_LIMIT');
+  assert.equal(sent.at(-1).includes(`参考号：${status.lastMessageError.referenceId}`), true);
+  assert.doesNotMatch(sent.at(-1), /private transient batch rate-limit detail/);
   assert.equal(finalReactions.at(-1), 'ERROR');
 
   await bridge.accept(event('batch-retry-status', '/batch'));
@@ -2544,6 +2555,9 @@ test('Feishu finalizes the answer card before delivering registered result files
   assert.equal(status.artifactSendErrors, 1);
   assert.equal(notices.length, 1);
   assert.match(notices[0], /notes\.txt.*限流/);
+  assert.equal(status.lastMessageError.code, 'CHANNEL_RATE_LIMIT');
+  assert.equal(status.lastMessageError.reason, 'ARTIFACT_RATE_LIMITED');
+  assert.equal(notices[0].endsWith(`参考号：${status.lastMessageError.referenceId}`), true);
   assert.doesNotMatch(notices[0], /provider detail/);
 });
 
@@ -2551,6 +2565,7 @@ test('Feishu tells users to check the chat before retrying an uncertain file del
   const artifact = await committedArtifact(t, 'uncertain.txt', 'uncertain result', 'uncertain');
   const fixture = stateFixture([['p2p:ou_user', 'session-uncertain-artifact']]);
   const notices = [];
+  const status = bridgeStatus();
   const bridge = new FeishuHarnessBridge({
     client: textClient(async ({ text }) => notices.push(text)),
     channel: {
@@ -2572,16 +2587,18 @@ test('Feishu tells users to check the chat before retrying an uncertain file del
       },
     },
     state: fixture.state,
-    status: bridgeStatus(),
+    status,
     allowedSenderOpenIds: new Set(['ou_user']),
   });
 
   bridge.accept(event('om_uncertain_artifact', '生成并发送文件'));
   await bridge.waitForIdle();
 
-  assert.deepEqual(notices, [
-    '结果文件「uncertain.txt」发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。',
-  ]);
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /^结果文件「uncertain\.txt」发送结果未能确认/);
+  assert.equal(status.lastMessageError.code, 'CHANNEL_DELIVERY_UNCERTAIN');
+  assert.equal(status.lastMessageError.reason, 'ARTIFACT_DELIVERY_UNCERTAIN');
+  assert.equal(notices[0].endsWith(`参考号：${status.lastMessageError.referenceId}`), true);
 });
 
 test('Feishu delivers a file-only Turn with a neutral final card', async (t) => {
@@ -2676,6 +2693,7 @@ test('Feishu still delivers a file-only result when CardKit and fallback text bo
   const fixture = stateFixture([['p2p:ou_user', 'session-text-failure']]);
   const files = [];
   let fallbackTextAttempts = 0;
+  const status = bridgeStatus();
   const bridge = new FeishuHarnessBridge({
     client: textClient(async () => {
       fallbackTextAttempts += 1;
@@ -2705,7 +2723,7 @@ test('Feishu still delivers a file-only result when CardKit and fallback text bo
       },
     },
     state: fixture.state,
-    status: bridgeStatus(),
+    status,
     allowedSenderOpenIds: new Set(['ou_user']),
     logger: { info() {}, warn() {}, error() {} },
   });
@@ -2715,6 +2733,8 @@ test('Feishu still delivers a file-only result when CardKit and fallback text bo
 
   assert.deepEqual(files, ['survives-text-failure.txt']);
   assert.equal(fallbackTextAttempts, 1, 'must not append a generic retry after file success');
+  assert.equal(status.lastMessageError.code, 'CHANNEL_DELIVERY_UNCERTAIN');
+  assert.match(status.lastMessageError.referenceId, /^MF-[A-F0-9]{8}$/);
 });
 
 test('Feishu returns the receipt after reaction finalization and one safe notice when text and file delivery fail', async (t) => {
@@ -2811,7 +2831,8 @@ test('Feishu keeps the generic error when no answer or file failure notice is vi
   await bridge.accept(event('om-no-visible-failure', '生成并发送文件'));
 
   assert.equal(attemptedTexts.length, 3);
-  assert.match(attemptedTexts.at(-1), /^处理失败，请稍后重试/);
+  assert.match(attemptedTexts.at(-1), /^回复发送结果未能确认/);
+  assert.match(attemptedTexts.at(-1), /错误码：CHANNEL_DELIVERY_UNCERTAIN；参考号：MF-[A-F0-9]{8}$/);
 });
 
 test('Feishu does not repeat finalized card text when cancellation happens before file delivery', async (t) => {
@@ -2938,9 +2959,52 @@ test('bridge does not expose internal error details in a Feishu failure reply', 
   await bridge.waitForIdle();
 
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /处理失败，请稍后重试/);
+  assert.match(sent[0], /任务未完成，暂时无法确定原因/);
+  assert.match(sent[0], /错误码：INTERNAL_UNKNOWN；参考号：MF-[A-F0-9]{8}$/);
   assert.doesNotMatch(sent[0], /secret-shaped-internal-detail|private\/path/);
   assert.equal(status.lastError, 'secret-shaped-internal-detail /private/path');
+});
+
+test('Feishu exposes a structured model rate limit without changing connection state', async () => {
+  const fixture = stateFixture([['p2p:ou_owner', 'session-rate-limit']]);
+  const sent = [];
+  const status = {
+    ...bridgeStatus(),
+    connected: true,
+    connectionState: 'connected',
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async (outgoing) => sent.push(outgoing.text)),
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        const error = new Error('private Feishu provider rate-limit detail');
+        error.code = 'harness-turn-failed';
+        error.providerCode = 'RATE_LIMIT';
+        throw error;
+      },
+    },
+    state: fixture.state,
+    status,
+    allowedSenderOpenIds: new Set(['ou_owner']),
+    logger: { error() {} },
+  });
+
+  await bridge.accept(event('om_rate_limit', '触发模型限流', {
+    senderOpenId: 'ou_owner',
+  }));
+  await bridge.waitForIdle();
+
+  const failure = status.lastMessageError;
+  assert.equal(failure.code, 'MODEL_RATE_LIMIT');
+  assert.equal(failure.reason, 'MODEL_RATE_LIMIT');
+  assert.match(failure.referenceId, /^MF-[A-F0-9]{8}$/);
+  assert.match(sent.at(-1), /模型服务正在限流，本次任务未完成。请稍后重试。/);
+  assert.equal(sent.at(-1).endsWith(`参考号：${failure.referenceId}`), true);
+  assert.doesNotMatch(sent.at(-1), /private Feishu provider rate-limit detail/);
+  assert.equal(status.connected, true);
+  assert.equal(status.connectionState, 'connected');
 });
 
 // ── Interactive cards: menus, session lists, workspace lists ───────────────
@@ -3461,10 +3525,14 @@ test('compact card action contains session lookup failures', async () => {
   const fixture = stateFixture();
   const sent = [];
   let failSessionLookup = false;
+  const status = bridgeStatus();
   const sessionFor = fixture.state.sessionFor;
   fixture.state.sessionFor = (key) => {
     if (failSessionLookup) {
-      throw new Error('secret-shaped compact detail /private/path');
+      const error = new Error('secret-shaped compact detail /private/path');
+      error.code = 'harness-turn-failed';
+      error.providerCode = 'RATE_LIMIT';
+      throw error;
     }
     return sessionFor(key);
   };
@@ -3473,7 +3541,7 @@ test('compact card action contains session lookup failures', async () => {
     channel: {},
     harness: sessionsHarness(1),
     state: fixture.state,
-    status: bridgeStatus(),
+    status,
     allowedSenderOpenIds: new Set(['ou_owner']),
     logger: { warn() {}, error() {} },
   });
@@ -3488,8 +3556,54 @@ test('compact card action contains session lookup failures', async () => {
     .filter((message) => message.msgType === 'text')
     .map((message) => JSON.parse(message.content).text);
   assert.equal(replies.length, 1);
-  assert.match(replies[0], /上下文压缩失败，请稍后重试/);
+  assert.match(replies[0], /模型服务正在限流，本次任务未完成。请稍后重试。/);
+  assert.match(replies[0], /错误码：MODEL_RATE_LIMIT；参考号：MF-[A-F0-9]{8}/);
+  assert.equal(replies[0].endsWith(`参考号：${status.lastMessageError.referenceId}`), true);
   assert.doesNotMatch(replies[0], /secret-shaped|private\/path|compactCommand/);
+});
+
+test('Feishu list and status command failures share one safe classified format', async () => {
+  for (const command of ['/sessionlist', '/workspacelist', '/status']) {
+    const fixture = stateFixture();
+    const sent = [];
+    const status = bridgeStatus();
+    const providerFailure = () => {
+      const error = new Error(`private ${command} provider detail`);
+      error.code = 'harness-turn-failed';
+      error.providerCode = 'RATE_LIMIT';
+      return error;
+    };
+    const harness = {
+      currentWorkspace: () => tmpdir(),
+      listWorkspaces: async () => [tmpdir()],
+      listWorkspaceSessions: async () => ({ workspace: tmpdir(), sessions: [] }),
+      ensureRunning: async () => true,
+    };
+    if (command === '/sessionlist') harness.listWorkspaceSessions = async () => { throw providerFailure(); };
+    if (command === '/workspacelist') harness.listWorkspaces = async () => { throw providerFailure(); };
+    if (command === '/status') harness.ensureRunning = async () => { throw providerFailure(); };
+    const bridge = new FeishuHarnessBridge({
+      client: textClient(async ({ text }) => sent.push(text)),
+      channel: {},
+      harness,
+      state: fixture.state,
+      status,
+      allowedSenderOpenIds: new Set(['ou_user']),
+      logger: { warn() {}, error() {} },
+    });
+
+    await bridge.accept(event(`classified-${command.slice(1)}`, command));
+    await bridge.waitForIdle();
+
+    assert.equal(status.lastMessageError.code, 'MODEL_RATE_LIMIT', command);
+    assert.match(sent.at(-1), /模型服务正在限流，本次任务未完成。请稍后重试。/, command);
+    assert.equal(
+      sent.at(-1).endsWith(`参考号：${status.lastMessageError.referenceId}`),
+      true,
+      command,
+    );
+    assert.doesNotMatch(sent.at(-1), /private .* provider detail/, command);
+  }
 });
 
 test('preset card selection does not expose internal update errors', async () => {

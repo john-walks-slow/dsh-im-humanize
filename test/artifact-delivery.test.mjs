@@ -147,6 +147,7 @@ test('a definitive native-image rejection falls back to file delivery', async (t
 test('a failed file fallback produces one failure receipt and one safe notice', async (t) => {
   const artifact = await committedArtifact(t, 'result.webp', Buffer.from([1]));
   const calls = [];
+  const classifiedFailure = { referenceId: 'MF-ARTIFACT1' };
 
   const delivery = await deliverOutboundArtifacts({
     artifacts: [artifact],
@@ -159,13 +160,22 @@ test('a failed file fallback produces one failure receipt and one safe notice', 
       calls.push('file');
       throw rejected('artifact-provider-failed');
     },
-    sendFailureNotice: async () => {
+    onFailure: (failedArtifact, error) => {
+      calls.push('classify');
+      assert.equal(failedArtifact, artifact);
+      assert.equal(error.code, 'artifact-provider-failed');
+      return classifiedFailure;
+    },
+    sendFailureNotice: async (failedArtifact, error, failure) => {
       calls.push('notice');
+      assert.equal(failedArtifact, artifact);
+      assert.equal(error.code, 'artifact-provider-failed');
+      assert.equal(failure, classifiedFailure);
       return { messageId: 'notice-after-fallback' };
     },
   });
 
-  assert.deepEqual(calls, ['image', 'file', 'notice']);
+  assert.deepEqual(calls, ['image', 'file', 'classify', 'notice']);
   assert.deepEqual(delivery.receipt.providerMessageIds, ['notice-after-fallback']);
   assert.deepEqual(delivery.receipt.artifacts, [{
     artifactId: artifact.artifactId,

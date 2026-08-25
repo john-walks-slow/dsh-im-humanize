@@ -9,6 +9,7 @@ import {
 } from './message-utils.mjs';
 import {
   hasInboundImages,
+  imagePromptDiagnostic,
   imagePromptUserMessage,
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
@@ -48,6 +49,12 @@ import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.m
 import {
   createDeliveryReceipt,
 } from '../shared/semantic/delivery.mjs';
+import {
+  channelDeliveryFailure,
+  clearLastMessageFailure,
+  messageFailureText,
+  setLastMessageFailure,
+} from '../shared/message-failure.mjs';
 import {
   MENU_PAGE_SIZE,
   PRESET_FOLLOW_DEFAULT_SENTINEL,
@@ -365,6 +372,7 @@ function ensureStatus(status) {
   status.lastReplyAt ??= null;
   status.lastRejectedAt ??= null;
   status.lastError ??= null;
+  status.lastMessageError ??= null;
 }
 
 export class FeishuHarnessBridge {
@@ -801,6 +809,30 @@ export class FeishuHarnessBridge {
     return current;
   }
 
+  #recordFailure(error, {
+    logLabel = 'operation',
+    logLevel = 'warn',
+    userMessage,
+    reason,
+  } = {}) {
+    this.#status.lastError = error?.message ?? String(error);
+    const failure = setLastMessageFailure(this.#status, error, { userMessage, reason });
+    this.#logger?.[logLevel]?.(
+      `[dsh-feishu] ${logLabel} failed [${failure.referenceId}]:`,
+      error?.message ?? String(error),
+    );
+    return failure;
+  }
+
+  async #sendFailure(chatId, error, options = {}) {
+    const failure = this.#recordFailure(error, options);
+    const text = options.appendMessage
+      ? `${messageFailureText(failure)}\n\n${options.appendMessage}`
+      : messageFailureText(failure);
+    await this.#send(chatId, text).catch(() => undefined);
+    return failure;
+  }
+
   async #handleMessageFailure(event, messageId, processingReaction, error) {
     if (error?.code === 'turn-stopped') {
       await this.#removeProcessingReaction(messageId, processingReaction);
@@ -813,15 +845,21 @@ export class FeishuHarnessBridge {
       await this.#removeProcessingReaction(messageId, processingReaction);
       return;
     }
-    this.#logger.error?.('[dsh-feishu] message handling failed:', error?.message ?? String(error));
-    this.#status.lastError = error?.message ?? String(error);
+    const userMessage = inboundFileUserMessage(error)
+      ?? imagePromptUserMessage(error);
+    const failure = this.#recordFailure(error, {
+      logLabel: 'message handling',
+      logLevel: 'error',
+      userMessage,
+      reason: imagePromptDiagnostic(error)?.reason,
+    });
     await this.#finishReaction(messageId, processingReaction, 'ERROR');
+    const failureText = error?.batchInputMessage
+      ? `${messageFailureText(failure)}\n\n${error.batchInputMessage}`
+      : messageFailureText(failure);
     await this.#send(
       event.message.chat_id,
-      error?.batchInputMessage
-        ?? inboundFileUserMessage(error)
-        ?? imagePromptUserMessage(error)
-        ?? t('处理失败，请稍后重试。如果问题持续，请在 DeepSeek Harness 的飞书插件页面检查连接状态。'),
+      failureText,
     ).catch(() => undefined);
   }
 
@@ -1025,7 +1063,11 @@ export class FeishuHarnessBridge {
     const batchSubmission = event.batchSubmission ?? null;
     let batchAskCompleted = false;
     try {
-      const receipt = await this.#answerWithStream(event, key, message, {
+      const {
+        receipt,
+        artifactSendErrors,
+        textDeliveryErrors = 0,
+      } = await this.#answerWithStream(event, key, message, {
         onAskComplete: batchSubmission
           ? () => {
               batchAskCompleted = this.#batchInputs.complete(
@@ -1038,6 +1080,9 @@ export class FeishuHarnessBridge {
       this.#status.messagesReplied += 1;
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
+      if (textDeliveryErrors === 0 && artifactSendErrors === 0) {
+        clearLastMessageFailure(this.#status);
+      }
       return receipt;
     } catch (error) {
       if (batchSubmission && !batchAskCompleted) {
@@ -1049,6 +1094,9 @@ export class FeishuHarnessBridge {
         if (failed.retained) {
           const batchError = new Error(error?.message ?? String(error), { cause: error });
           batchError.code = error?.code;
+          batchError.providerCode = error?.providerCode;
+          batchError.method = error?.method;
+          if (Number.isInteger(error?.status)) batchError.status = error.status;
           batchError.batchInputMessage = failed.message;
           throw batchError;
         }
@@ -1643,9 +1691,7 @@ export class FeishuHarnessBridge {
       })
       .catch(async (error) => {
         if (this.#signal?.aborted) return;
-        this.#logger.warn?.('[dsh-feishu] card action failed:', error?.message ?? String(error));
-        this.#status.lastError = error?.message ?? String(error);
-        await this.#send(entry.chatId, t('卡片操作失败，请稍后重试。')).catch(() => undefined);
+        await this.#sendFailure(entry.chatId, error, { logLabel: 'card action' });
       })
       .finally(() => {
         if (this.#cardActionInFlight.get(dedupeKey) === tracked) {
@@ -2008,8 +2054,7 @@ export class FeishuHarnessBridge {
         },
       );
     } catch (error) {
-      this.#logger.warn?.('[dsh-feishu] session list failed:', error.message);
-      await this.#send(chatId, t('暂时无法获取会话列表，请稍后重试。'));
+      await this.#sendFailure(chatId, error, { logLabel: 'session list' });
     }
   }
 
@@ -2026,8 +2071,7 @@ export class FeishuHarnessBridge {
         { key, updateMessageId },
       );
     } catch (error) {
-      this.#logger.warn?.('[dsh-feishu] workspace list failed:', error.message);
-      await this.#send(chatId, t('暂时无法获取工作区列表，请稍后重试。'));
+      await this.#sendFailure(chatId, error, { logLabel: 'workspace list' });
     }
   }
 
@@ -2038,7 +2082,10 @@ export class FeishuHarnessBridge {
       await this.#send(chatId, t('已绑定会话「{title}」\nID：{id}', { title, id: bound?.sessionId ?? sessionId }));
       await this.#sendMenuCard(key, chatId, { updateMessageId });
     } catch (error) {
-      await this.#send(chatId, t('绑定失败：{message}', { message: safeErrorText(error) }));
+      await this.#sendFailure(chatId, error, {
+        logLabel: 'session binding',
+        userMessage: t('绑定失败：{message}', { message: safeErrorText(error) }),
+      });
     }
   }
 
@@ -2048,7 +2095,10 @@ export class FeishuHarnessBridge {
       await this.#send(chatId, t('工作区已切换为：{workspace}', { workspace: current }));
       await this.#sendMenuCard(key, chatId, { updateMessageId });
     } catch (error) {
-      await this.#send(chatId, t('切换失败：{message}', { message: safeErrorText(error) }));
+      await this.#sendFailure(chatId, error, {
+        logLabel: 'workspace switch',
+        userMessage: t('切换失败：{message}', { message: safeErrorText(error) }),
+      });
     }
   }
 
@@ -2247,8 +2297,7 @@ export class FeishuHarnessBridge {
       catalog._currentId = settings.agentPreset;
       await this.#sendCard(chatId, presetCard(catalog), { key, updateMessageId });
     } catch (error) {
-      this.#logger.warn?.('[dsh-feishu] preset card failed:', error.message);
-      await this.#send(chatId, t('暂时无法获取预设列表，请稍后重试。'));
+      await this.#sendFailure(chatId, error, { logLabel: 'preset card' });
     }
   }
 
@@ -2273,8 +2322,7 @@ export class FeishuHarnessBridge {
       }
       await this.#sendCard(chatId, modelCard(catalog), { key, updateMessageId });
     } catch (error) {
-      this.#logger.warn?.('[dsh-feishu] model card failed:', error.message);
-      await this.#send(chatId, t('暂时无法获取模型列表，请稍后重试。'));
+      await this.#sendFailure(chatId, error, { logLabel: 'model card' });
     }
   }
 
@@ -2302,8 +2350,7 @@ export class FeishuHarnessBridge {
       }
       await this.#send(chatId, lines.join('\n'));
     } catch (error) {
-      this.#logger.warn?.('[dsh-feishu] status text failed:', error.message);
-      await this.#send(chatId, t('暂时无法获取系统状态，请稍后重试。'));
+      await this.#sendFailure(chatId, error, { logLabel: 'status text' });
     }
   }
 
@@ -2355,8 +2402,7 @@ export class FeishuHarnessBridge {
 
       await this.#sendCard(chatId, statusCard(info), { key, updateMessageId });
     } catch (error) {
-      this.#logger.warn?.('[dsh-feishu] status card failed:', error.message);
-      await this.#send(chatId, t('暂时无法获取系统状态，请稍后重试。'));
+      await this.#sendFailure(chatId, error, { logLabel: 'status card' });
     }
   }
 
@@ -2381,8 +2427,7 @@ export class FeishuHarnessBridge {
       );
       await this.#send(chatId, result?.message || t('上下文压缩失败。'));
     } catch (error) {
-      this.#logger.warn?.('[dsh-feishu] compact failed:', error.message, error.code);
-      await this.#send(chatId, t('上下文压缩失败，请稍后重试。'));
+      await this.#sendFailure(chatId, error, { logLabel: 'compact' });
     }
   }
 
@@ -2405,8 +2450,7 @@ export class FeishuHarnessBridge {
       }
       await this.#send(chatId, result?.message || t('/stop 执行完成。'));
     } catch (error) {
-      this.#logger.warn?.('[dsh-feishu] stop failed:', error.message);
-      await this.#send(chatId, t('停止任务失败，请稍后重试。'));
+      await this.#sendFailure(chatId, error, { logLabel: 'stop' });
     }
   }
 
@@ -2446,8 +2490,7 @@ export class FeishuHarnessBridge {
         if (reply) await this.#send(chatId, reply);
       }
     } catch (error) {
-      this.#logger.warn?.('[dsh-feishu] preset default failed:', error.message);
-      await this.#send(chatId, t('预设重置失败，请稍后重试。'));
+      await this.#sendFailure(chatId, error, { logLabel: 'preset reset' });
       return;
     }
     try {
@@ -2470,8 +2513,7 @@ export class FeishuHarnessBridge {
         if (reply) await this.#send(chatId, reply);
       }
     } catch (error) {
-      this.#logger.warn?.('[dsh-feishu] preset select failed:', error.message);
-      await this.#send(chatId, t('预设切换失败，请稍后重试。'));
+      await this.#sendFailure(chatId, error, { logLabel: 'preset selection' });
       return;
     }
     try {
@@ -2503,8 +2545,7 @@ export class FeishuHarnessBridge {
         if (reply) await this.#send(chatId, reply);
       }
     } catch (error) {
-      this.#logger.warn?.('[dsh-feishu] model select failed:', error.message);
-      await this.#send(chatId, t('模型切换失败，请稍后重试。'));
+      await this.#sendFailure(chatId, error, { logLabel: 'model selection' });
       return;
     }
     try {
@@ -3046,10 +3087,14 @@ export class FeishuHarnessBridge {
             signal: this.#signal,
           })
         : undefined,
-      sendFailureNotice: async (artifact, error) => ({
+      onFailure: (artifact, error) => setLastMessageFailure(this.#status, error, {
+        userMessage: artifactFailureText(artifact?.fileName, error),
+        reason: error?.code,
+      }),
+      sendFailureNotice: async (_artifact, _error, failure) => ({
         messageId: await this.#send(
           chatId,
-          artifactFailureText(artifact?.fileName, error),
+          messageFailureText(failure),
         ),
       }),
       logger: this.#logger,
@@ -3065,11 +3110,13 @@ export class FeishuHarnessBridge {
           presentation: 'feishu-files',
         }),
         failureNoticeVisible: delivery.failureNoticeVisible,
+        artifactSendErrors: delivery.artifactSendErrors,
       };
     }
     return {
       receipt: delivery.receipt,
       failureNoticeVisible: delivery.failureNoticeVisible,
+      artifactSendErrors: delivery.artifactSendErrors,
     };
   }
 
@@ -3110,7 +3157,7 @@ export class FeishuHarnessBridge {
           },
         );
       } catch (error) {
-        textSendError = error;
+        textSendError = channelDeliveryFailure(error);
         this.#logger.warn?.(
           '[dsh-feishu] final text delivery failed; continuing with result files:',
           error,
@@ -3123,8 +3170,11 @@ export class FeishuHarnessBridge {
       if (textSendError && !artifactDispatched && !delivery.failureNoticeVisible) {
         throw textSendError;
       }
+      if (textSendError && delivery.artifactSendErrors === 0) {
+        setLastMessageFailure(this.#status, textSendError);
+      }
       this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
-      return delivery.receipt;
+      return { ...delivery, textDeliveryErrors: textSendError ? 1 : 0 };
     }
 
     let promptStarted = false;
@@ -3177,7 +3227,7 @@ export class FeishuHarnessBridge {
             },
           );
         } catch (fallbackError) {
-          textSendError = fallbackError;
+          textSendError = channelDeliveryFailure(fallbackError);
           this.#logger.warn?.(
             '[dsh-feishu] fallback text delivery failed; continuing with result files:',
             fallbackError,
@@ -3195,8 +3245,11 @@ export class FeishuHarnessBridge {
         if (textSendError && !artifactDispatched && !delivery.failureNoticeVisible) {
           throw textSendError;
         }
+        if (textSendError && delivery.artifactSendErrors === 0) {
+          setLastMessageFailure(this.#status, textSendError);
+        }
         this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
-        return delivery.receipt;
+        return { ...delivery, textDeliveryErrors: textSendError ? 1 : 0 };
       }
       if (promptStarted) throw error;
 
@@ -3224,7 +3277,7 @@ export class FeishuHarnessBridge {
           },
         );
       } catch (fallbackError) {
-        textSendError = fallbackError;
+        textSendError = channelDeliveryFailure(fallbackError);
         this.#logger.warn?.(
           '[dsh-feishu] fallback text delivery failed; continuing with result files:',
           fallbackError,
@@ -3237,8 +3290,11 @@ export class FeishuHarnessBridge {
       if (textSendError && !artifactDispatched && !delivery.failureNoticeVisible) {
         throw textSendError;
       }
+      if (textSendError && delivery.artifactSendErrors === 0) {
+        setLastMessageFailure(this.#status, textSendError);
+      }
       this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
-      return delivery.receipt;
+      return { ...delivery, textDeliveryErrors: textSendError ? 1 : 0 };
     }
     const delivery = await this.#deliverArtifacts(
       chatId,
@@ -3251,7 +3307,7 @@ export class FeishuHarnessBridge {
       }),
     );
     this.#status.streamResponses = (this.#status.streamResponses ?? 0) + 1;
-    return delivery.receipt;
+    return delivery;
   }
 
   async #processInteractionReply(event, messageId, key, expected, processingReaction) {

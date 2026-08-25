@@ -1,4 +1,5 @@
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
+import { normalizeLastMessageError } from '../../last-message-error.js';
 
 export const WECOM_RPC_CHANNEL = '/wecom';
 
@@ -103,6 +104,7 @@ function normalizeBot(value) {
       summary: text(value.health?.summary, connected ? '企业微信 WebSocket 长连接运行正常' : '企业微信连接尚未就绪'),
       lastCheckedAt: timestamp(value.health?.lastCheckedAt),
     },
+    lastMessageError: normalizeLastMessageError(value.lastMessageError),
     error: isRecord(value.error) ? {
       code: text(value.error.code, 'WECOM_ACCOUNT_ERROR', 80),
       message: text(value.error.message, '企业微信连接尚未就绪'),

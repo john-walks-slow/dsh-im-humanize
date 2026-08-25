@@ -1,4 +1,5 @@
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
+import { normalizeLastMessageError } from '../../last-message-error.js';
 
 export const WEIXIN_RPC_CHANNEL = '/weixin';
 export const WEIXIN_ENDPOINTS = Object.freeze({
@@ -46,15 +47,6 @@ function normalizeTestMessage(value) {
     ? 'test-target-unavailable'
     : 'test-message-failed';
   return { sent: false, code };
-}
-
-function normalizeMessageError(value) {
-  if (!isRecord(value)) return null;
-  const code = string(value.code).slice(0, 64);
-  const reason = string(value.reason).slice(0, 128);
-  const message = string(value.message).slice(0, 500);
-  const at = timestamp(value.at);
-  return code && reason && message && at !== null ? { code, reason, message, at } : null;
 }
 
 export function unwrapRpcResult(result) {
@@ -141,7 +133,7 @@ function normalizeBot(value) {
       messagesReceived: Math.max(0, Number(value.stats?.messagesReceived) || 0),
       messagesReplied: Math.max(0, Number(value.stats?.messagesReplied) || 0),
     },
-    lastMessageError: normalizeMessageError(value.lastMessageError),
+    lastMessageError: normalizeLastMessageError(value.lastMessageError),
     error: isRecord(value.error)
       ? {
           code: string(value.error.code, 'WEIXIN_ACCOUNT_ERROR'),

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { connectionTestMessage } from '../shared/connection-test.mjs';
+import { publicMessageFailure } from '../shared/message-failure.mjs';
 import { RegistrationManager } from './registration-manager.mjs';
 import {
   CALLBACK_REPAIR_OPERATION,
@@ -633,6 +634,7 @@ export class MultiBotDshFeishuController {
         groupMessagePermissionGranted: config.groupMessagePermissionGranted === true,
         bot: publicBot(config),
         connection,
+        lastMessageError: publicMessageFailure(connection.lastMessageError),
         error,
       };
     });

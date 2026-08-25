@@ -1,4 +1,5 @@
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
+import { normalizeLastMessageError } from '../../last-message-error.js';
 
 export const QQ_RPC_CHANNEL = '/qq';
 
@@ -94,6 +95,7 @@ function normalizeBot(value) {
       summary: text(value.health?.summary, connected ? 'QQ WebSocket 长连接运行正常' : 'QQ 连接尚未就绪'),
       lastCheckedAt: timestamp(value.health?.lastCheckedAt),
     },
+    lastMessageError: normalizeLastMessageError(value.lastMessageError),
     error: isRecord(value.error) ? {
       code: text(value.error.code, 'QQ_ACCOUNT_ERROR', 80),
       message: text(value.error.message, 'QQ 连接尚未就绪'),
