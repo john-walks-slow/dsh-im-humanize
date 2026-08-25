@@ -945,7 +945,10 @@ export class FeishuHarnessBridge {
     const text = message.content;
     const hasImages = hasInboundImages(message);
     const hasFiles = hasInboundFiles(message);
-    const commandText = event.message.message_type === 'text' && !hasImages && !hasFiles ? text : null;
+    // 命令识别对 text 与纯文本 post 一视同仁：post 富文本若仅含单个
+    // 文本段落（如复制粘贴的 /new），同样按命令处理；带图片/文件不认。
+    // accept() 侧已用 nonEmptyString(content) 判定，两侧保持一致。
+    const commandText = !hasImages && !hasFiles && text ? text.trim() : null;
     if (!text && !hasImages && !hasFiles) {
       await this.#send(event.message.chat_id, t('目前支持文字、图片和文件消息。'));
       return;

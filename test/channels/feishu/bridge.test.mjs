@@ -1075,7 +1075,7 @@ test('bridge sends Feishu post text and all embedded images as one structured pr
   assert.deepEqual(sent, ['两张图片都已收到']);
 });
 
-test('text inside a Feishu post is a model prompt rather than a local or batch command', async () => {
+test('a single-text-paragraph Feishu post is treated as a command like a text message', async () => {
   const fixture = stateFixture([['p2p:ou_user', 'session-post-command']]);
   const asked = [];
   const sent = [];
@@ -1098,18 +1098,12 @@ test('text inside a Feishu post is a model prompt rather than a local or batch c
     message_type: 'post',
     content: JSON.stringify({ content: [[{ tag: 'text', text: '/new' }]] }),
   }));
-  await bridge.accept(event('om_post_batch_command', '', {
-    message_type: 'post',
-    content: JSON.stringify({ content: [[{ tag: 'text', text: '/batch' }]] }),
-  }));
   await bridge.waitForIdle();
 
-  assert.equal(fixture.sessions.get('p2p:ou_user'), 'session-post-command');
-  assert.deepEqual(asked, [
-    { sessionId: 'session-post-command', content: '/new' },
-    { sessionId: 'session-post-command', content: '/batch' },
-  ]);
-  assert.deepEqual(sent, ['按普通内容处理', '按普通内容处理']);
+  // /new 在 post 单文本段落中现在按命令处理：解除会话绑定并回复确认。
+  assert.equal(fixture.sessions.get('p2p:ou_user'), undefined);
+  assert.ok(sent.some((line) => /已开启全新/.test(line)));
+  assert.deepEqual(asked, []);
 });
 
 test('a threaded Feishu reply answers a pending Harness question before the original turn queue', async () => {
