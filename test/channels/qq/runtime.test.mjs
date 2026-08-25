@@ -51,6 +51,7 @@ test('QQ runtime waits for gateway ready, installs typing, and stops its client'
   assert.equal(bot.middlewares[0].options.keepAlive, true);
   assert.equal(bot.middlewares[0].options.predicate({ message: { senderId: 'owner' } }), true);
   assert.equal(bot.middlewares[0].options.predicate({ message: { senderId: 'other' } }), false);
+  assert.equal(botOptions.markdownSupport, false);
   botOptions.logger.debug('raw gateway payload');
   botOptions.logger.info('gateway ready');
   assert.deepEqual(sdkLogs, [['info', 'gateway ready']]);

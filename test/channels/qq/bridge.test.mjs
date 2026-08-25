@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { ApiError } from '@tencent-connect/qqbot-nodejs';
 
 import {
   createQqBridgeStatus,
@@ -809,12 +810,17 @@ test('QQ remembers any authorized private inbound as a connection-test target', 
 });
 
 test('QQ private messages deliver the final answer as Markdown without opening a stream', async () => {
-  const sent = [];
+  const markdown = [];
+  const sentText = [];
   let streamCalls = 0;
   const seen = new Set();
   const bridge = new QqHarnessBridge({
     bot: {
-      sendText: async (_target, text) => sent.push(text),
+      send: async (options) => {
+        markdown.push(options);
+        return { message: { id: 'qq-private-markdown' } };
+      },
+      sendText: async (_target, text) => sentText.push(text),
       openStream: () => { streamCalls += 1; },
     },
     ownerUserOpenid: 'owner-openid',
@@ -838,11 +844,19 @@ test('QQ private messages deliver the final answer as Markdown without opening a
     },
   });
 
-  await bridge.accept(message());
-  assert.deepEqual(sent, ['最终回答']);
+  const receipt = await bridge.accept(message());
+  assert.equal(markdown.length, 1);
+  assert.equal(markdown[0].msgType, 2);
+  assert.equal(markdown[0].markdown.content, '最终回答');
+  assert.deepEqual(markdown[0].target, {
+    scope: 'c2c', targetId: 'owner-openid', msgId: 'msg-1',
+  });
+  assert.equal(Number.isInteger(markdown[0].extra.msg_seq), true);
+  assert.deepEqual(sentText, []);
   assert.equal(streamCalls, 0);
   assert.equal(seen.has('msg-1'), true);
   assert.equal(bridge.status.messagesReplied, 1);
+  assert.deepEqual(receipt.providerMessageIds, ['qq-private-markdown']);
 });
 
 test('QQ group messages suppress every successful progress update', async () => {
@@ -976,8 +990,20 @@ test('QQ falls back to plain text when the platform rejects markdown', async () 
   const sentText = [];
   const bridge = new QqHarnessBridge({
     bot: {
-      sendText: async (_target, text) => sentText.push(text),
-      send: async () => { throw new Error('markdown rejected'); },
+      sendText: async () => { throw new Error('fallback must explicitly use msg_type=0'); },
+      send: async (options) => {
+        if (options.msgType === 2) {
+          throw new ApiError(
+            'markdown rejected',
+            400,
+            '/v2/users/test/messages',
+            40_034_090,
+            'markdown rejected',
+          );
+        }
+        sentText.push(options.content);
+        return { id: 'plain-fallback' };
+      },
     },
     ownerUserOpenid: 'owner-openid',
     harness: {

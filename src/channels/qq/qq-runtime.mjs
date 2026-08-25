@@ -124,6 +124,9 @@ export class QqRuntime {
       logger: sdkLogger,
       transport: 'websocket',
       tokenPrefetch: 'sync',
+      // sendText is reserved for literal notices/connection tests. Markdown
+      // replies use the explicit msg_type=2 path in sendMarkdownReply().
+      markdownSupport: false,
     });
     if (!bot || typeof bot.start !== 'function' || typeof bot.stop !== 'function') {
       throw new TypeError('QQ bot factory returned an invalid client');
