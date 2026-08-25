@@ -10,7 +10,11 @@ import {
   EMPTY_AGENT_PRESET_CATALOG,
 } from '../../agent-preset.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
-import { BotStatusMeta, ChannelListHeading } from '../../channel-card-meta.js';
+import {
+  BotStatusMeta,
+  ChannelListHeading,
+  LastMessageErrorSummary,
+} from '../../channel-card-meta.js';
 import { installDingtalkStyles } from '../dingtalk/styles.js';
 import {
   WHATSAPP_ENDPOINTS,
@@ -345,6 +349,10 @@ export function WhatsappAccountCard({
               className: 'dim-cardAction', kind: 'danger', onClick: onRequestRemove, disabled: Boolean(busy),
             }, '移除接入')),
           summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
+          account.lastMessageError ? h(LastMessageErrorSummary, {
+            className: 'ddt-summary',
+            error: account.lastMessageError,
+          }) : null,
           testNotice ? h('div', {
             className: 'ddt-summary dim-cardFeedback',
             role: 'status',

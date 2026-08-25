@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createBotWorkspaceScope } from '../../../src/channels/shared/bot-workspace-store.mjs';
-import { HarnessClient } from '../../../src/channels/shared/harness-client.mjs';
+import {
+  HarnessClient,
+  HarnessTurnError,
+} from '../../../src/channels/shared/harness-client.mjs';
 import {
   OUTBOUND_ARTIFACT_TOOL,
   createOutboundArtifactTool,
@@ -312,6 +315,78 @@ function controlledTurn({ sessionId, initialEnd = false, controlExecutor } = {})
     },
   };
 }
+
+test('HarnessClient preserves structured turn failures for channel classification', async () => {
+  for (const [reason, expectedCode, expectedProviderCode] of [
+    [{ kind: 'error', error: { code: 'RATE_LIMIT', message: 'private provider detail' } },
+      'harness-turn-failed', 'RATE_LIMIT'],
+    [{ kind: 'max-tokens' }, 'model-max-tokens', undefined],
+    [{ kind: 'completed' }, 'model-empty-response', undefined],
+    ['completed', 'model-empty-response', undefined],
+    ['stopped', 'turn-interrupted', undefined],
+  ]) {
+    const turn = controlledTurn();
+    const asking = turn.client.ask(turn.id, 'work', { timeoutMs: 2_000 });
+    await turn.admitted;
+    turn.finish({ reason });
+    await assert.rejects(asking, (error) => {
+      assert.ok(error instanceof HarnessTurnError);
+      assert.equal(error.code, expectedCode);
+      assert.equal(error.providerCode, expectedProviderCode);
+      assert.equal(error.promptAccepted, true);
+      assert.doesNotMatch(error.message, /private provider detail/);
+      return true;
+    });
+  }
+});
+
+test('HarnessClient does not treat partial text from a failed turn as success', async () => {
+  for (const [reason, expectedCode, expectedProviderCode] of [
+    [{ kind: 'error', error: { code: 'RATE_LIMIT' } },
+      'harness-turn-failed', 'RATE_LIMIT'],
+    [{ kind: 'error', error: { code: 'CONTENT_FILTER' } },
+      'harness-turn-failed', 'CONTENT_FILTER'],
+    [{ kind: 'max-tokens' }, 'model-max-tokens', undefined],
+    [{ kind: 'blocked' }, 'turn-blocked', undefined],
+    ['interrupted', 'turn-interrupted', undefined],
+    ['stopped', 'turn-interrupted', undefined],
+    ['cancelled', 'turn-interrupted', undefined],
+    ['aborted', 'turn-aborted', undefined],
+  ]) {
+    const turn = controlledTurn();
+    const asking = turn.client.ask(turn.id, 'work', { timeoutMs: 2_000 });
+    await turn.admitted;
+    turn.finish({ text: 'partial result must not escape', reason });
+    await assert.rejects(asking, (error) => {
+      assert.ok(error instanceof HarnessTurnError);
+      assert.equal(error.code, expectedCode);
+      assert.equal(error.providerCode, expectedProviderCode);
+      return true;
+    });
+  }
+});
+
+test('HarnessClient accepts partial text only for completed or omitted end reasons', async () => {
+  for (const reason of ['completed', { kind: 'completed' }, null]) {
+    const turn = controlledTurn();
+    const asking = turn.client.ask(turn.id, 'work', { timeoutMs: 2_000 });
+    await turn.admitted;
+    turn.finish({ text: 'valid partial result', reason });
+    assert.equal(await asking, 'valid partial result');
+  }
+});
+
+test('HarnessClient marks a reply timeout after prompt admission', async () => {
+  const turn = controlledTurn();
+  const asking = turn.client.ask(turn.id, 'work', { timeoutMs: 1 });
+  await turn.admitted;
+  await assert.rejects(asking, (error) => {
+    assert.ok(error instanceof HarnessTurnError);
+    assert.equal(error.code, 'harness-reply-timeout');
+    assert.equal(error.promptAccepted, true);
+    return true;
+  });
+});
 
 test('control methods require exact owner identity, key, and Session before any RPC', async () => {
   const turn = controlledTurn();

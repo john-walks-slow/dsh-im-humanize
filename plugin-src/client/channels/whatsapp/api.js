@@ -1,4 +1,5 @@
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
+import { normalizeLastMessageError } from '../../last-message-error.js';
 
 export const WHATSAPP_RPC_CHANNEL = '/whatsapp';
 
@@ -106,6 +107,7 @@ function normalizeBot(value) {
         ? 'WhatsApp Web 关联设备运行正常' : 'WhatsApp 连接尚未就绪'),
       lastCheckedAt: timestamp(value.health?.lastCheckedAt),
     },
+    lastMessageError: normalizeLastMessageError(value.lastMessageError),
     error: isRecord(value.error) ? {
       code: text(value.error.code, 'WHATSAPP_ACCOUNT_ERROR', 80),
       message: text(value.error.message, 'WhatsApp 连接尚未就绪'),

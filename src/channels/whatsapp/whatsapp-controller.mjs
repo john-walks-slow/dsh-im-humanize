@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { connectionTestMessage } from '../shared/connection-test.mjs';
 import { t } from '../shared/i18n.mjs';
+import { publicMessageFailure } from '../shared/message-failure.mjs';
 import {
   deriveWhatsappBotId,
   maskWhatsappAccount,
@@ -285,6 +286,7 @@ export class WhatsappController {
           messagesReceived: runtimeStatus?.messagesReceived ?? 0,
           messagesReplied: runtimeStatus?.messagesReplied ?? 0,
         },
+        lastMessageError: publicMessageFailure(runtimeStatus?.lastMessageError),
         accessPolicy: normalizeWhatsappAccessPolicy(config),
         error: structuredClone(this.#errors.get(config.botId) ?? null),
       };

@@ -187,7 +187,7 @@ test('QQ runtime aborts an in-flight Harness interaction when stopped', async ()
 
 test('QQ runtime enables result-file delivery without per-bot configuration', async () => {
   const bot = new FakeBot();
-  const finished = deferred();
+  const askObserved = deferred();
   let onArtifact;
   const runtime = new QqRuntime({
     config: { botId: 'qq_bot', appId: 'app', ownerUserOpenid: 'owner' },
@@ -197,12 +197,13 @@ test('QQ runtime enables result-file delivery without per-bot configuration', as
       sessionExists: async () => true,
       ask: async (_sessionId, _text, options) => {
         onArtifact = options.onArtifact;
+        askObserved.resolve();
         return '完成';
       },
     },
     state: {
       hasSeen: () => false,
-      markSeen: async () => finished.resolve(),
+      markSeen: async () => {},
       sessionFor: () => 'session-existing',
       setSession: async () => {},
       clearSession: async () => {},
@@ -222,7 +223,7 @@ test('QQ runtime enables result-file delivery without per-bot configuration', as
     messageId: 'qq-artifact-gate',
     replyTarget: { scope: 'c2c', targetId: 'owner', msgId: 'qq-artifact-gate' },
   });
-  await finished.promise;
+  await askObserved.promise;
   assert.equal(typeof onArtifact, 'function');
   await runtime.stop();
 });

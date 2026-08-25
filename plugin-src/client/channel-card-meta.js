@@ -1,6 +1,20 @@
 import * as React from 'react';
 
-import { h } from './i18n.js';
+import { h, isEnglish } from './i18n.js';
+
+function messageErrorTime(value) {
+  try {
+    return new Intl.DateTimeFormat(isEnglish() ? 'en-US' : 'zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(value));
+  } catch {
+    return null;
+  }
+}
 
 export function ChannelListHeading({ className = '', id, title, connectionLabel }) {
   const helpId = React.useId();
@@ -45,4 +59,25 @@ export function BotStatusMeta({
     h('div', { className: 'dim-lastChecked' },
       h('span', null, '最近检查'),
       h('span', null, formatCheckedTime(lastCheckedAt))));
+}
+
+export function LastMessageErrorSummary({ className = '', error }) {
+  if (!error) return null;
+  const occurredAt = messageErrorTime(error.at);
+  return h('div', {
+    className: `${className} dim-cardSummary`.trim(),
+    role: 'status',
+  },
+  h('strong', null, '最近一条消息处理失败'),
+  '：',
+  h('span', null, error.message),
+  '（',
+  h('span', null, '错误码'),
+  ` ${error.code} · `,
+  h('span', null, '参考号'),
+  ` ${error.referenceId}`,
+  occurredAt ? h(React.Fragment, null,
+    ' · ',
+    h('time', { dateTime: new Date(error.at).toISOString() }, occurredAt)) : null,
+  '）');
 }

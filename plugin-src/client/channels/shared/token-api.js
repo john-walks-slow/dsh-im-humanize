@@ -1,4 +1,5 @@
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
+import { normalizeLastMessageError } from '../../last-message-error.js';
 
 const ACCOUNT_STATES = new Set(['connected', 'connecting', 'offline', 'error']);
 
@@ -68,6 +69,7 @@ export function createTokenChannelApi(channel, connectionSummary, {
         ),
         lastCheckedAt: timestamp(value.health?.lastCheckedAt),
       },
+      lastMessageError: normalizeLastMessageError(value.lastMessageError),
       error: isRecord(value.error) ? {
         code: text(value.error.code, `${channel.toUpperCase()}_ACCOUNT_ERROR`, 80),
         message: text(value.error.message, `${channel}连接尚未就绪`),

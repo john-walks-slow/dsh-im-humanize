@@ -830,7 +830,7 @@ export function createDingtalkApi({
             clientId: appKey,
             clientSecret: appSecret,
             cardInstanceId,
-            text: t('消息处理失败，请稍后重试。'),
+            text: t('卡片已结束，请查看后续消息。'),
             signal: cleanupSignal,
           }).catch(() => undefined);
         }

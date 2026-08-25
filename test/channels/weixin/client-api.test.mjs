@@ -62,6 +62,7 @@ test('Weixin client keeps only the public connection-test result', () => {
         code: 'attachment-error',
         reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
         message: '当前模型不支持图片。',
+        referenceId: 'MF-1A2B3C4D',
         at: 123,
         providerDetail: 'must-not-cross-client-normalization',
       },
@@ -76,6 +77,7 @@ test('Weixin client keeps only the public connection-test result', () => {
     code: 'attachment-error',
     reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
     message: '当前模型不支持图片。',
+    referenceId: 'MF-1A2B3C4D',
     at: 123,
   });
   assert.doesNotMatch(JSON.stringify(snapshot), /must-not-cross-client-normalization/);
@@ -89,6 +91,7 @@ test('Weixin account card shows the latest safe message-processing error', () =>
         code: 'attachment-error',
         reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
         message: '当前模型不支持图片，请用 /models 查看可用模型，再用 /model <序号> 切换后重发。',
+        referenceId: 'MF-1A2B3C4D',
         at: Date.now(),
       },
     },

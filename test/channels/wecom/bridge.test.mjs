@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  createWecomBridgeStatus,
   sendWecomImage,
   WecomHarnessBridge,
   wecomInboundMessage,
@@ -765,7 +766,8 @@ test('Enterprise WeChat bounds prefetched image memory while a conversation is q
   assert.equal(downloads.length, 4);
   assert.equal(prompts.length, 5);
   assert.equal(transport.streamed.some(({ content }) => (
-    content === '当前待处理图片较多，请稍后重新发送。'
+    content.startsWith('当前待处理图片较多，请稍后重新发送。')
+      && /错误码：INPUT_INVALID；参考号：MF-[A-F0-9]{8}$/.test(content)
   )), true);
 });
 
@@ -816,11 +818,96 @@ test('Enterprise WeChat finalizes an existing progress stream when Harness fails
   });
 
   await bridge.accept(frame());
-  assert.deepEqual(replies, [
-    { streamId: 'stream-failure', content: '正在思考中…', finish: false },
-    { streamId: 'stream-failure', content: '消息处理失败，请稍后重试。', finish: true },
-  ]);
+  assert.deepEqual(replies[0], {
+    streamId: 'stream-failure', content: '正在思考中…', finish: false,
+  });
+  assert.equal(replies[1].streamId, 'stream-failure');
+  assert.equal(replies[1].finish, true);
+  assert.match(replies[1].content, /任务未完成，暂时无法确定原因/);
+  assert.match(replies[1].content, /错误码：INTERNAL_UNKNOWN；参考号：MF-[A-F0-9]{8}$/);
   assert.equal(store.seen.has('msg-1'), true);
+});
+
+test('Enterprise WeChat exposes a structured model rate limit without changing connection state', async () => {
+  const transport = testClient();
+  const status = {
+    ...createWecomBridgeStatus(),
+    connected: true,
+    connectionState: 'connected',
+  };
+  const bridge = new WecomHarnessBridge({
+    client: transport.client,
+    generateStreamId: () => 'rate-limit-stream',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        const error = new Error('private Enterprise WeChat provider rate-limit detail');
+        error.code = 'harness-turn-failed';
+        error.providerCode = 'RATE_LIMIT';
+        throw error;
+      },
+    },
+    state: state(),
+    status,
+    logger: { error() {} },
+  });
+
+  await bridge.accept(frame({
+    msgid: 'wecom-rate-limit',
+    text: { content: '触发模型限流' },
+  }));
+
+  const failure = status.lastMessageError;
+  const visibleError = transport.streamed.at(-1).content;
+  assert.equal(failure.code, 'MODEL_RATE_LIMIT');
+  assert.equal(failure.reason, 'MODEL_RATE_LIMIT');
+  assert.match(failure.referenceId, /^MF-[A-F0-9]{8}$/);
+  assert.match(visibleError, /模型服务正在限流，本次任务未完成。请稍后重试。/);
+  assert.equal(visibleError.endsWith(`参考号：${failure.referenceId}`), true);
+  assert.doesNotMatch(visibleError, /private Enterprise WeChat provider rate-limit detail/);
+  assert.equal(status.connected, true);
+  assert.equal(status.connectionState, 'connected');
+});
+
+test('Enterprise WeChat does not resubmit a recorded prompt when the safe error reply fails', async () => {
+  const store = state();
+  let asks = 0;
+  let safeReplyAttempts = 0;
+  const bridge = new WecomHarnessBridge({
+    client: {
+      replyStream: async (_frame, _streamId, _content, finish) => {
+        if (!finish) return;
+        safeReplyAttempts += 1;
+        throw new Error('safe reply unavailable');
+      },
+      replyStreamNonBlocking: async () => {},
+      sendMessage: async () => {},
+    },
+    generateStreamId: () => 'safe-error-replay-stream',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        asks += 1;
+        const error = new Error('private provider failure');
+        error.code = 'harness-turn-failed';
+        error.providerCode = 'RATE_LIMIT';
+        throw error;
+      },
+    },
+    state: store,
+    logger: { error() {}, warn() {} },
+  });
+  const inbound = frame({
+    msgid: 'wecom-safe-error-replay',
+    text: { content: '请执行一次' },
+  });
+
+  await bridge.accept(inbound);
+  await bridge.accept(inbound);
+
+  assert.equal(asks, 1);
+  assert.equal(safeReplyAttempts, 1);
+  assert.equal(store.seen.has('wecom-safe-error-replay'), true);
 });
 
 test('an Enterprise WeChat answer bypasses the original conversation queue', async () => {
@@ -1600,6 +1687,9 @@ test('Enterprise WeChat sends registered files after the final text and continue
   assert.equal(uploads[1].bytes.toString(), '<h1>second</h1>');
   assert.equal(active.length, 1);
   assert.match(active[0].content, /first\.txt.*暂时未能/);
+  assert.equal(status.lastMessageError.code, 'CHANNEL_DELIVERY');
+  assert.equal(status.lastMessageError.reason, 'ARTIFACT_PROVIDER_FAILED');
+  assert.equal(active[0].content.endsWith(`参考号：${status.lastMessageError.referenceId}`), true);
   assert.doesNotMatch(active[0].content, /private provider detail/);
   assert.equal(status.artifactsSent, 1);
   assert.equal(status.artifactSendErrors, 1);
@@ -1655,6 +1745,8 @@ test('Enterprise WeChat still delivers registered files when final text delivery
   }]);
   assert.equal(finalTextAttempts, 1, 'must not append a generic retry stream after file success');
   assert.equal(activeTextAttempts, 1);
+  assert.equal(bridge.status.lastMessageError.code, 'CHANNEL_DELIVERY_UNCERTAIN');
+  assert.match(bridge.status.lastMessageError.referenceId, /^MF-[A-F0-9]{8}$/);
 });
 
 test('Enterprise WeChat returns the authoritative receipt and one safe notice when text and file delivery fail', async (t) => {
@@ -1754,7 +1846,9 @@ test('Enterprise WeChat keeps the generic error when no answer or file failure n
   await bridge.accept(frame({ msgid: 'wecom-no-visible-failure' }));
 
   assert.equal(attemptedActiveTexts.length, 2);
-  assert.deepEqual(finalStreamTexts, ['文字结果', '消息处理失败，请稍后重试。']);
+  assert.equal(finalStreamTexts[0], '文字结果');
+  assert.match(finalStreamTexts[1], /^回复发送结果未能确认/);
+  assert.match(finalStreamTexts[1], /错误码：CHANNEL_DELIVERY_UNCERTAIN；参考号：MF-[A-F0-9]{8}$/);
 });
 
 test('Enterprise WeChat reports an unacknowledged file message as uncertain', async (t) => {
@@ -1980,7 +2074,7 @@ test('Enterprise WeChat keeps a failed batch for retry and queues later ordinary
   await bridge.accept(frame({ msgid: 'retry-start', text: { content: '/batch' } }));
   await bridge.accept(frame({ msgid: 'retry-content', text: { content: '需要重试' } }));
   await bridge.accept(frame({ msgid: 'retry-send-1', text: { content: '/send' } }));
-  assert.match(transport.streamed.at(-1).content, /消息处理失败.*已保留 1 条消息/s);
+  assert.match(transport.streamed.at(-1).content, /错误码：INTERNAL_UNKNOWN.*已保留 1 条消息/s);
 
   const retry = bridge.accept(frame({ msgid: 'retry-send-2', text: { content: '/send' } }));
   await eventually(() => prompts.length === 2);

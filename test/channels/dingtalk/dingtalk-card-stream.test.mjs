@@ -194,6 +194,6 @@ test('a failed final frame closes the delivered card once and requests text fall
 
   assert.equal(fixtureValue.calls.finish.length, 1);
   assert.equal(fixtureValue.calls.fail.length, 1);
-  assert.equal(fixtureValue.calls.fail[0].text, '消息处理失败，请稍后重试。');
+  assert.equal(fixtureValue.calls.fail[0].text, '卡片已结束，请查看后续消息。');
   assert.notEqual(fixtureValue.calls.fail[0].signal, fixtureValue.calls.finish[0].signal);
 });

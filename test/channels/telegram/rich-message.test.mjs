@@ -564,11 +564,13 @@ test('shared bridge surfaces a definite final delivery failure without rerunning
       });
 
       assert.equal(prompts, 1);
-      assert.deepEqual(safeReplies, ['消息处理失败，请稍后重试。']);
+      assert.equal(safeReplies.length, 1);
+      assert.match(safeReplies[0], /回复已经生成，但当前渠道暂时无法发送/);
+      assert.match(safeReplies[0], /错误码：CHANNEL_DELIVERY；参考号：MF-[A-F0-9]{8}/);
       assert.equal(receipt.deliveryOutcome, 'failed');
       assert.equal(receipt.reason, 'telegram-403');
       assert.deepEqual(receipt.artifacts, []);
-      assert.match(bridge.status.lastError, /telegram-403/);
+      assert.equal(bridge.status.lastError, 'Channel message delivery failed');
     });
   }
 });
@@ -944,6 +946,7 @@ test('Telegram group processing failure replaces its placeholder instead of leav
   assert.equal(sent[0].text, '正在处理…');
   assert.equal(edits.length, 1);
   assert.equal(edits[0].messageId, 1401);
-  assert.equal(edits[0].text, '消息处理失败，请稍后重试。');
+  assert.match(edits[0].text, /任务未完成，暂时无法确定原因/);
+  assert.match(edits[0].text, /错误码：INTERNAL_UNKNOWN；参考号：MF-[A-F0-9]{8}/);
   assert.equal(Object.hasOwn(edits[0], 'richMessage'), false);
 });

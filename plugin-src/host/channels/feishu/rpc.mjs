@@ -4,6 +4,7 @@ import {
   normalizeAgentPresetId,
 } from '../../../../src/channels/shared/agent-preset.mjs';
 import { publicConnectionTestResult } from '../../../../src/channels/shared/connection-test.mjs';
+import { publicMessageFailure } from '../../../../src/channels/shared/message-failure.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
 import { validAgentPresetPayload } from '../shared/agent-preset-rpc.mjs';
@@ -281,6 +282,8 @@ function publicBotEntry(entry) {
     health: publicHealth(source, connected),
   };
   if (typeof source.workspace === 'string' && source.workspace) result.workspace = source.workspace;
+  const lastMessageError = publicMessageFailure(source.lastMessageError);
+  if (lastMessageError) result.lastMessageError = lastMessageError;
   const error = publicError(source.error);
   if (error) result.error = error;
   return result;

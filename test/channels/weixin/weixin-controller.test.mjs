@@ -86,6 +86,7 @@ test('confirmed QR login stores bot_token only in credentials and starts a redac
       code: 'attachment-error',
       reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
       message: '当前模型不支持图片。',
+      referenceId: 'MF-WX123456',
       at: 123,
       providerDetail: 'must-not-cross-controller-boundary',
     },
@@ -129,6 +130,7 @@ test('confirmed QR login stores bot_token only in credentials and starts a redac
     code: 'attachment-error',
     reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
     message: '当前模型不支持图片。',
+    referenceId: 'MF-WX123456',
     at: 123,
   });
   assert.doesNotMatch(publicJson, /must-not-cross-controller-boundary/);

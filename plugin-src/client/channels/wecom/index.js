@@ -10,7 +10,11 @@ import {
   EMPTY_AGENT_PRESET_CATALOG,
 } from '../../agent-preset.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
-import { BotStatusMeta, ChannelListHeading } from '../../channel-card-meta.js';
+import {
+  BotStatusMeta,
+  ChannelListHeading,
+  LastMessageErrorSummary,
+} from '../../channel-card-meta.js';
 import { installDingtalkStyles } from '../dingtalk/styles.js';
 import {
   WECOM_ENDPOINTS,
@@ -200,6 +204,10 @@ export function AccountCard({
             h(Button, { className: 'dim-cardAction', onClick: onReconnect, disabled: Boolean(busy) }, busy === 'reconnect' ? '检查中…' : account.connected ? '检查连接' : '重试连接'),
             h(Button, { className: 'dim-cardAction', kind: 'danger', onClick: onRequestRemove, disabled: Boolean(busy) }, '移除接入')),
           summary ? h('div', { className: 'ddt-summary dim-cardSummary' }, summary) : null,
+          account.lastMessageError ? h(LastMessageErrorSummary, {
+            className: 'ddt-summary',
+            error: account.lastMessageError,
+          }) : null,
           feedback ? h('div', {
             className: 'ddt-summary dim-cardFeedback',
             role: 'status',

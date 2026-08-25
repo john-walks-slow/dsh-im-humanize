@@ -32,6 +32,7 @@ import {
 } from '../shared/batch-input.mjs';
 import {
   hasInboundImages,
+  imagePromptDiagnostic,
   imagePromptUserMessage,
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
@@ -46,10 +47,15 @@ import {
   createDeliveryReceipt,
   providerMessageIdsFor,
 } from '../shared/semantic/delivery.mjs';
+import {
+  channelDeliveryFailure,
+  clearLastMessageFailure,
+  messageFailureText,
+  setLastMessageFailure,
+} from '../shared/message-failure.mjs';
 import { t } from '../shared/i18n.mjs';
 
 const CARD_INITIAL_TEXT = '已连接 DeepSeek Harness，正在思考…';
-const CARD_ERROR_TEXT = '消息处理失败，请稍后重试。';
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
 
 const HELP_TEXT_LINES = [
@@ -326,6 +332,7 @@ export function createDingtalkBridgeStatus({ pendingSenders = [] } = {}) {
     lastReplyAt: null,
     lastRejectedAt: null,
     lastError: null,
+    lastMessageError: null,
     pendingSenders: structuredClone(pendingSenders),
     stats: {
       messagesReceived: 0,
@@ -484,9 +491,13 @@ export class DingtalkHarnessBridge {
         commandRunner,
       ).catch((error) => {
         if (error?.code === 'turn-stopped' || this.#signal?.aborted) return;
-        this.#status.lastError = t('钉钉命令处理失败。');
-        this.#logger.error?.('[dsh-dingtalk] failed to process a command', safeErrorDiagnostic(error));
-        return this.#send(sessionWebhook, t(CARD_ERROR_TEXT)).catch(() => undefined);
+        this.#status.lastError = error?.message ?? String(error);
+        const failure = setLastMessageFailure(this.#status, error);
+        this.#logger.error?.(
+          `[dsh-dingtalk] failed to process a command [${failure.referenceId}]`,
+          safeErrorDiagnostic(error),
+        );
+        return this.#send(sessionWebhook, messageFailureText(failure)).catch(() => undefined);
       }).finally(() => {
         this.#acceptedMessageIds.delete(messageId);
         this.#commandTasks.delete(task);
@@ -659,9 +670,13 @@ export class DingtalkHarnessBridge {
       this.#status.lastError = null;
     }).catch(async (error) => {
       if (this.#signal?.aborted) return;
-      this.#status.lastError = t('钉钉命令处理失败。');
-      this.#logger.error?.('[dsh-dingtalk] failed to process a batch input message', safeErrorDiagnostic(error));
-      await this.#send(sessionWebhook, t(CARD_ERROR_TEXT)).catch(() => undefined);
+      this.#status.lastError = error?.message ?? String(error);
+      const failure = setLastMessageFailure(this.#status, error);
+      this.#logger.error?.(
+        `[dsh-dingtalk] failed to process a batch input message [${failure.referenceId}]`,
+        safeErrorDiagnostic(error),
+      );
+      await this.#send(sessionWebhook, messageFailureText(failure)).catch(() => undefined);
     }).finally(() => {
       this.#acceptedMessageIds.delete(messageId);
       this.#commandTasks.delete(task);
@@ -819,7 +834,7 @@ export class DingtalkHarnessBridge {
           });
         }
       } catch (error) {
-        textDeliveryError = error;
+        textDeliveryError = channelDeliveryFailure(error);
       }
       const delivery = await this.#deliverArtifacts(
         fileTarget(message, sender, this.#clientId),
@@ -829,9 +844,15 @@ export class DingtalkHarnessBridge {
         textReceipt,
       );
       if (textDeliveryError && !delivery.userVisible) throw textDeliveryError;
+      if (textDeliveryError && delivery.artifactSendErrors === 0) {
+        setLastMessageFailure(this.#status, textDeliveryError);
+      }
       increment(this.#status, 'messagesReplied');
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
+      if (!textDeliveryError && delivery.artifactSendErrors === 0) {
+        clearLastMessageFailure(this.#status);
+      }
       return delivery.receipt;
     } catch (error) {
       let batchFailureMessage = null;
@@ -848,15 +869,19 @@ export class DingtalkHarnessBridge {
         return;
       }
       if (this.#signal?.aborted) return;
-      this.#status.lastError = t('钉钉消息处理失败。');
+      this.#status.lastError = error?.message ?? String(error);
+      const userMessage = inboundFileUserMessage(error)
+        ?? dingtalkImageErrorUserMessage(error);
+      const failure = setLastMessageFailure(this.#status, error, {
+        userMessage,
+        reason: imagePromptDiagnostic(error)?.reason,
+      });
       this.#logger.error?.(
-        '[dsh-dingtalk] failed to process an inbound message',
+        `[dsh-dingtalk] failed to process an inbound message [${failure.referenceId}]`,
         safeErrorDiagnostic(error),
       );
       try {
-        const errorText = inboundFileUserMessage(error)
-          ?? dingtalkImageErrorUserMessage(error)
-          ?? t(CARD_ERROR_TEXT);
+        const errorText = messageFailureText(failure);
         const visibleError = batchFailureMessage
           ? `${errorText}\n\n${batchFailureMessage}`
           : errorText;
@@ -1201,9 +1226,13 @@ export class DingtalkHarnessBridge {
       sendFile: typeof this.#api.sendFile === 'function'
         ? (file) => sendArtifact('sendFile', file)
         : undefined,
-      sendFailureNotice: (artifact, error) => this.#send(
+      onFailure: (artifact, error) => setLastMessageFailure(this.#status, error, {
+        userMessage: artifactFailureText(artifact?.fileName, error),
+        reason: error?.code,
+      }),
+      sendFailureNotice: (_artifact, _error, failure) => this.#send(
         sessionWebhook,
-        artifactFailureText(artifact?.fileName, error),
+        messageFailureText(failure),
       ),
       logger: this.#logger,
     });
@@ -1211,7 +1240,11 @@ export class DingtalkHarnessBridge {
       + delivery.artifactsSent;
     this.#status.artifactSendErrors = (this.#status.artifactSendErrors ?? 0)
       + delivery.artifactSendErrors;
-    return { receipt: delivery.receipt, userVisible: delivery.userVisible };
+    return {
+      receipt: delivery.receipt,
+      userVisible: delivery.userVisible,
+      artifactSendErrors: delivery.artifactSendErrors,
+    };
   }
 }
 

@@ -477,6 +477,8 @@ test('Weixin still attempts a registered file when the final text transport fail
   assert.deepEqual(files, ['weixin-text-failed.txt']);
   assert.equal(textAttempts, 1, 'must not send a generic retry notice after the file succeeds');
   assert.equal(bridge.status.artifactsSent, 1);
+  assert.equal(bridge.status.lastMessageError.code, 'CHANNEL_DELIVERY_UNCERTAIN');
+  assert.match(bridge.status.lastMessageError.referenceId, /^MF-[A-F0-9]{8}$/);
   assert.deepEqual(receipt.providerMessageIds, ['weixin-file-after-text-failure']);
   assert.deepEqual(receipt.artifacts, [{ artifactId: 'weixin-artifact-one', outcome: 'sent' }]);
 });
@@ -515,10 +517,11 @@ test('Weixin tells users to inspect the chat instead of retrying an uncertain fi
 
   const receipt = await bridge.accept(message('weixin-artifact-uncertain', '生成文件'));
 
-  assert.equal(
-    sent.at(-1),
-    '结果文件「weixin-uncertain.txt」发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。',
-  );
+  const failure = bridge.status.lastMessageError;
+  assert.match(sent.at(-1), /^结果文件「weixin-uncertain\.txt」发送结果未能确认/);
+  assert.equal(failure.code, 'CHANNEL_DELIVERY_UNCERTAIN');
+  assert.equal(failure.reason, 'ARTIFACT_DELIVERY_UNCERTAIN');
+  assert.equal(sent.at(-1).endsWith(`参考号：${failure.referenceId}`), true);
   assert.doesNotMatch(sent.join('\n'), /private provider transport detail/);
   assert.equal(bridge.status.artifactSendErrors, 1);
   assert.deepEqual(receipt.artifacts, [{
@@ -614,7 +617,8 @@ test('Weixin returns a specific retry message when encrypted image loading fails
     item_list: [{ type: 2, image_item: { media: {} } }],
   }));
 
-  assert.equal(sent.at(-1).text, '图片下载失败，请重新发送后再试。');
+  assert.match(sent.at(-1).text, /^图片下载失败，请重新发送后再试。/);
+  assert.match(sent.at(-1).text, /错误码：INPUT_INVALID；参考号：MF-[A-F0-9]{8}$/);
   assert.equal(fixture.seen.has('weixin-image-error'), true);
 });
 
@@ -656,11 +660,13 @@ test('Weixin explains model image rejection and records only safe structured dia
   assert.match(sent.at(-1).text, /\/models/);
   assert.equal(fixture.seen.has('weixin-model-image-error'), true);
   assert.deepEqual(status.lastMessageError, {
-    code: 'attachment-error',
+    code: 'INPUT_INVALID',
     reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
-    message: sent.at(-1).text,
+    message: '当前模型不支持图片，请用 /models 查看可用模型，再用 /model <序号> 切换后重发。',
+    referenceId: status.lastMessageError.referenceId,
     at: status.lastMessageError.at,
   });
+  assert.match(status.lastMessageError.referenceId, /^MF-[A-F0-9]{8}$/);
   assert.equal(Number.isFinite(status.lastMessageError.at), true);
   assert.doesNotMatch(JSON.stringify(status.lastMessageError), /private|provider-token|providerDetail/);
 });
@@ -1619,7 +1625,7 @@ test('bridge rejects every user except the account owner returned by QR login', 
   assert.equal(status.messagesRejected, 1);
 });
 
-test('bridge commands are local and internal failures return a generic message', async () => {
+test('bridge commands are local and internal failures return a safe traceable message', async () => {
   const fixture = stateFixture();
   fixture.sessions.set('p2p:owner-user', 'old-session');
   const sent = [];
@@ -1642,15 +1648,97 @@ test('bridge commands are local and internal failures return a generic message',
   await bridge.accept(message('new', '/new'));
   assert.equal(fixture.sessions.has('p2p:owner-user'), false);
   await bridge.accept(message('failure', '触发失败'));
-  assert.match(sent.at(-1), /消息处理失败/);
+  assert.match(sent.at(-1), /任务未完成，暂时无法确定原因/);
+  assert.match(sent.at(-1), /错误码：INTERNAL_UNKNOWN；参考号：MF-[A-F0-9]{8}$/);
   assert.doesNotMatch(sent.at(-1), /private path|secret|token-shaped/);
   assert.deepEqual(status.lastMessageError, {
-    code: 'message-processing-failed',
-    reason: 'UNKNOWN',
-    message: '消息处理失败，请稍后重试。',
+    code: 'INTERNAL_UNKNOWN',
+    reason: 'INTERNAL_UNKNOWN',
+    message: '任务未完成，暂时无法确定原因。请重试；若持续发生，请将参考号提供给管理员。',
+    referenceId: status.lastMessageError.referenceId,
     at: status.lastMessageError.at,
   });
+  assert.match(status.lastMessageError.referenceId, /^MF-[A-F0-9]{8}$/);
   assert.doesNotMatch(JSON.stringify(status.lastMessageError), /private path|secret|token-shaped/);
+});
+
+test('Weixin exposes a structured model rate limit without changing connection state', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-rate-limit');
+  const sent = [];
+  const status = {
+    ...createWeixinBridgeStatus(),
+    connected: true,
+    connectionState: 'connected',
+  };
+  const bridge = new WeixinHarnessBridge({
+    api: { sendText: async ({ text }) => sent.push(text) },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        const error = new Error('private Weixin provider rate-limit detail');
+        error.code = 'harness-turn-failed';
+        error.providerCode = 'RATE_LIMIT';
+        throw error;
+      },
+    },
+    state: fixture.state,
+    status,
+    logger: { error() {} },
+  });
+
+  await bridge.accept(message('weixin-rate-limit', '触发模型限流'));
+
+  const failure = status.lastMessageError;
+  assert.equal(failure.code, 'MODEL_RATE_LIMIT');
+  assert.equal(failure.reason, 'MODEL_RATE_LIMIT');
+  assert.match(failure.referenceId, /^MF-[A-F0-9]{8}$/);
+  assert.match(sent.at(-1), /模型服务正在限流，本次任务未完成。请稍后重试。/);
+  assert.equal(sent.at(-1).endsWith(`参考号：${failure.referenceId}`), true);
+  assert.doesNotMatch(sent.at(-1), /private Weixin provider rate-limit detail/);
+  assert.equal(status.connected, true);
+  assert.equal(status.connectionState, 'connected');
+});
+
+test('Weixin does not resubmit a recorded prompt when the safe error reply fails', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-safe-error-replay');
+  let asks = 0;
+  let safeReplyAttempts = 0;
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      sendText: async () => {
+        safeReplyAttempts += 1;
+        throw new Error('safe reply unavailable');
+      },
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        asks += 1;
+        const error = new Error('private provider failure');
+        error.code = 'harness-turn-failed';
+        error.providerCode = 'RATE_LIMIT';
+        throw error;
+      },
+    },
+    state: fixture.state,
+    logger: { error() {} },
+  });
+  const inbound = message('weixin-safe-error-replay', '请执行一次');
+
+  await bridge.accept(inbound);
+  await bridge.accept(inbound);
+
+  assert.equal(asks, 1);
+  assert.equal(safeReplyAttempts, 1);
+  assert.equal(fixture.seen.has('weixin-safe-error-replay'), true);
 });
 
 test('Weixin batch input collects up to ten native text messages and submits one ordered turn', async () => {
@@ -1729,7 +1817,7 @@ test('Weixin batch cancellation is local and a failed submission remains retryab
   await bridge.accept(message('retry-start', '/batch'));
   await bridge.accept(message('retry-content', '需要重试'));
   await bridge.accept(message('retry-send-1', '/send'));
-  assert.match(sent.at(-1), /消息处理失败.*已保留 1 条消息/s);
+  assert.match(sent.at(-1), /错误码：INTERNAL_UNKNOWN.*已保留 1 条消息/s);
 
   await bridge.accept(message('retry-send-2', '/send'));
   assert.equal(attempts, 2);

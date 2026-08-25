@@ -73,6 +73,7 @@ export async function deliverOutboundArtifacts({
   sendFile,
   sendImage,
   sendFailureNotice,
+  onFailure,
   logger,
 }) {
   const receipts = baseReceipt ? [baseReceipt] : [];
@@ -107,14 +108,20 @@ export async function deliverOutboundArtifacts({
       } catch (error) {
         if (isAbort(error, signal)) throw error;
         artifactSendErrors += 1;
+        const failure = typeof onFailure === 'function'
+          ? await onFailure(artifact, error)
+          : null;
+        const reference = typeof failure?.referenceId === 'string'
+          ? ` [${failure.referenceId}]`
+          : '';
         logger?.warn?.(
-          `[dsh-im:${channelKey}] result artifact delivery failed (${error?.code ?? 'unknown'})`,
+          `[dsh-im:${channelKey}] result artifact delivery failed${reference} (${error?.code ?? 'unknown'})`,
         );
         let messageIds = [];
         if (typeof sendFailureNotice === 'function') {
           try {
             signal?.throwIfAborted();
-            const notice = await sendFailureNotice(artifact, error);
+            const notice = await sendFailureNotice(artifact, error, failure);
             signal?.throwIfAborted();
             messageIds = providerIds(notice);
             failureNoticeVisible = true;

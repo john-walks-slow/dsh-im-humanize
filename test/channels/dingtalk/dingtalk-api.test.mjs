@@ -792,6 +792,11 @@ test('AI Card creation closes a delivered card with an independent signal after 
 
   assert.equal(bodies.some((body) => body.isError === true), true);
   assert.equal(bodies.some((body) => body.cardData?.cardParamMap?.flowStatus === '5'), true);
+  assert.equal(bodies.some((body) => (
+    body.isError === true
+      && body.content === '卡片已结束，请查看后续消息。'
+  )), true);
+  assert.equal(JSON.stringify(bodies).includes('消息处理失败，请稍后重试。'), false);
 });
 
 test('text splitting prefers line boundaries and never produces oversized chunks', () => {

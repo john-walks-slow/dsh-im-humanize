@@ -14,7 +14,10 @@ import {
   createOutboundArtifactTool,
   releaseOutboundArtifact,
 } from '../../../src/channels/shared/semantic/artifact.mjs';
-import { TextHarnessBridge } from '../../../src/channels/shared/text-harness-bridge.mjs';
+import {
+  createTextBridgeStatus,
+  TextHarnessBridge,
+} from '../../../src/channels/shared/text-harness-bridge.mjs';
 import { SlackHarnessBridge } from '../../../src/channels/slack/slack-bridge.mjs';
 import { TelegramHarnessBridge } from '../../../src/channels/telegram/telegram-bridge.mjs';
 import { WhatsappHarnessBridge } from '../../../src/channels/whatsapp/whatsapp-bridge.mjs';
@@ -213,6 +216,123 @@ test('all four shared text channels execute /compact outside the model prompt pa
 
     assert.deepEqual(executed, [{ sessionId: `session-${name}`, line: '/compact' }]);
     assert.deepEqual(sent, ['已压缩 12 条历史记录（约 3456 个 token）。']);
+  }
+});
+
+test('all four shared text channels expose structured model rate limits without changing connection state', async () => {
+  for (const [name, Bridge] of [
+    ['slack', SlackHarnessBridge],
+    ['telegram', TelegramHarnessBridge],
+    ['discord', DiscordHarnessBridge],
+    ['whatsapp', WhatsappHarnessBridge],
+  ]) {
+    const fixture = stateFixture({ 'direct:chat-a': `session-${name}` });
+    const sent = [];
+    const status = {
+      ...createTextBridgeStatus(),
+      connected: true,
+      connectionState: 'connected',
+    };
+    const bridge = new Bridge({
+      bot: { sendText: async (_target, text) => sent.push(text) },
+      state: fixture.state,
+      status,
+      harness: {
+        sessionExists: async () => true,
+        ask: async () => {
+          const error = new Error('private provider rate-limit detail');
+          error.code = 'harness-turn-failed';
+          error.providerCode = 'RATE_LIMIT';
+          throw error;
+        },
+      },
+      logger: { error() {} },
+    });
+
+    await bridge.accept(message(`rate-limit-${name}`, '触发模型限流'));
+
+    const failure = status.lastMessageError;
+    assert.equal(failure.code, 'MODEL_RATE_LIMIT', name);
+    assert.equal(failure.reason, 'MODEL_RATE_LIMIT', name);
+    assert.match(failure.referenceId, /^MF-[A-F0-9]{8}$/, name);
+    assert.match(sent.at(-1), /模型服务正在限流，本次任务未完成。请稍后重试。/, name);
+    assert.equal(sent.at(-1).endsWith(`参考号：${failure.referenceId}`), true, name);
+    assert.doesNotMatch(sent.at(-1), /private provider rate-limit detail/, name);
+    assert.equal(status.connected, true, name);
+    assert.equal(status.connectionState, 'connected', name);
+  }
+});
+
+test('all four shared text channels retain a traceable artifact failure until a clean turn succeeds', async (t) => {
+  for (const [name, Bridge] of [
+    ['slack', SlackHarnessBridge],
+    ['telegram', TelegramHarnessBridge],
+    ['discord', DiscordHarnessBridge],
+    ['whatsapp', WhatsappHarnessBridge],
+  ]) {
+    const failedArtifact = await committedArtifact(
+      t,
+      `${name}-blocked.txt`,
+      'blocked',
+      `${name}-blocked`,
+    );
+    const sentArtifact = await committedArtifact(
+      t,
+      `${name}-sent.txt`,
+      'sent',
+      `${name}-sent`,
+    );
+    const fixture = stateFixture();
+    const sent = [];
+    const status = {
+      ...createTextBridgeStatus(),
+      connected: true,
+      connectionState: 'connected',
+    };
+    let askCount = 0;
+    const bridge = new Bridge({
+      bot: {
+        sendText: async (_target, text) => {
+          sent.push(text);
+          return { id: `${name}-text-${sent.length}` };
+        },
+        sendFile: async (_target, file) => {
+          if (file.fileName.endsWith('-blocked.txt')) {
+            const error = new Error('private permission detail');
+            error.code = 'artifact-permission-required';
+            throw error;
+          }
+          return { id: `${name}-file` };
+        },
+      },
+      state: fixture.state,
+      status,
+      harness: {
+        createSession: async () => `session-${name}`,
+        sessionExists: async () => true,
+        ask: async (_sessionId, _text, options) => {
+          const artifact = askCount === 0 ? failedArtifact : sentArtifact;
+          askCount += 1;
+          await options.onArtifact(artifact);
+          return '文件已生成。';
+        },
+      },
+      logger: { warn() {}, error() {} },
+    });
+
+    await bridge.accept(message(`artifact-failed-${name}`, '生成文件'));
+
+    const failure = status.lastMessageError;
+    assert.equal(failure.code, 'CHANNEL_PERMISSION', name);
+    assert.equal(failure.reason, 'ARTIFACT_PERMISSION_REQUIRED', name);
+    assert.match(failure.referenceId, /^MF-[A-F0-9]{8}$/, name);
+    assert.equal(sent.at(-1).endsWith(`参考号：${failure.referenceId}`), true, name);
+    assert.doesNotMatch(sent.at(-1), /private permission detail/, name);
+    assert.equal(status.connected, true, name);
+    assert.equal(status.connectionState, 'connected', name);
+
+    await bridge.accept(message(`artifact-clean-${name}`, '再生成一个文件'));
+    assert.equal(status.lastMessageError, null, `${name} clears the prior failure after a clean turn`);
   }
 });
 
@@ -703,7 +823,9 @@ test('shared text bridge reports a safe native-file download failure', async () 
     files: [{ name: 'failed.txt', load: async () => Buffer.from('unused') }],
   }));
 
-  assert.deepEqual(sent, ['文件下载失败，请重新发送后再试。']);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /^文件下载失败，请重新发送后再试。/);
+  assert.match(sent[0], /错误码：INPUT_INVALID；参考号：MF-[A-F0-9]{8}$/);
   assert.doesNotMatch(sent[0], /secret|token|https:/i);
 });
 
@@ -898,6 +1020,93 @@ test('a stopped shared-channel turn closes an opened stream instead of leaving a
   assert.deepEqual(sent, []);
 });
 
+test('a failed shared-channel turn finalizes an editable stream when fail is unavailable', async () => {
+  const fixture = stateFixture({ 'direct:chat-a': 'session-failed-stream' });
+  const finished = [];
+  const sent = [];
+  let cancelled = 0;
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: {
+      sendText: async (_target, text) => sent.push(text),
+      openStream: async () => ({
+        update() {},
+        async finish(text) { finished.push(text); },
+        cancel() { cancelled += 1; },
+      }),
+    },
+    harness: {
+      workspaceSession: () => ({
+        sessionExists: async () => true,
+        ask: async () => {
+          const error = new Error('private provider rate-limit details');
+          error.code = 'harness-turn-failed';
+          error.providerCode = 'RATE_LIMIT';
+          throw error;
+        },
+      }),
+    },
+  });
+
+  await bridge.accept(message('failed-editable-stream', '执行任务'));
+
+  assert.equal(finished.length, 1);
+  assert.match(finished[0], /模型服务正在限流/);
+  assert.match(finished[0], /错误码：MODEL_RATE_LIMIT；参考号：MF-[A-F0-9]{8}/);
+  assert.doesNotMatch(finished[0], /private provider rate-limit details/);
+  assert.equal(cancelled, 0);
+  assert.deepEqual(sent, []);
+});
+
+test('an unknown final delivery receipt is reported without rerunning the prompt', async () => {
+  const fixture = stateFixture({ 'direct:chat-a': 'session-unknown-delivery' });
+  const notices = [];
+  let asks = 0;
+  const status = {
+    ...createTextBridgeStatus(),
+    connected: true,
+    connectionState: 'connected',
+  };
+  const bridge = new TextHarnessBridge({
+    descriptor: { key: 'test', label: 'Test' },
+    state: fixture.state,
+    status,
+    bot: {
+      sendDelivery: async () => ({
+        presentation: 'test-final',
+        providerMessageIds: ['possibly-sent-answer'],
+        deliveryOutcome: 'unknown',
+        reason: 'provider-timeout',
+      }),
+      sendText: async (_target, text) => {
+        notices.push(text);
+        return { providerMessageIds: ['uncertain-notice'] };
+      },
+    },
+    harness: {
+      workspaceSession: () => ({
+        sessionExists: async () => true,
+        ask: async () => {
+          asks += 1;
+          return '可能已经送达的回答';
+        },
+      }),
+    },
+    logger: { warn() {}, error() {} },
+  });
+
+  const receipt = await bridge.accept(message('unknown-final-delivery', '回答问题'));
+
+  assert.equal(asks, 1);
+  assert.equal(status.lastMessageError.code, 'CHANNEL_DELIVERY_UNCERTAIN');
+  assert.match(notices.at(-1), /发送结果未能确认.*不要立即重复提交/);
+  assert.equal(notices.at(-1).endsWith(`参考号：${status.lastMessageError.referenceId}`), true);
+  assert.deepEqual(receipt.providerMessageIds, ['possibly-sent-answer']);
+  assert.equal(receipt.deliveryOutcome, 'unknown');
+  assert.equal(status.connected, true);
+  assert.equal(status.connectionState, 'connected');
+});
+
 test('shared text artifact delivery sends text first and each materialized file in order', async (t) => {
   const first = await committedArtifact(t, 'result.html', '<h1>result</h1>', 'success-html');
   const second = await committedArtifact(t, 'notes.txt', 'notes', 'success-text');
@@ -1011,6 +1220,8 @@ test('shared text delivery still attempts registered files when its final text c
   assert.deepEqual(texts, ['文字回答']);
   assert.equal(bridge.status.artifactsSent, 1);
   assert.equal(bridge.status.messagesReplied, 1);
+  assert.equal(bridge.status.lastMessageError.code, 'CHANNEL_DELIVERY_UNCERTAIN');
+  assert.match(bridge.status.lastMessageError.referenceId, /^MF-[A-F0-9]{8}$/);
   assert.deepEqual(receipt.providerMessageIds, ['file-after-text-failure']);
   assert.deepEqual(receipt.artifacts, [{ artifactId: 'text-failed-1', outcome: 'sent' }]);
 });

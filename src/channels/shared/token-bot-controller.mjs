@@ -1,5 +1,6 @@
 import { connectionTestMessage } from './connection-test.mjs';
 import { t } from './i18n.mjs';
+import { publicMessageFailure } from './message-failure.mjs';
 
 function cleanString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -291,6 +292,7 @@ export class TokenBotController {
           messagesReceived: runtimeStatus?.messagesReceived ?? 0,
           messagesReplied: runtimeStatus?.messagesReplied ?? 0,
         },
+        lastMessageError: publicMessageFailure(runtimeStatus?.lastMessageError),
         error: structuredClone(this.#errors.get(config.botId) ?? null),
       };
     });

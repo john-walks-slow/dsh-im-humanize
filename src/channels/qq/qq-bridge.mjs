@@ -29,6 +29,7 @@ import {
 import {
   fetchImageBuffer,
   hasInboundImages,
+  imagePromptDiagnostic,
   imagePromptUserMessage,
   promptContentForMessage,
 } from '../shared/image-prompt.mjs';
@@ -45,6 +46,12 @@ import {
   createDeliveryReceipt,
   providerMessageIdsFor,
 } from '../shared/semantic/delivery.mjs';
+import {
+  channelDeliveryFailure,
+  clearLastMessageFailure,
+  messageFailureText,
+  setLastMessageFailure,
+} from '../shared/message-failure.mjs';
 import { sendMarkdownReply } from './markdown-reply.mjs';
 import { t } from '../shared/i18n.mjs';
 
@@ -216,8 +223,14 @@ function answerTextForDelivery(answer, artifacts) {
 }
 
 function qqArtifactError(error, { dispatched = false } = {}) {
-  if (error?.code?.startsWith?.('artifact-') || error?.name === 'UploadDailyLimitExceededError') {
+  if (error?.code?.startsWith?.('artifact-')) {
     return error;
+  }
+  if (error?.name === 'UploadDailyLimitExceededError') {
+    const wrapped = new Error('QQ daily file upload limit exceeded', { cause: error });
+    wrapped.name = error.name;
+    wrapped.code = 'artifact-rate-limited';
+    return wrapped;
   }
   const status = Number(error?.httpStatus);
   const wrapped = new Error('QQ file delivery failed', { cause: error });
@@ -341,6 +354,7 @@ export function createQqBridgeStatus() {
     lastReplyAt: null,
     lastRejectedAt: null,
     lastError: null,
+    lastMessageError: null,
   };
 }
 
@@ -470,8 +484,12 @@ export class QqHarnessBridge {
       ).catch((error) => {
         if (error?.code === 'turn-stopped' || this.#signal?.aborted) return;
         this.#status.lastError = error?.message ?? String(error);
-        this.#logger.error?.('[dsh-im:qq] failed to process a command:', error);
-        return this.#bot.sendText(message.replyTarget, t('消息处理失败，请稍后重试。'))
+        const failure = setLastMessageFailure(this.#status, error);
+        this.#logger.error?.(
+          `[dsh-im:qq] failed to process a command [${failure.referenceId}]:`,
+          error,
+        );
+        return this.#bot.sendText(message.replyTarget, messageFailureText(failure))
           .catch(() => undefined);
       }).finally(() => {
         this.#acceptedMessageIds.delete(messageId);
@@ -614,8 +632,12 @@ export class QqHarnessBridge {
     }).catch(async (error) => {
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);
-      this.#logger.error?.('[dsh-im:qq] failed to process a batch input message:', error);
-      await this.#bot.sendText(message.replyTarget, t('消息处理失败，请稍后重试。'))
+      const failure = setLastMessageFailure(this.#status, error);
+      this.#logger.error?.(
+        `[dsh-im:qq] failed to process a batch input message [${failure.referenceId}]:`,
+        error,
+      );
+      await this.#bot.sendText(message.replyTarget, messageFailureText(failure))
         .catch(() => undefined);
     }).finally(() => {
       this.#acceptedMessageIds.delete(messageId);
@@ -627,7 +649,7 @@ export class QqHarnessBridge {
 
   async #deliverArtifacts(target, replyTo, artifacts = [], baseReceipt = null) {
     if (artifacts.length === 0) {
-      return { receipt: baseReceipt, failureNoticeVisible: false };
+      return { receipt: baseReceipt, failureNoticeVisible: false, artifactSendErrors: 0 };
     }
     const delivery = await deliverOutboundArtifacts({
       artifacts,
@@ -645,9 +667,13 @@ export class QqHarnessBridge {
         signal: this.#signal,
         timeoutMs: this.#fileUploadTimeoutMs,
       }),
-      sendFailureNotice: (artifact, error) => this.#bot.sendText(
+      onFailure: (artifact, error) => setLastMessageFailure(this.#status, error, {
+        userMessage: artifactFailureText(artifact?.fileName, error),
+        reason: error?.code,
+      }),
+      sendFailureNotice: (_artifact, _error, failure) => this.#bot.sendText(
         target,
-        artifactFailureText(artifact?.fileName, error),
+        messageFailureText(failure),
       ),
       logger: this.#logger,
     });
@@ -658,6 +684,7 @@ export class QqHarnessBridge {
     return {
       receipt: delivery.receipt,
       failureNoticeVisible: delivery.failureNoticeVisible,
+      artifactSendErrors: delivery.artifactSendErrors,
     };
   }
 
@@ -676,6 +703,12 @@ export class QqHarnessBridge {
       this.#status.messagesReceived += 1;
       this.#status.lastMessageAt = new Date().toISOString();
     }
+    let messageRecorded = alreadyRecorded;
+    const markMessageSeen = async () => {
+      if (messageRecorded) return;
+      await this.#state.markSeen(messageId);
+      messageRecorded = true;
+    };
     if (this.#ownerUserOpenid !== '*' && sender !== this.#ownerUserOpenid) {
       this.#status.messagesRejected += 1;
       this.#status.lastRejectedAt = new Date().toISOString();
@@ -694,25 +727,25 @@ export class QqHarnessBridge {
     try {
       if (!text && !hasImages && !hasFiles) {
         await this.#bot.sendText(target, t('目前支持文字、图片和文件消息。'));
-        await this.#state.markSeen(messageId);
+        await markMessageSeen();
         return;
       }
       const command = text.toLowerCase();
       if (!hasImages && !hasFiles && command === '/help') {
         await this.#bot.sendText(target, helpText());
-        await this.#state.markSeen(messageId);
+        await markMessageSeen();
         return;
       }
       if (!hasImages && !hasFiles && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
         await this.#bot.sendText(target, t('QQ 机器人与 DeepSeek Harness 连接正常。'));
-        await this.#state.markSeen(messageId);
+        await markMessageSeen();
         return;
       }
       if (!hasImages && !hasFiles && command === '/new') {
         await this.#state.clearSession(key);
         await this.#bot.sendText(target, t('已开启新会话。请发送你的问题。'));
-        await this.#state.markSeen(messageId);
+        await markMessageSeen();
         return;
       }
       const workspaceCommand = hasImages || hasFiles
@@ -722,7 +755,7 @@ export class QqHarnessBridge {
         for (const reply of workspaceCommand.messages ?? [workspaceCommand.message]) {
           await this.#bot.sendText(target, reply);
         }
-        await this.#state.markSeen(messageId);
+        await markMessageSeen();
         return;
       }
       const compactCommand = hasImages || hasFiles
@@ -736,7 +769,7 @@ export class QqHarnessBridge {
           );
       if (compactCommand) {
         await this.#bot.sendText(target, compactCommand.message);
-        await this.#state.markSeen(messageId);
+        await markMessageSeen();
         return;
       }
 
@@ -757,6 +790,9 @@ export class QqHarnessBridge {
       let answer;
       let artifacts = [];
       try {
+        // Persist consumption before handing the prompt to Harness. Provider
+        // redelivery after a failed error notice must never execute it twice.
+        await markMessageSeen();
         ({ answer, artifacts = [] } = await askInWorkspaceSession({
           harness: this.#harness,
           state: this.#state,
@@ -771,10 +807,13 @@ export class QqHarnessBridge {
             progressMode: 'all',
             onUpdate: (update) => {
               if (update.error) {
-                const label = nonEmptyString(update.toolName)
-                  ? `Tool call ${update.toolName}` : 'Tool call';
-                const text = `${label}\nError: ${update.error}`;
-                toolErrors.push(text);
+                const name = (nonEmptyString(update.toolName) ?? t('工具'))
+                  .replace(/[\r\n]+/gu, ' ')
+                  .slice(0, 80);
+                toolErrors.push(t(
+                  '工具调用「{name}」未成功，请检查工具配置或稍后重试。',
+                  { name },
+                ));
               }
             },
             onInteraction: (interaction) => this.#handleInteraction(interaction, {
@@ -836,7 +875,7 @@ export class QqHarnessBridge {
           });
         }
       } catch (error) {
-        textSendError = error;
+        textSendError = channelDeliveryFailure(error);
         this.#logger.warn?.('[dsh-im:qq] final text delivery failed; continuing with result files:', error);
       }
       const delivery = await this.#deliverArtifacts(target, messageId, artifacts, textReceipt);
@@ -846,10 +885,15 @@ export class QqHarnessBridge {
       if (textSendError && !artifactDispatched && !delivery.failureNoticeVisible) {
         throw textSendError;
       }
-      await this.#state.markSeen(messageId);
+      if (textSendError && delivery.artifactSendErrors === 0) {
+        setLastMessageFailure(this.#status, textSendError);
+      }
       this.#status.messagesReplied += 1;
       this.#status.lastReplyAt = new Date().toISOString();
       this.#status.lastError = null;
+      if (!textSendError && delivery.artifactSendErrors === 0) {
+        clearLastMessageFailure(this.#status);
+      }
       return delivery.receipt;
     } catch (error) {
       let batchFailureMessage = null;
@@ -872,7 +916,7 @@ export class QqHarnessBridge {
         } catch (sendError) {
           this.#logger.warn?.('[dsh-im:qq] unable to announce a stopped QQ turn:', sendError);
         }
-        await this.#state.markSeen(messageId);
+        await markMessageSeen();
         return;
       }
       try {
@@ -882,16 +926,23 @@ export class QqHarnessBridge {
       }
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);
-      this.#logger.error?.('[dsh-im:qq] failed to process an inbound message:', error);
+      const userMessage = inboundFileUserMessage(error)
+        ?? imagePromptUserMessage(error);
+      const failure = setLastMessageFailure(this.#status, error, {
+        userMessage,
+        reason: imagePromptDiagnostic(error)?.reason,
+      });
+      this.#logger.error?.(
+        `[dsh-im:qq] failed to process an inbound message [${failure.referenceId}]:`,
+        error,
+      );
       try {
-        const errorMessage = inboundFileUserMessage(error)
-          ?? imagePromptUserMessage(error)
-          ?? t('消息处理失败，请稍后重试。');
+        const errorMessage = messageFailureText(failure);
         await this.#bot.sendText(
           target,
           batchFailureMessage ? `${errorMessage}\n\n${batchFailureMessage}` : errorMessage,
         );
-        await this.#state.markSeen(messageId);
+        await markMessageSeen();
       } catch (sendError) {
         this.#logger.error?.('[dsh-im:qq] failed to send the safe error reply:', sendError);
       }
@@ -1166,11 +1217,15 @@ export class QqHarnessBridge {
   async #handleInteractionFailure(message, messageId, error) {
     if (this.#signal?.aborted) return;
     this.#status.lastError = error?.message ?? String(error);
-    this.#logger.error?.('[dsh-im:qq] failed to process an interaction reply:', error);
+    const failure = setLastMessageFailure(this.#status, error);
+    this.#logger.error?.(
+      `[dsh-im:qq] failed to process an interaction reply [${failure.referenceId}]:`,
+      error,
+    );
     if (!this.#state.hasSeen(messageId)) {
       await this.#state.markSeen(messageId).catch(() => undefined);
     }
-    await this.#bot.sendText(message.replyTarget, t('消息处理失败，请稍后重试。'))
+    await this.#bot.sendText(message.replyTarget, messageFailureText(failure))
       .catch(() => undefined);
   }
 }
