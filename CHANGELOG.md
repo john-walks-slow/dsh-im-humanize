@@ -6,6 +6,18 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-08-25
+
+### Added / 新增
+
+- 飞书、钉钉、Slack、Telegram、Discord 和 WhatsApp 现在会通过消息 Reaction 显示任务正在处理、成功或失败；Reaction 调用采用限时的尽力而为机制，不会阻塞正常回复。Slack App Manifest 同步加入 `reactions:write`，已有 App 需要重新授权或安装后再连接机器人。
+  Feishu, DingTalk, Slack, Telegram, Discord, and WhatsApp now use message reactions to show processing, success, or failure. Reaction calls are time-bounded and best-effort, so they never block normal replies. The Slack App Manifest now includes `reactions:write`; existing Apps must be re-authorized or reinstalled before reconnecting the bot.
+
+### Fixed / 修复
+
+- 当交互答案提交或后续交互问题发送失败时，消息会保留失败 Reaction，不再被外层处理流程覆盖为成功状态。
+  When submitting an interaction answer or presenting a follow-up interaction question fails, the message now retains its failure reaction instead of being overwritten as successful by the outer processing flow.
+
 ## [2.5.0] - 2026-08-25
 
 ### Added / 新增
@@ -326,7 +338,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.5.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v2.6.0...HEAD
+[2.6.0]: https://github.com/xmanrui/dsh-im/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/xmanrui/dsh-im/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/xmanrui/dsh-im/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/xmanrui/dsh-im/compare/v2.2.1...v2.3.0
