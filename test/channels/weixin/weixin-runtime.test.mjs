@@ -168,6 +168,80 @@ test('runtime sends a connection test to the bound Weixin owner without reply co
   await runtime.stop();
 });
 
+test('runtime cancels typing before notifying iLink that it stopped', async () => {
+  const events = [];
+  const seen = new Set();
+  let polls = 0;
+  const runtime = new WeixinRuntime({
+    api: {
+      notifyStart: async () => events.push({ type: 'notify-start' }),
+      notifyStop: async () => events.push({ type: 'notify-stop' }),
+      getConfig: async () => ({ typingTicket: 'typing-ticket' }),
+      sendTyping: async ({ status, signal }) => events.push({ type: 'typing', status, signal }),
+      sendText: async () => assert.fail('an aborted turn must not send a reply'),
+      getUpdates: async ({ signal }) => {
+        polls += 1;
+        if (polls === 1) {
+          return {
+            ret: 0,
+            msgs: [{
+              seq: 1,
+              message_id: 'runtime-typing-stop',
+              message_type: 1,
+              from_user_id: 'owner-user',
+              context_token: 'runtime-typing-context',
+              item_list: [{ type: 1, text_item: { text: '执行长任务' } }],
+            }],
+          };
+        }
+        return new Promise((_resolve, reject) => {
+          const onAbort = () => reject(signal.reason);
+          if (signal.aborted) onAbort();
+          else signal.addEventListener('abort', onAbort, { once: true });
+        });
+      },
+    },
+    config: {
+      botId: 'wx_typing_stop',
+      baseUrl: 'https://ilinkai.weixin.qq.com/',
+      ownerUserId: 'owner-user',
+    },
+    token: 'bot-token',
+    harness: {
+      ensureRunning: async () => true,
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+      }),
+    },
+    state: {
+      getUpdatesBuf: () => '',
+      setGetUpdatesBuf: async () => {},
+      hasSeen: (id) => seen.has(id),
+      markSeen: async (id) => seen.add(id),
+      sessionFor: () => 'session-runtime-typing-stop',
+      setSession: async () => {},
+      clearSession: async () => {},
+    },
+    logger: { warn() {}, error() {} },
+  });
+
+  await runtime.start();
+  await eventually(
+    () => events.some((event) => event.type === 'typing' && event.status === 1),
+    'the runtime should start the typing indicator',
+  );
+  await runtime.stop();
+
+  const cancellationIndex = events.findIndex(
+    (event) => event.type === 'typing' && event.status === 2,
+  );
+  const stopIndex = events.findIndex((event) => event.type === 'notify-stop');
+  assert.ok(cancellationIndex > -1);
+  assert.ok(cancellationIndex < stopIndex);
+  assert.equal(events[cancellationIndex].signal.aborted, false);
+});
+
 test('runtime verifies the token, consumes getUpdates, replies, persists cursor, and aborts on stop', async () => {
   const calls = [];
   let pollCount = 0;

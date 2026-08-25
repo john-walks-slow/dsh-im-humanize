@@ -637,6 +637,53 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
       }
     },
 
+    async getConfig({ baseUrl, token, toUserId, contextToken, signal }) {
+      const recipient = nonEmptyString(toUserId);
+      if (!recipient) throw new TypeError('toUserId is required');
+      const response = await requestJson(fetchImpl, {
+        method: 'POST',
+        baseUrl,
+        endpoint: 'ilink/bot/getconfig',
+        token,
+        signal,
+        timeoutMs: 10_000,
+        body: {
+          ilink_user_id: recipient,
+          ...(nonEmptyString(contextToken) ? { context_token: contextToken.trim() } : {}),
+          base_info: baseInfo(),
+        },
+      });
+      if (response?.ret !== undefined && response.ret !== 0) {
+        throw new WeixinApiError('config-rejected', '微信服务拒绝了机器人配置请求。');
+      }
+      return { typingTicket: nonEmptyString(response?.typing_ticket) };
+    },
+
+    async sendTyping({ baseUrl, token, toUserId, typingTicket, status, signal }) {
+      const recipient = nonEmptyString(toUserId);
+      const ticket = nonEmptyString(typingTicket);
+      if (!recipient || !ticket) throw new TypeError('toUserId and typingTicket are required');
+      if (status !== 1 && status !== 2) throw new TypeError('typing status must be 1 or 2');
+      const response = await requestJson(fetchImpl, {
+        method: 'POST',
+        baseUrl,
+        endpoint: 'ilink/bot/sendtyping',
+        token,
+        signal,
+        timeoutMs: 10_000,
+        body: {
+          ilink_user_id: recipient,
+          typing_ticket: ticket,
+          status,
+          base_info: baseInfo(),
+        },
+      });
+      if (response?.ret !== undefined && response.ret !== 0) {
+        throw new WeixinApiError('typing-rejected', '微信服务拒绝了输入状态请求。');
+      }
+      return true;
+    },
+
     async sendText({ baseUrl, token, toUserId, text, contextToken, runId, signal }) {
       const recipient = nonEmptyString(toUserId);
       const content = nonEmptyString(text);
