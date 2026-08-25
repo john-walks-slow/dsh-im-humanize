@@ -808,18 +808,14 @@ test('QQ remembers any authorized private inbound as a connection-test target', 
   assert.equal(sent.length, 2);
 });
 
-test('QQ private messages produce one final stream bubble', async () => {
+test('QQ private messages deliver the final answer as Markdown without opening a stream', async () => {
   const sent = [];
-  const frames = [];
+  let streamCalls = 0;
   const seen = new Set();
   const bridge = new QqHarnessBridge({
     bot: {
       sendText: async (_target, text) => sent.push(text),
-      openStream: () => ({
-        update: async (text) => frames.push(text),
-        complete: async () => frames.push('DONE'),
-        cancel() {},
-      }),
+      openStream: () => { streamCalls += 1; },
     },
     ownerUserOpenid: 'owner-openid',
     harness: {
@@ -843,42 +839,9 @@ test('QQ private messages produce one final stream bubble', async () => {
   });
 
   await bridge.accept(message());
-  assert.deepEqual(frames, ['最终回答', 'DONE']);
-  assert.deepEqual(sent, []);
+  assert.deepEqual(sent, ['最终回答']);
+  assert.equal(streamCalls, 0);
   assert.equal(seen.has('msg-1'), true);
-  assert.equal(bridge.status.messagesReplied, 1);
-});
-
-test('QQ does not duplicate a visible private answer when stream completion fails', async () => {
-  const frames = [];
-  const sent = [];
-  const bridge = new QqHarnessBridge({
-    bot: {
-      sendText: async (_target, text) => sent.push(text),
-      openStream: () => ({
-        update: async (text) => frames.push(text),
-        complete: async () => { throw new Error('already submitted'); },
-        cancel() {},
-      }),
-    },
-    ownerUserOpenid: 'owner-openid',
-    harness: {
-      sessionExists: async () => true,
-      ask: async () => '最终回答',
-    },
-    state: {
-      hasSeen: () => false,
-      markSeen: async () => {},
-      sessionFor: () => 'session-stream-complete-failure',
-      setSession: async () => {},
-      clearSession: async () => {},
-    },
-    logger: { warn() {}, error() {} },
-  });
-
-  await bridge.accept(message({ messageId: 'msg-stream-complete-failure' }));
-  assert.deepEqual(frames, ['最终回答']);
-  assert.deepEqual(sent, []);
   assert.equal(bridge.status.messagesReplied, 1);
 });
 

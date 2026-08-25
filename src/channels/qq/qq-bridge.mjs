@@ -776,16 +776,8 @@ export class QqHarnessBridge {
       const content = hasImages
         ? await promptContentForMessage(promptMessage, { signal: this.#signal })
         : undefined;
-      // QQ C2C keeps one stream bubble. Progress is collected but never submitted:
-      // some clients reject replacing an already visible stream frame, which would
-      // otherwise leave a stale progress bubble plus a separate fallback answer.
-      if (message.kind === 'c2c' && target?.msgId && typeof this.#bot.openStream === 'function') {
-        try {
-          stream = this.#bot.openStream({ target });
-        } catch (error) {
-          this.#logger.warn?.('[dsh-im:qq] unable to start a QQ stream; using markdown fallback:', error);
-        }
-      }
+      // QQ stream_messages can acknowledge a final frame without rendering it in
+      // some C2C clients. Standard Markdown delivery is the reliable reply path.
       const toolErrors = [];
       let answer;
       let artifacts = [];
