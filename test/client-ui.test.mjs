@@ -121,11 +121,10 @@ test('IM settings renders nine IM channels plus the AI Office connector', async 
   assert.match(markup, /让 DeepSeek Harness 触手可及/);
   assert.match(markup, /class="dim-brand"/);
   assert.equal(IM_PLUGIN_VERSION, packageVersion);
-  assert.match(markup, /class="dim-brand" tabindex="0" aria-describedby="[^"]+"/);
-  assert.match(markup, /<strong class="dim-brandName">DSH-IM<\/strong>/);
   assert.match(markup, new RegExp(
-    `class="dim-versionTooltip" role="tooltip"><span>当前版本<\\/span><strong>v${packageVersion.replaceAll('.', '\\.')}`,
+    `<div class="dim-brandHeading"><strong class="dim-brandName">DSH-IM<\\/strong><span class="dim-brandVersion">v${packageVersion.replaceAll('.', '\\.')}<\\/span><\\/div>`,
   ));
+  assert.doesNotMatch(markup, /dim-versionTooltip|当前版本/);
   assert.doesNotMatch(markup, /dim-brandLogo|<img/);
   assert.match(markup, /href="https:\/\/github\.com\/xmanrui\/dsh-im"/);
   assert.match(markup, /target="_blank"/);
@@ -135,11 +134,11 @@ test('IM settings renders nine IM channels plus the AI Office connector', async 
   assert.match(markup, /role="tooltip"[^>]*>帮助与反馈 · 前往 GitHub</);
   assert.match(styles, /\.dim-title \{[^}]*margin: 0 0 18px;/);
   assert.match(styles, /\.dim-title p \{[^}]*color: var\(--dsw-alias-label-secondary, #646a73\);[^}]*font-size: 12px;[^}]*font-weight: 500;/);
-  assert.match(styles, /\.dim-brand \{[^}]*position: relative;[^}]*display: flex;[^}]*flex-direction: column;[^}]*align-items: flex-start;[^}]*gap: 1px;[^}]*cursor: help;/);
-  assert.doesNotMatch(styles, /\.dim-brand:hover\s*\{[^}]*background:/);
+  assert.match(styles, /\.dim-brand \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*align-items: flex-start;[^}]*gap: 1px;/);
+  assert.match(styles, /\.dim-brandHeading \{[^}]*display: flex;[^}]*align-items: baseline;[^}]*gap: 8px;[^}]*white-space: nowrap;/);
   assert.match(styles, /\.dim-brandName \{[^}]*font-size: 20px;[^}]*font-weight: 800;[^}]*letter-spacing: \.04em;/);
-  assert.match(styles, /\.dim-versionTooltip \{[^}]*top: calc\(100% \+ 8px\);[^}]*display: inline-flex;[^}]*opacity: 0;[^}]*visibility: hidden;[^}]*transform: translateY\(-3px\);/);
-  assert.match(styles, /\.dim-brand:hover \.dim-versionTooltip, \.dim-brand:focus \.dim-versionTooltip \{[^}]*opacity: 1;[^}]*visibility: visible;/);
+  assert.match(styles, /\.dim-brandVersion \{[^}]*color: var\(--dsw-alias-label-tertiary, #8f959e\);[^}]*font: 500 10px\/16px[^}]*letter-spacing: 0;/);
+  assert.doesNotMatch(styles, /dim-versionTooltip|\.dim-brand:focus-visible/);
   assert.doesNotMatch(styles, /\.dim-brandLogo/);
   assert.match(styles, /\.dim-githubLink \{[^}]*border: 1px solid var\(--dsw-alias-border-l2, #dfe1e5\);[^}]*text-decoration: none;/);
   assert.match(styles, /\.dim-githubTooltip \{[^}]*top: calc\(100% \+ 8px\);[^}]*transform: translateY\(-3px\);/);
@@ -756,7 +755,7 @@ test('client registers one top-level bilingual IM settings section with a direct
     ));
     assert.match(markup, /Connecting DeepSeek Harness/);
     assert.match(markup, new RegExp(
-      `<span>Current version<\\/span><strong>v${IM_PLUGIN_VERSION.replaceAll('.', '\\.')}`,
+      `class="dim-brandVersion">v${IM_PLUGIN_VERSION.replaceAll('.', '\\.')}<\\/span>`,
     ));
     assert.match(markup, /Help &amp; feedback · Open GitHub/);
     assert.match(markup, />WeChat<|>Feishu<|>DingTalk<|>WeCom</);
