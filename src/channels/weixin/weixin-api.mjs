@@ -240,7 +240,8 @@ export function extractWeixinFiles(message, { fetchImpl = fetch } = {}) {
 
 function isWeixinHost(hostname) {
   const normalized = hostname.toLowerCase().replace(/\.$/, '');
-  return normalized === 'weixin.qq.com' || normalized.endsWith('.weixin.qq.com');
+  return normalized === 'weixin.qq.com' || normalized.endsWith('.weixin.qq.com')
+    || normalized === 'wechat.com' || normalized.endsWith('.wechat.com');
 }
 
 export function normalizeWeixinApiBaseUrl(value) {

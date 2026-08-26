@@ -74,7 +74,8 @@ export function safeVerificationUrl(value) {
     const url = new URL(value);
     const host = url.hostname.toLowerCase();
     return url.protocol === 'https:'
-      && (host === 'weixin.qq.com' || host.endsWith('.weixin.qq.com'))
+      && (host === 'weixin.qq.com' || host.endsWith('.weixin.qq.com')
+        || host === 'wechat.com' || host.endsWith('.wechat.com'))
       ? url.toString()
       : undefined;
   } catch {

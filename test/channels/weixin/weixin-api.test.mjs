@@ -652,7 +652,12 @@ test('Weixin URL, inbound text, and reply chunk helpers enforce their narrow for
     normalizeWeixinApiBaseUrl('https://ilinkai.weixin.qq.com/path'),
     'https://ilinkai.weixin.qq.com/path/',
   );
+  assert.equal(
+    normalizeWeixinApiBaseUrl('https://ilinkai.wechat.com/path'),
+    'https://ilinkai.wechat.com/path/',
+  );
   assert.throws(() => normalizeWeixinApiBaseUrl('https://ilinkai.weixin.qq.com:444/'));
+  assert.throws(() => normalizeWeixinApiBaseUrl('https://ilinkai.wechat.com.attacker.test/'));
   assert.equal(extractWeixinText({ item_list: [{ type: 1, text_item: { text: ' 你好 ' } }] }), '你好');
   assert.equal(extractWeixinText({ item_list: [{ type: 3, voice_item: { text: '语音转写' } }] }), '语音转写');
   assert.deepEqual(splitWeixinText('abcdefgh', 5), ['abcde', 'fgh']);
