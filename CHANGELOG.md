@@ -6,6 +6,13 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [3.0.5] - 2026-08-26
+
+### Fixed / 修复
+
+- 微信扫码绑定和消息接口现在同时信任腾讯的 `wechat.com` 国际域名及其子域名，国际环境下的二维码验证、登录重定向和消息连接不再被错误拒绝，同时继续拦截伪装后缀域名。
+  WeChat QR provisioning and messaging APIs now also trust Tencent's international `wechat.com` domain and its subdomains, preventing valid QR verification, login redirects, and message connections from being rejected in international environments while still blocking lookalike suffix domains.
+
 ## [3.0.4] - 2026-08-26
 
 ### Changed / 变更
@@ -389,7 +396,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.4...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.5...HEAD
+[3.0.5]: https://github.com/xmanrui/dsh-im/compare/v3.0.4...v3.0.5
 [3.0.4]: https://github.com/xmanrui/dsh-im/compare/v3.0.3...v3.0.4
 [3.0.3]: https://github.com/xmanrui/dsh-im/compare/v3.0.2...v3.0.3
 [3.0.2]: https://github.com/xmanrui/dsh-im/compare/v3.0.1...v3.0.2
