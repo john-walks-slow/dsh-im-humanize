@@ -257,13 +257,14 @@ Without a setting, Chinese is used. Chinese is always the fallback language — 
 
 ## Contact
 
-You can reach me by email, WeChat, or Xiaohongshu.
+You can reach me by email, WeChat, Xiaohongshu, or WhatsApp.
 
 <table>
   <tr>
     <th align="center">Email</th>
     <th align="center">WeChat</th>
     <th align="center">Xiaohongshu</th>
+    <th align="center">WhatsApp</th>
   </tr>
   <tr>
     <td align="center" valign="middle">
@@ -274,6 +275,9 @@ You can reach me by email, WeChat, or Xiaohongshu.
     </td>
     <td align="center" valign="top">
       <a href="docs/images/xhs.jpg"><img src="docs/images/xhs.jpg" alt="Xiaohongshu QR code" width="240"></a>
+    </td>
+    <td align="center" valign="top">
+      <a href="docs/images/WhatsApp.jpg"><img src="docs/images/WhatsApp.jpg" alt="WhatsApp QR code" width="240"></a>
     </td>
   </tr>
 </table>

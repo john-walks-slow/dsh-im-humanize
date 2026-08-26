@@ -260,13 +260,14 @@ IM 管理 RPC 默认仅接受回环浏览器。如果 Web profile 在受信任�
 
 ## 联系方式
 
-欢迎通过邮箱、微信或小红书联系我。
+欢迎通过邮箱、微信、小红书或 WhatsApp 联系我。
 
 <table>
   <tr>
     <th align="center">邮箱</th>
     <th align="center">微信</th>
     <th align="center">小红书</th>
+    <th align="center">WhatsApp</th>
   </tr>
   <tr>
     <td align="center" valign="middle">
@@ -277,6 +278,9 @@ IM 管理 RPC 默认仅接受回环浏览器。如果 Web profile 在受信任�
     </td>
     <td align="center" valign="top">
       <a href="docs/images/xhs.jpg"><img src="docs/images/xhs.jpg" alt="小红书二维码" width="240"></a>
+    </td>
+    <td align="center" valign="top">
+      <a href="docs/images/WhatsApp.jpg"><img src="docs/images/WhatsApp.jpg" alt="WhatsApp 二维码" width="240"></a>
     </td>
   </tr>
 </table>
