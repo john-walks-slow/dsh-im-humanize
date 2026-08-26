@@ -3,7 +3,6 @@ import { createHash, randomBytes } from 'node:crypto';
 import {
   areJidsSameUser,
   downloadMediaMessage,
-  jidNormalizedUser,
   normalizeMessageContent,
 } from '@whiskeysockets/baileys';
 
@@ -14,7 +13,6 @@ import { trackOutboundArtifactProviderPromise } from '../shared/semantic/artifac
 import { createWhatsappBridgeStatus, WhatsappHarnessBridge } from './whatsapp-bridge.mjs';
 import {
   WHATSAPP_ACCESS_MODES,
-  normalizeWhatsappAccountJid,
   normalizeWhatsappAccessPolicy,
 } from './config-store.mjs';
 import { createWhatsappWebSession } from './whatsapp-web-session.mjs';
@@ -206,21 +204,8 @@ export function createWhatsappMediaDownloader({
   });
 }
 
-function whatsappAccountMatcher(accountJid, aliases) {
-  const accountJids = new Set(
-    [accountJid, ...(Array.isArray(aliases) ? aliases : [])]
-      .map((jid) => normalizeWhatsappAccountJid(jidNormalizedUser(jid)))
-      .filter(Boolean),
-  );
-  return (jid) => {
-    const normalized = normalizeWhatsappAccountJid(jidNormalizedUser(jid));
-    return normalized !== null && accountJids.has(normalized);
-  };
-}
-
 export function normalizeWhatsappMessage(message, accountJid, {
   download = downloadMediaMessage,
-  accountAliases = [],
 } = {}) {
   const remoteJid = typeof message?.key?.remoteJid === 'string' ? message.key.remoteJid : '';
   const alternateRemoteJid = typeof message?.key?.remoteJidAlt === 'string'
@@ -230,9 +215,8 @@ export function normalizeWhatsappMessage(message, accountJid, {
     || remoteJid.endsWith('@newsletter')) return null;
   const group = remoteJid.endsWith('@g.us');
   const fromMe = message.key.fromMe === true;
-  const matchesAccount = whatsappAccountMatcher(accountJid, accountAliases);
   const selfChat = fromMe && !group
-    && [remoteJid, alternateRemoteJid].some(matchesAccount);
+    && [remoteJid, alternateRemoteJid].some((jid) => jid && areJidsSameUser(jid, accountJid));
   if (fromMe && !selfChat && !group) return null;
   const senderJid = fromMe ? accountJid : group ? message.key.participant : remoteJid;
   const senderAlternateJid = group && !fromMe ? message.key.participantAlt : alternateRemoteJid;
@@ -241,9 +225,9 @@ export function normalizeWhatsappMessage(message, accountJid, {
   const content = normalizeMessageContent(message.message);
   const context = messageContext(content);
   const mentioned = Array.isArray(context?.mentionedJid)
-    && context.mentionedJid.some(matchesAccount);
+    && context.mentionedJid.some((jid) => areJidsSameUser(jid, accountJid));
   const replyToSelf = typeof context?.participant === 'string'
-    && matchesAccount(context.participant);
+    && areJidsSameUser(context.participant, accountJid);
   const image = whatsappImageSource(message, content, download, { viewOnce });
   const file = whatsappFileSource(message, content, download);
   return {
@@ -251,7 +235,6 @@ export function normalizeWhatsappMessage(message, accountJid, {
     providerMessageId: messageId,
     senderId: senderJid,
     senderAlternateId: typeof senderAlternateJid === 'string' ? senderAlternateJid : '',
-    senderIsSelf: fromMe,
     senderIsBot: false,
     kind: group ? 'group' : 'direct',
     conversationId: remoteJid,
@@ -270,22 +253,12 @@ export function normalizeWhatsappMessage(message, accountJid, {
 export function whatsappInboundAllowed(message, {
   accessMode = WHATSAPP_ACCESS_MODES.selfOnly,
   allowedNumbers = new Set(),
-  groupAllowedNumbers = new Set(),
 } = {}) {
-  if (accessMode === WHATSAPP_ACCESS_MODES.open) {
-    if (message?.kind !== 'group' || message.senderIsSelf === true) return true;
-    if (!(groupAllowedNumbers instanceof Set)) return false;
-    if (groupAllowedNumbers.size === 0) return true;
-    const senderJids = [message.senderId, message.senderAlternateId]
-      .filter((jid) => typeof jid === 'string' && jid.endsWith('@s.whatsapp.net'));
-    return [...groupAllowedNumbers].some((number) => senderJids.some((jid) => (
-      areJidsSameUser(jid, `${number}@s.whatsapp.net`)
-    )));
-  }
+  if (accessMode === WHATSAPP_ACCESS_MODES.open) return true;
   if (message?.kind !== 'direct') return false;
   if (message.selfChat === true) return true;
-  if (accessMode !== WHATSAPP_ACCESS_MODES.privateAllowlist) return false;
-  if (!(allowedNumbers instanceof Set)) return false;
+  if (accessMode !== WHATSAPP_ACCESS_MODES.privateAllowlist
+    || !(allowedNumbers instanceof Set)) return false;
   const senderJids = [message.senderId, message.senderAlternateId]
     .filter((jid) => typeof jid === 'string' && jid.endsWith('@s.whatsapp.net'));
   return [...allowedNumbers].some((number) => senderJids.some((jid) => (
@@ -569,7 +542,6 @@ export class WhatsappRuntime {
   #mediaUploadTimeoutMs;
   #accessMode;
   #allowedPrivateNumbers;
-  #allowedGroupNumbers;
   #createSession;
   #status = createWhatsappRuntimeStatus();
   #abortController = null;
@@ -618,7 +590,6 @@ export class WhatsappRuntime {
     const policy = normalizeWhatsappAccessPolicy(value);
     this.#accessMode = policy.accessMode;
     this.#allowedPrivateNumbers = new Set(policy.allowedNumbers);
-    this.#allowedGroupNumbers = new Set(policy.groupAllowedNumbers);
     this.#config = { ...this.#config, ...policy };
     return policy;
   }
@@ -653,13 +624,7 @@ export class WhatsappRuntime {
           { code: 'relink-required' },
         )),
         onMessage: async (raw, context) => {
-          const linkedAccount = context?.socket?.user;
           const message = normalizeWhatsappMessage(raw, this.#config.accountJid, {
-            accountAliases: [
-              linkedAccount?.id,
-              linkedAccount?.lid,
-              linkedAccount?.phoneNumber,
-            ],
             download: createWhatsappMediaDownloader({
               socket: context?.socket,
               logger: this.#logger,
@@ -670,7 +635,6 @@ export class WhatsappRuntime {
           if (!whatsappInboundAllowed(message, {
             accessMode: this.#accessMode,
             allowedNumbers: this.#allowedPrivateNumbers,
-            groupAllowedNumbers: this.#allowedGroupNumbers,
           })) {
             this.#status.messagesRejected += 1;
             this.#status.lastRejectedAt = new Date().toISOString();

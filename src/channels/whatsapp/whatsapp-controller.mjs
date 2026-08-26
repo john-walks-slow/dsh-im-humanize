@@ -334,7 +334,6 @@ export class WhatsappController {
       connectedAt: new Date().toISOString(),
       accessMode: previous?.accessMode,
       allowedNumbers: previous?.allowedNumbers,
-      groupAllowedNumbers: previous?.groupAllowedNumbers,
     };
     try {
       if (record.controller.signal.aborted || this.#closed) throw Object.assign(new Error(), { name: 'AbortError' });

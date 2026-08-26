@@ -97,11 +97,6 @@ function normalizeBot(value) {
             typeof entry === 'string' && /^[1-9]\d{4,14}$/.test(entry)
           )))]
         : [],
-      groupAllowedNumbers: Array.isArray(value.accessPolicy?.groupAllowedNumbers)
-        ? [...new Set(value.accessPolicy.groupAllowedNumbers.filter((entry) => (
-            typeof entry === 'string' && /^[1-9]\d{4,14}$/.test(entry)
-          )))]
-        : [],
     },
     bot: {
       name: text(value.bot?.name, 'WhatsApp机器人', 100),

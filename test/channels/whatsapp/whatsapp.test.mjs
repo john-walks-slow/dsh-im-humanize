@@ -40,7 +40,6 @@ import {
 } from '../../../plugin-src/host/channels/whatsapp/rpc.mjs';
 
 const ACCOUNT_JID = '16505550123@s.whatsapp.net';
-const ACCOUNT_LID = '123456789012345@lid';
 const AUTH_DIRECTORY = '7fe8c17e-4fb7-4c5b-a9dc-c36525575dd1';
 
 function deferred() {
@@ -141,7 +140,6 @@ function linkedConfig(overrides = {}) {
     name: 'Harness WhatsApp',
     accessMode: WHATSAPP_ACCESS_MODES.open,
     allowedNumbers: [],
-    groupAllowedNumbers: [],
     createdAt: new Date().toISOString(),
     connectedAt: new Date().toISOString(),
     ...overrides,
@@ -165,31 +163,19 @@ test('WhatsApp migrates existing bots to self-only mode and validates access pol
   const legacy = linkedConfig();
   delete legacy.accessMode;
   delete legacy.allowedNumbers;
-  delete legacy.groupAllowedNumbers;
   await writeFile(path, `${JSON.stringify({ version: 2, bots: [legacy] })}\n`);
   const store = await new WhatsappConfigStore(path).load();
   assert.deepEqual(store.get(legacy.botId), {
     ...legacy,
     accessMode: WHATSAPP_ACCESS_MODES.selfOnly,
     allowedNumbers: [],
-    groupAllowedNumbers: [],
   });
   assert.deepEqual(normalizeWhatsappAccessPolicy({
     accessMode: WHATSAPP_ACCESS_MODES.privateAllowlist,
     allowedNumbers: ['+16505550999', '16505550999'],
-    groupAllowedNumbers: ['+33620607448', '33620607448'],
   }), {
     accessMode: WHATSAPP_ACCESS_MODES.privateAllowlist,
     allowedNumbers: ['16505550999'],
-    groupAllowedNumbers: ['33620607448'],
-  });
-  assert.deepEqual(normalizeWhatsappAccessPolicy({
-    accessMode: WHATSAPP_ACCESS_MODES.open,
-    allowedNumbers: ['16505550999'],
-  }), {
-    accessMode: WHATSAPP_ACCESS_MODES.open,
-    allowedNumbers: ['16505550999'],
-    groupAllowedNumbers: [],
   });
   assert.throws(() => normalizeWhatsappAccessPolicy({
     accessMode: 'compatible',
@@ -414,57 +400,7 @@ test('WhatsApp normalizes direct, linked-account, and explicitly mentioned group
   }, ACCOUNT_JID), null);
 });
 
-test('WhatsApp recognizes the linked account LID in group mentions and replies', () => {
-  const lidMention = normalizeWhatsappMessage({
-    key: {
-      remoteJid: '120363000000000002@g.us',
-      participant: '16505550999@s.whatsapp.net',
-      id: 'group-lid-mention',
-      fromMe: false,
-    },
-    message: {
-      extendedTextMessage: {
-        text: '@Harness question',
-        contextInfo: { mentionedJid: [`${ACCOUNT_LID.split('@')[0]}:9@lid`] },
-      },
-    },
-  }, ACCOUNT_JID, { accountAliases: [ACCOUNT_LID] });
-  assert.equal(lidMention.addressed, true);
-
-  const lidReply = normalizeWhatsappMessage({
-    key: {
-      remoteJid: '120363000000000002@g.us',
-      participant: '16505550999@s.whatsapp.net',
-      id: 'group-lid-reply',
-      fromMe: false,
-    },
-    message: {
-      extendedTextMessage: {
-        text: 'reply to the linked account',
-        contextInfo: { participant: `${ACCOUNT_LID.split('@')[0]}:9@lid` },
-      },
-    },
-  }, ACCOUNT_JID, { accountAliases: [ACCOUNT_LID] });
-  assert.equal(lidReply.addressed, true);
-
-  const unrelatedLidMention = normalizeWhatsappMessage({
-    key: {
-      remoteJid: '120363000000000002@g.us',
-      participant: '16505550999@s.whatsapp.net',
-      id: 'group-other-lid-mention',
-      fromMe: false,
-    },
-    message: {
-      extendedTextMessage: {
-        text: '@SomeoneElse question',
-        contextInfo: { mentionedJid: ['999999999999999@lid'] },
-      },
-    },
-  }, ACCOUNT_JID, { accountAliases: [ACCOUNT_LID] });
-  assert.equal(unrelatedLidMention.addressed, false);
-});
-
-test('WhatsApp access modes keep existing behavior and optionally restrict open group callers', () => {
+test('WhatsApp access modes allow self-chat, selected contacts, or the existing open behavior', () => {
   const direct = normalizeWhatsappMessage({
     key: {
       remoteJid: '987654321098765@lid',
@@ -495,16 +431,6 @@ test('WhatsApp access modes keep existing behavior and optionally restrict open 
     },
     message: { conversation: 'hello from the linked account' },
   }, ACCOUNT_JID);
-  const lidAddressedGroup = normalizeWhatsappMessage({
-    key: {
-      remoteJid: '120363000000000002@g.us',
-      participant: '987654321098765@lid',
-      participantAlt: '16505550999@s.whatsapp.net',
-      id: 'access-lid-group',
-      fromMe: false,
-    },
-    message: { conversation: 'hello from a LID-addressed member' },
-  }, ACCOUNT_JID);
 
   assert.equal(whatsappInboundAllowed(selfChat), true);
   assert.equal(whatsappInboundAllowed(direct), false);
@@ -519,34 +445,10 @@ test('WhatsApp access modes keep existing behavior and optionally restrict open 
     allowedNumbers: new Set(['16505550000']),
   }), false);
   assert.equal(whatsappInboundAllowed(group, {
-    accessMode: WHATSAPP_ACCESS_MODES.privateAllowlist,
-    allowedNumbers: new Set(['16505550999']),
-  }), false);
-  assert.equal(whatsappInboundAllowed(direct, {
     accessMode: WHATSAPP_ACCESS_MODES.open,
-    allowedNumbers: new Set(['16505550000']),
-    groupAllowedNumbers: new Set(['16505550001']),
-  }), true);
-  assert.equal(whatsappInboundAllowed(group, {
-    accessMode: WHATSAPP_ACCESS_MODES.open,
-  }), true);
-  assert.equal(whatsappInboundAllowed(group, {
-    accessMode: WHATSAPP_ACCESS_MODES.open,
-    allowedNumbers: new Set(['16505550000']),
-    groupAllowedNumbers: new Set(['16505550999']),
-  }), true);
-  assert.equal(whatsappInboundAllowed(group, {
-    accessMode: WHATSAPP_ACCESS_MODES.open,
-    allowedNumbers: new Set(['16505550999']),
-    groupAllowedNumbers: new Set(['16505550000']),
-  }), false);
-  assert.equal(whatsappInboundAllowed(lidAddressedGroup, {
-    accessMode: WHATSAPP_ACCESS_MODES.open,
-    groupAllowedNumbers: new Set(['16505550999']),
   }), true);
   assert.equal(whatsappInboundAllowed(linkedAccountGroup, {
     accessMode: WHATSAPP_ACCESS_MODES.open,
-    groupAllowedNumbers: new Set(['16505550000']),
   }), true);
 });
 
@@ -759,11 +661,7 @@ test('WhatsApp runtime filters messages before the bridge and applies policy upd
   assert.equal(runtime.status.ready, true);
   assert.equal(runtime.status.messagesRejected, 1);
   assert.equal(calls.length, 0);
-  runtime.setAccessPolicy({
-    accessMode: WHATSAPP_ACCESS_MODES.open,
-    allowedNumbers: [],
-    groupAllowedNumbers: [],
-  });
+  runtime.setAccessPolicy({ accessMode: WHATSAPP_ACCESS_MODES.open, allowedNumbers: [] });
   await callbacks.onMessage({
     key: { remoteJid: '16505550999@s.whatsapp.net', id: 'direct-3', fromMe: false },
     message: { conversation: 'hello again' },
@@ -771,95 +669,6 @@ test('WhatsApp runtime filters messages before the bridge and applies policy upd
   assert.ok(calls.some((call) => call[0] === 'presence' && call[1] === 'composing'));
   assert.ok(calls.some((call) => call[0] === 'message' && call[2].text === 'Harness answer'));
   await runtime.stop();
-});
-
-test('WhatsApp open mode uses the account LID and restricts group callers by phone number', async (t) => {
-  const groupJid = '120363000000000003@g.us';
-  let callbacks;
-  let askCount = 0;
-  const sent = [];
-  const socket = {
-    user: {
-      id: '16505550123:9@s.whatsapp.net',
-      lid: `${ACCOUNT_LID.split('@')[0]}:9@lid`,
-      name: 'Harness WhatsApp',
-    },
-    sendPresenceUpdate: async () => {},
-    readMessages: async () => {},
-    sendMessage: async (jid, content, options = {}) => {
-      sent.push({ jid, content, options });
-      return { key: { id: options.messageId ?? 'group-lid-reply' } };
-    },
-  };
-  const runtime = new WhatsappRuntime({
-    config: linkedConfig({
-      accessMode: WHATSAPP_ACCESS_MODES.open,
-      allowedNumbers: ['16505550000'],
-      groupAllowedNumbers: ['16505550999'],
-    }),
-    authDir: '/tmp/test-whatsapp-lid-group-mention',
-    harness: {
-      ensureRunning: async () => {},
-      sessionExists: async () => true,
-      ask: async () => {
-        askCount += 1;
-        return 'Harness LID answer';
-      },
-    },
-    state: artifactState('session-lid-group-mention'),
-    createSession: async (options) => {
-      callbacks = options;
-      return {
-        socket,
-        ready: Promise.resolve({ accountJid: ACCOUNT_JID, name: 'Harness WhatsApp' }),
-        close: async () => {},
-        logout: async () => {},
-      };
-    },
-  });
-  t.after(() => runtime.stop());
-  await runtime.start();
-
-  const mentioned = {
-    key: {
-      remoteJid: groupJid,
-      participant: '987654321098765@lid',
-      participantAlt: '16505550999@s.whatsapp.net',
-      id: 'runtime-group-lid-mention',
-      fromMe: false,
-    },
-    message: {
-      extendedTextMessage: {
-        text: '@Harness question',
-        contextInfo: { mentionedJid: [ACCOUNT_LID] },
-      },
-    },
-  };
-  await callbacks.onMessage(mentioned, { socket });
-
-  assert.equal(askCount, 1);
-  assert.ok(sent.some(({ jid, content }) => (
-    jid === groupJid && content.text === 'Harness LID answer'
-  )));
-
-  await callbacks.onMessage({
-    key: {
-      remoteJid: groupJid,
-      participant: '999999999999999@lid',
-      participantAlt: '16505550000@s.whatsapp.net',
-      id: 'runtime-group-disallowed-caller',
-      fromMe: false,
-    },
-    message: {
-      extendedTextMessage: {
-        text: '@Harness disallowed question',
-        contextInfo: { mentionedJid: [ACCOUNT_LID] },
-      },
-    },
-  }, { socket });
-
-  assert.equal(askCount, 1);
-  assert.equal(runtime.status.messagesRejected, 1);
 });
 
 test('WhatsApp open mode answers linked-account group messages without processing reply echoes', async (t) => {
@@ -1710,7 +1519,6 @@ test('WhatsApp QR controller and RPC keep the raw QR and linked identity host-on
       setAccessPolicy: (value) => appliedPolicies.push({
         accessMode: value.accessMode,
         allowedNumbers: value.allowedNumbers,
-        groupAllowedNumbers: value.groupAllowedNumbers,
       }),
     }),
     deleteAuth: async (name) => deletedAuth.push(name),
@@ -1735,31 +1543,26 @@ test('WhatsApp QR controller and RPC keep the raw QR and linked identity host-on
   assert.deepEqual(status.value.bots[0].accessPolicy, {
     accessMode: WHATSAPP_ACCESS_MODES.selfOnly,
     allowedNumbers: [],
-    groupAllowedNumbers: [],
   });
   assert.doesNotMatch(JSON.stringify(status.value), /16505550123@s\.whatsapp\.net|authDirectory/);
   const updated = await handler(WHATSAPP_ENDPOINTS.setAccessPolicy, {
     botId: status.value.bots[0].botId,
     accessMode: WHATSAPP_ACCESS_MODES.privateAllowlist,
     allowedNumbers: ['+16505550999'],
-    groupAllowedNumbers: ['+33620607448'],
   });
   assert.equal(updated.ok, true);
   assert.deepEqual(updated.value.bots[0].accessPolicy, {
     accessMode: WHATSAPP_ACCESS_MODES.privateAllowlist,
     allowedNumbers: ['16505550999'],
-    groupAllowedNumbers: ['33620607448'],
   });
   assert.deepEqual(appliedPolicies, [{
     accessMode: WHATSAPP_ACCESS_MODES.privateAllowlist,
     allowedNumbers: ['16505550999'],
-    groupAllowedNumbers: ['33620607448'],
   }]);
   const invalidPolicy = await handler(WHATSAPP_ENDPOINTS.setAccessPolicy, {
     botId: status.value.bots[0].botId,
     accessMode: 'compatible',
     allowedNumbers: [],
-    groupAllowedNumbers: [],
   });
   assert.equal(invalidPolicy.ok, false);
   assert.equal(invalidPolicy.error.code, 'bad-request');

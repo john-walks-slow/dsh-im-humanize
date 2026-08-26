@@ -37,8 +37,6 @@ function accessPolicyFor(account) {
     accessMode,
     allowedNumbers: Array.isArray(account?.accessPolicy?.allowedNumbers)
       ? account.accessPolicy.allowedNumbers : [],
-    groupAllowedNumbers: Array.isArray(account?.accessPolicy?.groupAllowedNumbers)
-      ? account.accessPolicy.groupAllowedNumbers : [],
   };
 }
 
@@ -54,39 +52,30 @@ function allowedNumbersFromText(value) {
 export function WhatsappAccessSettings({ account, busy = false, onSave }) {
   const policy = accessPolicyFor(account);
   const sourceNumbers = policy.allowedNumbers.join('\n');
-  const sourceGroupNumbers = policy.groupAllowedNumbers.join('\n');
   const helpId = React.useId();
   const [accessMode, setAccessMode] = React.useState(policy.accessMode);
   const [allowedNumbers, setAllowedNumbers] = React.useState(sourceNumbers);
-  const [groupAllowedNumbers, setGroupAllowedNumbers] = React.useState(sourceGroupNumbers);
   const [error, setError] = React.useState(null);
 
   React.useEffect(() => {
     setAccessMode(policy.accessMode);
     setAllowedNumbers(sourceNumbers);
-    setGroupAllowedNumbers(sourceGroupNumbers);
     setError(null);
-  }, [policy.accessMode, sourceNumbers, sourceGroupNumbers]);
+  }, [policy.accessMode, sourceNumbers]);
 
   const save = async (event) => {
     event.preventDefault();
     setError(null);
     try {
       const normalized = allowedNumbersFromText(allowedNumbers);
-      const normalizedGroup = allowedNumbersFromText(groupAllowedNumbers);
       if (typeof onSave !== 'function') throw new Error('WhatsApp 访问设置暂不可用。');
-      await onSave({
-        accessMode,
-        allowedNumbers: normalized,
-        groupAllowedNumbers: normalizedGroup,
-      });
+      await onSave({ accessMode, allowedNumbers: normalized });
     } catch (caught) {
       setError(caught?.message ?? 'WhatsApp 访问设置保存失败。');
     }
   };
 
   const allowlistEnabled = accessMode === 'private-allowlist';
-  const groupAllowlistEnabled = accessMode === 'open';
   const labels = {
     'self-only': '仅自己模式',
     'private-allowlist': '指定联系人模式',
@@ -114,7 +103,7 @@ export function WhatsappAccessSettings({ account, busy = false, onSave }) {
               h('span', null, '响应自聊和白名单联系人的私聊，忽略群聊。')),
             h('span', { className: 'dwa-accessTooltipItem' },
               h('strong', null, '开放响应模式'),
-              h('span', null, '响应所有私聊、已绑定账号自己发出的群聊消息，以及允许成员的提及或回复；群聊号码列表留空时允许所有群成员。')))))),
+              h('span', null, '响应所有私聊、已绑定账号自己发出的群聊消息，以及其他群成员的提及或回复。')))))),
     h('label', { className: 'dwa-accessField' },
       h('span', null, '模式'),
       h('select', {
@@ -126,28 +115,18 @@ export function WhatsappAccessSettings({ account, busy = false, onSave }) {
       h('option', { value: 'self-only' }, '仅自己模式（默认）'),
       h('option', { value: 'private-allowlist' }, '指定联系人模式'),
       h('option', { value: 'open' }, '开放响应模式'))),
-    (allowlistEnabled || groupAllowlistEnabled)
+    allowlistEnabled
       ? h('label', { className: 'dwa-accessField' },
-          h('span', null, allowlistEnabled
-            ? '允许私聊的 WhatsApp 电话号码'
-            : '允许在群聊中呼叫机器人的 WhatsApp 电话号码'),
+          h('span', null, '允许私聊的 WhatsApp 电话号码'),
           h('textarea', {
-            value: allowlistEnabled ? allowedNumbers : groupAllowedNumbers,
+            value: allowedNumbers,
             disabled: busy,
             rows: 3,
             placeholder: '每行一个含国家或地区代码的号码',
-            'aria-label': allowlistEnabled
-              ? '允许私聊的 WhatsApp 电话号码'
-              : '允许在群聊中呼叫机器人的 WhatsApp 电话号码',
-            onChange: (event) => {
-              if (allowlistEnabled) setAllowedNumbers(event.target.value);
-              else setGroupAllowedNumbers(event.target.value);
-              setError(null);
-            },
+            'aria-label': '允许私聊的 WhatsApp 电话号码',
+            onChange: (event) => { setAllowedNumbers(event.target.value); setError(null); },
           }),
-          h('small', null, allowlistEnabled
-            ? '可以包含开头的 +，保存时会自动移除。'
-            : '留空表示所有群成员都可以通过提及或回复呼叫机器人。'))
+          h('small', null, '可以包含开头的 +，保存时会自动移除。'))
       : null,
     allowlistEnabled && allowedNumbers.trim() === ''
       ? h('p', { className: 'dwa-accessWarning', role: 'status' },
