@@ -6,6 +6,17 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [3.0.3] - 2026-08-26
+
+### Fixed / 修复
+
+- WhatsApp 开放响应模式现在会正确识别群聊中的提及和回复，并使用与私聊联系人分开保存的群成员号码列表控制调用者；群成员列表为空时允许所有群成员。
+  WhatsApp Open responses now correctly recognize group mentions and replies and use a separately stored group-member number list to control callers; an empty group list allows every group member.
+- 机器人卡片在窄屏布局下仍会把连接状态保持在卡片右上角，不再移动到机器人信息下方。
+  Bot cards now keep connection status in the top-right corner on narrow layouts instead of moving it below the bot identity.
+- 企业微信流式回复现在会把思考过程与最终答案分开呈现，工具进度只更新思考区域，避免覆盖或混入答案正文。
+  WeCom streaming replies now present thinking separately from the final answer, with tool progress updating only the thinking area instead of overwriting or mixing into the answer body.
+
 ## [3.0.2] - 2026-08-26
 
 ### Fixed / 修复
@@ -371,7 +382,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.2...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.3...HEAD
+[3.0.3]: https://github.com/xmanrui/dsh-im/compare/v3.0.2...v3.0.3
 [3.0.2]: https://github.com/xmanrui/dsh-im/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/xmanrui/dsh-im/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/xmanrui/dsh-im/compare/v2.6.0...v3.0.0
