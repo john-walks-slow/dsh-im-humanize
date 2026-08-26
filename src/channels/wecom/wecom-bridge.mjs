@@ -296,10 +296,21 @@ function splitUtf8(text, maxBytes = MAX_REPLY_BYTES) {
   return chunks;
 }
 
-function progressText(update) {
-  if (update?.type === 'text') return update.text;
+function thinkingProgressText(update) {
   if (update?.type === 'tool') return t('正在使用{name}…', { name: update.name });
   return update?.text;
+}
+
+function streamContent(thinkingText, answerText = '', { finish = false } = {}) {
+  const thinking = String(thinkingText ?? '')
+    .replace(/<\/?think>/gi, '')
+    .trim();
+  const answer = String(answerText ?? '').trim();
+  if (!thinking) return answer;
+  const thinkBlock = finish || answer
+    ? `<think>${thinking}</think>`
+    : `<think>${thinking}`;
+  return answer ? `${thinkBlock}\n${answer}` : thinkBlock;
 }
 
 function artifactFailureText(fileName, error) {
@@ -867,6 +878,8 @@ export class WecomHarnessBridge {
     const key = conversationKey(frame);
     let streamId = null;
     let streamStarted = false;
+    let streamThinkingText = t('正在思考中…');
+    let streamAnswerText = '';
     let batchSettled = batchSubmission === null;
     let promptRecorded = false;
     try {
@@ -920,7 +933,12 @@ export class WecomHarnessBridge {
 
       streamId = this.#generateReqId('stream');
       try {
-        await this.#client.replyStream(frame, streamId, t('正在思考中…'), false);
+        await this.#client.replyStream(
+          frame,
+          streamId,
+          streamContent(streamThinkingText),
+          false,
+        );
         streamStarted = true;
       } catch (error) {
         this.#logger.warn?.('[dsh-im:wecom] unable to start a stream; using an active reply:', error);
@@ -945,8 +963,15 @@ export class WecomHarnessBridge {
           control: { owner: this, key },
           onUpdate: streamStarted && typeof this.#client.replyStreamNonBlocking === 'function'
             ? async (update) => {
-                const progress = splitUtf8(progressText(update))[0];
-                if (progress) await this.#client.replyStreamNonBlocking(frame, streamId, progress, false);
+                if (update?.type === 'text') {
+                  streamAnswerText = update.text;
+                } else {
+                  streamThinkingText = thinkingProgressText(update) || streamThinkingText;
+                }
+                const preview = splitUtf8(
+                  streamContent(streamThinkingText, streamAnswerText),
+                )[0];
+                if (preview) await this.#client.replyStreamNonBlocking(frame, streamId, preview, false);
               }
             : undefined,
           onInteraction: (interaction) => this.#handleInteraction(interaction, {
@@ -966,18 +991,20 @@ export class WecomHarnessBridge {
 
       this.#signal?.throwIfAborted();
       const displayAnswer = answerTextForDelivery(answer, artifacts);
-      const chunks = splitUtf8(displayAnswer);
+      const streamChunks = splitUtf8(
+        streamContent(streamThinkingText, displayAnswer, { finish: true }),
+      );
       let finalSent = false;
       let textReceipt = null;
       let textSendError = null;
       try {
-        if (streamStarted && chunks.length > 0) {
+        if (streamStarted && streamChunks.length > 0) {
           try {
             const providerMessageIds = [];
-            const streamed = await this.#client.replyStream(frame, streamId, chunks[0], true);
+            const streamed = await this.#client.replyStream(frame, streamId, streamChunks[0], true);
             const streamedMessageId = providerMessageId(streamed);
             if (streamedMessageId) providerMessageIds.push(streamedMessageId);
-            for (const chunk of chunks.slice(1)) {
+            for (const chunk of streamChunks.slice(1)) {
               const sent = await this.#client.sendMessage(
                 chatId,
                 { msgtype: 'markdown', markdown: { content: chunk } },
@@ -1040,7 +1067,12 @@ export class WecomHarnessBridge {
       }
       if (error?.code === 'turn-stopped') {
         if (streamStarted && streamId) {
-          await this.#client.replyStream(frame, streamId, t('已停止。'), true)
+          await this.#client.replyStream(
+            frame,
+            streamId,
+            streamContent(streamThinkingText, t('已停止。'), { finish: true }),
+            true,
+          )
             .catch(() => undefined);
         }
         if (!promptRecorded) await this.#state.markSeen(messageId);
@@ -1063,7 +1095,12 @@ export class WecomHarnessBridge {
         : errorText;
       try {
         if (streamStarted && streamId) {
-          await this.#client.replyStream(frame, streamId, visibleError, true);
+          await this.#client.replyStream(
+            frame,
+            streamId,
+            streamContent(streamThinkingText, visibleError, { finish: true }),
+            true,
+          );
         } else {
           await this.#sendImmediate(frame, chatId, visibleError);
         }
