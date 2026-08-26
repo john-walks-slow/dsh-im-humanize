@@ -6,6 +6,13 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-08-26
+
+### Fixed / 修复
+
+- 设置页现在会在 `DSH-IM` 品牌标题旁常驻显示当前插件版本，不再需要悬停或键盘聚焦才能查看。
+  The settings page now displays the current plugin version persistently beside the `DSH-IM` brand heading instead of requiring hover or keyboard focus.
+
 ## [3.0.1] - 2026-08-26
 
 ### Fixed / 修复
@@ -364,7 +371,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.2...HEAD
+[3.0.2]: https://github.com/xmanrui/dsh-im/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/xmanrui/dsh-im/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/xmanrui/dsh-im/compare/v2.6.0...v3.0.0
 [2.6.0]: https://github.com/xmanrui/dsh-im/compare/v2.5.0...v2.6.0
