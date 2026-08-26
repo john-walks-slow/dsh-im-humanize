@@ -184,6 +184,121 @@ test('WorkspaceEditor browses from the current path and saves the selected direc
   assert.equal(renderer.root.findByType('code').props.title, '/workspace/current/next project');
 });
 
+test('WorkspaceEditor navigates to arbitrary absolute paths across drives and UNC shares', async () => {
+  const start = 'C:\\Users\\alice\\project';
+  const targets = [
+    'D:\\projects\\bot',
+    '\\\\server\\share\\bot',
+    '/mnt/bot',
+  ];
+  const listed = [];
+  const saved = [];
+  const picker = {
+    async listDirectory(path) {
+      listed.push(path);
+      return {
+        path,
+        home: 'C:\\Users\\alice',
+        crumbs: [{ name: path, path, hidden: false }],
+        entries: [],
+        truncated: false,
+      };
+    },
+  };
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(WorkspaceEditor, {
+      workspace: start,
+      directoryPicker: picker,
+      async onSave(value) { saved.push(value); },
+    }));
+  });
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-workspaceEdit' }).props.onClick();
+    await flushMicrotasks();
+  });
+
+  const pathForm = renderer.root.findByProps({ className: 'dim-directoryPathForm' });
+  assert.equal(renderer.root.findByProps({ className: 'dim-directoryPathInput' }).props.value, start);
+  for (const target of targets) {
+    await act(async () => {
+      renderer.root.findByProps({ className: 'dim-directoryPathInput' }).props.onChange({
+        target: { value: target },
+      });
+    });
+    assert.equal(
+      renderer.root.findByProps({ className: 'dim-directoryPickerPrimary' }).props.disabled,
+      true,
+    );
+    await act(async () => {
+      pathForm.props.onSubmit({ preventDefault() {} });
+      await flushMicrotasks();
+    });
+    assert.equal(renderer.root.findByProps({ className: 'dim-directoryPathInput' }).props.value, target);
+    assert.equal(
+      renderer.root.findByProps({ className: 'dim-directoryPickerPrimary' }).props.disabled,
+      false,
+    );
+  }
+
+  assert.deepEqual(listed, [start, ...targets]);
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-directoryPickerPrimary' }).props.onClick();
+    await flushMicrotasks();
+  });
+  assert.deepEqual(saved, [targets.at(-1)]);
+});
+
+test('WorkspaceEditor keeps the prior folder unselectable when a typed path cannot be read', async () => {
+  const start = 'C:\\Users\\alice';
+  const missing = 'Z:\\missing';
+  const picker = {
+    async listDirectory(path) {
+      if (path === missing) {
+        const error = new Error('cannot read requested folder');
+        error.rpcError = { code: 'directory-unreadable', message: error.message, details: { path } };
+        throw error;
+      }
+      return {
+        path,
+        home: start,
+        crumbs: [{ name: 'Home', path, hidden: false }],
+        entries: [],
+        truncated: false,
+      };
+    },
+  };
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(WorkspaceEditor, {
+      workspace: start,
+      directoryPicker: picker,
+      async onSave() { throw new Error('must not save'); },
+    }));
+  });
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-workspaceEdit' }).props.onClick();
+    await flushMicrotasks();
+  });
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-directoryPathInput' }).props.onChange({
+      target: { value: missing },
+    });
+    await flushMicrotasks();
+  });
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-directoryPathForm' }).props.onSubmit({ preventDefault() {} });
+    await flushMicrotasks();
+  });
+
+  assert.equal(textOf(renderer.root.findByProps({ role: 'alert' })), 'cannot read requested folder');
+  assert.equal(renderer.root.findByProps({ className: 'dim-directoryPathInput' }).props.value, missing);
+  assert.equal(
+    renderer.root.findByProps({ className: 'dim-directoryPickerPrimary' }).props.disabled,
+    true,
+  );
+});
+
 test('WorkspaceEditor keeps the picker open and presents a rejected workspace error', async () => {
   const picker = {
     async listDirectory(path) {
@@ -386,6 +501,11 @@ test('WorkspaceEditor never translates Host filesystem names in the English UI',
   const directory = renderer.root.findByProps({ title: '/workspace/current/微信' });
   assert.equal(textOf(directory), '微信');
   assert.doesNotMatch(textOf(directory), /WeChat/);
+  assert.equal(
+    renderer.root.findByProps({ className: 'dim-directoryPathInput' }).props.placeholder,
+    'Enter a full absolute path on the Host',
+  );
+  assert.ok(buttonNamed(renderer.root, 'Go'));
   await act(async () => { renderer.unmount(); });
 });
 

@@ -48,6 +48,7 @@ export function WorkspaceDirectoryPicker({
   const [listing, setListing] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState(null);
+  const [pathDraft, setPathDraft] = React.useState(startPath ?? '');
   const [showHidden, setShowHidden] = React.useState(false);
   const [retryKey, setRetryKey] = React.useState(0);
   const requestRef = React.useRef(0);
@@ -56,6 +57,8 @@ export function WorkspaceDirectoryPicker({
   const bodyRef = React.useRef(null);
   const titleId = React.useId();
   const noticeId = React.useId();
+  const pathInputId = React.useId();
+  const errorId = React.useId();
   const initialPathRef = React.useRef(startPath);
   const onPickedRef = React.useRef(onPicked);
   const onCancelRef = React.useRef(onCancel);
@@ -78,6 +81,7 @@ export function WorkspaceDirectoryPicker({
       if (request !== requestRef.current || controller.signal.aborted) return { aborted: true };
       if (bodyRef.current) bodyRef.current.scrollTop = 0;
       setListing(next);
+      if (typeof next?.path === 'string') setPathDraft(next.path);
       setError(null);
       return { value: next };
     } catch (cause) {
@@ -94,6 +98,7 @@ export function WorkspaceDirectoryPicker({
     let active = true;
     setListing(null);
     setError(null);
+    setPathDraft(initialPathRef.current ?? '');
     setShowHidden(false);
     dialogRef.current?.focus?.();
     const handleKeyDown = (event) => {
@@ -145,6 +150,7 @@ export function WorkspaceDirectoryPicker({
   const entries = (listing?.entries ?? []).filter((entry) => showHidden || !entry.hidden);
   const crumbs = listing ? displayCrumbs(listing) : [];
   const presentedError = saveError ?? error;
+  const pathReady = listing !== null && pathDraft === listing.path;
 
   const content = h('div', {
     className: 'dim-directoryPickerBackdrop',
@@ -177,7 +183,40 @@ export function WorkspaceDirectoryPicker({
               ? h('span', null, '主目录')
               : (crumb.name || crumb.path)))),
         )
-      : h('p', null, '正在准备目录选择器…')),
+      : h('p', null, '正在准备目录选择器…'),
+    h('form', {
+      className: 'dim-directoryPathForm',
+      onSubmit: (event) => {
+        event.preventDefault();
+        if (!busy && !loading && pathDraft.trim()) void loadDirectory(pathDraft);
+      },
+    },
+      h('div', { className: 'dim-directoryPathMeta' },
+        h('label', { htmlFor: pathInputId }, '直接输入路径'),
+        h('span', null, '支持 Windows 盘符、UNC 与 POSIX 绝对路径。')),
+      h('div', { className: 'dim-directoryPathControl' },
+        h('input', {
+          id: pathInputId,
+          className: 'dim-directoryPathInput',
+          value: pathDraft,
+          placeholder: '输入 Host 上的完整绝对路径',
+          'aria-label': '工作区绝对路径',
+          'aria-describedby': presentedError ? errorId : undefined,
+          'aria-invalid': presentedError ? 'true' : undefined,
+          autoCapitalize: 'none',
+          autoCorrect: 'off',
+          spellCheck: false,
+          maxLength: 4_096,
+          disabled: busy || loading,
+          onChange: (event) => {
+            setPathDraft(event.target.value);
+            setError(null);
+          },
+        }),
+        h('button', {
+          type: 'submit',
+          disabled: busy || loading || !pathDraft.trim(),
+        }, loading ? '读取中…' : '前往')))),
   h('div', { ref: bodyRef, className: 'dim-directoryPickerBody', 'aria-busy': loading },
     loading && !listing
       ? h('div', { className: 'dim-directoryPickerState' },
@@ -201,7 +240,7 @@ export function WorkspaceDirectoryPicker({
     listing?.truncated
       ? h('p', { className: 'dim-directoryPickerTruncated' }, '此目录的子文件夹过多，仅显示前一部分。')
       : null,
-    presentedError ? h('div', { className: 'dim-directoryPickerError', role: 'alert' },
+    presentedError ? h('div', { id: errorId, className: 'dim-directoryPickerError', role: 'alert' },
       h('span', null, presentedError),
       !listing && !busy ? h('button', {
         type: 'button', onClick: () => setRetryKey((value) => value + 1),
@@ -222,7 +261,7 @@ export function WorkspaceDirectoryPicker({
       h('button', {
         type: 'button',
         className: 'dim-directoryPickerPrimary',
-        disabled: busy || loading || !listing,
+        disabled: busy || loading || !pathReady,
         onClick: () => listing && void onPicked(listing.path),
       }, busy ? '切换中…' : '选择此目录')))));
 
