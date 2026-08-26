@@ -208,6 +208,32 @@ test('sendText emits the iLink message envelope without reflecting the token in 
   assert.doesNotMatch(calls[0].init.body, /host-only-token/);
 });
 
+test('sendText preserves safe iLink business rejection codes', async (t) => {
+  for (const scenario of [
+    { response: { ret: -2 }, providerCode: '-2' },
+    { response: { errcode: 45009 }, providerCode: '45009' },
+  ]) {
+    await t.test(scenario.providerCode, async () => {
+      const api = createWeixinApi({
+        fetchImpl: async () => jsonResponse(scenario.response),
+      });
+
+      await assert.rejects(
+        api.sendText({
+          baseUrl: 'https://ilinkai.wechat.com',
+          token: 'host-only-token',
+          toUserId: 'wx-user',
+          text: 'Harness reply',
+          contextToken: 'message-context',
+        }),
+        (error) => error instanceof WeixinApiError
+          && error.code === 'send-rejected'
+          && error.providerCode === scenario.providerCode,
+      );
+    });
+  }
+});
+
 test('getConfig requests a typing ticket for the current Weixin conversation', async () => {
   const calls = [];
   const api = createWeixinApi({

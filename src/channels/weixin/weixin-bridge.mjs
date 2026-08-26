@@ -60,6 +60,7 @@ import { t } from '../shared/i18n.mjs';
 const INTERACTION_RESOLVED_TEXT = () => t('这个问题已在其他客户端处理，无需再次回答。');
 const DEFAULT_TYPING_KEEPALIVE_MS = 5_000;
 const TYPING_RETRY_DELAY_MS = 60_000;
+const WEIXIN_SEND_DIAGNOSTIC = Symbol('weixin-send-diagnostic');
 
 const HELP_TEXT = () => [
   t('微信已连接 DeepSeek Harness。'),
@@ -96,6 +97,82 @@ function conversationKey(userId) {
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function safeDiagnosticToken(value) {
+  const token = value === undefined || value === null ? '' : String(value).trim();
+  return /^-?[A-Za-z0-9_.:-]{1,160}$/u.test(token) ? token : '-';
+}
+
+function weixinApiHost(baseUrl) {
+  try {
+    return safeDiagnosticToken(new URL(baseUrl).hostname.toLowerCase());
+  } catch {
+    return '-';
+  }
+}
+
+function createWeixinSendDiagnostic({
+  baseUrl,
+  text,
+  chunk,
+  chunkIndex,
+  chunkCount,
+  maxMessageChars,
+  contextToken,
+  runId,
+  error,
+}) {
+  const status = Number(error?.status ?? error?.httpStatus);
+  const http = Number.isInteger(status)
+    ? String(status)
+    : error?.code === 'send-rejected' ? '2xx' : '-';
+  return [
+    'endpoint=sendmessage',
+    `host=${weixinApiHost(baseUrl)}`,
+    `chunk=${chunkIndex + 1}/${chunkCount}`,
+    `chunkChars=${chunk.length}`,
+    `chunkUtf8Bytes=${Buffer.byteLength(chunk, 'utf8')}`,
+    `totalChars=${text.length}`,
+    `totalUtf8Bytes=${Buffer.byteLength(text, 'utf8')}`,
+    `limitChars=${maxMessageChars}`,
+    `contextToken=${contextToken ? 'yes' : 'no'}`,
+    `runId=${runId ? 'yes' : 'no'}`,
+    `http=${http}`,
+    `provider=${safeDiagnosticToken(error?.providerCode)}`,
+    `cause=${safeDiagnosticToken(error?.code ?? error?.name)}`,
+  ].join(' ');
+}
+
+function weixinSendError(error, details) {
+  const diagnostic = createWeixinSendDiagnostic({ ...details, error });
+  const wrapped = new Error(`Weixin text delivery failed (${diagnostic})`, { cause: error });
+  const code = safeDiagnosticToken(error?.code);
+  wrapped.code = code === '-' ? 'weixin-send-failed' : code;
+  const status = Number(error?.status ?? error?.httpStatus);
+  if (Number.isInteger(status)) wrapped.status = status;
+  const providerCode = safeDiagnosticToken(error?.providerCode);
+  if (providerCode !== '-') wrapped.providerCode = providerCode;
+  wrapped[WEIXIN_SEND_DIAGNOSTIC] = diagnostic;
+  return wrapped;
+}
+
+function weixinSendFailureOptions(error) {
+  let current = error;
+  for (let depth = 0; current && depth < 5; depth += 1) {
+    const diagnostic = current[WEIXIN_SEND_DIAGNOSTIC];
+    if (typeof diagnostic === 'string' && diagnostic) {
+      return {
+        reason: 'weixin-send-failed',
+        userMessage: [
+          t('回复已经生成，但微信发送失败，可能只收到部分内容。请将下面的诊断信息完整反馈给管理员。'),
+          t('微信发送诊断：{diagnostic}', { diagnostic }),
+        ].join('\n'),
+      };
+    }
+    current = current.cause;
+  }
+  return undefined;
 }
 
 export function weixinInboundMessage(message, api) {
@@ -634,7 +711,11 @@ export class WeixinHarnessBridge {
       );
       if (textDeliveryError && !delivery.userVisible) throw textDeliveryError;
       if (textDeliveryError && delivery.artifactSendErrors === 0) {
-        setLastMessageFailure(this.#status, textDeliveryError);
+        setLastMessageFailure(
+          this.#status,
+          textDeliveryError,
+          weixinSendFailureOptions(textDeliveryError),
+        );
       }
       if (!promptRecorded) await this.#state.markSeen(messageId);
       this.#status.messagesReplied += 1;
@@ -663,9 +744,10 @@ export class WeixinHarnessBridge {
       const userMessage = inboundFileUserMessage(error)
         ?? imagePromptUserMessage(error);
       const imageDiagnostic = imagePromptDiagnostic(error);
+      const sendFailureOptions = weixinSendFailureOptions(error);
       const failure = setLastMessageFailure(this.#status, error, {
-        userMessage,
-        reason: imageDiagnostic?.reason,
+        userMessage: userMessage ?? sendFailureOptions?.userMessage,
+        reason: imageDiagnostic?.reason ?? sendFailureOptions?.reason,
       });
       this.#logger.error?.(
         `[dsh-weixin] failed to process an inbound message [${failure.referenceId}]:`,
@@ -1002,17 +1084,32 @@ export class WeixinHarnessBridge {
   async #send(toUserId, text, contextToken, runId) {
     await this.#stopTyping();
     const providerMessageIds = [];
-    for (const chunk of splitWeixinText(text, this.#maxMessageChars)) {
-      const result = await this.#api.sendText({
-        baseUrl: this.#baseUrl,
-        token: this.#token,
-        toUserId,
-        text: chunk,
-        contextToken,
-        runId,
-        signal: this.#signal,
-      });
-      providerMessageIds.push(...providerMessageIdsFor(result));
+    const chunks = splitWeixinText(text, this.#maxMessageChars);
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+      const chunk = chunks[chunkIndex];
+      try {
+        const result = await this.#api.sendText({
+          baseUrl: this.#baseUrl,
+          token: this.#token,
+          toUserId,
+          text: chunk,
+          contextToken,
+          runId,
+          signal: this.#signal,
+        });
+        providerMessageIds.push(...providerMessageIdsFor(result));
+      } catch (error) {
+        throw weixinSendError(error, {
+          baseUrl: this.#baseUrl,
+          text,
+          chunk,
+          chunkIndex,
+          chunkCount: chunks.length,
+          maxMessageChars: this.#maxMessageChars,
+          contextToken,
+          runId,
+        });
+      }
     }
     return providerMessageIds;
   }

@@ -10,6 +10,8 @@ export default {
   '目前支持文字、图片，以及微信已转成文字的语音消息。': 'Currently supports text, images, and voice messages that WeChat has converted to text.',
   '微信与 DeepSeek Harness 连接正常。': 'WeChat is connected to DeepSeek Harness normally.',
   '微信交互问题发送失败。': 'Failed to send the WeChat interaction question.',
+  '回复已经生成，但微信发送失败，可能只收到部分内容。请将下面的诊断信息完整反馈给管理员。': 'The reply was generated, but WeChat delivery failed and only part of it may have arrived. Please send the complete diagnostic below to the administrator.',
+  '微信发送诊断：{diagnostic}': 'WeChat delivery diagnostic: {diagnostic}',
 
   // weixin-controller.mjs
   '微信已授权，但无法读取现有登录凭据。请检查 DSH 凭据存储。': 'WeChat was authorized, but the existing login credential could not be read. Please check the DSH credential store.',

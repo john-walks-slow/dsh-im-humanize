@@ -182,6 +182,64 @@ test('Weixin splits long replies below the iLink text limit', async () => {
   assert.equal(bridge.status.lastMessageError, null);
 });
 
+test('Weixin reports safe chunk diagnostics when a long reply is rejected', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-long-reply-rejected');
+  const answer = '答'.repeat(2_000);
+  const attempts = [];
+  const status = createWeixinBridgeStatus();
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      sendText: async ({ text }) => {
+        attempts.push(text);
+        if (text === answer.slice(1_800)) {
+          const error = new Error('private provider detail with token-shaped-value');
+          error.code = 'send-rejected';
+          error.providerCode = '-2';
+          throw error;
+        }
+        return { messageId: `weixin-long-${attempts.length}` };
+      },
+    },
+    baseUrl: 'https://ilinkai.wechat.com/',
+    token: 'private-host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => answer,
+    },
+    state: fixture.state,
+    status,
+    logger: { error() {} },
+  });
+
+  await bridge.accept(message('weixin-long-reply-rejected', '生成一段长回答'));
+
+  const failure = status.lastMessageError;
+  assert.equal(failure.code, 'CHANNEL_DELIVERY_UNCERTAIN');
+  assert.equal(failure.reason, 'WEIXIN_SEND_FAILED');
+  assert.match(failure.message, /可能只收到部分内容/);
+  assert.match(failure.message, /endpoint=sendmessage/);
+  assert.match(failure.message, /host=ilinkai\.wechat\.com/);
+  assert.match(failure.message, /chunk=2\/2/);
+  assert.match(failure.message, /chunkChars=200/);
+  assert.match(failure.message, /chunkUtf8Bytes=600/);
+  assert.match(failure.message, /totalChars=2000/);
+  assert.match(failure.message, /totalUtf8Bytes=6000/);
+  assert.match(failure.message, /limitChars=1800/);
+  assert.match(failure.message, /contextToken=yes/);
+  assert.match(failure.message, /runId=no/);
+  assert.match(failure.message, /http=2xx/);
+  assert.match(failure.message, /provider=-2/);
+  assert.match(failure.message, /cause=send-rejected/);
+  assert.match(attempts.at(-1), /微信发送诊断：/);
+  assert.match(attempts.at(-1), /错误码：CHANNEL_DELIVERY_UNCERTAIN/);
+  assert.doesNotMatch(
+    JSON.stringify({ failure, safeReply: attempts.at(-1) }),
+    /private provider detail|token-shaped-value|private-host-token|context-weixin/,
+  );
+});
+
 test('Weixin starts a native-file download before an earlier queued turn finishes', async () => {
   const fixture = stateFixture();
   fixture.sessions.set('p2p:owner-user', 'session-prefetch-file');
