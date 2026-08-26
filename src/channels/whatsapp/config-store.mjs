@@ -63,6 +63,7 @@ export function normalizeWhatsappAccessPolicy(value = {}) {
   return Object.freeze({
     accessMode,
     allowedNumbers: normalizeWhatsappAllowedNumbers(value.allowedNumbers),
+    groupAllowedNumbers: normalizeWhatsappAllowedNumbers(value.groupAllowedNumbers),
   });
 }
 

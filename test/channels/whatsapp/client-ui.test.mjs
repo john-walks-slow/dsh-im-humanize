@@ -14,6 +14,7 @@ import {
   WhatsappAccountCard,
   WhatsappSettingsTab,
 } from '../../../plugin-src/client/channels/whatsapp/index.js';
+import { normalizeSnapshot } from '../../../plugin-src/client/channels/whatsapp/api.js';
 import { en, setImTranslator } from '../../../plugin-src/client/i18n.js';
 
 const { act, create } = TestRenderer;
@@ -79,13 +80,35 @@ test('WhatsApp account card uses the unified compact channel layout', () => {
   assert.match(markup, /role="status"[^>]*>测试消息已发送/);
 });
 
+test('WhatsApp client keeps private and group number lists separate', () => {
+  const snapshot = normalizeSnapshot({
+    bots: [{
+      botId: 'whatsapp_test',
+      accessPolicy: {
+        accessMode: 'open',
+        allowedNumbers: ['16505550999'],
+        groupAllowedNumbers: ['33620607448'],
+      },
+    }],
+  });
+  assert.deepEqual(snapshot.bots[0].accessPolicy, {
+    accessMode: 'open',
+    allowedNumbers: ['16505550999'],
+    groupAllowedNumbers: ['33620607448'],
+  });
+});
+
 test('WhatsApp access settings save a normalized selected-contact allowlist', async () => {
   const saved = [];
   let renderer;
   await act(async () => {
     renderer = create(React.createElement(WhatsappAccessSettings, {
       account: {
-        accessPolicy: { accessMode: 'self-only', allowedNumbers: [] },
+        accessPolicy: {
+          accessMode: 'self-only',
+          allowedNumbers: [],
+          groupAllowedNumbers: ['33620607448'],
+        },
       },
       onSave: async (value) => saved.push(value),
     }));
@@ -107,16 +130,54 @@ test('WhatsApp access settings save a normalized selected-contact allowlist', as
   assert.deepEqual(saved, [{
     accessMode: 'private-allowlist',
     allowedNumbers: ['16505550999'],
+    groupAllowedNumbers: ['33620607448'],
   }]);
   await act(async () => { renderer.unmount(); });
 });
 
-test('WhatsApp access settings only show the allowlist for selected contacts', async () => {
+test('WhatsApp access settings save a normalized open-mode group caller allowlist', async () => {
+  const saved = [];
   let renderer;
   await act(async () => {
     renderer = create(React.createElement(WhatsappAccessSettings, {
       account: {
-        accessPolicy: { accessMode: 'self-only', allowedNumbers: ['16505550999'] },
+        accessPolicy: {
+          accessMode: 'open',
+          allowedNumbers: ['16505550000'],
+          groupAllowedNumbers: [],
+        },
+      },
+      onSave: async (value) => saved.push(value),
+    }));
+  });
+  const textarea = renderer.root.findByProps({
+    'aria-label': '允许在群聊中呼叫机器人的 WhatsApp 电话号码',
+  });
+  await act(async () => {
+    textarea.props.onChange({ target: { value: '+16505550999\n16505550999' } });
+  });
+  await act(async () => {
+    renderer.root.findByType('form').props.onSubmit({ preventDefault() {} });
+    await flushMicrotasks();
+  });
+  assert.deepEqual(saved, [{
+    accessMode: 'open',
+    allowedNumbers: ['16505550000'],
+    groupAllowedNumbers: ['16505550999'],
+  }]);
+  await act(async () => { renderer.unmount(); });
+});
+
+test('WhatsApp access settings show mode-specific number allowlists', async () => {
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(WhatsappAccessSettings, {
+      account: {
+        accessPolicy: {
+          accessMode: 'self-only',
+          allowedNumbers: ['16505550999'],
+          groupAllowedNumbers: ['33620607448'],
+        },
       },
       onSave: async () => {},
     }));
@@ -125,16 +186,25 @@ test('WhatsApp access settings only show the allowlist for selected contacts', a
   const allowlistFields = () => renderer.root.findAllByProps({
     'aria-label': '允许私聊的 WhatsApp 电话号码',
   });
+  const groupCallerFields = () => renderer.root.findAllByProps({
+    'aria-label': '允许在群聊中呼叫机器人的 WhatsApp 电话号码',
+  });
 
   assert.equal(allowlistFields().length, 0);
+  assert.equal(groupCallerFields().length, 0);
   await act(async () => {
     select.props.onChange({ target: { value: 'private-allowlist' } });
   });
   assert.equal(allowlistFields().length, 1);
+  assert.equal(groupCallerFields().length, 0);
+  assert.equal(allowlistFields()[0].props.value, '16505550999');
   await act(async () => {
     select.props.onChange({ target: { value: 'open' } });
   });
   assert.equal(allowlistFields().length, 0);
+  assert.equal(groupCallerFields().length, 1);
+  assert.equal(groupCallerFields()[0].props.value, '33620607448');
+  assert.match(textOf(renderer.root), /留空表示所有群成员/);
   await act(async () => { renderer.unmount(); });
 });
 

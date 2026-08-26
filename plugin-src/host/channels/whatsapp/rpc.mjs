@@ -53,8 +53,8 @@ function payloadFailure(endpoint, payload) {
       && payload.confirm === true ? null : 'bot.delete requires a botId and confirm=true.';
   }
   if (endpoint === WHATSAPP_ENDPOINTS.setAccessPolicy) {
-    if (!exactKeys(payload, ['botId', 'accessMode', 'allowedNumbers'])
-      || Object.keys(payload).length !== 3
+    if (!exactKeys(payload, ['botId', 'accessMode', 'allowedNumbers', 'groupAllowedNumbers'])
+      || Object.keys(payload).length !== 4
       || !validId(payload.botId)) return '请输入有效的 WhatsApp 访问模式和电话号码。';
     try {
       normalizeWhatsappAccessPolicy(payload);
