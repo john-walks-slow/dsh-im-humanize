@@ -6,6 +6,13 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [3.0.4] - 2026-08-26
+
+### Changed / 变更
+
+- 回退 3.0.3 中未计划进入 `main` 的 WhatsApp 群聊提及、回复识别与群成员调用白名单改动；WhatsApp 行为恢复到 3.0.2。
+  Reverted the WhatsApp group mention/reply detection and group-caller allowlist changes from 3.0.3 that were not intended for `main`; WhatsApp behavior returns to 3.0.2.
+
 ## [3.0.3] - 2026-08-26
 
 ### Fixed / 修复
@@ -382,7 +389,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.3...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.4...HEAD
+[3.0.4]: https://github.com/xmanrui/dsh-im/compare/v3.0.3...v3.0.4
 [3.0.3]: https://github.com/xmanrui/dsh-im/compare/v3.0.2...v3.0.3
 [3.0.2]: https://github.com/xmanrui/dsh-im/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/xmanrui/dsh-im/compare/v3.0.0...v3.0.1
