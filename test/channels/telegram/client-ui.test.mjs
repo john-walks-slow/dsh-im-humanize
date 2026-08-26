@@ -166,7 +166,8 @@ test('Telegram cards shrink to a narrow English panel without horizontal scrolli
 
   assert.match(sharedStyles, /\.dim-panel \.dim-botList \{[^}]*grid-template-columns: minmax\(0, 1fr\);/);
   assert.match(sharedStyles, /\.dim-panel \.dim-botCard \{[^}]*min-width: 0;[^}]*width: 100%;[^}]*max-width: 100%;[^}]*overflow: hidden;/);
-  assert.match(sharedStyles, /@container \(max-width: 680px\)[^]*\.dim-panel \.dim-botCardTop \{ flex-direction: column; align-items: stretch; \}/);
+  assert.match(sharedStyles, /\.dim-panel \.dim-botIdentity \{[^}]*min-width: 0;[^}]*flex: 1 1 0;/);
+  assert.doesNotMatch(sharedStyles, /\.dim-panel \.dim-botCardTop \{ flex-direction: column;/);
   assert.match(sharedStyles, /\.dim-panel \.dim-workspacePath \{[^}]*overflow: hidden;[^}]*overflow-wrap: anywhere;[^}]*white-space: normal;/);
   assert.doesNotMatch(sharedStyles, /\.dim-panel \.dim-workspacePath \{[^}]*overflow-x: auto;/);
   assert.match(telegramStyles, /\.dtg-access \{[^}]*min-width: 0;[^}]*width: 100%;[^}]*max-width: 100%;/);

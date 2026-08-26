@@ -601,6 +601,16 @@ test('all channel bot cards use the DingTalk card treatment', async () => {
   assert.doesNotMatch(styles, /\.dim-panel \.dim-botMetrics|\.dim-panel \.dim-botMetric/);
 });
 
+test('bot card status stays in the top-right corner at every responsive breakpoint', async () => {
+  const styles = await readFile(STYLES_URL, 'utf8');
+
+  assert.match(styles, /\.dim-panel \.dim-botCardTop \{[^}]*display: flex;[^}]*align-items: flex-start;[^}]*justify-content: space-between;/);
+  assert.match(styles, /\.dim-panel \.dim-botIdentity \{[^}]*min-width: 0;[^}]*flex: 1 1 0;/);
+  assert.match(styles, /\.dim-panel \.dim-botHealthGroup \{[^}]*flex: none;[^}]*justify-items: end;/);
+  assert.doesNotMatch(styles, /\.dim-panel \.dim-botCardTop \{ flex-direction: column;/);
+  assert.doesNotMatch(styles, /\.dim-panel \.dim-botHealthGroup \{ justify-items: start;/);
+});
+
 test('bot cards wrap full workspace paths without horizontal scrolling', async () => {
   const styles = await readFile(STYLES_URL, 'utf8');
 
