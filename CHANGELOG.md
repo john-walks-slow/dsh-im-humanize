@@ -6,6 +6,15 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [3.0.6] - 2026-08-26
+
+### Fixed / 修复
+
+- 工作区目录选择器现在可以直接输入 Windows 盘符、UNC 共享或 POSIX 绝对路径并跳转；输入的目录无法读取时不会误选先前浏览的目录，解决 Issue #69。
+  The workspace directory picker now accepts direct Windows drive, UNC share, and POSIX absolute paths; an unreadable typed path can no longer accidentally select the previously browsed directory, resolving Issue #69.
+- 微信回复发送失败时会记录并展示脱敏的接口、域名、分段大小、上下文状态、HTTP 状态和平台错误码诊断，便于定位长回复部分投递等问题，同时不会泄露令牌或平台原始错误详情。
+  Failed WeChat reply delivery now records and presents sanitized endpoint, host, chunk-size, context, HTTP-status, and provider-code diagnostics for troubleshooting issues such as partially delivered long replies, without exposing tokens or raw provider error details.
+
 ## [3.0.5] - 2026-08-26
 
 ### Fixed / 修复
@@ -396,7 +405,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.5...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.6...HEAD
+[3.0.6]: https://github.com/xmanrui/dsh-im/compare/v3.0.5...v3.0.6
 [3.0.5]: https://github.com/xmanrui/dsh-im/compare/v3.0.4...v3.0.5
 [3.0.4]: https://github.com/xmanrui/dsh-im/compare/v3.0.3...v3.0.4
 [3.0.3]: https://github.com/xmanrui/dsh-im/compare/v3.0.2...v3.0.3
