@@ -6,6 +6,20 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-08-26
+
+### Fixed / 修复
+
+- QQ 私聊最终回答现在使用标准 Markdown 消息投递，避免部分客户端确认流式最终帧却不显示内容；长回答会安全拆分代码块和 GFM 表格，遵守被动回复配额，并仅在平台明确拒绝 Markdown 时逐段回退纯文本，避免不确定结果造成重复回复。
+  QQ direct-message final answers now use standard Markdown delivery to avoid clients that acknowledge but do not render final streaming frames. Long answers safely split fenced code and GFM tables, respect passive-reply quotas, and fall back to plain text per chunk only after a definite Markdown rejection, preventing duplicate replies after uncertain outcomes.
+- 优化英文设置界面的文案与间距，限制 Telegram 机器人卡片在窄面板内自适应显示，并把版本提示移到品牌标题下方，避免内容溢出或提示被裁切。
+  Polished English settings copy and spacing, constrained Telegram bot cards within narrow panels, and moved the version tooltip below the brand heading to prevent overflow or clipping.
+
+### Documentation / 文档
+
+- 英文 README 新增设置界面预览图。
+  Added a settings interface preview to the English README.
+
 ## [3.0.0] - 2026-08-25
 
 ### Changed / 变更
@@ -350,7 +364,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/xmanrui/dsh-im/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/xmanrui/dsh-im/compare/v2.6.0...v3.0.0
 [2.6.0]: https://github.com/xmanrui/dsh-im/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/xmanrui/dsh-im/compare/v2.4.0...v2.5.0
