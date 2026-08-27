@@ -1008,13 +1008,18 @@ export function createDingtalkApi({
 
     failAiCard: failCard,
 
-    async sendText({ clientId, clientSecret, sessionWebhook, text, signal }) {
+    async sendText({ clientId, clientSecret, sessionWebhook, text, at, signal }) {
       const content = nonEmptyString(text);
       if (!content) throw new TypeError('text is required');
       const webhook = normalizeDingtalkSessionWebhook(sessionWebhook);
       const token = await accessToken({ clientId, clientSecret, signal });
+      const replyAt = at && typeof at === 'object'
+      && ((Array.isArray(at.atUserIds) && at.atUserIds.length > 0)
+          || (Array.isArray(at.atMobiles) && at.atMobiles.length > 0)
+          || at.isAtAll === true)
+          ? { at } : {};
       const response = await requestJson(fetchImpl, webhook, {
-        body: { msgtype: 'text', text: { content } },
+        body: { msgtype: 'text', text: { content }, ...replyAt },
         headers: { 'x-acs-dingtalk-access-token': token },
         signal,
         action: '消息回复',
