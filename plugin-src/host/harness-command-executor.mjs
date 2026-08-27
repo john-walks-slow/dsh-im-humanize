@@ -15,7 +15,11 @@ export function createHarnessCommandExecutor(ctx, provided) {
   return (sessionId, line, options = {}) => gateway.invoke({
     namespace: 'commands',
     method: 'execute',
-    args: { agentId: sessionId, line },
+    // The Harness commands execute descriptor declares agentId, line, and
+    // images as required JSON wire fields; omitting images makes the Typert
+    // gateway reject the call with arguments-invalid, so IM /compact always
+    // carried an empty image list.
+    args: { agentId: sessionId, line, images: [] },
     signal: options.signal,
   });
 }
