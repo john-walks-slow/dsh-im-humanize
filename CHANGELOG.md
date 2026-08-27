@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Fixed / 修复
+
+- `/compact` 同时兼容要求 `images` 字段的新 Harness 与不接受该字段的旧 Harness；仅在网关明确拒绝多余字段、命令尚未执行时回退，避免重复压缩。
+  `/compact` now supports both newer Harness endpoints that require `images` and older endpoints that reject it, falling back only after an explicit pre-execution field rejection to avoid duplicate compaction.
+
 ## [3.0.6] - 2026-08-26
 
 ### Fixed / 修复

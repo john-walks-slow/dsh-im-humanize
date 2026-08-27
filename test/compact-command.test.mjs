@@ -24,6 +24,17 @@ function state(sessionId = 'session-one') {
   return { sessionFor: () => sessionId };
 }
 
+function legacyImagesArgumentError(overrides = {}) {
+  return Object.assign(new Error(
+    'typert gateway: commands/execute: args fields do not match the descriptor: unexpected "images"',
+  ), {
+    name: 'TypertGatewayError',
+    code: 'arguments-invalid',
+    endpoint: 'commands/execute',
+    ...overrides,
+  });
+}
+
 test('compact command validates syntax and requires an existing conversation Session', async () => {
   assert.equal(await runCompactCommand('hello', {}, state(), 'direct:one'), null);
   assert.match(
@@ -145,14 +156,111 @@ test('Host command executor invokes the commands Typert endpoint with the Sessio
   assert.deepEqual(requests, [{
     namespace: 'commands',
     method: 'execute',
-    // images must ride the wire as an empty array: the Harness commands
-    // execute descriptor declares it a required JSON field, and omitting it
-    // makes the Typert gateway reject the call with arguments-invalid.
+    // Newer Harness descriptors require images even for plain commands.
     args: { agentId: 'session-one', line: '/compact', images: [] },
     signal,
   }]);
   assert.equal(createHarnessCommandExecutor({}), undefined);
   assert.throws(() => createHarnessCommandExecutor({}, 'invalid'), /must be a function/);
+});
+
+test('compact executes once on older Harness after its gateway rejects the images field', async () => {
+  const requests = [];
+  let executions = 0;
+  const signal = new AbortController().signal;
+  const executor = createHarnessCommandExecutor({
+    typertGateway: { invoke: async (request) => {
+      requests.push(request);
+      if (Object.hasOwn(request.args, 'images')) throw legacyImagesArgumentError();
+      executions += 1;
+      return {
+        commandId: 'command-one',
+        result: { kind: 'success', text: 'Compacted 5 history items (~200 tokens).' },
+      };
+    } },
+  });
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:1', workspace: '/tmp', commandExecutor: executor,
+  });
+
+  const result = await runCompactCommand('/compact', client, state(), 'direct:one', { signal });
+  assert.equal(result.message, '已压缩 5 条历史记录（约 200 个 token）。');
+  assert.equal(executions, 1);
+  assert.deepEqual(requests, [
+    {
+      namespace: 'commands', method: 'execute',
+      args: { agentId: 'session-one', line: '/compact', images: [] }, signal,
+    },
+    {
+      namespace: 'commands', method: 'execute',
+      args: { agentId: 'session-one', line: '/compact' }, signal,
+    },
+  ]);
+});
+
+test('Host command executor never retries other gateway or business failures', async () => {
+  const message = legacyImagesArgumentError().message;
+  for (const failure of [
+    new Error(message),
+    legacyImagesArgumentError({ name: 'CommandError' }),
+    legacyImagesArgumentError({ code: 'result-invalid' }),
+    legacyImagesArgumentError({ endpoint: 'other/execute' }),
+    legacyImagesArgumentError({ message: message.replace('unexpected "images"', 'missing "images"') }),
+    legacyImagesArgumentError({ message: `${message}, "other"` }),
+    Object.assign(new Error('busy'), { failure: { code: 'agent-busy' } }),
+    new Error('compaction failed after starting'),
+  ]) {
+    let attempts = 0;
+    const executor = createHarnessCommandExecutor({
+      typertGateway: { invoke: async () => { attempts += 1; throw failure; } },
+    });
+    await assert.rejects(executor('session-one', '/compact'), (error) => error === failure);
+    assert.equal(attempts, 1);
+  }
+});
+
+test('Host command executor does not repeat a failed legacy invocation', async () => {
+  let attempts = 0;
+  const failure = new Error('compaction failed after starting');
+  const executor = createHarnessCommandExecutor({
+    typertGateway: { invoke: async () => {
+      attempts += 1;
+      if (attempts === 1) throw legacyImagesArgumentError();
+      throw failure;
+    } },
+  });
+  await assert.rejects(executor('session-one', '/compact'), (error) => error === failure);
+  assert.equal(attempts, 2);
+});
+
+test('Host command executor preserves an unresolved command on the legacy endpoint', async () => {
+  let attempts = 0;
+  const executor = createHarnessCommandExecutor({
+    typertGateway: { invoke: async () => {
+      attempts += 1;
+      if (attempts === 1) throw legacyImagesArgumentError();
+      return undefined;
+    } },
+  });
+  assert.equal(await executor('session-one', '/compact'), undefined);
+  assert.equal(attempts, 2);
+});
+
+test('Host command executor honours cancellation before retrying the legacy endpoint', async () => {
+  let attempts = 0;
+  const controller = new AbortController();
+  const executor = createHarnessCommandExecutor({
+    typertGateway: { invoke: async () => {
+      attempts += 1;
+      controller.abort();
+      throw legacyImagesArgumentError();
+    } },
+  });
+  await assert.rejects(
+    executor('session-one', '/compact', { signal: controller.signal }),
+    (error) => error === controller.signal.reason,
+  );
+  assert.equal(attempts, 1);
 });
 
 test('all nine production channels receive the Host command executor', async () => {
