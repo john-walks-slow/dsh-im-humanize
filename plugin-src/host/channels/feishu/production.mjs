@@ -5,6 +5,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import HttpsProxyAgent from 'https-proxy-agent';
 import { createConnectionSupervisor } from './connection-supervisor.mjs';
 import { createHarnessCommandExecutor } from '../../harness-command-executor.mjs';
+import { harnessConnection } from '../../harness-connection.mjs';
 import { createHarnessSessionExecutors } from '../../harness-session-coordinator.mjs';
 import { verifyFeishuApp } from '../../../../src/channels/feishu/feishu-app.mjs';
 import { FeishuRuntime } from '../../../../src/channels/feishu/feishu-runtime.mjs';
@@ -39,17 +40,6 @@ export function createFeishuWebSocketAgent(
   return proxyUrl ? createAgent(proxyUrl) : undefined;
 }
 
-function harnessOrigin(webServer, configured) {
-  if (configured !== undefined) return new URL(configured);
-  const port = webServer?.port;
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error('dsh-feishu requires an initialized DSH webServer port');
-  }
-  // Even when DSH listens on all interfaces, its own plugin talks through the
-  // loopback authority accepted by Connection's request-trust fence.
-  return new URL(`http://127.0.0.1:${port}`);
-}
-
 function pluginPaths(config) {
   const dshHome = resolve(config.dshHome
     ?? process.env.DSH_HOME
@@ -70,7 +60,7 @@ function pluginPaths(config) {
  */
 export async function createProductionController(ctx, config = {}, internals = {}) {
   if (!ctx?.credentials) throw new TypeError('dsh-feishu requires ctx.credentials');
-  if (!ctx?.webServer) throw new TypeError('dsh-feishu requires ctx.webServer');
+  const connection = harnessConnection(ctx, config);
 
   const lark = internals.lark ?? Lark;
   const Controller = internals.Controller ?? MultiBotDshFeishuController;
@@ -139,7 +129,7 @@ export async function createProductionController(ctx, config = {}, internals = {
     fileIngressExecutor: internals.fileIngressExecutor,
   });
   const harness = new Harness({
-    baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
+    ...connection,
     workspace: defaultWorkspace,
     // This plugin is already hosted by a running DSH process. Starting a
     // second DSH would create a competing server and lifecycle.

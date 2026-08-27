@@ -2,7 +2,7 @@ import { createProductionController } from './production.mjs';
 import { installDiscordRpc } from './rpc.mjs';
 
 export const name = 'dsh-im-discord-host';
-export const inject = ['connection', 'credentials', 'webServer', 'typertGateway'];
+export const inject = ['connection', 'credentials', 'apiProxy', 'typertGateway'];
 
 export async function apply(ctx, config = {}) {
   if (config?.controller) {

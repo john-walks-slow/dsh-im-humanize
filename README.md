@@ -101,6 +101,8 @@ dsh plugin --profile web add -w @xmanrui/dsh-im
 
 重启 `dsh web`、刷新浏览器，然后打开「设置 → IM机器人」。IM机器人使用 `order: 21`，尽量排在一级设置菜单的「Agent 预设」之后；插件页面不再保留旧入口。从旧版升级不会改变已有机器人、凭据、工作区、Agent Preset 或会话绑定。
 
+本机 `dsh web` 和 DSH Desktop 默认通过当前 Host 的内部 `apiProxy` 接口通信，不再绕行本机 HTTP 端口。Desktop 的兼容模式、扩展窗口和增强模式均无需开启“允许在浏览器中打开”或局域网访问。渠道配置中显式设置的 `harnessBaseUrl` 仍使用原有 HTTP/WebSocket 连接；内部调用失败不会自动改连其他 Host。
+
 如需试用尚未发布到 npm 的最新代码，可以改用 GitHub 源安装器：
 
 ```sh

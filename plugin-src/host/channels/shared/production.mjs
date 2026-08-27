@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 
 import { createTokenConnectionSupervisor } from './connection-supervisor.mjs';
 import { createHarnessCommandExecutor } from '../../harness-command-executor.mjs';
+import { harnessConnection } from '../../harness-connection.mjs';
 import { createHarnessSessionExecutors } from '../../harness-session-coordinator.mjs';
 import {
   BotWorkspaceStore,
@@ -12,15 +13,6 @@ import {
   observeBotWorkspaceRemovals,
 } from '../../../../src/channels/shared/bot-workspace-store.mjs';
 import { listAgentPresetCatalog } from '../../../../src/channels/shared/agent-preset.mjs';
-
-export function harnessOrigin(webServer, configured) {
-  if (configured !== undefined) return new URL(configured);
-  const port = webServer?.port;
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error('dsh-im token channel requires an initialized DSH webServer port');
-  }
-  return new URL(`http://127.0.0.1:${port}`);
-}
 
 export function pluginPaths(config, channel) {
   const dshHome = resolve(config.dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh'));
@@ -37,7 +29,7 @@ export async function createTokenProductionController(ctx, config, internals, de
     channel, ConfigStore, StateStore, HarnessClient, Controller, Runtime, runtimeOptions,
   } = definitions;
   if (!ctx?.credentials) throw new TypeError(`dsh-im ${channel} requires ctx.credentials`);
-  if (!ctx?.webServer) throw new TypeError(`dsh-im ${channel} requires ctx.webServer`);
+  const connection = harnessConnection(ctx, config);
 
   const ResolvedConfigStore = internals.ConfigStore ?? ConfigStore;
   const ResolvedStateStore = internals.StateStore ?? StateStore;
@@ -84,7 +76,7 @@ export async function createTokenProductionController(ctx, config, internals, de
     fileIngressExecutor: internals.fileIngressExecutor,
   });
   const harness = new ResolvedHarness({
-    baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
+    ...connection,
     workspace: defaultWorkspace,
     autostart: false,
     dshBin: config.dshBin ?? 'dsh',

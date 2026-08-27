@@ -56,7 +56,7 @@ test('Telegram production has no per-bot result-file Gate', async (t) => {
 
   const production = await createProductionController({
     credentials: {},
-    webServer: { port: 3080 },
+    apiProxy: {},
     logger: () => ({ error() {}, warn() {}, info() {}, debug() {} }),
   }, { dataDir }, {
     ConfigStore,

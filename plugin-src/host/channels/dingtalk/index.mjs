@@ -2,7 +2,7 @@ import { createProductionController } from './production.mjs';
 import { installDingtalkRpc } from './rpc.mjs';
 
 export const name = 'dsh-dingtalk-host';
-export const inject = ['connection', 'credentials', 'webServer', 'typertGateway'];
+export const inject = ['connection', 'credentials', 'apiProxy', 'typertGateway'];
 
 export async function apply(ctx, config = {}) {
   if (config?.controller) {

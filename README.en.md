@@ -98,6 +98,8 @@ dsh plugin --profile web add -w @xmanrui/dsh-im
 
 Restart `dsh web`, refresh the browser, then open **Settings → IM Bot**. The top-level IM Bot entry uses `order: 21` to follow **Agent Presets**, and the Plugins page no longer retains the old entry. Upgrading preserves existing bots, credentials, workspaces, Agent Presets, and Session bindings.
 
+Local `dsh web` and DSH Desktop use the current Host's internal `apiProxy` by default, without a loopback HTTP connection. Desktop's compatibility, extended-window, and advanced modes do not require browser access or LAN access to be enabled. An explicit channel `harnessBaseUrl` still uses the existing HTTP/WebSocket connection; failed internal calls never silently switch to another Host.
+
 To try the latest code before it is published to npm, use the GitHub-source installer instead:
 
 ```sh

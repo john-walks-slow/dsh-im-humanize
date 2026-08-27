@@ -44,7 +44,7 @@ test('Slack production has no per-bot result-file Gate', async (t) => {
   };
   const ctx = {
     credentials: {},
-    webServer: { port: 3080 },
+    apiProxy: {},
     logger: () => ({ error() {}, warn() {}, info() {}, debug() {} }),
   };
 

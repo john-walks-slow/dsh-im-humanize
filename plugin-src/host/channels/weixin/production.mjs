@@ -20,16 +20,8 @@ import {
 import { listAgentPresetCatalog } from '../../../../src/channels/shared/agent-preset.mjs';
 import { createConnectionSupervisor } from './connection-supervisor.mjs';
 import { createHarnessCommandExecutor } from '../../harness-command-executor.mjs';
+import { harnessConnection } from '../../harness-connection.mjs';
 import { createHarnessSessionExecutors } from '../../harness-session-coordinator.mjs';
-
-function harnessOrigin(webServer, configured) {
-  if (configured !== undefined) return new URL(configured);
-  const port = webServer?.port;
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error('dsh-weixin requires an initialized DSH webServer port');
-  }
-  return new URL(`http://127.0.0.1:${port}`);
-}
 
 function pluginPaths(config) {
   const dshHome = resolve(config.dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh'));
@@ -44,7 +36,7 @@ function pluginPaths(config) {
 
 export async function createProductionController(ctx, config = {}, internals = {}) {
   if (!ctx?.credentials) throw new TypeError('dsh-weixin requires ctx.credentials');
-  if (!ctx?.webServer) throw new TypeError('dsh-weixin requires ctx.webServer');
+  const connection = harnessConnection(ctx, config);
 
   const ConfigStore = internals.ConfigStore ?? WeixinConfigStore;
   const StateStore = internals.StateStore ?? WeixinStateStore;
@@ -89,7 +81,7 @@ export async function createProductionController(ctx, config = {}, internals = {
     fileIngressExecutor: internals.fileIngressExecutor,
   });
   const harness = new Harness({
-    baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
+    ...connection,
     workspace: defaultWorkspace,
     autostart: false,
     dshBin: config.dshBin ?? 'dsh',

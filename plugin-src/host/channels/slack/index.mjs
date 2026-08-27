@@ -2,7 +2,7 @@ import { createProductionController } from './production.mjs';
 import { installSlackRpc } from './rpc.mjs';
 
 export const name = 'dsh-im-slack-host';
-export const inject = ['connection', 'credentials', 'webServer', 'typertGateway'];
+export const inject = ['connection', 'credentials', 'apiProxy', 'typertGateway'];
 
 export async function apply(ctx, config = {}) {
   if (config?.controller) return installSlackRpc(ctx, config.controller, config.rpcAuthority);
