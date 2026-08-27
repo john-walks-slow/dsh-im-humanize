@@ -145,7 +145,10 @@ test('Host command executor invokes the commands Typert endpoint with the Sessio
   assert.deepEqual(requests, [{
     namespace: 'commands',
     method: 'execute',
-    args: { agentId: 'session-one', line: '/compact' },
+    // images must ride the wire as an empty array: the Harness commands
+    // execute descriptor declares it a required JSON field, and omitting it
+    // makes the Typert gateway reject the call with arguments-invalid.
+    args: { agentId: 'session-one', line: '/compact', images: [] },
     signal,
   }]);
   assert.equal(createHarnessCommandExecutor({}), undefined);
