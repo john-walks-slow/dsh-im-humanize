@@ -147,7 +147,7 @@ dsh web
 按钮复用 Desktop 内置包管理服务或标准 Harness 的 CLI，执行相当于以下命令的精确版本安装（将示例 profile、版本替换为确认值）：
 
 ```sh
-dsh plugin --profile web add -w --save-exact @xmanrui/dsh-im@3.0.8 --registry=https://registry.npmjs.org/
+dsh plugin --profile web add -w --save-exact @xmanrui/dsh-im@3.1.0 --registry=https://registry.npmjs.org/
 ```
 
 源码 `link:`、`file:`、Git 来源或无法确认归属的安装只提供版本检查，不会替换开发链接；如需迁移为 npm 安装，请自行确认对应 profile。作用域 registry 冲突、Node 版本不满足要求或缺少当前 Host 的执行器时，按钮会说明原因。标准 Windows CLI 暂需手动更新；Desktop 使用其原有执行器。

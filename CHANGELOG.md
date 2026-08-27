@@ -6,6 +6,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-08-28
+
 ### Added / 新增
 
 - 「设置 → IM机器人」新增 npm 更新检查和确认安装按钮，复用当前 Desktop / Harness 的包管理机制；保护源码链接、校验精确版本与目标 profile，不拉取 GitHub，安装后提示手动重启。手动重启后可「刷新状态」核验生效，无需重载原页面。更新功能不会主动重启或刷新；宿主自带的界面刷新不代表后台版本已生效。
@@ -13,6 +15,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 - 九个聊天渠道统一新增私聊命令 `/history [数量]`，只读预览当前绑定会话的最近对话：默认 3 条、最多 5 条，超出上限自动按 5 条处理；过滤工具、推理和未完成回复，长正文截断，并复用各渠道现有文字回复机制。命令不创建会话或调用模型，绑定成功提示和中英文帮助同步提供入口。
   Added `/history [count]` to direct chats on all nine channels to preview the bound Session's recent conversation without creating a Session or prompting the model. It defaults to 3 messages and caps larger counts at 5, omits tools, reasoning, and unfinished replies, truncates long text, and reuses each channel's existing text-reply mechanism. Binding confirmations and bilingual help now point to the command.
+
+### Fixed / 修复
+
+- 调整设置页渠道栏顶部间距，使渠道页签与扫码操作对齐。
+  Adjusted the channel rail's top spacing to align channel tabs with the scan action in settings.
 
 ## [3.0.8] - 2026-08-28
 
@@ -432,7 +439,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.8...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/xmanrui/dsh-im/compare/v3.0.8...v3.1.0
 [3.0.8]: https://github.com/xmanrui/dsh-im/compare/v3.0.7...v3.0.8
 [3.0.7]: https://github.com/xmanrui/dsh-im/compare/v3.0.6...v3.0.7
 [3.0.6]: https://github.com/xmanrui/dsh-im/compare/v3.0.5...v3.0.6

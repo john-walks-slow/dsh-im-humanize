@@ -144,7 +144,7 @@ If the existing page still shows a restart notice after you restart manually, cl
 The button reuses Desktop's package-management service or the current Harness CLI for an exact-version install equivalent to the following (replace the example profile and version with the confirmed values):
 
 ```sh
-dsh plugin --profile web add -w --save-exact @xmanrui/dsh-im@3.0.8 --registry=https://registry.npmjs.org/
+dsh plugin --profile web add -w --save-exact @xmanrui/dsh-im@3.1.0 --registry=https://registry.npmjs.org/
 ```
 
 Source `link:`, `file:`, Git, and unrecognized installations can check versions but are never replaced automatically. Confirm the intended profile before manually migrating to npm. Conflicting scoped registries, incompatible Node versions, and unavailable Host executors disable installation with an explanation. Standard Windows CLI installations currently require a manual update; Desktop uses its existing executor.
