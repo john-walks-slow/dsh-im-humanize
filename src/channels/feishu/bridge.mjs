@@ -30,6 +30,7 @@ import {
   isBatchInputCommand,
 } from '../shared/batch-input.mjs';
 import { runCompactCommand } from '../shared/compact-command.mjs';
+import { isHistoryCommand, runHistoryCommand } from '../shared/history-command.mjs';
 import {
   isControlCommand,
   runControlCommand,
@@ -620,12 +621,15 @@ export class FeishuHarnessBridge {
         .finally(() => this.#acceptedMessageIds.delete(messageId));
       return processing;
     }
-    const commandRunner = hasInboundFiles(commandMessage) ? null : isControlCommand(commandText)
+    const commandRunner = isHistoryCommand(commandText) ? runHistoryCommand
+      : hasInboundFiles(commandMessage) ? null : isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText)
           ? runModelCommand
           : (isPresetCommand(commandText) ? runPresetCommand : null));
-    if (commandRunner && addressed) {
+    // In all-message group mode, history must still be refused locally rather
+    // than becoming a normal prompt when no mention is present.
+    if (commandRunner && (addressed || commandRunner === runHistoryCommand)) {
       const processing = this.#processFastCommand(
         event,
         messageId,
@@ -913,6 +917,7 @@ export class FeishuHarnessBridge {
       key,
       {
         signal: this.#signal,
+        isDirect: event.message.chat_type === 'p2p',
         hasImages: hasInboundImages(message),
         hasFiles: hasInboundFiles(message),
         pendingInteraction: this.#hasPendingInteraction(key),
@@ -2083,7 +2088,10 @@ export class FeishuHarnessBridge {
     try {
       const bound = await this.#harness.bindWorkspaceSession(key, sessionId);
       const title = String(bound?.title ?? '').replace(/\s+/gu, ' ').trim() || t('暂无标题');
-      await this.#send(chatId, t('已绑定会话「{title}」\nID：{id}', { title, id: bound?.sessionId ?? sessionId }));
+      await this.#send(chatId, [
+        t('已绑定会话「{title}」\nID：{id}', { title, id: bound?.sessionId ?? sessionId }),
+        t('发送 /history 查看最近对话。'),
+      ].join('\n'));
       await this.#sendMenuCard(key, chatId, { updateMessageId });
     } catch (error) {
       await this.#sendFailure(chatId, error, {

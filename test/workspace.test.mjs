@@ -238,12 +238,13 @@ test('an old session cannot be written back while RPC switches the bot workspace
   assert.equal(existenceChecks, 0, 'stale sessions are rejected before asking Harness');
 });
 
-test('an old workspace session handle cannot list, select, stop, or steer after a switch', async (t) => {
+test('an old workspace session handle cannot read history, list, select, stop, or steer after a switch', async (t) => {
   const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
   const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
   await workspaces.ensure('bot_session_controls');
   const targetCalls = [];
   const harness = {
+    async readSessionHistory(...args) { targetCalls.push(['history', ...args]); },
     async getSessionModels(...args) { targetCalls.push(['models', ...args]); },
     async selectSessionModel(...args) { targetCalls.push(['select', ...args]); },
     async stopActiveTurn(...args) { targetCalls.push(['stop', ...args]); },
@@ -261,6 +262,7 @@ test('an old workspace session handle cannot list, select, stop, or steer after 
   await controller.updateWorkspace('bot_session_controls', alternateWorkspace);
   const control = { owner: {}, key: 'direct:one' };
   for (const operation of [
+    () => oldSession.readHistory(),
     () => oldSession.models(),
     () => oldSession.selectModel({ provider: 'provider', model: 'model' }),
     () => oldSession.stopActiveTurn(control),
@@ -269,6 +271,33 @@ test('an old workspace session handle cannot list, select, stop, or steer after 
     await assert.rejects(operation(), (error) => error?.code === WORKSPACE_SESSION_STALE);
   }
   assert.deepEqual(targetCalls, []);
+});
+
+test('history results cannot escape a workspace change that happens while reading', async (t) => {
+  const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await workspaces.ensure('bot_history');
+  let finishRead;
+  const calls = [];
+  const harness = {
+    readSessionHistory(sessionId, options) {
+      calls.push({ sessionId, options });
+      return new Promise((resolve) => { finishRead = resolve; });
+    },
+  };
+  const state = { async clearSessions() {} };
+  const scope = createBotWorkspaceScope(harness, { botId: 'bot_history', workspaces, state });
+  const session = scope.harness.workspaceSession('history-session');
+  const options = { maxMessages: 50 };
+  const pending = session.readHistory(options);
+  const rejected = assert.rejects(pending, { code: WORKSPACE_SESSION_STALE });
+  const controller = createWorkspaceAwareController({
+    status() { return { bots: [{ botId: 'bot_history' }] }; },
+  }, { workspaces, stateFor: async () => state });
+  await controller.updateWorkspace('bot_history', alternateWorkspace);
+  finishRead({ events: [], hasMore: false });
+  await rejected;
+  assert.deepEqual(calls, [{ sessionId: 'history-session', options }]);
 });
 
 test('a control mutation that already started keeps its result across a workspace switch', async (t) => {

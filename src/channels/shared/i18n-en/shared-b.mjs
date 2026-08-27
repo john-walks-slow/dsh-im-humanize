@@ -75,6 +75,7 @@ export default {
   '当前消息缺少可绑定的会话上下文。':
     'The current message lacks a conversation context to bind to.',
   '当前聊天已绑定会话：': 'This chat is now bound to the Session:',
+  '发送 /history 查看最近对话。': 'Send /history to preview recent conversation messages.',
   '标题：{title}': 'Title: {title}',
   '归档：{archived}': 'Archived: {archived}',
   '是': 'Yes',

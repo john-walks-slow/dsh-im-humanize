@@ -497,6 +497,7 @@ export function menuHelpText() {
     '/status  连接状态',
     '/version  查看插件版本',
     '/compact  压缩当前会话上下文',
+    '/history [数量]  查看最近历史消息（默认 3 条，最多 5 条）',
     '/archived on/off  会话列表显示/隐藏归档',
     '',
     '👁 关注',
@@ -593,6 +594,7 @@ export function helpCard(extraTextLines = []) {
     { tag: 'div', text: markdown([
       t(HELP_TEXT_COMMANDS),
       t('`/version` — 查看插件版本'),
+      t('/history [数量]  查看最近历史消息（默认 3 条，最多 5 条）'),
     ].join('\n') + extraText) },
     { tag: 'hr' },
     { tag: 'div', text: markdown(t(HELP_NUMBER_FALLBACK)) },

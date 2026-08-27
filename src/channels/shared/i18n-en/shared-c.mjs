@@ -1,5 +1,45 @@
 // English translations (shared-c area). Keys are exact Chinese literals passed to t().
 export default {
+  // history-command.mjs / command help
+  '/history [数量]  查看最近历史消息（默认 3 条，最多 5 条）':
+    '/history [count]  Preview recent messages (default 3, maximum 5)',
+  '用法：/history [数量]（默认 3 条，最多 5 条）':
+    'Usage: /history [count] (default 3, maximum 5)',
+  '[图片]': '[Image]',
+  '[文件]': '[File]',
+  '本条没有可预览的文字。': 'This message has no text to preview.',
+  '（已截断）': ' (truncated)',
+  '会话历史｜{session}｜最近 {count} 条':
+    'Session history | {session} | Recent messages: {count}',
+  '以上为历史记录，不是本次新回复。':
+    'These are history records, not a new reply.',
+  '本次有限读取中仅找到 {count} 条可预览消息。':
+    'Messages available to preview within this bounded read: {count}.',
+  '当前会话仅有 {count} 条可预览消息。':
+    'Messages available to preview in this Session: {count}.',
+  '用户': 'User',
+  '助手': 'Assistant',
+  '当前聊天绑定的会话已不存在，请重新绑定会话。':
+    'The Session bound to this chat no longer exists. Please bind a Session again.',
+  '会话、工作区或机器人状态已发生变化，请重新执行 /history。':
+    'The Session, workspace, or bot state has changed. Please run /history again.',
+  '当前 Harness 暂不支持读取会话历史。':
+    'This Harness does not support reading Session history.',
+  '历史读取已取消。': 'History reading was cancelled.',
+  '读取历史超时，请稍后重试。': 'Reading history timed out. Please try again later.',
+  '暂时无法读取会话历史，请稍后重试。':
+    'Unable to read Session history right now. Please try again later.',
+  '请在与机器人的私聊中使用 /history。':
+    'Please use /history in a direct chat with the bot.',
+  '/history 仅支持文字命令，请移除图片或文件后重试。':
+    '/history supports text commands only. Remove images or files and try again.',
+  '当前聊天尚未绑定会话，请先发送消息或使用 /session 绑定会话。':
+    'This chat has no bound Session. Send a message or use /session to bind one first.',
+  '本次有限读取中未找到可预览的历史消息。':
+    'No history messages were available to preview within this bounded read.',
+  '当前会话暂无可预览的历史消息。':
+    'This Session has no history messages available to preview yet.',
+
   // harness-approval.mjs
   '请精准回复「批准」或「拒绝」（也支持：同意 / 不同意 / yes / no）。':
     'Please reply exactly with 「批准」 (approve) or 「拒绝」 (reject). Also accepted: 同意 / 不同意 / yes / no.',

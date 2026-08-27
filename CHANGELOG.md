@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Added / 新增
+
+- 九个聊天渠道统一新增私聊命令 `/history [数量]`，只读预览当前绑定会话的最近对话：默认 3 条、最多 5 条，超出上限自动按 5 条处理；过滤工具、推理和未完成回复，长正文截断，并复用各渠道现有文字回复机制。命令不创建会话或调用模型，绑定成功提示和中英文帮助同步提供入口。
+  Added `/history [count]` to direct chats on all nine channels to preview the bound Session's recent conversation without creating a Session or prompting the model. It defaults to 3 messages and caps larger counts at 5, omits tools, reasoning, and unfinished replies, truncates long text, and reuses each channel's existing text-reply mechanism. Binding confirmations and bilingual help now point to the command.
+
 ## [3.0.8] - 2026-08-28
 
 ### Fixed / 修复

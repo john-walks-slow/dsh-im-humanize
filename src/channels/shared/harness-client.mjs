@@ -911,6 +911,19 @@ export class HarnessClient {
     }
   }
 
+  async readSessionHistory(sessionId, { maxMessages = 50, beforeSeq, timeoutMs = 10_000, ...options } = {}) {
+    if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('sessionId is required');
+    if (!Number.isSafeInteger(maxMessages) || maxMessages < 1
+      || (beforeSeq !== undefined && (!Number.isSafeInteger(beforeSeq) || beforeSeq < 0))) {
+      throw new TypeError('Invalid history pagination');
+    }
+    return this.rpc('session.history', {
+      sessionId,
+      maxMessages,
+      ...(beforeSeq === undefined ? {} : { beforeSeq }),
+    }, timeoutMs, options);
+  }
+
   async sessionExists(sessionId, options = {}) {
     try {
       await this.rpc('session.history', { sessionId, maxMessages: 1 }, 30_000, options);

@@ -834,6 +834,9 @@ export function createBotWorkspaceScope(
             models(...args) {
               return invokeCurrentSession('getSessionModels', args, 'model listing');
             },
+            readHistory(...args) {
+              return invokeCurrentSession('readSessionHistory', args, 'history read');
+            },
             selectModel(...args) {
               return invokeCurrentSession('selectSessionModel', args, 'model selection');
             },

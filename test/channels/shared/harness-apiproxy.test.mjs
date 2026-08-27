@@ -191,6 +191,62 @@ test('explicit baseUrl still selects the existing HTTP transport', async () => {
   assert.equal(requests, 1);
 });
 
+test('history reading uses only the existing read RPC in both Host connection modes', async () => {
+  const page = { events: [], hasMore: false };
+  for (const mode of ['local', 'http']) {
+    const calls = [];
+    const client = localClient({
+      sessions: {
+        history({ rpcId, payload }, signal) {
+          assert.equal(mode, 'local');
+          assert.ok(signal instanceof AbortSignal);
+          calls.push(payload);
+          return { rpcId, result: { ok: true, value: page } };
+        },
+      },
+    }, mode === 'http' ? {
+      baseUrl: 'http://127.0.0.1:1234',
+      fetchImpl: async (url, options) => {
+        assert.equal(url.pathname, '/api/session.history');
+        const request = JSON.parse(options.body);
+        calls.push(request.payload);
+        return { ok: true, json: async () => ({
+          type: 'server-response', rpcId: request.rpcId, result: { ok: true, value: page },
+        }) };
+      },
+    } : {});
+    assert.deepEqual(await client.readSessionHistory('cold-session'), page);
+    assert.deepEqual(await client.readSessionHistory('cold-session', { beforeSeq: 40, maxMessages: 10 }), page);
+    assert.deepEqual(calls, [
+      { sessionId: 'cold-session', maxMessages: 50 },
+      { sessionId: 'cold-session', beforeSeq: 40, maxMessages: 10 },
+    ]);
+    await assert.rejects(client.readSessionHistory('', {}), TypeError);
+    await assert.rejects(client.readSessionHistory('cold-session', { maxMessages: 0 }), TypeError);
+    await assert.rejects(client.readSessionHistory('cold-session', { beforeSeq: -1 }), TypeError);
+    assert.equal(calls.length, 2, 'invalid input must not make another RPC');
+  }
+});
+
+test('history reads preserve cancellation, timeout and missing-session errors without retrying', async () => {
+  let calls = 0;
+  const client = localClient({ sessions: {
+    async history({ rpcId, payload }) {
+      calls += 1;
+      if (payload.sessionId === 'missing') {
+        return { rpcId, result: { ok: false, error: { code: 'session-not-found', message: 'missing' } } };
+      }
+      await delay(30);
+      return { rpcId, result: { ok: true, value: { events: [], hasMore: false } } };
+    },
+  } });
+  await assert.rejects(client.readSessionHistory('missing'), { code: 'session-not-found' });
+  await assert.rejects(client.readSessionHistory('slow', { timeoutMs: 2 }), { code: 'harness-timeout' });
+  const signal = AbortSignal.abort(new DOMException('Cancelled', 'AbortError'));
+  await assert.rejects(client.readSessionHistory('cancelled', { signal }), { name: 'AbortError' });
+  assert.equal(calls, 2);
+});
+
 test('in-process interaction responses preserve the full envelope and rejection receipts', async () => {
   let received;
   let receipt = { accepted: true };

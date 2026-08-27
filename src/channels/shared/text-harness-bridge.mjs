@@ -1,6 +1,7 @@
 import { t } from './i18n.mjs';
 import { runWorkspaceCommand } from './workspace-command.mjs';
 import { runCompactCommand } from './compact-command.mjs';
+import { isHistoryCommand, runHistoryCommand } from './history-command.mjs';
 import {
   isControlCommand,
   runControlCommand,
@@ -260,7 +261,8 @@ export class TextHarnessBridge {
     }
     const collectingBatch = normalized.kind === 'direct'
       && this.#batches.status(key).phase === 'collecting';
-    const commandRunner = collectingBatch || hasInboundFiles(normalized) ? null : isControlCommand(text)
+    const commandRunner = collectingBatch ? null : isHistoryCommand(text) ? runHistoryCommand
+      : hasInboundFiles(normalized) ? null : isControlCommand(text)
       ? runControlCommand
       : (isModelCommand(text)
           ? runModelCommand
@@ -417,6 +419,7 @@ export class TextHarnessBridge {
         key,
         {
           signal: this.#signal,
+          isDirect: message.kind === 'direct',
           hasImages: hasInboundImages(message),
           hasFiles: hasInboundFiles(message),
           pendingInteraction: this.#pendingInteractions.has(key)
@@ -529,6 +532,7 @@ export class TextHarnessBridge {
           t('直接发送文字、图片或文件即可继续当前会话。'),
           t('/new  开启一个全新会话'),
           t('/compact  压缩当前会话的较早上下文'),
+          t('/history [数量]  查看最近历史消息（默认 3 条，最多 5 条）'),
           t('/workspace 工作区绝对路径  切换工作区'),
           t('/workspacelist  列出工作区绝对路径'),
           t('/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题'),

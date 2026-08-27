@@ -13,6 +13,7 @@ import {
 } from '../shared/harness-question.mjs';
 import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
 import { runCompactCommand } from '../shared/compact-command.mjs';
+import { isHistoryCommand, runHistoryCommand } from '../shared/history-command.mjs';
 import {
   isControlCommand,
   runControlCommand,
@@ -67,6 +68,7 @@ const HELP_TEXT_LINES = [
   '直接发送文字、图片或文件即可继续当前会话。',
   '/new  开启一个全新会话',
   '/compact  压缩当前会话的较早上下文',
+  '/history [数量]  查看最近历史消息（默认 3 条，最多 5 条）',
   '/workspace 工作区绝对路径  切换工作区',
   '/workspacelist  列出工作区绝对路径',
   '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
@@ -522,7 +524,8 @@ export class DingtalkHarnessBridge {
         ));
       }
     }
-    const commandRunner = hasInboundFiles(promptMessage) ? null : isControlCommand(commandText)
+    const commandRunner = isHistoryCommand(commandText) ? runHistoryCommand
+      : hasInboundFiles(promptMessage) ? null : isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText)
           ? runModelCommand
@@ -789,6 +792,7 @@ export class DingtalkHarnessBridge {
       key,
       {
         signal: this.#signal,
+        isDirect: String(message.conversationType) === '1',
         hasImages: hasInboundImages(prompt),
         hasFiles: hasInboundFiles(prompt),
         pendingInteraction: this.#pendingInteractions.has(key)

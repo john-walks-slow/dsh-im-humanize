@@ -12,6 +12,7 @@ import {
   isBatchInputCommand,
 } from '../shared/batch-input.mjs';
 import { runCompactCommand } from '../shared/compact-command.mjs';
+import { isHistoryCommand, runHistoryCommand } from '../shared/history-command.mjs';
 import {
   isControlCommand,
   runControlCommand,
@@ -61,6 +62,7 @@ function helpText() {
     t('直接发送文字、图片或文件即可继续当前会话。'),
     t('/new  开启一个全新会话'),
     t('/compact  压缩当前会话的较早上下文'),
+    t('/history [数量]  查看最近历史消息（默认 3 条，最多 5 条）'),
     t('/workspace 工作区绝对路径  切换工作区'),
     t('/workspacelist  列出工作区绝对路径'),
     t('/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题'),
@@ -591,7 +593,8 @@ export class WecomHarnessBridge {
         return this.#finishBatchResult(frame, messageId, chatId, result);
       }
     }
-    const commandRunner = hasInboundFiles(commandMessage) ? null : isControlCommand(commandText)
+    const commandRunner = isHistoryCommand(commandText) ? runHistoryCommand
+      : hasInboundFiles(commandMessage) ? null : isControlCommand(commandText)
       ? runControlCommand
       : (isModelCommand(commandText)
           ? runModelCommand
@@ -768,6 +771,7 @@ export class WecomHarnessBridge {
     this.#status.lastMessageAt = new Date().toISOString();
     const result = await runner(message.content, this.#harness, this.#state, key, {
       signal: this.#signal,
+      isDirect: bodyOf(frame).chattype === 'single',
       hasImages: hasInboundImages(message),
       hasFiles: hasInboundFiles(message),
       pendingInteraction: this.#pendingInteractions.has(key)
