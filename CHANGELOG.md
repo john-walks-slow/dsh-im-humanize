@@ -6,6 +6,13 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [3.0.8] - 2026-08-28
+
+### Fixed / 修复
+
+- 本机 `dsh web` 与 DSH Desktop 的 IM 渠道和 AI Office 现在默认直接使用当前 Host 的内部 `apiProxy`，不再依赖回环 HTTP 端口或 Desktop 的浏览器/局域网访问开关；显式配置 `harnessBaseUrl` 时仍使用 HTTP/WebSocket，内部调用失败不会静默切换 Host。
+  IM channels and AI Office in local `dsh web` and DSH Desktop now use the current Host's internal `apiProxy` by default, removing the dependency on loopback HTTP ports or Desktop's browser/LAN access settings. Explicit `harnessBaseUrl` configurations still use HTTP/WebSocket, and failed internal calls never silently switch Hosts.
+
 ## [3.0.7] - 2026-08-27
 
 ### Fixed / 修复
@@ -417,7 +424,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.7...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.0.8...HEAD
+[3.0.8]: https://github.com/xmanrui/dsh-im/compare/v3.0.7...v3.0.8
 [3.0.7]: https://github.com/xmanrui/dsh-im/compare/v3.0.6...v3.0.7
 [3.0.6]: https://github.com/xmanrui/dsh-im/compare/v3.0.5...v3.0.6
 [3.0.5]: https://github.com/xmanrui/dsh-im/compare/v3.0.4...v3.0.5
