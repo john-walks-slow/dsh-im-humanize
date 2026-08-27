@@ -133,6 +133,24 @@ Each Telegram bot has its own access-mode control on its bot card. Existing and 
 
 Each WhatsApp bot also has its own access mode. Existing bots migrate to **Only me**, which is also the default for newly linked bots and accepts only self-chat messages from the linked account. **Selected contacts** additionally accepts direct messages from allowlisted phone numbers and ignores groups. Enter one number with its country or region code per line; a leading `+` is optional. **Open responses** accepts all direct messages, group messages sent by the linked account, and mentions of or replies to that account from other group members; this also lets an owner-only group act as a separate conversation. Switching modes retains the allowlist. An empty Selected contacts allowlist behaves like Only me, and rejected messages are ignored silently.
 
+## Checking and installing updates
+
+In **Settings → IM Bot**, click **Check for updates** immediately to the left of GitHub. The official npm registry is contacted only on request; confirm the target version and current profile before installing. Only `@xmanrui/dsh-im` is updated, without fetching GitHub or updating Harness / Desktop itself.
+
+After installation, the backend still requires a manual restart, and the panel reports **Installed; restart manually** based on the Host's status. The updater does not request a restart, hot reload, or page refresh. The host's existing module watcher may refresh the plugin interface, but an interface change does not mean the new backend version is running; the Host-reported running version is authoritative. Update when bots are idle, then restart the current Harness / Desktop yourself. Closing the settings page does not cancel a submitted installation.
+
+If the existing page still shows a restart notice after you restart manually, click **Refresh status** in the dialog or reopen **Restart needed**. This reads the current Host status without checking npm or refreshing the page.
+
+The button reuses Desktop's package-management service or the current Harness CLI for an exact-version install equivalent to the following (replace the example profile and version with the confirmed values):
+
+```sh
+dsh plugin --profile web add -w --save-exact @xmanrui/dsh-im@3.0.8 --registry=https://registry.npmjs.org/
+```
+
+Source `link:`, `file:`, Git, and unrecognized installations can check versions but are never replaced automatically. Confirm the intended profile before manually migrating to npm. Conflicting scoped registries, incompatible Node versions, and unavailable Host executors disable installation with an explanation. Standard Windows CLI installations currently require a manual update; Desktop uses its existing executor.
+
+Do not modify the same profile through a terminal or plugin market during installation. A failed command may leave partial dependency changes; it is not an automatic rollback. Inspect the installation, reinstall the previous exact version if needed, and restart manually. The updater keeps only the profile's latest job and manifest backup under the current `DSH_HOME/updates/dsh-im`, without copying bot credentials. Resolve uncertain remaining installers or locks before retrying; do not blindly delete a lock.
+
 ## Bot commands
 
 | Command | Description |

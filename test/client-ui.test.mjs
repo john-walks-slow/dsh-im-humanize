@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
 
+import { transform } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
@@ -130,6 +131,8 @@ test('IM settings renders nine IM channels plus the AI Office connector', async 
   assert.match(markup, /target="_blank"/);
   assert.match(markup, /rel="noopener noreferrer"/);
   assert.match(markup, /aria-label="dsh-im GitHub"/);
+  assert.match(markup, /dim-updateTrigger[^>]*aria-haspopup="dialog"[^>]*>检查更新</);
+  assert.ok(markup.indexOf('dim-updateTrigger') < markup.indexOf('dim-githubAction'));
   assert.match(markup, /aria-describedby="[^"]+"/);
   assert.match(markup, /role="tooltip"[^>]*>帮助与反馈 · 前往 GitHub</);
   assert.match(styles, /\.dim-title \{[^}]*margin: 0 0 18px;/);
@@ -650,6 +653,12 @@ test('the bundled DingTalk channel has no local sender approval workflow', async
   );
 });
 
+test('the bilingual dictionary has no duplicate object keys', async () => {
+  const source = await readFile(new URL('../plugin-src/client/i18n.js', import.meta.url), 'utf8');
+  const { warnings } = await transform(source, { loader: 'js', logLevel: 'silent' });
+  assert.deepEqual(warnings.filter((warning) => warning.id === 'duplicate-object-key'), []);
+});
+
 test('every shipped Chinese client string has an English projection', async () => {
   const paths = (await readdir(CLIENT_SOURCE_DIRECTORY_URL, { recursive: true }))
     .filter((path) => path.endsWith('.js') && path !== 'i18n.js');
@@ -692,7 +701,11 @@ test('client registers one top-level bilingual IM settings section with a direct
   const registrations = [];
   const dictionaries = [];
   const directoryCalls = [];
-  const rpcCall = async () => ({ ok: true, value: {} });
+  const rpcCalls = [];
+  const rpcCall = async (...args) => {
+    rpcCalls.push(args);
+    return { ok: true, value: {} };
+  };
   const ctx = {
     effect(install, label) {
       effects.push({ install, label });
@@ -749,6 +762,8 @@ test('client registers one top-level bilingual IM settings section with a direct
 
     const injected = registrations[0].options.inject();
     const signal = new AbortController().signal;
+    await injected.updateRpcCall('update.status', {}, signal);
+    assert.deepEqual(rpcCalls, [['/dsh-im', 'update.status', {}, signal]]);
     assert.deepEqual(
       await injected.workspaceDirectoryPicker.listDirectory('/workspace/current', signal),
       { path: '/workspace/current', entries: [] },

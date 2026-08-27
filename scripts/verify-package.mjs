@@ -28,6 +28,10 @@ const required = [
   'plugin-src/client/channels/dingtalk/index.js',
   'plugin-src/client/channels/slack/index.js',
   'plugin-src/client/i18n.js',
+  'plugin-src/client/update-panel.js',
+  'plugin-src/host/update-service.mjs',
+  'plugin-src/host/update-runtime.mjs',
+  'plugin-src/host/update-rpc.mjs',
   'plugin-src/host/channels/feishu/index.mjs',
   'plugin-src/host/channels/weixin/index.mjs',
   'plugin-src/host/channels/dingtalk/index.mjs',
@@ -142,6 +146,14 @@ for (const marker of ['/feishu', '/weixin', '/dingtalk', '/wecom', '/qq', '/slac
   if (!host.includes(marker)) {
     throw new Error(`host bundle does not contain the internal ${marker} RPC provider`);
   }
+}
+for (const marker of ['update.status', 'update.check', 'update.install']) {
+  if (!host.includes(marker) || !client.includes(marker)) {
+    throw new Error(`update RPC endpoint missing from Host or Client bundle: ${marker}`);
+  }
+}
+if (!host.includes('https://registry.npmjs.org/') || !host.includes('desktopPnpm')) {
+  throw new Error('host bundle is missing the npm updater or Desktop package-management adapter');
 }
 for (const marker of ['/session Session ID', 'bindWorkspaceSession', 'session-subagent-unsupported']) {
   if (!host.includes(marker)) {

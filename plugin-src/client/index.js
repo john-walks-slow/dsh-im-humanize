@@ -48,6 +48,7 @@ import {
   replacePageLocation,
 } from './loopback-recovery.js';
 import { installImStyles } from './styles.js';
+import { UpdatePanel, UPDATE_RPC_CHANNEL } from './update-panel.js';
 import { WorkspaceDirectoryPickerContext } from './workspace-editor.js';
 
 export const name = 'im-settings';
@@ -155,16 +156,21 @@ export function IMSettingsTab({
   weixinRpcCall,
   whatsappRpcCall,
   officeRpcCall,
+  updateRpcCall,
   workspaceDirectoryPicker,
   browserLocation = globalThis.location,
   navigateToRecoveryUrl = replacePageLocation,
 }) {
   const [selected, setSelected] = React.useState('weixin');
   const [loopbackRecovery, setLoopbackRecovery] = React.useState(null);
+  const [runningVersion, setRunningVersion] = React.useState(IM_PLUGIN_VERSION);
   const githubTooltipId = React.useId();
   const active = CHANNELS.find((channel) => channel.id === selected) ?? CHANNELS[0];
   const reportLoopbackRecovery = React.useCallback((recovery) => {
     setLoopbackRecovery((current) => current?.url === recovery.url ? current : recovery);
+  }, []);
+  const reportUpdateStatus = React.useCallback((snapshot) => {
+    setRunningVersion(snapshot.runningVersion);
   }, []);
   const rpcCalls = React.useMemo(() => createLoopbackAwareRpcCalls({
     dingtalkRpcCall,
@@ -177,6 +183,7 @@ export function IMSettingsTab({
     weixinRpcCall,
     whatsappRpcCall,
     officeRpcCall,
+    updateRpcCall,
   }, {
     location: browserLocation,
     onRecovery: reportLoopbackRecovery,
@@ -190,6 +197,7 @@ export function IMSettingsTab({
     reportLoopbackRecovery,
     slackRpcCall,
     telegramRpcCall,
+    updateRpcCall,
     wecomRpcCall,
     weixinRpcCall,
     whatsappRpcCall,
@@ -200,8 +208,14 @@ export function IMSettingsTab({
       h('div', { className: 'dim-brand' },
         h('div', { className: 'dim-brandHeading' },
           h('strong', { className: 'dim-brandName' }, 'DSH-IM'),
-          h('span', { className: 'dim-brandVersion' }, `v${IM_PLUGIN_VERSION}`)),
+          h('span', { className: 'dim-brandVersion' }, `v${runningVersion}`)),
         h('p', null, '让 DeepSeek Harness 触手可及')),
+      h('div', { className: 'dim-titleActions' },
+        h(UpdatePanel, {
+          rpcCall: rpcCalls.updateRpcCall,
+          clientVersion: IM_PLUGIN_VERSION,
+          onStatus: reportUpdateStatus,
+        }),
       h('span', { className: 'dim-githubAction' },
         h('a', {
           className: 'dim-githubLink',
@@ -217,7 +231,7 @@ export function IMSettingsTab({
           id: githubTooltipId,
           className: 'dim-githubTooltip',
           role: 'tooltip',
-        }, '帮助与反馈 · 前往 GitHub')),
+        }, '帮助与反馈 · 前往 GitHub'))),
     ),
     h('div', { className: 'dim-layout' },
       h('nav', { className: 'dim-rail', role: 'tablist', 'aria-label': 'IM 渠道' },
@@ -318,6 +332,8 @@ export function apply(ctx) {
     ctx.connection.rpc.call(SLACK_RPC_CHANNEL, endpoint, payload, signal);
   const officeRpcCall = (endpoint, payload, signal) =>
     ctx.connection.rpc.call(OFFICE_RPC_CHANNEL, endpoint, payload, signal);
+  const updateRpcCall = (endpoint, payload, signal) =>
+    ctx.connection.rpc.call(UPDATE_RPC_CHANNEL, endpoint, payload, signal);
   const workspaceDirectoryPicker = Object.freeze({
     listDirectory: (path, signal) => ctx.workspaces.listDirectory(path, signal),
     pickDirectory: () => ctx.workspaces.pickDirectory(),
@@ -340,6 +356,7 @@ export function apply(ctx) {
       weixinRpcCall,
       whatsappRpcCall,
       officeRpcCall,
+      updateRpcCall,
       workspaceDirectoryPicker,
     }),
   }, IMSettingsTab));

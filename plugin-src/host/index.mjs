@@ -10,6 +10,7 @@ import { apply as applyWeixin } from './channels/weixin/index.mjs';
 import { apply as applyWhatsapp } from './channels/whatsapp/index.mjs';
 import { installOutboundArtifactTool } from '../../src/channels/shared/semantic/artifact.mjs';
 import { setImHostLanguage } from '../../src/channels/shared/i18n.mjs';
+import { installUpdateRpc } from './update-rpc.mjs';
 
 export const name = 'dsh-im-host';
 export const inject = [
@@ -27,6 +28,7 @@ function channelConfig(config, name) {
 }
 
 export function createImHostPlugin(internals = {}) {
+  const startUpdate = internals.installUpdateRpc ?? installUpdateRpc;
   const startFeishu = internals.applyFeishu ?? applyFeishu;
   const startWeixin = internals.applyWeixin ?? applyWeixin;
   const startDingtalk = internals.applyDingtalk ?? applyDingtalk;
@@ -64,6 +66,13 @@ export function createImHostPlugin(internals = {}) {
       const logger = typeof ctx?.logger === 'function'
         ? ctx.logger(name)
         : (ctx?.logger ?? console);
+      if (ctx?.connection?.rpc) {
+        try {
+          startUpdate(ctx);
+        } catch (error) {
+          logger.error?.('[dsh-im] failed to activate update management; continuing with channels', error);
+        }
+      }
       const failures = [];
       for (const [channel, start] of channels) {
         try {
