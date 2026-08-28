@@ -1274,77 +1274,115 @@ test('group messages require an explicit bot mention before Harness work', async
   assert.equal(fixture.sessions.get('group:group-one'), 'session-group');
 });
 
-test('bridge streams Harness snapshots into one DingTalk AI Card and finalizes it', async () => {
-  const fixture = stateFixture();
-  const calls = { create: [], update: [], finish: [], text: [] };
-  const bridge = new DingtalkHarnessBridge({
-    api: {
-      sendText: async (request) => calls.text.push(request),
-      createAiCard: async (request) => {
-        calls.create.push(request);
-        return { cardInstanceId: 'card-one' };
-      },
-      updateAiCard: async (request) => calls.update.push(request),
-      finishAiCard: async (request) => {
-        calls.finish.push(request);
-        return { delivered: true, completed: false };
+test('bridge streams one AI Card and mentions only the group sender without an extra text reply', async (t) => {
+  for (const scenario of [
+    {
+      name: 'private reply',
+      overrides: {},
+      target: { type: 'user', userId: 'staff-approved' },
+    },
+    {
+      name: 'group reply mentions the sender by name',
+      overrides: { conversationType: '2', isInAtList: true },
+      target: {
+        type: 'group',
+        openConversationId: 'conversation-stream',
+        atUserIds: { 'staff-approved': '钉钉用户' },
       },
     },
-    clientId: 'ding-client',
-    clientSecret: 'host-secret',
-    harness: {
-      sessionExists: async () => false,
-      createSession: async () => 'session-stream',
-      ask: async (_sessionId, _text, options) => {
-        options.onUpdate({ type: 'text', text: '生成中的完整快照' });
-        await new Promise((resolve) => setTimeout(resolve, 510));
-        return '最终完整回答';
+    {
+      name: 'group reply without a nickname falls back to the sender ID',
+      overrides: { conversationType: 2, isInAtList: true, senderNick: undefined },
+      target: {
+        type: 'group',
+        openConversationId: 'conversation-stream',
+        atUserIds: { 'staff-approved': 'staff-approved' },
       },
     },
-    state: fixture.state,
-  });
+  ]) {
+    await t.test(scenario.name, async () => {
+      const fixture = stateFixture();
+      const calls = { create: [], update: [], finish: [], text: [] };
+      const bridge = new DingtalkHarnessBridge({
+        api: {
+          sendText: async (request) => calls.text.push(request),
+          createAiCard: async (request) => {
+            calls.create.push(request);
+            return { cardInstanceId: 'card-one' };
+          },
+          updateAiCard: async (request) => calls.update.push(request),
+          finishAiCard: async (request) => {
+            calls.finish.push(request);
+            return { delivered: true, completed: false };
+          },
+        },
+        clientId: 'ding-client',
+        clientSecret: 'host-secret',
+        harness: {
+          sessionExists: async () => false,
+          createSession: async () => 'session-stream',
+          ask: async (_sessionId, _text, options) => {
+            options.onUpdate({ type: 'text', text: '生成中的完整快照' });
+            await new Promise((resolve) => setTimeout(resolve, 510));
+            return '最终完整回答';
+          },
+        },
+        state: fixture.state,
+      });
 
-  await bridge.accept(message('stream', '请流式回答'));
+      await bridge.accept(message('stream', '请流式回答', scenario.overrides));
 
-  assert.equal(calls.create.length, 1);
-  assert.deepEqual(calls.create[0].target, { type: 'user', userId: 'staff-approved' });
-  assert.equal(calls.update.at(-1).text, '生成中的完整快照');
-  assert.equal(calls.finish.length, 1);
-  assert.equal(calls.finish[0].text, '最终完整回答');
-  assert.equal(calls.text.length, 0);
-  assert.equal(bridge.status.messagesReplied, 1);
+      assert.equal(calls.create.length, 1);
+      assert.deepEqual(calls.create[0].target, scenario.target);
+      assert.equal(calls.update.at(-1).text, '生成中的完整快照');
+      assert.equal(calls.finish.length, 1);
+      assert.equal(calls.finish[0].text, '最终完整回答');
+      assert.equal(calls.text.length, 0);
+      assert.equal(bridge.status.messagesReplied, 1);
+    });
+  }
 });
 
-test('bridge asks Harness once and falls back to final text when AI Card creation fails', async () => {
-  const fixture = stateFixture();
-  const sent = [];
-  let asks = 0;
-  const bridge = new DingtalkHarnessBridge({
-    api: {
-      sendText: async (request) => sent.push(request.text),
-      createAiCard: async () => { throw new Error('card unavailable'); },
-      updateAiCard: async () => undefined,
-      finishAiCard: async () => undefined,
-    },
-    clientId: 'ding-client',
-    clientSecret: 'host-secret',
-    harness: {
-      sessionExists: async () => false,
-      createSession: async () => 'session-fallback',
-      ask: async () => {
-        asks += 1;
-        return '文本降级回答';
-      },
-    },
-    state: fixture.state,
-    logger: { error() {} },
-  });
+test('bridge falls back to final text with group sender mentions when AI Card creation fails', async (t) => {
+  for (const conversationType of ['1', '2']) {
+    await t.test(`conversationType=${conversationType}`, async () => {
+      const fixture = stateFixture();
+      const sent = [];
+      let asks = 0;
+      const bridge = new DingtalkHarnessBridge({
+        api: {
+          sendText: async (request) => sent.push(request),
+          createAiCard: async () => { throw new Error('card unavailable'); },
+          updateAiCard: async () => undefined,
+          finishAiCard: async () => undefined,
+        },
+        clientId: 'ding-client',
+        clientSecret: 'host-secret',
+        harness: {
+          sessionExists: async () => false,
+          createSession: async () => 'session-fallback',
+          ask: async () => {
+            asks += 1;
+            return '文本降级回答';
+          },
+        },
+        state: fixture.state,
+        logger: { error() {} },
+      });
 
-  await bridge.accept(message('fallback', '卡片失败也要回答'));
+      await bridge.accept(message('fallback', '卡片失败也要回答', {
+        conversationType,
+        isInAtList: true,
+      }));
 
-  assert.equal(asks, 1);
-  assert.deepEqual(sent, ['文本降级回答']);
-  assert.equal(bridge.status.messagesReplied, 1);
+      assert.equal(asks, 1);
+      assert.deepEqual(sent.map(({ text }) => text), ['文本降级回答']);
+      assert.deepEqual(sent[0].at, conversationType === '2'
+        ? { atUserIds: ['staff-approved'] }
+        : undefined);
+      assert.equal(bridge.status.messagesReplied, 1);
+    });
+  }
 });
 
 test('commands stay local and unsafe session webhooks are rejected before Harness', async () => {

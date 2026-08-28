@@ -316,16 +316,30 @@ function normalizeCardTarget(target) {
   }
   if (target?.type === 'group') {
     const openConversationId = nonEmptyString(target.openConversationId);
-    if (openConversationId) return { type: 'group', openConversationId };
+    if (openConversationId) {
+      return { type: 'group', openConversationId, atUserIds: target.atUserIds };
+    }
   }
   throw new TypeError('DingTalk AI Card target is invalid');
 }
 
-function cardData(text, flowStatus) {
+function cardMarkdown(text, target) {
+  const escape = (value) => String(value).replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[char]);
+  const mentions = target?.type === 'group'
+    ? Object.entries(target.atUserIds ?? {}).map(([userId, name]) => (
+        `<a atId="${escape(userId)}">${escape(name)}</a>`
+      )).join(' ')
+    : '';
+  return normalizeDingtalkCardMarkdown(mentions ? `${mentions}\n\n${text}` : text);
+}
+
+function cardData(text, flowStatus, target) {
   return {
     cardParamMap: {
       flowStatus,
-      msgContent: normalizeDingtalkCardMarkdown(text),
+      msgContent: cardMarkdown(text, target),
       staticMsgContent: '',
       sys_full_json_obj: JSON.stringify({ order: ['msgContent'] }),
       config: JSON.stringify({ autoLayout: true }),
@@ -339,7 +353,7 @@ function cardDeliverBody(cardInstanceId, target, robotCode) {
     return {
       ...base,
       openSpaceId: `dtv1.card//IM_GROUP.${target.openConversationId}`,
-      imGroupOpenDeliverModel: { robotCode },
+      imGroupOpenDeliverModel: { robotCode, atUserIds: target.atUserIds },
     };
   }
   return {
@@ -575,7 +589,7 @@ export function createDingtalkApi({
     }
   }
 
-  async function failCard({ clientId, clientSecret, cardInstanceId, text, signal }) {
+  async function failCard({ clientId, clientSecret, cardInstanceId, text, target, signal }) {
     const instanceId = nonEmptyString(cardInstanceId);
     const content = nonEmptyString(text);
     if (!instanceId) throw new TypeError('cardInstanceId is required');
@@ -589,7 +603,7 @@ export function createDingtalkApi({
           outTrackId: instanceId,
           guid: randomUUID(),
           key: 'msgContent',
-          content: normalizeDingtalkCardMarkdown(content),
+          content: cardMarkdown(content, target),
           isFull: true,
           isFinalize: false,
           isError: true,
@@ -602,7 +616,7 @@ export function createDingtalkApi({
         method: 'PUT',
         body: {
           outTrackId: instanceId,
-          cardData: cardData(content, '5'),
+          cardData: cardData(content, '5', target),
           cardUpdateOptions: { updateCardDataByKey: true },
         },
         headers,
@@ -883,6 +897,9 @@ export function createDingtalkApi({
               cardParamMap: { config: JSON.stringify({ autoLayout: true }) },
             },
             callbackType: 'STREAM',
+            cardAtUserIds: normalizedTarget.atUserIds
+              ? Object.keys(normalizedTarget.atUserIds)
+              : undefined,
             imGroupOpenSpaceModel: { supportForward: true },
             imRobotOpenSpaceModel: { supportForward: true },
           },
@@ -899,7 +916,7 @@ export function createDingtalkApi({
         delivered = true;
         await cardRequest('v1.0/card/instances', {
           method: 'PUT',
-          body: { outTrackId: cardInstanceId, cardData: cardData(content, '2') },
+          body: { outTrackId: cardInstanceId, cardData: cardData(content, '2', normalizedTarget) },
           headers,
           signal,
           action: 'AI Card 启动',
@@ -910,7 +927,7 @@ export function createDingtalkApi({
             outTrackId: cardInstanceId,
             guid: randomUUID(),
             key: 'msgContent',
-            content: normalizeDingtalkCardMarkdown(content).replace(/\n+$/, ''),
+            content: cardMarkdown(content, normalizedTarget).replace(/\n+$/, ''),
             isFull: true,
             isFinalize: false,
             isError: false,
@@ -927,6 +944,7 @@ export function createDingtalkApi({
             clientSecret: appSecret,
             cardInstanceId,
             text: t('卡片已结束，请查看后续消息。'),
+            target: normalizedTarget,
             signal: cleanupSignal,
           }).catch(() => undefined);
         }
@@ -935,7 +953,7 @@ export function createDingtalkApi({
       return { cardInstanceId };
     },
 
-    async updateAiCard({ clientId, clientSecret, cardInstanceId, text, signal }) {
+    async updateAiCard({ clientId, clientSecret, cardInstanceId, text, target, signal }) {
       const instanceId = nonEmptyString(cardInstanceId);
       const content = nonEmptyString(text);
       if (!instanceId) throw new TypeError('cardInstanceId is required');
@@ -947,7 +965,7 @@ export function createDingtalkApi({
           outTrackId: instanceId,
           guid: randomUUID(),
           key: 'msgContent',
-          content: normalizeDingtalkCardMarkdown(content).replace(/\n+$/, ''),
+          content: cardMarkdown(content, target).replace(/\n+$/, ''),
           isFull: true,
           isFinalize: false,
           isError: false,
@@ -959,14 +977,14 @@ export function createDingtalkApi({
       return true;
     },
 
-    async finishAiCard({ clientId, clientSecret, cardInstanceId, text, signal }) {
+    async finishAiCard({ clientId, clientSecret, cardInstanceId, text, target, signal }) {
       const instanceId = nonEmptyString(cardInstanceId);
       const content = nonEmptyString(text);
       if (!instanceId) throw new TypeError('cardInstanceId is required');
       if (!content) throw new TypeError('text is required');
       const token = await accessToken({ clientId, clientSecret, signal });
       const headers = { 'x-acs-dingtalk-access-token': token };
-      const normalizedContent = normalizeDingtalkCardMarkdown(content);
+      const normalizedContent = cardMarkdown(content, target);
       await cardRequest('v1.0/card/streaming', {
         method: 'PUT',
         body: {
@@ -987,7 +1005,7 @@ export function createDingtalkApi({
         method: 'PUT',
         body: {
           outTrackId: instanceId,
-          cardData: cardData(content, '3'),
+          cardData: cardData(content, '3', target),
           cardUpdateOptions: { updateCardDataByKey: true },
         },
         headers,

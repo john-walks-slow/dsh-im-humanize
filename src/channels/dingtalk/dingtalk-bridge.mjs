@@ -251,7 +251,11 @@ function conversationKey(message, sender) {
 
 function cardTarget(message, sender) {
   if (String(message?.conversationType) === '2') {
-    return { type: 'group', openConversationId: nonEmptyString(message?.conversationId) };
+    return {
+      type: 'group',
+      openConversationId: nonEmptyString(message?.conversationId),
+      atUserIds: { [sender]: nonEmptyString(message?.senderNick) ?? sender },
+    };
   }
   return { type: 'user', userId: sender };
 }

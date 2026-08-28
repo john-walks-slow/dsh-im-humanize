@@ -802,6 +802,121 @@ test('AI Card replies create, deliver, stream full snapshots, and finalize on fi
   assert.equal(cardCalls[6].body.cardData.cardParamMap.flowStatus, '3');
 });
 
+test('AI Cards keep native group mentions through every frame and leave private replies unchanged', async (t) => {
+  const unsafeUserId = "staff&<>\"'";
+  const unsafeName = "提问者&<>\"'";
+  for (const scenario of [
+    {
+      name: 'group with sender mention',
+      target: {
+        type: 'group',
+        openConversationId: 'group-one',
+        atUserIds: { 'staff-one': '提问者' },
+      },
+      delivery: {
+        openSpaceId: 'dtv1.card//IM_GROUP.group-one',
+        imGroupOpenDeliverModel: {
+          robotCode: 'ding-client',
+          atUserIds: { 'staff-one': '提问者' },
+        },
+      },
+      cardAtUserIds: ['staff-one'],
+      mentionPrefix: '<a atId="staff-one">提问者</a>\n\n',
+    },
+    {
+      name: 'mention IDs and names cannot inject HTML',
+      target: {
+        type: 'group',
+        openConversationId: 'group-one',
+        atUserIds: { [unsafeUserId]: unsafeName },
+      },
+      delivery: {
+        openSpaceId: 'dtv1.card//IM_GROUP.group-one',
+        imGroupOpenDeliverModel: {
+          robotCode: 'ding-client',
+          atUserIds: { [unsafeUserId]: unsafeName },
+        },
+      },
+      cardAtUserIds: [unsafeUserId],
+      mentionPrefix: '<a atId="staff&amp;&lt;&gt;&quot;&#39;">提问者&amp;&lt;&gt;&quot;&#39;</a>\n\n',
+    },
+    {
+      name: 'group without mentions',
+      target: { type: 'group', openConversationId: 'group-one' },
+      delivery: {
+        openSpaceId: 'dtv1.card//IM_GROUP.group-one',
+        imGroupOpenDeliverModel: { robotCode: 'ding-client' },
+      },
+    },
+    {
+      name: 'private reply ignores mentions',
+      target: { type: 'user', userId: 'staff-one', atUserIds: { 'staff-one': '提问者' } },
+      delivery: {
+        openSpaceId: 'dtv1.card//IM_ROBOT.staff-one',
+        imRobotOpenDeliverModel: {
+          spaceType: 'IM_ROBOT',
+          robotCode: 'ding-client',
+          extension: { dynamicSummary: 'true' },
+        },
+      },
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const calls = [];
+      const api = createDingtalkApi({
+        fetchImpl: async (url, options) => {
+          if (url.pathname.endsWith('/oauth2/accessToken')) {
+            return jsonResponse({ accessToken: 'access-token', expireIn: 7_200 });
+          }
+          calls.push({ path: url.pathname, method: options.method, body: JSON.parse(options.body) });
+          return jsonResponse({});
+        },
+        cardMinIntervalMs: 0,
+        cardBackoffMs: 0,
+      });
+
+      const request = {
+        clientId: 'ding-client',
+        clientSecret: 'host-only-secret',
+        target: scenario.target,
+      };
+      const card = await api.createAiCard({ ...request, initialText: '正在处理…' });
+      await api.updateAiCard({ ...request, ...card, text: '第一行\n第二行' });
+      await api.finishAiCard({ ...request, ...card, text: '最终回答' });
+      await api.failAiCard({ ...request, ...card, text: '处理失败' });
+
+      assert.deepEqual(calls[0].body.cardAtUserIds, scenario.cardAtUserIds);
+      if (!scenario.cardAtUserIds) {
+        assert.equal(Object.hasOwn(calls[0].body, 'cardAtUserIds'), false);
+      }
+      const deliveries = calls
+        .filter(({ path }) => path.endsWith('/instances/deliver'))
+        .map(({ body }) => body);
+      assert.deepEqual(deliveries, [{
+        outTrackId: card.cardInstanceId,
+        userIdType: 1,
+        ...scenario.delivery,
+      }]);
+      const mention = scenario.mentionPrefix ?? '';
+      const frames = calls.filter(({ path }) => path.endsWith('/streaming')).map(({ body }) => body);
+      assert.deepEqual(frames.map(({ content, isFinalize, isError }) => ({ content, isFinalize, isError })), [
+        { content: mention + '正在处理…', isFinalize: false, isError: false },
+        { content: mention + '第一行<br>第二行', isFinalize: false, isError: false },
+        { content: mention + '最终回答', isFinalize: true, isError: false },
+        { content: mention + '处理失败', isFinalize: false, isError: true },
+      ]);
+      const states = calls
+        .filter(({ path, method }) => path.endsWith('/instances') && method === 'PUT')
+        .map(({ body }) => body.cardData.cardParamMap);
+      assert.deepEqual(states.map(({ flowStatus, msgContent }) => ({ flowStatus, msgContent })), [
+        { flowStatus: '2', msgContent: mention + '正在处理…' },
+        { flowStatus: '3', msgContent: mention + '最终回答' },
+        { flowStatus: '5', msgContent: mention + '处理失败' },
+      ]);
+    });
+  }
+});
+
 test('AI Card markdown preserves fenced code while rendering ordinary line breaks', () => {
   assert.equal(normalizeDingtalkCardMarkdown('一\n二'), '一<br>二');
   assert.equal(
@@ -847,6 +962,9 @@ test('AI Card start slots preserve 20 QPS without blocking cleanup behind slow H
 
   assert.equal(bodies.some((body) => body.isError === true), true);
   assert.equal(bodies.some((body) => body.cardData?.cardParamMap?.flowStatus === '5'), true);
+  assert.equal(bodies.find((body) => body.isError === true).content, '及时收口');
+  const failedState = bodies.find((body) => body.cardData?.cardParamMap?.flowStatus === '5');
+  assert.equal(failedState.cardData.cardParamMap.msgContent, '及时收口');
   assert.deepEqual(waits, [50, 50]);
   firstUpdate.resolve();
   await slowUpdate;
@@ -918,7 +1036,7 @@ test('AI Card cleanup marks failure while a completed final frame never falls ba
   assert.equal(bodies.some((body) => body.cardData?.cardParamMap?.flowStatus === '5'), true);
 });
 
-test('AI Card creation closes a delivered card with an independent signal after abort', async () => {
+test('AI Card creation cleanup preserves group mentions with an independent signal after abort', async () => {
   const controller = new AbortController();
   const bodies = [];
   const fetchImpl = async (url, options) => {
@@ -938,7 +1056,11 @@ test('AI Card creation closes a delivered card with an independent signal after 
   await assert.rejects(api.createAiCard({
     clientId: 'ding-client',
     clientSecret: 'host-only-secret',
-    target: { type: 'user', userId: 'staff-one' },
+    target: {
+      type: 'group',
+      openConversationId: 'group-one',
+      atUserIds: { 'staff-one': '提问者' },
+    },
     initialText: '正在处理',
     signal: controller.signal,
   }), { name: 'AbortError' });
@@ -947,8 +1069,11 @@ test('AI Card creation closes a delivered card with an independent signal after 
   assert.equal(bodies.some((body) => body.cardData?.cardParamMap?.flowStatus === '5'), true);
   assert.equal(bodies.some((body) => (
     body.isError === true
-      && body.content === '卡片已结束，请查看后续消息。'
+      && body.content === '<a atId="staff-one">提问者</a>\n\n卡片已结束，请查看后续消息。'
   )), true);
+  const failedState = bodies.find((body) => body.cardData?.cardParamMap?.flowStatus === '5');
+  assert.equal(failedState.cardData.cardParamMap.msgContent,
+    '<a atId="staff-one">提问者</a>\n\n卡片已结束，请查看后续消息。');
   assert.equal(JSON.stringify(bodies).includes('消息处理失败，请稍后重试。'), false);
 });
 
