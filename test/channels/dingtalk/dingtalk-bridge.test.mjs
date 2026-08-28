@@ -2425,6 +2425,67 @@ test('DingTalk clears a private batch after turn-stopped without suggesting a ba
   assert.match(sent.at(-1), /当前没有待提交的批量内容/);
 });
 
+test('DingTalk mentions the sender in every group text chunk but not in private replies', async (t) => {
+  for (const conversationType of ['1', '2', 2]) {
+    await t.test(`conversationType=${JSON.stringify(conversationType)}`, async () => {
+      const sent = [];
+      const bridge = new DingtalkHarnessBridge({
+        api: { sendText: async (request) => sent.push(request) },
+        clientId: 'ding-client',
+        clientSecret: 'host-secret',
+        harness: { ensureRunning: async () => true },
+        state: stateFixture().state,
+        maxMessageChars: 10,
+      });
+
+      await bridge.accept(message('mention-status', '/status', {
+        conversationType,
+        isInAtList: true,
+      }));
+
+      assert.ok(sent.length > 1);
+      assert.equal(sent.map(({ text }) => text).join(''), '钉钉机器人与 DeepSeek Harness 连接正常。');
+      for (const request of sent) {
+        assert.deepEqual(request.at, String(conversationType) === '2'
+          ? { atUserIds: ['staff-approved'] }
+          : undefined);
+      }
+    });
+  }
+});
+
+test('DingTalk batch reply failures attempt a safe fallback and settle even if it also fails', async (t) => {
+  for (const conversationType of ['1', '2']) {
+    for (const fallbackFails of [false, true]) {
+      await t.test(`conversationType=${conversationType}, fallbackFails=${fallbackFails}`, async () => {
+        const sent = [];
+        const bridge = new DingtalkHarnessBridge({
+          api: {
+            sendText: async (request) => {
+              sent.push(request);
+              if (sent.length === 1 || fallbackFails) throw new Error('private delivery failure');
+            },
+          },
+          clientId: 'ding-client',
+          clientSecret: 'host-secret',
+          harness: { ask: async () => assert.fail('batch acknowledgement must not call Harness') },
+          state: stateFixture().state,
+          logger: { error() {} },
+        });
+
+        await assert.doesNotReject(bridge.accept(message('batch-reply-failure', '/batch', {
+          conversationType,
+          isInAtList: true,
+        })));
+
+        assert.equal(sent.length, 2);
+        assert.match(sent[1].text, /参考号：MF-[A-F0-9]{8}/);
+        assert.doesNotMatch(sent[1].text, /private delivery failure|ReferenceError/);
+      });
+    }
+  }
+});
+
 test('DingTalk group batch commands are rejected without reaching Harness', async () => {
   const fixture = stateFixture();
   const sent = [];

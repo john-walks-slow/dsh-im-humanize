@@ -117,6 +117,42 @@ test('session replies use the fixed token endpoint, reject redirects, and cache 
   });
 });
 
+test('session text replies include populated mention targets and omit empty mentions', async () => {
+  const sent = [];
+  const api = createDingtalkApi({
+    fetchImpl: async (url, options) => {
+      if (url.toString().includes('/oauth2/accessToken')) {
+        return jsonResponse({ accessToken: 'access-token', expireIn: 7_200 });
+      }
+      sent.push(JSON.parse(options.body));
+      return jsonResponse({ errcode: 0 });
+    },
+  });
+  for (const at of [
+    { atUserIds: ['staff-one'] },
+    { atMobiles: ['13800000000'] },
+    { isAtAll: true },
+    {},
+    { atUserIds: [], atMobiles: [], isAtAll: false },
+  ]) {
+    await api.sendText({
+      clientId: 'ding-client',
+      clientSecret: 'host-only-secret',
+      sessionWebhook: 'https://oapi.dingtalk.com/robot/reply?ticket=mentions',
+      text: '回答',
+      at,
+    });
+  }
+  assert.deepEqual(sent.map((body) => body.at), [
+    { atUserIds: ['staff-one'] },
+    { atMobiles: ['13800000000'] },
+    { isAtAll: true },
+    undefined,
+    undefined,
+  ]);
+  for (const body of sent) assert.equal(body.text.content, '回答');
+});
+
 test('DingTalk adds, recalls, and replaces its native status reactions', async () => {
   const calls = [];
   const fetchImpl = async (url, options) => {
