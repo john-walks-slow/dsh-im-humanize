@@ -829,7 +829,7 @@ export class DingtalkHarnessBridge {
         `[dsh-dingtalk] failed to process a batch input message [${failure.referenceId}]`,
         safeErrorDiagnostic(error),
       );
-      await this.#send(sessionWebhook, messageFailureText(failure), this.#atUsersFor(message)).catch(() => undefined);
+      await this.#send(sessionWebhook, messageFailureText(failure)).catch(() => undefined);
     }).finally(() => {
       this.#acceptedMessageIds.delete(messageId);
       this.#commandTasks.delete(task);
