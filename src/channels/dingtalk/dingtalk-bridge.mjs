@@ -551,7 +551,7 @@ export class DingtalkHarnessBridge {
           `[dsh-dingtalk] failed to process a command [${failure.referenceId}]`,
           safeErrorDiagnostic(error),
         );
-        return this.#send(sessionWebhook, messageFailureText(failure)).catch(() => undefined);
+        return this.#send(sessionWebhook, messageFailureText(failure), this.#atUsersFor(message)).catch(() => undefined);
       }).finally(() => {
         this.#acceptedMessageIds.delete(messageId);
         this.#commandTasks.delete(task);
@@ -573,7 +573,7 @@ export class DingtalkHarnessBridge {
         : null,
       isQuestionPending: () => this.#pendingInteractions.has(key),
       send: sessionWebhook
-        ? (reply) => this.#send(sessionWebhook, reply)
+        ? (reply) => this.#send(sessionWebhook, reply, this.#atUsersFor(message))
         : async () => undefined,
     });
     if (approvalReply) {
@@ -807,7 +807,7 @@ export class DingtalkHarnessBridge {
       ]);
     }
     for (const reply of result?.messages ?? [result?.message]) {
-      if (reply) await this.#send(sessionWebhook, reply);
+      if (reply) await this.#send(sessionWebhook, reply, this.#atUsersFor(message));
     }
     this.#status.lastError = null;
   }
@@ -885,23 +885,23 @@ export class DingtalkHarnessBridge {
     let batchSettled = batchSubmission === null;
     try {
       if (!text && !hasImages && !hasFiles) {
-        await this.#send(sessionWebhook, t('目前支持文字、图片和文件消息。'));
+        await this.#send(sessionWebhook, t('目前支持文字、图片和文件消息。'), this.#atUsersFor(message));
         return;
       }
 
       const command = text.toLowerCase();
       if (isPlainText && !hasImages && !hasFiles && command === '/help') {
-        await this.#send(sessionWebhook, helpText());
+        await this.#send(sessionWebhook, helpText(), this.#atUsersFor(message));
         return;
       }
       if (isPlainText && !hasImages && !hasFiles && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
-        await this.#send(sessionWebhook, t('钉钉机器人与 DeepSeek Harness 连接正常。'));
+        await this.#send(sessionWebhook, t('钉钉机器人与 DeepSeek Harness 连接正常。'), this.#atUsersFor(message));
         return;
       }
       if (isPlainText && !hasImages && !hasFiles && command === '/new') {
         await this.#state.clearSession(key);
-        await this.#send(sessionWebhook, t('已开启新会话。请发送你的问题。'));
+        await this.#send(sessionWebhook, t('已开启新会话。请发送你的问题。'), this.#atUsersFor(message));
         return;
       }
       const workspaceCommand = isPlainText && !hasImages && !hasFiles
@@ -909,7 +909,7 @@ export class DingtalkHarnessBridge {
         : null;
       if (workspaceCommand) {
         for (const reply of workspaceCommand.messages ?? [workspaceCommand.message]) {
-          await this.#send(sessionWebhook, reply);
+          await this.#send(sessionWebhook, reply, this.#atUsersFor(message));
         }
         return;
       }
@@ -923,7 +923,7 @@ export class DingtalkHarnessBridge {
           )
         : null;
       if (compactCommand) {
-        await this.#send(sessionWebhook, compactCommand.message);
+        await this.#send(sessionWebhook, compactCommand.message, this.#atUsersFor(message));
         return;
       }
 
@@ -988,7 +988,7 @@ export class DingtalkHarnessBridge {
           textReceipt = createDeliveryReceipt({
             deliveryId: messageId,
             presentation: 'dingtalk-text',
-            providerMessageIds: await this.#send(sessionWebhook, answerText),
+            providerMessageIds: await this.#send(sessionWebhook, answerText, this.#atUsersFor(message)),
           });
         }
       } catch (error) {
@@ -1049,7 +1049,7 @@ export class DingtalkHarnessBridge {
           ? `${errorText}\n\n${batchFailureMessage}`
           : errorText;
         const streamed = cardStarted && await cardStream.finish(visibleError);
-        if (!streamed) await this.#send(sessionWebhook, visibleError);
+        if (!streamed) await this.#send(sessionWebhook, visibleError, this.#atUsersFor(message));
       } catch {
         this.#logger.error?.('[dsh-dingtalk] failed to send the safe error reply');
       }
@@ -1102,7 +1102,7 @@ export class DingtalkHarnessBridge {
     const text = message?.msgtype === 'text' ? nonEmptyString(message?.text?.content) : null;
     if (!text) {
       try {
-        await this.#send(sessionWebhook, t('请用文字回答当前问题。'));
+        await this.#send(sessionWebhook, t('请用文字回答当前问题。'), this.#atUsersFor(message));
       } catch {
         this.#logger.error?.('[dsh-dingtalk] failed to reject a non-text interaction reply');
       }
@@ -1113,7 +1113,7 @@ export class DingtalkHarnessBridge {
     if (!pending || pending !== expected || pending.submitting) {
       if (claimed && (!pending || pending !== expected)) {
         try {
-          await this.#send(sessionWebhook, t(INTERACTION_RESOLVED_TEXT));
+          await this.#send(sessionWebhook, t(INTERACTION_RESOLVED_TEXT), this.#atUsersFor(message));
         } catch {
           this.#logger.error?.('[dsh-dingtalk] failed to send an expired interaction notice');
         }
@@ -1178,7 +1178,7 @@ export class DingtalkHarnessBridge {
       if (error?.code === 'interaction-not-pending') {
         this.#clearPendingInteraction(key, pending.interactionId);
         try {
-          await this.#send(sessionWebhook, t(INTERACTION_RESOLVED_TEXT));
+          await this.#send(sessionWebhook, t(INTERACTION_RESOLVED_TEXT), this.#atUsersFor(message));
         } catch {
           this.#logger.error?.('[dsh-dingtalk] failed to send an expired interaction notice');
         }
@@ -1191,7 +1191,7 @@ export class DingtalkHarnessBridge {
       this.#status.lastError = t('回答提交失败。');
       this.#logger.error?.('[dsh-dingtalk] failed to answer a Harness interaction');
       try {
-        await this.#send(sessionWebhook, t('回答提交失败，请重新发送当前问题的答案。'));
+        await this.#send(sessionWebhook, t('回答提交失败，请重新发送当前问题的答案。'), this.#atUsersFor(message));
       } catch {
         this.#logger.error?.('[dsh-dingtalk] failed to send an interaction retry notice');
       }
@@ -1323,7 +1323,7 @@ export class DingtalkHarnessBridge {
       return;
     }
     try {
-      await this.#send(sessionWebhook, t(INTERACTION_RESOLVED_TEXT));
+      await this.#send(sessionWebhook, t(INTERACTION_RESOLVED_TEXT), this.#atUsersFor(message));
     } catch {
       this.#logger.error?.('[dsh-dingtalk] failed to send an expired interaction notice');
     }
@@ -1367,7 +1367,14 @@ export class DingtalkHarnessBridge {
     }
   }
 
-  async #send(sessionWebhook, text) {
+  #atUsersFor(message) {
+    const sender = senderStaffId(message);
+    return String(message?.conversationType) === '2' && sender
+        ? { atUserIds: [sender] }
+        : undefined;
+  }
+
+  async #send(sessionWebhook, text, at) {
     const providerMessageIds = [];
     for (const chunk of splitDingtalkText(text, this.#maxMessageChars)) {
       this.#signal?.throwIfAborted();
@@ -1376,6 +1383,7 @@ export class DingtalkHarnessBridge {
         clientSecret: this.#clientSecret,
         sessionWebhook,
         text: chunk,
+        at,
         signal: this.#signal,
       });
       providerMessageIds.push(...providerMessageIdsFor(result));
