@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Fixed / 修复
+
+- 飞书流式回复超过单卡长度限制时保留预览，生成结束后分段发送完整回答，不再因超限抛错而撤回卡片；分段保留 Unicode 字符、空白和所有消息 ID，解决 Issue #78。
+  Feishu streaming replies now keep a bounded preview and deliver the complete final answer across multiple cards instead of throwing and recalling the card when its length limit is exceeded. Splitting preserves Unicode characters, whitespace, and every message ID, resolving Issue #78.
+
 ## [3.1.0] - 2026-08-28
 
 ### Added / 新增

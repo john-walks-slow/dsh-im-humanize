@@ -49,6 +49,7 @@ import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
 import {
   createDeliveryReceipt,
+  providerMessageIdsFor,
 } from '../shared/semantic/delivery.mjs';
 import {
   channelDeliveryFailure,
@@ -3315,7 +3316,7 @@ export class FeishuHarnessBridge {
       createDeliveryReceipt({
         deliveryId: messageId,
         presentation: 'feishu-cardkit',
-        providerMessageIds: stream?.messageId ? [stream.messageId] : [],
+        providerMessageIds: providerMessageIdsFor(stream),
       }),
     );
     this.#status.streamResponses = (this.#status.streamResponses ?? 0) + 1;

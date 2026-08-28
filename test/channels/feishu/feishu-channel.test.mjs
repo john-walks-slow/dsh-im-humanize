@@ -4,6 +4,8 @@ import { VerifiedFeishuChannel } from '../../../src/channels/feishu/feishu-chann
 
 function fakeClient(overrides = {}) {
   const calls = {
+    cards: [],
+    messages: [],
     replies: [],
     updates: [],
     settings: [],
@@ -16,7 +18,11 @@ function fakeClient(overrides = {}) {
   const client = {
     cardkit: { v1: {
       card: {
-        create: async () => ({ code: 0, data: { card_id: 'card-test' } }),
+        create: async (request) => {
+          calls.cards.push(request);
+          const cardId = calls.cards.length === 1 ? 'card-test' : `card-test-${calls.cards.length}`;
+          return { code: 0, data: { card_id: cardId } };
+        },
         settings: async (request) => {
           calls.settings.push(request);
           return { code: 0 };
@@ -45,9 +51,14 @@ function fakeClient(overrides = {}) {
       message: {
         reply: async (request) => {
           calls.replies.push(request);
-          return { code: 0, data: { message_id: 'om-stream' } };
+          const messageId = calls.replies.length === 1 ? 'om-stream' : `om-stream-${calls.replies.length}`;
+          return { code: 0, data: { message_id: messageId } };
         },
-        create: async () => ({ code: 0, data: { message_id: 'om-stream' } }),
+        create: async (request) => {
+          calls.messages.push(request);
+          const messageId = calls.messages.length === 1 ? 'om-stream' : `om-stream-${calls.messages.length}`;
+          return { code: 0, data: { message_id: messageId } };
+        },
         delete: async (request) => {
           calls.recalls.push(request);
           return { code: 0 };
@@ -75,6 +86,14 @@ function fakeClient(overrides = {}) {
   return { client, calls };
 }
 
+function finalCardContents(calls) {
+  return calls.cards.map((request, index) => {
+    const cardId = index === 0 ? 'card-test' : `card-test-${index + 1}`;
+    return calls.updates.findLast((update) => update.path.card_id === cardId)?.data.content
+      ?? JSON.parse(request.data.data).body.elements[0].content;
+  });
+}
+
 test('VerifiedFeishuChannel streams content and verifies terminal settings', async () => {
   const { client, calls } = fakeClient();
   const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
@@ -86,7 +105,7 @@ test('VerifiedFeishuChannel streams content and verifies terminal settings', asy
     },
   }, { replyTo: 'om_user' });
 
-  assert.deepEqual(result, { messageId: 'om-stream' });
+  assert.deepEqual(result, { messageId: 'om-stream', providerMessageIds: ['om-stream'] });
   assert.equal(calls.replies[0].path.message_id, 'om_user');
   assert.deepEqual(calls.updates.map((call) => ({
     content: call.data.content,
@@ -103,6 +122,129 @@ test('VerifiedFeishuChannel streams content and verifies terminal settings', asy
     },
   });
   assert.equal(calls.recalls.length, 0);
+});
+
+test('VerifiedFeishuChannel previews long snapshots and delivers the entire final answer in cards', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client });
+  const answer = `${'A'.repeat(28000)}\n\n  ${'中'.repeat(28000)}😀\n尾声  `;
+
+  const result = await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent(answer.slice(0, 28001));
+      const preview = calls.updates.at(-1).data.content;
+      assert.ok(preview.length <= 28000);
+      assert.match(preview, /生成完成后将分段发送完整回答/);
+      const updateCount = calls.updates.length;
+      await controller.setContent(answer);
+      assert.equal(calls.updates.length, updateCount, 'unchanged previews need no provider update');
+      assert.equal(calls.cards.length, 1, 'only the final snapshot is split into permanent cards');
+    },
+  }, { replyTo: 'om_user' });
+
+  const contents = finalCardContents(calls);
+  assert.equal(contents.join(''), answer, 'preserve the latest tail, newlines, and whitespace');
+  assert.ok(contents.every((content) => content.length <= 28000 && content.isWellFormed()));
+  assert.ok(calls.updates.every(({ data }) => data.content.length <= 28000));
+  assert.equal(result.providerMessageIds.length, contents.length);
+  assert.deepEqual(result.providerMessageIds, ['om-stream', 'om-stream-2', 'om-stream-3']);
+  assert.ok(calls.replies.every(({ path }) => path.message_id === 'om_user'));
+  assert.equal(calls.settings.length, contents.length);
+  assert.ok(calls.settings.every(({ data }) => (
+    JSON.parse(data.settings).config.streaming_mode === false
+  )));
+  assert.equal(calls.recalls.length, 0);
+});
+
+test('VerifiedFeishuChannel handles exact limits and Unicode without a reply target', async (t) => {
+  const previewLimit = 28000 - '\n\n内容较长，生成完成后将分段发送完整回答。'.length;
+  for (const answer of [
+    'a'.repeat(27999),
+    'a'.repeat(28000),
+    'a'.repeat(28001),
+    `${'中'.repeat(27999)}😀尾声`,
+    `${'a'.repeat(20000)}\n\n${'b'.repeat(12000)}`,
+    `${'a'.repeat(48)}😀${'b'.repeat(30000)}`,
+    `${'a'.repeat(previewLimit - 1)}😀${'b'.repeat(100)}`,
+  ]) {
+    await t.test(`${answer.length} UTF-16 units`, async () => {
+      const { client, calls } = fakeClient();
+      const channel = new VerifiedFeishuChannel({ client });
+      const result = await channel.stream('oc_chat', {
+        markdown: async (controller) => controller.setContent(answer),
+      });
+
+      const contents = finalCardContents(calls);
+      assert.equal(contents.join(''), answer);
+      assert.ok(contents.every((content) => content.length <= 28000 && content.isWellFormed()));
+      assert.ok(calls.updates.every(({ data }) => (
+        data.content.length <= 28000 && data.content.isWellFormed()
+      )));
+      assert.ok(calls.settings.every(({ data }) => (
+        JSON.parse(data.settings).config.summary.content.isWellFormed()
+      )));
+      assert.equal(contents.length, answer.length <= 28000 ? 1 : 2);
+      assert.equal(result.providerMessageIds.length, contents.length);
+      assert.ok(calls.messages.every(({ params, data }) => (
+        params.receive_id_type === 'chat_id' && data.receive_id === 'oc_chat'
+      )));
+      assert.equal(calls.replies.length, 0);
+      assert.equal(calls.recalls.length, 0);
+    });
+  }
+});
+
+test('VerifiedFeishuChannel replaces oversized progress with a shorter final answer', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client });
+
+  await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent('中间过程'.repeat(10000));
+      await controller.setContent('最终回答');
+    },
+  }, { replyTo: 'om_user' });
+
+  assert.deepEqual(finalCardContents(calls), ['最终回答']);
+  assert.equal(calls.replies.length, 1);
+  assert.equal(calls.recalls.length, 0);
+});
+
+test('VerifiedFeishuChannel finishes an empty producer and skips duplicate content updates', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client, initialText: '' });
+
+  await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent(null);
+      await controller.setContent('');
+    },
+  });
+
+  assert.deepEqual(finalCardContents(calls), ['…']);
+  assert.equal(calls.updates.length, 0);
+  assert.equal(calls.settings.length, 1);
+});
+
+test('VerifiedFeishuChannel cleans up every split card on a real provider failure for text fallback', async () => {
+  const { client, calls } = fakeClient({
+    updateContent: async (request) => {
+      calls.updates.push(request);
+      return request.path.card_id === 'card-test-3'
+        ? { code: 230099, msg: 'element update failed' }
+        : { code: 0 };
+    },
+  });
+  const channel = new VerifiedFeishuChannel({ client });
+
+  await assert.rejects(channel.stream('oc_chat', {
+    markdown: async (controller) => controller.setContent('a'.repeat(56001)),
+  }, { replyTo: 'om_user' }), /cardElement\.content failed/);
+
+  assert.equal(calls.settings.length, 2);
+  assert.deepEqual(calls.recalls.map(({ path }) => path.message_id), [
+    'om-stream', 'om-stream-2', 'om-stream-3',
+  ]);
 });
 
 test('VerifiedFeishuChannel rejects failed updates and recalls the partial card', async () => {

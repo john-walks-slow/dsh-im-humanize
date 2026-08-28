@@ -6,6 +6,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FeishuHarnessBridge } from '../../../src/channels/feishu/bridge.mjs';
+import { VerifiedFeishuChannel } from '../../../src/channels/feishu/feishu-channel.mjs';
 import { DEFAULT_IMAGE_PROMPT } from '../../../src/channels/shared/image-prompt.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
 import { setImHostLanguage } from '../../../src/channels/shared/i18n.mjs';
@@ -2908,6 +2909,79 @@ test('Feishu does not repeat finalized card text when cancellation happens befor
 
   assert.equal(files, 0);
   assert.deepEqual(fallbackTexts, []);
+});
+
+test('Feishu delivers oversized native streams once and retains every card id in the receipt', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-long-answer']]);
+  const status = bridgeStatus();
+  const cards = new Map();
+  const replyIds = [];
+  const recalls = [];
+  const fallbackTexts = [];
+  const answer = `${'完整回答'.repeat(15000)}\n完成。`;
+  let askCount = 0;
+  const client = textClient(async ({ text }) => fallbackTexts.push(text));
+  client.cardkit = { v1: {
+    card: {
+      create: async (request) => {
+        const cardId = `card-${cards.size + 1}`;
+        cards.set(cardId, { content: JSON.parse(request.data.data).body.elements[0].content });
+        return { code: 0, data: { card_id: cardId } };
+      },
+      settings: async ({ path, data }) => {
+        cards.get(path.card_id).finished = !JSON.parse(data.settings).config.streaming_mode;
+        return { code: 0 };
+      },
+    },
+    cardElement: { content: async ({ path, data }) => {
+      assert.ok(data.content.length <= 28000);
+      cards.get(path.card_id).content = data.content;
+      return { code: 0 };
+    } },
+  } };
+  client.im.v1.message.reply = async ({ path }) => {
+    assert.equal(path.message_id, 'om-long-answer');
+    const messageId = `om-card-${replyIds.length + 1}`;
+    replyIds.push(messageId);
+    return { code: 0, data: { message_id: messageId } };
+  };
+  client.im.v1.message.delete = async ({ path }) => {
+    recalls.push(path.message_id);
+    return { code: 0 };
+  };
+  client.im.v1.messageReaction = {
+    create: async () => ({ code: 0, data: { reaction_id: 'reaction-long-answer' } }),
+    delete: async () => ({ code: 0 }),
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: new VerifiedFeishuChannel({ client }),
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        askCount += 1;
+        await options.onUpdate({ type: 'text', text: '中间过程'.repeat(8000) });
+        await options.onUpdate({ type: 'tool', name: 'web_search' });
+        await options.onUpdate({ type: 'text', text: answer.slice(0, 28001) });
+        return answer;
+      },
+    },
+    state: fixture.state,
+    status,
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  const receipt = await bridge.accept(event('om-long-answer', '请生成长回答'));
+
+  assert.equal(askCount, 1);
+  assert.equal([...cards.values()].map(({ content }) => content).join(''), answer);
+  assert.ok([...cards.values()].every(({ finished }) => finished));
+  assert.deepEqual(receipt.providerMessageIds, ['om-card-1', 'om-card-2', 'om-card-3']);
+  assert.deepEqual(recalls, []);
+  assert.deepEqual(fallbackTexts, []);
+  assert.equal(status.streamResponses, 1);
+  assert.equal(status.streamErrors ?? 0, 0);
+  assert.equal(status.streamFallbacks ?? 0, 0);
 });
 
 test('a stream finalization failure falls back to text without repeating the prompt', async () => {
