@@ -127,11 +127,23 @@ test('source installs and incompatible Host Node can check but cannot install', 
   const checked = await source.service.check();
   assert.equal(checked.latestVersion, '3.0.8');
   assert.equal(checked.blockedReason, 'source-install');
+  assert.equal(checked.sourceInstall, true);
   assert.equal(checked.canInstall, false);
   assert.equal(checked.checkId, null);
   const oldNode = await fixture(t, { service: { nodeVersion: '22.18.0' } });
   assert.equal((await oldNode.service.check()).blockedReason, 'incompatible-node');
   assert.deepEqual(source.state.installs, []);
+});
+
+test('source-install protection remains independent of the primary status reason', async (t) => {
+  const f = await fixture(t, { environment: {
+    eligible: false, blockedReason: 'source-install', sourceInstall: true, installedVersion: '3.0.8',
+  } });
+  const status = await f.service.status();
+  assert.equal(status.blockedReason, 'pending-restart');
+  assert.equal(status.sourceInstall, true);
+  f.environment.blockedReason = 'installation-changed';
+  assert.equal((await f.service.status()).sourceInstall, true);
 });
 
 test('a failed check invalidates previous install confirmation without claiming latest', async (t) => {

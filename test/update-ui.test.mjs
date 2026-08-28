@@ -47,7 +47,7 @@ function textOf(node) {
 }
 
 function buttonNamed(renderer, label) {
-  return renderer.root.findAllByType('button').find((node) => textOf(node) === label);
+  return renderer.root.findAllByType('button').find((node) => (node.props['aria-label'] ?? textOf(node)) === label);
 }
 
 async function flushMicrotasks() {
@@ -82,6 +82,19 @@ function deferred() {
   return { promise, resolve };
 }
 
+function stubClipboard(t, clipboard) {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard } });
+  t.after(() => {
+    if (original) Object.defineProperty(globalThis, 'navigator', original);
+    else delete globalThis.navigator;
+  });
+}
+
+function manualCommandOf(renderer) {
+  return renderer.root.findAllByType('textarea')[0]?.props.value;
+}
+
 async function tick(t, milliseconds = 1_000) {
   await act(async () => {
     t.mock.timers.tick(milliseconds);
@@ -110,13 +123,25 @@ test('update panel reads local status first and requires an explicit npm check a
   assert.equal(renderer.root.findByProps({ role: 'dialog' }).props['aria-modal'], 'true');
   assert.match(textOf(renderer.toJSON()), /发现新版本/);
   assert.match(textOf(renderer.toJSON()), /desktop-test/);
-  assert.match(textOf(renderer.toJSON()), /registry\.npmjs\.org/);
   assert.match(textOf(renderer.toJSON()), /需手动重启后台.*本功能不会自动重启或主动刷新页面/);
   assert.ok(buttonNamed(renderer, '安装更新'));
   assert.ok(buttonNamed(renderer, '更新至 v3.0.9'));
   assert.equal(calls.some((call) => call.endpoint === 'update.install'), false);
   await click(renderer, '关闭');
   assert.equal(renderer.root.findAllByProps({ role: 'dialog' }).length, 0);
+});
+
+test('version details hide npm, registry and client metadata while preserving running and installed versions', async (t) => {
+  for (const latestVersion of [null, '3.1.2']) {
+    const renderer = await mount(t, async () => ok(snapshot({
+      runningVersion: '3.1.0', installedVersion: '3.1.1', latestVersion,
+      profileName: 'web', blockedReason: 'pending-restart',
+    })), { clientVersion: '3.1.1' });
+    await click(renderer, '待手动重启');
+    const details = renderer.root.findByProps({ className: 'dim-updateVersions' });
+    assert.deepEqual(details.findAllByType('dt').map(textOf), ['运行版本', '已安装版本', '目标 profile']);
+    assert.deepEqual(details.findAllByType('dd').map(textOf), ['v3.1.0', 'v3.1.1', 'web']);
+  }
 });
 
 test('confirmed installation ignores double clicks, polls the Host and stops at manual restart', async (t) => {
@@ -201,23 +226,24 @@ test('a failed npm check cannot reuse an earlier up-to-date result', async (t) =
   });
   await click(renderer, '检查更新');
   assert.match(textOf(renderer.toJSON()), /无法访问 npm 或请求超时/);
-  assert.match(textOf(renderer.toJSON()), /尚未检查/);
+  assert.match(manualCommandOf(renderer), /@latest$/);
   assert.doesNotMatch(textOf(renderer.toJSON()), /已是最新版本|当前版本无需更新/);
   assert.equal(buttonNamed(renderer, '安装更新'), undefined);
 });
 
 test('source installations can check npm but never offer automatic replacement', async (t) => {
   const calls = [];
+  const reported = [];
   const renderer = await mount(t, async (endpoint) => {
     calls.push(endpoint);
     return ok(endpoint === 'update.status'
       ? snapshot({ blockedReason: 'source-install' })
       : available({ blockedReason: 'source-install', canInstall: false, checkId: null }));
-  });
+  }, { onStatus: (value) => reported.push(value) });
   await click(renderer, '检查更新');
   assert.deepEqual(calls, ['update.status', 'update.check']);
   assert.match(textOf(renderer.toJSON()), /当前是源码或链接安装/);
-  assert.match(textOf(renderer.toJSON()), /v3.0.9/);
+  assert.equal(reported.at(-1).latestVersion, '3.0.9');
   assert.equal(buttonNamed(renderer, '安装更新'), undefined);
 });
 
@@ -299,7 +325,6 @@ test('pending restart shows manual restart guidance instead of a redundant page 
   await click(renderer, '待手动重启');
   assert.deepEqual(calls, ['update.status', 'update.status']);
   assert.match(textOf(renderer.toJSON()), /运行版本v3.0.8/);
-  assert.match(textOf(renderer.toJSON()), /页面版本v3.0.7/);
   assert.match(textOf(renderer.toJSON()), /手动重启当前 Harness 或 Desktop/);
   assert.doesNotMatch(textOf(renderer.toJSON()), /页面版本与运行版本不同|手动刷新页面/);
   assert.equal(buttonNamed(renderer, '安装更新'), undefined);
@@ -330,7 +355,6 @@ test('remounting the new client retains the old Host version and restores the re
   await click(remounted, '待手动重启');
   assert.match(textOf(remounted.toJSON()), /运行版本v3.0.8/);
   assert.match(textOf(remounted.toJSON()), /已安装版本v3.0.9/);
-  assert.match(textOf(remounted.toJSON()), /页面版本v3.0.9/);
   assert.match(textOf(remounted.toJSON()), /已安装，待手动重启/);
   assert.doesNotMatch(textOf(remounted.toJSON()), /手动刷新页面/);
   assert.equal(buttonNamed(remounted, '安装更新'), undefined);
@@ -634,7 +658,10 @@ test('the confirmation supports keyboard focus, tab wrapping, Escape and focus r
   const last = { focus() { document.activeElement = last; } };
   const dialogNode = {
     focus() { document.activeElement = dialogNode; },
-    querySelectorAll() { return [first, last]; },
+    querySelectorAll(selector) {
+      assert.match(selector, /textarea:not\(:disabled\)/);
+      return [first, last];
+    },
   };
   Object.defineProperty(globalThis, 'document', {
     configurable: true, value: { activeElement: previous },
@@ -666,4 +693,178 @@ test('the confirmation supports keyboard focus, tab wrapping, Escape and focus r
   assert.equal(renderer.root.findAllByProps({ role: 'dialog' }).length, 0);
   assert.equal(document.activeElement, previous);
   assert.equal(prevented, 2);
+});
+
+test('manual commands use the current profile and a known target without downgrading', async (t) => {
+  const cases = [
+    { profileName: 'web', runningVersion: '3.1.0', installedVersion: '3.1.1',
+      blockedReason: 'pending-restart', expected: 'web', version: '3.1.1' },
+    { profileName: 'desktop-test', job: { state: 'failed', targetVersion: '3.1.2', message: 'install-failed' },
+      expected: 'desktop-test', version: '3.1.2' },
+    { profileName: 'web', latestVersion: '3.1.3', job: { state: 'failed', targetVersion: '3.1.2' },
+      expected: 'web', version: '3.1.3' },
+    { profileName: 'web', runningVersion: '3.1.10', installedVersion: '3.1.10', latestVersion: '3.1.9',
+      expected: 'web', version: '3.1.10' },
+    { profileName: 'Team One', expected: '"Team One"', version: 'latest' },
+    { profileName: '测试环境', expected: '"测试环境"', version: 'latest' },
+    { profileName: 'web', latestVersion: '3.1.1; echo unsafe', expected: 'web', version: 'latest' },
+    { profileName: 'web', job: { state: 'completed', targetVersion: '3.0.8' }, expected: 'web', version: 'latest' },
+  ];
+  for (const { expected, version, ...fields } of cases) {
+    const renderer = await mount(t, async () => ok(snapshot(fields)));
+    await click(renderer, fields.blockedReason === 'pending-restart' ? '待手动重启' : '检查更新');
+    assert.equal(manualCommandOf(renderer),
+      `dsh plugin --profile ${expected} add -w @xmanrui/dsh-im@${version}`);
+    assert.equal(renderer.root.findByType('textarea').props.readOnly, true);
+    assert.match(textOf(renderer.toJSON()), /自动更新失败可以使用命令更新：/);
+    assert.doesNotMatch(textOf(renderer.toJSON()), /通常只需手动重启/);
+  }
+});
+
+test('manual copying uses an accessible icon at the right of the command row', async (t) => {
+  stubClipboard(t, { async writeText() {} });
+  const renderer = await mount(t, async () => ok(available()));
+  await click(renderer, '更新至 v3.0.9');
+  const row = renderer.root.findByProps({ className: 'dim-updateCommandRow' });
+  const copy = buttonNamed(renderer, '复制命令');
+  assert.equal(row.children[0].type, 'textarea');
+  assert.equal(row.children.at(-1), copy);
+  assert.equal(copy.props.className, 'dim-updateCopy');
+  assert.equal(copy.props.title, '复制命令');
+  assert.equal(textOf(copy), '');
+  assert.equal(copy.findByType('svg').props['aria-hidden'], 'true');
+  assert.equal(copy.findByType('svg').props.focusable, 'false');
+  await click(renderer, '复制命令');
+  const copied = buttonNamed(renderer, '已复制');
+  assert.match(copied.props.className, /dim-updateCopyCopied/);
+  assert.equal(copied.props.title, '已复制');
+  assert.equal(textOf(copied), '');
+  assert.equal(copied.findAllByType('rect').length, 0);
+});
+
+test('manual commands remain available after a failed npm check and explain the latest fallback', async (t) => {
+  const renderer = await mount(t, async (endpoint) => {
+    if (endpoint === 'update.status') return ok(snapshot({ profileName: 'web', environmentKind: 'cli' }));
+    throw new Error('npm unavailable');
+  });
+  await click(renderer, '检查更新');
+  assert.match(manualCommandOf(renderer), /@xmanrui\/dsh-im@latest$/);
+  assert.match(textOf(renderer.toJSON()), /尚未确认目标版本.*执行时 npm 的 latest/);
+  assert.match(textOf(renderer.toJSON()), /DSH_HOME 一致/);
+  assert.equal(buttonNamed(renderer, '复制命令').props.disabled, false);
+  assert.equal(buttonNamed(renderer, '安装更新'), undefined);
+});
+
+test('manual commands cannot overwrite source installs or interpolate unsafe profiles', async (t) => {
+  for (const profileName of [null, '', '..', 'node_modules', '-other', '../other', 'work; echo x',
+    'work$(echo x)', 'work`echo x`', 'work%PATH%', 'work"name', 'work\nname']) {
+    const renderer = await mount(t, async () => ok(snapshot({ profileName })));
+    await click(renderer, '检查更新');
+    assert.equal(manualCommandOf(renderer), undefined, String(profileName));
+    assert.equal(buttonNamed(renderer, '复制命令'), undefined);
+  }
+  for (const blockedReason of ['source-install', 'pending-restart', 'recovery-required']) {
+    const renderer = await mount(t, async () => ok(snapshot({
+      blockedReason, ...(blockedReason === 'source-install' ? {} : { sourceInstall: true }),
+    })));
+    await click(renderer, blockedReason === 'pending-restart' ? '待手动重启' : '检查更新');
+    assert.equal(manualCommandOf(renderer), undefined);
+    assert.equal(buttonNamed(renderer, '复制命令'), undefined);
+    assert.match(textOf(renderer.toJSON()), /不提供覆盖源码的 npm 命令/);
+  }
+});
+
+test('copying writes exactly the displayed command and never submits an installation', async (t) => {
+  const writes = [];
+  const calls = [];
+  const clipboard = { async writeText(value) { assert.equal(this, clipboard); writes.push(value); } };
+  stubClipboard(t, clipboard);
+  const renderer = await mount(t, async (endpoint) => {
+    calls.push(endpoint);
+    return ok(available());
+  });
+  await click(renderer, '更新至 v3.0.9');
+  assert.match(textOf(renderer.toJSON()), /Desktop 的内置终端/);
+  const before = [...calls];
+  await click(renderer, '复制命令');
+  assert.deepEqual(writes, [manualCommandOf(renderer)]);
+  assert.deepEqual(calls, before);
+  assert.ok(buttonNamed(renderer, '已复制'));
+  assert.match(textOf(renderer.toJSON()), /命令已复制/);
+});
+
+test('copy failure selects the command for keyboard copying and allows a retry', async (t) => {
+  const selection = [];
+  let denied = true;
+  stubClipboard(t, { async writeText() { if (denied) throw new Error('NotAllowedError'); } });
+  const renderer = await mount(t, async () => ok(available()), {}, {
+    createNodeMock(element) {
+      return element.type === 'textarea' ? {
+        focus() { selection.push('focus'); }, select() { selection.push('select'); },
+      } : null;
+    },
+  });
+  await click(renderer, '更新至 v3.0.9');
+  await click(renderer, '复制命令');
+  assert.deepEqual(selection, ['focus', 'select']);
+  assert.match(textOf(renderer.root.findByProps({ role: 'alert' })), /Ctrl\+C 或 ⌘C/);
+  assert.equal(buttonNamed(renderer, '复制命令').props.disabled, false);
+  denied = false;
+  await click(renderer, '复制命令');
+  assert.ok(buttonNamed(renderer, '已复制'));
+  assert.equal(renderer.root.findAllByProps({ role: 'alert' }).length, 0);
+});
+
+test('missing clipboard support exposes a selectable command without claiming success', async (t) => {
+  stubClipboard(t, undefined);
+  const renderer = await mount(t, async () => ok(available()));
+  await click(renderer, '更新至 v3.0.9');
+  await click(renderer, '复制命令');
+  assert.match(textOf(renderer.toJSON()), /复制失败/);
+  assert.ok(manualCommandOf(renderer));
+  assert.equal(buttonNamed(renderer, '已复制'), undefined);
+});
+
+test('an old clipboard result cannot mark a changed command or reopened dialog as copied', async (t) => {
+  const pending = deferred();
+  let writes = 0;
+  stubClipboard(t, { writeText() { writes += 1; return pending.promise; } });
+  const renderer = await mount(t, async (endpoint) => ok(endpoint === 'update.check'
+    ? available({ latestVersion: '3.0.10' }) : available()));
+  await click(renderer, '更新至 v3.0.9');
+  const copy = buttonNamed(renderer, '复制命令');
+  await act(async () => { copy.props.onClick(); copy.props.onClick(); await flushMicrotasks(); });
+  assert.equal(writes, 1);
+  assert.equal(buttonNamed(renderer, '复制中…').props.disabled, true);
+  await click(renderer, '重新检查');
+  assert.match(manualCommandOf(renderer), /@3\.0\.10$/);
+  await act(async () => { pending.resolve(); await flushMicrotasks(); });
+  assert.equal(buttonNamed(renderer, '已复制'), undefined);
+  await click(renderer, '复制命令');
+  assert.ok(buttonNamed(renderer, '已复制'));
+  await click(renderer, '关闭');
+  await click(renderer, '更新至 v3.0.10');
+  assert.ok(buttonNamed(renderer, '复制命令'));
+});
+
+test('manual copying is disabled while the Host may still be installing', async (t) => {
+  const renderer = await mount(t, async () => ok(installing()));
+  await click(renderer, '正在更新…');
+  assert.equal(buttonNamed(renderer, '复制命令').props.disabled, true);
+  assert.match(textOf(renderer.toJSON()), /确认没有安装进程运行/);
+});
+
+test('manual update instructions and copy feedback render in English', async (t) => {
+  setImTranslator((key) => en[key] ?? key);
+  t.after(() => setImTranslator(null));
+  stubClipboard(t, { async writeText() {} });
+  const renderer = await mount(t, async () => ok(available()));
+  await click(renderer, 'Update to v3.0.9');
+  assert.match(textOf(renderer.toJSON()), /Manual update/);
+  assert.match(textOf(renderer.toJSON()), /If the automatic update fails, update with this command:/);
+  assert.equal(renderer.root.findByType('textarea').props['aria-label'], 'Manual update command');
+  assert.equal(buttonNamed(renderer, 'Copy command').props.title, 'Copy command');
+  await click(renderer, 'Copy command');
+  assert.match(textOf(renderer.toJSON()), /Command copied/);
+  assert.doesNotMatch(textOf(renderer.toJSON()), /[\p{Script=Han}]/u);
 });

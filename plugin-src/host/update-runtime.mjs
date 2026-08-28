@@ -280,6 +280,8 @@ export function createUpdateRuntime(options = {}) {
 
       const profile = await packageAt(runtime.profileDir);
       const installed = await packageAt(join(runtime.profileDir, 'node_modules', PACKAGE_NAME));
+      result.sourceInstall = !registrySpec(profile.manifest.dependencies?.[PACKAGE_NAME])
+        || !inside(join(runtime.profileDir, 'node_modules'), installed.directory);
       result.installedVersion = typeof installed.manifest.version === 'string' ? installed.manifest.version : null;
       result.packageValid = await validPackage(installed);
       const loaded = await loadedPackage;
@@ -298,8 +300,7 @@ export function createUpdateRuntime(options = {}) {
       if (boundProfile !== undefined && boundProfile !== identity) result.blockedReason = 'installation-changed';
       else if (!sameLoadedPackage && boundProfile === undefined) result.blockedReason = 'installation-changed';
       else if (!result.packageValid) result.blockedReason = 'invalid-installation';
-      else if (!registrySpec(profile.manifest.dependencies?.[PACKAGE_NAME])
-          || !inside(join(runtime.profileDir, 'node_modules'), installed.directory)) result.blockedReason = 'source-install';
+      else if (result.sourceInstall) result.blockedReason = 'source-install';
       else if (runtime.blockedReason) result.blockedReason = runtime.blockedReason;
       else if (!sameLoadedPackage) result.blockedReason = 'pending-restart';
       else if (preflight) await checkRegistry(runtime);

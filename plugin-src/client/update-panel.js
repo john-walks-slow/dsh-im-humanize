@@ -1,5 +1,7 @@
 import * as React from 'react';
 import { createPortal } from 'react-dom';
+import validSemver from 'semver/functions/valid.js';
+import compareVersionsDescending from 'semver/functions/rcompare.js';
 
 import { h } from './i18n.js';
 import { createPollScheduler } from './lifecycle.js';
@@ -85,6 +87,102 @@ function retainDialogFocus(event) {
   event?.currentTarget?.closest?.('.dim-updateDialog')?.focus?.({ preventScroll: true });
 }
 
+function manualUpdateCommand(snapshot) {
+  const profile = snapshot?.profileName;
+  if (snapshot?.sourceInstall || ['source-install', 'unknown-profile'].includes(snapshot?.blockedReason)
+    || typeof profile !== 'string' || !profile.trim() || profile.length > 255
+    || profile.startsWith('-') || ['.', '..', 'node_modules'].includes(profile)
+    || !/^[\p{L}\p{N}_. -]+$/u.test(profile)) return null;
+
+  // Only allow shell-neutral profile characters; spaces and Unicode stay one argument.
+  const profileArgument = /^[A-Za-z0-9_.-]+$/.test(profile) ? profile : `"${profile}"`;
+  const validVersion = (version) => typeof version === 'string' && validSemver(version) === version;
+  const pendingRestart = snapshot.blockedReason === 'pending-restart'
+    || snapshot.job?.state === 'restart-required';
+  const targets = [
+    snapshot.latestVersion,
+    pendingRestart ? snapshot.installedVersion : null,
+    snapshot.job?.state !== 'completed' ? snapshot.job?.targetVersion : null,
+  ].filter(validVersion);
+  // Keep a known target pinned, and never suggest downgrading an installed/running version.
+  const version = targets.length
+    ? [...targets, snapshot.runningVersion, snapshot.installedVersion]
+      .filter(validVersion).sort(compareVersionsDescending)[0]
+    : 'latest';
+  return `dsh plugin --profile ${profileArgument} add -w @xmanrui/dsh-im@${version}`;
+}
+
+function ManualUpdateCommand({ command, disabled, sourceInstall, desktop }) {
+  const [copyState, setCopyState] = React.useState('idle');
+  const commandRef = React.useRef(null);
+  const mounted = React.useRef(false);
+  const copying = React.useRef(false);
+  React.useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  const copy = async (event) => {
+    if (!command || disabled || copying.current) return;
+    retainDialogFocus(event);
+    copying.current = true;
+    setCopyState('copying');
+    try {
+      const clipboard = globalThis.navigator?.clipboard;
+      if (typeof clipboard?.writeText !== 'function') throw new Error('Clipboard unavailable');
+      await clipboard.writeText(command);
+      if (mounted.current) setCopyState('copied');
+    } catch {
+      if (mounted.current) {
+        setCopyState('failed');
+        commandRef.current?.focus?.({ preventScroll: true });
+        commandRef.current?.select?.();
+      }
+    } finally {
+      copying.current = false;
+    }
+  };
+
+  const copyLabel = copyState === 'copying' ? '复制中…' : copyState === 'copied' ? '已复制' : '复制命令';
+
+  return h('section', { className: 'dim-updateManual', 'aria-label': '手工更新' },
+    h('h4', { className: 'dim-updateManualHeading' }, '手工更新'),
+    command ? h(React.Fragment, null,
+      h('p', { className: 'dim-updateManualHint' }, '自动更新失败可以使用命令更新：'),
+      h('div', { className: 'dim-updateCommandRow' },
+        h('textarea', {
+          ref: commandRef, className: 'dim-updateCommand', 'aria-label': '手工更新命令',
+          value: command, readOnly: true, spellCheck: false, rows: 2, dir: 'ltr',
+        }),
+        h('button', {
+          type: 'button', className: `dim-updateCopy${copyState === 'copied' ? ' dim-updateCopyCopied' : ''}`,
+          'aria-label': copyLabel, title: copyLabel, 'aria-busy': copyState === 'copying',
+          disabled: disabled || copyState === 'copying', onClick: (event) => void copy(event),
+        }, h('svg', {
+          width: 16, height: 16, viewBox: '0 0 20 20', fill: 'none',
+          stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round',
+          'aria-hidden': 'true', focusable: 'false',
+        }, copyState === 'copied'
+          ? h('path', { d: 'm4 10 4 4 8-8' })
+          : h(React.Fragment, null,
+              h('rect', { x: 7, y: 7, width: 10, height: 11, rx: 1.5 }),
+              h('path', { d: 'M5 13H3.5A1.5 1.5 0 0 1 2 11.5v-8A1.5 1.5 0 0 1 3.5 2h8A1.5 1.5 0 0 1 13 3.5V5' }))))),
+      command.endsWith('@xmanrui/dsh-im@latest') ? h('p', { className: 'dim-updateManualHint' },
+        '尚未确认目标版本，此命令安装执行时 npm 的 latest 版本。') : null,
+      h('p', { className: 'dim-updateManualHint' }, desktop
+        ? '请在当前 Desktop 的内置终端执行，完成后手动重启。'
+        : '请在运行当前 Harness 的同一环境执行，保持 DSH_HOME 一致，完成后手动重启。'),
+      disabled ? h('p', { className: 'dim-updateManualHint' },
+        '请等待当前操作结束，确认没有安装进程运行后再执行命令。') : null,
+      copyState === 'failed' || copyState === 'copied' ? h('p', {
+        className: copyState === 'failed' ? 'dim-updateError' : 'dim-updateManualHint',
+        role: copyState === 'failed' ? 'alert' : 'status',
+      }, copyState === 'failed' ? '复制失败，请选中命令后按 Ctrl+C 或 ⌘C 复制。' : '命令已复制。') : null)
+      : h('p', { className: 'dim-updateManualHint' }, sourceInstall
+        ? '源码或链接安装请按原安装方式更新，不提供覆盖源码的 npm 命令。'
+        : '无法安全生成当前 profile 的命令，请在终端中手动确认 profile 后更新。'));
+}
+
 function UpdateDialog({ children, onClose }) {
   const dialogRef = React.useRef(null);
   const titleId = React.useId();
@@ -115,7 +213,7 @@ function UpdateDialog({ children, onClose }) {
         onClose();
       }
       if (event.key !== 'Tab') return;
-      const buttons = dialogRef.current?.querySelectorAll?.('button:not(:disabled)');
+      const buttons = dialogRef.current?.querySelectorAll?.('button:not(:disabled), textarea:not(:disabled)');
       if (!buttons?.length) return;
       const first = buttons[0];
       const last = buttons[buttons.length - 1];
@@ -299,6 +397,7 @@ export function UpdatePanel({ rpcCall, clientVersion, onStatus }) {
   const failedJob = ['failed', 'interrupted'].includes(snapshot?.job?.state);
   const jobMessage = snapshot?.job?.message;
   const targetVersion = snapshot?.job?.targetVersion;
+  const manualCommand = manualUpdateCommand(snapshot);
   const buttonLabel = action === 'checking' ? '检查中…'
     : action === 'starting' || activeJob ? '正在更新…'
       : restartRequired ? '待手动重启'
@@ -324,13 +423,9 @@ export function UpdatePanel({ rpcCall, clientVersion, onStatus }) {
           snapshot?.installedVersion && snapshot.installedVersion !== snapshot.runningVersion
             ? h(React.Fragment, null,
                 h('dt', null, '已安装版本'), h('dd', null, `v${snapshot.installedVersion}`)) : null,
-          h('dt', null, 'npm 最新版本'), h('dd', null, snapshot?.latestVersion ? `v${snapshot.latestVersion}` : '尚未检查'),
           targetVersion ? h(React.Fragment, null,
             h('dt', null, '目标版本'), h('dd', null, `v${targetVersion}`)) : null,
-          h('dt', null, '目标 profile'), h('dd', null, snapshot?.profileName ?? '无法确认'),
-          h('dt', null, '更新来源'), h('dd', null, 'registry.npmjs.org'),
-          versionsDiffer ? h(React.Fragment, null,
-            h('dt', null, '页面版本'), h('dd', null, `v${clientVersion}`)) : null),
+          h('dt', null, '目标 profile'), h('dd', null, snapshot?.profileName ?? '无法确认')),
         h('div', {
           className: `dim-updateStatus${error || failedJob ? ' dim-updateStatusError' : ''}`,
           role: 'status',
@@ -347,7 +442,13 @@ export function UpdatePanel({ rpcCall, clientVersion, onStatus }) {
         blocked && !restartRequired ? h('p', { className: 'dim-updateHint' }, blocked) : null,
         versionsDiffer && !restartRequired ? h('p', { className: 'dim-updateHint' }, '页面版本与运行版本不同，请手动刷新页面；若仍不一致，请手动重启 Harness 或 Desktop。') : null,
         canConfirm ? h('p', { className: 'dim-updateHint' },
-          '请在机器人空闲时安装；安装会修改当前 profile 的依赖，完成后需手动重启。') : null),
+          '请在机器人空闲时安装；安装会修改当前 profile 的依赖，完成后需手动重启。') : null,
+        h(ManualUpdateCommand, {
+          key: manualCommand ?? 'unavailable', command: manualCommand,
+          disabled: busyAction || activeJob || uncertainInstall,
+          sourceInstall: snapshot?.sourceInstall || snapshot?.blockedReason === 'source-install',
+          desktop: snapshot?.environmentKind === 'desktop',
+        })),
       h('footer', { className: 'dim-updateFooter' },
         h('button', { type: 'button', className: 'dim-updateButton', onClick: () => setOpen(false) }, '关闭'),
         restartRequired || !activeJob ? h('button', {

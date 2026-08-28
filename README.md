@@ -150,6 +150,8 @@ dsh web
 dsh plugin --profile web add -w --save-exact @xmanrui/dsh-im@3.1.0 --registry=https://registry.npmjs.org/
 ```
 
+更新窗口下方的「手工更新」会按当前 profile 生成精简命令，例如 `dsh plugin --profile web add -w @xmanrui/dsh-im@3.1.1`，点击命令最右侧的复制图标后可在终端执行。已知目标版本时指定该版本；尚未查到版本时使用 `@latest`，以执行时 npm 返回的版本为准。手工命令沿用本机 npm 源配置，不拉取 GitHub；按钮安装仍固定使用官方源并保存精确版本。浏览器无法复制时可选中文本手动复制。Desktop 请使用当前 Desktop 的内置终端；Web 请使用启动当前 Harness 的环境并保持相同 `DSH_HOME`。如果已经提示「待手动重启」，通常只需重启，无需再次安装。源码链接或无法安全确认的 profile 不生成可能覆盖安装的命令。
+
 源码 `link:`、`file:`、Git 来源或无法确认归属的安装只提供版本检查，不会替换开发链接；如需迁移为 npm 安装，请自行确认对应 profile。作用域 registry 冲突、Node 版本不满足要求或缺少当前 Host 的执行器时，按钮会说明原因。标准 Windows CLI 暂需手动更新；Desktop 使用其原有执行器。
 
 安装期间不要同时在终端或插件市场修改该 profile。失败可能已经改变部分依赖，不能视为自动回滚；先检查安装状态，必要时按上述命令重装原精确版本，再手动重启。更新器只在当前 `DSH_HOME/updates/dsh-im` 下保存该 profile 最近一次任务与清单备份，不复制机器人凭据；残留安装进程或锁状态不明确时，请先人工确认，不要盲目重试或删除锁。

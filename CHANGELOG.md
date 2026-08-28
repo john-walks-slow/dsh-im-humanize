@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Added / 新增
+
+- 更新窗口新增手工更新命令及一键复制，页面更新失败时可在相同 Harness / Desktop 环境中通过 npm 更新；复制受限时可选中文本手动复制，安装完成后仍需手动重启。
+  Added a manual npm update command and copy button to the update dialog for use in the same Harness / Desktop environment when the in-page update fails. The command remains selectable if clipboard access fails, and installation still requires a manual restart.
+
 ## [3.1.1] - 2026-08-28
 
 ### Fixed / 修复

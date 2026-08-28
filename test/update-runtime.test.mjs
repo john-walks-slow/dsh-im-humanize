@@ -168,7 +168,9 @@ test('local, Git, alias and external-directory installations cannot be replaced'
   const f = await fixture(t);
   for (const spec of ['link:/work/dsh-im', 'file:../dsh-im', 'github:xmanrui/dsh-im', 'git+ssh://git@example.com/repo.git', 'npm:another-plugin@1.0.0']) {
     await json(join(f.profileDir, 'package.json'), { ...f.manifest, dependencies: { [PACKAGE_NAME]: spec } });
-    assert.equal((await f.runtime().inspect()).blockedReason, 'source-install', spec);
+    const inspected = await f.runtime().inspect();
+    assert.equal(inspected.blockedReason, 'source-install', spec);
+    assert.equal(inspected.sourceInstall, true, spec);
   }
   const sourceDir = join(f.root, 'source-checkout');
   await plugin(sourceDir);
@@ -176,7 +178,9 @@ test('local, Git, alias and external-directory installations cannot be replaced'
   await symlink(sourceDir, f.installedLink, 'dir');
   await json(join(f.profileDir, 'package.json'), f.manifest);
   f.options.moduleUrl = pathToFileURL(join(sourceDir, 'lib/index.js')).href;
-  assert.equal((await f.runtime().inspect()).blockedReason, 'source-install');
+  const inspected = await f.runtime().inspect();
+  assert.equal(inspected.blockedReason, 'source-install');
+  assert.equal(inspected.sourceInstall, true);
   assert.deepEqual(f.calls, []);
 });
 

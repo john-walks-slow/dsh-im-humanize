@@ -201,6 +201,8 @@ export function createUpdateService({
       latestVersion: checked?.release.version ?? null,
       profileName: environment.profileName ?? null,
       environmentKind: environment.environmentKind ?? 'cli',
+      // Preserve source protection even when restart/recovery takes status priority.
+      sourceInstall: environment.sourceInstall === true || environment.blockedReason === 'source-install',
       canInstall,
       blockedReason,
       checkedAt: checked?.checkedAt ?? null,
