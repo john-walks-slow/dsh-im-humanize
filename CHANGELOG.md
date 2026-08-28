@@ -6,6 +6,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-08-28
+
 ### Fixed / 修复
 
 - 飞书流式回复超过单卡长度限制时保留预览，生成结束后分段发送完整回答，不再因超限抛错而撤回卡片；分段保留 Unicode 字符、空白和所有消息 ID，解决 Issue #78。
@@ -444,7 +446,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.1.1...HEAD
+[3.1.1]: https://github.com/xmanrui/dsh-im/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/xmanrui/dsh-im/compare/v3.0.8...v3.1.0
 [3.0.8]: https://github.com/xmanrui/dsh-im/compare/v3.0.7...v3.0.8
 [3.0.7]: https://github.com/xmanrui/dsh-im/compare/v3.0.6...v3.0.7
