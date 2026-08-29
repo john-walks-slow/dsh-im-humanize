@@ -389,6 +389,24 @@ function consumeInteractionOwnership(ownership, entries) {
   }
 }
 
+/**
+ * Decide whether the current Host has a live dsh-im interaction watcher for
+ * this Session.  The modern Harness adapter uses the same ownership registry
+ * as HarnessClient so it never steals a browser-owned question or approval.
+ */
+export function hasActiveHarnessInteractionOwner(scope, sessionId, entries = []) {
+  if (!scope || !['object', 'function', 'string'].includes(typeof scope)
+    || typeof sessionId !== 'string' || !sessionId) return false;
+  const owners = interactionRegistry(scope).ownerships.get(sessionId);
+  if (!owners || owners.size === 0) return false;
+  for (const ownership of owners) consumeInteractionOwnership(ownership, entries);
+  return [...owners].some((ownership) => (
+    ownership.active
+    && !ownership.completed
+    && typeof ownership.reconnect === 'function'
+  ));
+}
+
 export class HarnessReplyTracker {
   #promptRpcId;
   #lastSeq;

@@ -3,7 +3,7 @@ import { createProductionController } from './production.mjs';
 import { installFeishuRpc } from './rpc.mjs';
 
 export const name = 'dsh-feishu-host';
-export const inject = ['connection', 'credentials', 'apiProxy', 'typertGateway'];
+export const inject = ['connection', 'credentials', 'typertGateway'];
 
 function controllerFrom(ctx, config) {
   if (config?.controller) return config.controller;

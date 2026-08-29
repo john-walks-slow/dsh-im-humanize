@@ -16,7 +16,6 @@ export const name = 'dsh-im-host';
 export const inject = [
   'connection',
   'credentials',
-  'apiProxy',
   'typertGateway',
 ];
 
@@ -55,38 +54,53 @@ export function createImHostPlugin(internals = {}) {
     name,
     inject,
     async apply(ctx, config = {}) {
-      setImHostLanguage(config.language ?? process.env.DSH_IM_LANGUAGE);
+      const activate = async (readyCtx) => {
+        await activateChannels(readyCtx, config);
+      };
       if (typeof ctx?.inject === 'function') {
-        ctx.inject(['tools', 'systemPrompt'], (artifactCtx) => {
-          installOutboundArtifactTool(artifactCtx);
-        });
-      } else {
-        installOutboundArtifactTool(ctx);
+        const modern = typeof ctx?.typertGateway?.stream === 'function';
+        await ctx.inject(
+          modern ? ['sessionController', 'workspaceController'] : ['apiProxy'],
+          activate,
+        );
+        return;
       }
-      const logger = typeof ctx?.logger === 'function'
-        ? ctx.logger(name)
-        : (ctx?.logger ?? console);
-      if (ctx?.connection?.rpc) {
-        try {
-          startUpdate(ctx);
-        } catch (error) {
-          logger.error?.('[dsh-im] failed to activate update management; continuing with channels', error);
-        }
-      }
-      const failures = [];
-      for (const [channel, start] of channels) {
-        try {
-          await start(ctx, channelConfig(config, channel));
-        } catch (error) {
-          failures.push(error);
-          logger.error?.(`[dsh-im] failed to activate ${channel}; continuing with the remaining channels`, error);
-        }
-      }
-      if (failures.length === channels.length) {
-        throw new AggregateError(failures, 'dsh-im failed to activate every channel');
-      }
+      await activate(ctx);
     },
   });
+
+  async function activateChannels(ctx, config) {
+    setImHostLanguage(config.language ?? process.env.DSH_IM_LANGUAGE);
+    if (typeof ctx?.inject === 'function') {
+      ctx.inject(['tools', 'systemPrompt'], (artifactCtx) => {
+        installOutboundArtifactTool(artifactCtx);
+      });
+    } else {
+      installOutboundArtifactTool(ctx);
+    }
+    const logger = typeof ctx?.logger === 'function'
+      ? ctx.logger(name)
+      : (ctx?.logger ?? console);
+    if (ctx?.connection?.rpc) {
+      try {
+        startUpdate(ctx);
+      } catch (error) {
+        logger.error?.('[dsh-im] failed to activate update management; continuing with channels', error);
+      }
+    }
+    const failures = [];
+    for (const [channel, start] of channels) {
+      try {
+        await start(ctx, channelConfig(config, channel));
+      } catch (error) {
+        failures.push(error);
+        logger.error?.(`[dsh-im] failed to activate ${channel}; continuing with the remaining channels`, error);
+      }
+    }
+    if (failures.length === channels.length) {
+      throw new AggregateError(failures, 'dsh-im failed to activate every channel');
+    }
+  }
 }
 
 export async function apply(ctx, config = {}) {

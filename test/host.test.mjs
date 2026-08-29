@@ -38,7 +38,6 @@ test('Host composes nine IM channels and the AI Office connector inside one plug
   assert.deepEqual(inject, [
     'connection',
     'credentials',
-    'apiProxy',
     'typertGateway',
   ]);
   assert.deepEqual(calls, [
@@ -53,6 +52,36 @@ test('Host composes nine IM channels and the AI Office connector inside one plug
     ['whatsapp', ctx, { ...config.whatsapp, rpcAuthority: 'trusted-host' }],
     ['office', ctx, { ...config.office, rpcAuthority: 'trusted-host' }],
   ]);
+});
+
+test('Host waits for apiProxy on legacy Harness and Controllers on modern Harness', async () => {
+  for (const [modern, expected] of [
+    [false, ['apiProxy']],
+    [true, ['sessionController', 'workspaceController']],
+  ]) {
+    const injections = [];
+    const calls = [];
+    const plugin = createImHostPlugin(Object.fromEntries(CHANNELS.map(([channel, applyName]) => [
+      applyName,
+      async () => calls.push(channel),
+    ])));
+    const ctx = {
+      credentials: {},
+      typertGateway: modern ? { stream() {} } : { invoke() {} },
+      inject(dependencies, callback) {
+        injections.push(dependencies);
+        if (dependencies.includes('tools')) return {};
+        return {
+          then(resolve, reject) {
+            Promise.resolve(callback(ctx)).then(resolve, reject);
+          },
+        };
+      },
+    };
+    await plugin.apply(ctx, {});
+    assert.deepEqual(injections[0], expected);
+    assert.deepEqual(calls, CHANNELS.map(([channel]) => channel));
+  }
 });
 
 const CHANNELS = [
