@@ -31,6 +31,7 @@ export class QqRuntime {
   #appSecret;
   #harness;
   #state;
+  #contextEnhancement;
   #logger;
   #replyTimeoutMs;
   #connectTimeoutMs;
@@ -48,6 +49,7 @@ export class QqRuntime {
     appSecret,
     harness,
     state,
+    contextEnhancement,
     logger = console,
     replyTimeoutMs = 600_000,
     connectTimeoutMs = 20_000,
@@ -61,6 +63,7 @@ export class QqRuntime {
     this.#appSecret = appSecret;
     this.#harness = harness;
     this.#state = state;
+    this.#contextEnhancement = contextEnhancement;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#connectTimeoutMs = connectTimeoutMs;
@@ -139,6 +142,7 @@ export class QqRuntime {
       ownerUserOpenid: this.#config.ownerUserOpenid,
       harness: this.#harness,
       state: this.#state,
+      contextEnhancement: this.#contextEnhancement,
       status: this.#status,
       logger: this.#logger,
       replyTimeoutMs: this.#replyTimeoutMs,

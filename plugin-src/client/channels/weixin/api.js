@@ -1,5 +1,6 @@
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
 import { normalizeLastMessageError } from '../../last-message-error.js';
+import { normalizeContextEnhancementConfig } from '../../../../src/channels/shared/context-enhancement.mjs';
 
 export const WEIXIN_RPC_CHANNEL = '/weixin';
 export const WEIXIN_ENDPOINTS = Object.freeze({
@@ -12,6 +13,7 @@ export const WEIXIN_ENDPOINTS = Object.freeze({
   deleteBot: 'bot.delete',
   setWorkspace: 'bot.workspace.set',
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
+  setContextEnhancement: 'bot.context-enhancement.set',
 });
 
 const ACCOUNT_STATES = new Set(['connected', 'connecting', 'offline', 'error']);
@@ -121,6 +123,7 @@ function normalizeBot(value) {
     configured: value.configured === true,
     workspace: string(value.workspace).slice(0, 4_096),
     agentPreset: normalizeAgentPresetId(value.agentPreset),
+    contextEnhancement: normalizeContextEnhancementConfig(value.contextEnhancement),
     bot: {
       name: string(value.bot.name, '微信机器人'),
       accountIdMasked: string(value.bot.accountIdMasked, '已安全保存'),

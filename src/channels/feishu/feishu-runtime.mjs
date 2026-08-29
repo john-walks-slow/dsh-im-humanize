@@ -104,6 +104,7 @@ export class FeishuRuntime {
   #ownerOpenIds;
   #harness;
   #state;
+  #contextEnhancement;
   #replyTimeoutMs;
   #connectTimeoutMs;
   #requestTimeoutMs;
@@ -131,6 +132,7 @@ export class FeishuRuntime {
     ownerOpenIds,
     harness,
     state,
+    contextEnhancement,
     repair,
     replyTimeoutMs = 600000,
     connectTimeoutMs = 15000,
@@ -162,6 +164,7 @@ export class FeishuRuntime {
     this.#ownerOpenIds = normalizedOwners;
     this.#harness = harness;
     this.#state = state;
+    this.#contextEnhancement = contextEnhancement;
     this.#repair = repair ?? null;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#connectTimeoutMs = connectTimeoutMs;
@@ -260,6 +263,7 @@ export class FeishuRuntime {
         channel,
         harness: this.#harness,
         state: this.#state,
+        contextEnhancement: this.#contextEnhancement,
         status: this.#status,
         allowedSenderOpenIds: new Set(this.#ownerOpenIds),
         botId: this.#botId,

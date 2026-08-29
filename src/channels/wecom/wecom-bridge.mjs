@@ -27,6 +27,7 @@ import {
 } from '../shared/preset-command.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
+import { captureContextEnhancement, enhanceContextContent } from '../shared/context-enhancement.mjs';
 import {
   hasInboundImages,
   ImagePromptError,
@@ -488,6 +489,7 @@ export class WecomHarnessBridge {
   #client;
   #harness;
   #state;
+  #contextEnhancement;
   #status;
   #logger;
   #replyTimeoutMs;
@@ -497,7 +499,8 @@ export class WecomHarnessBridge {
   #queues = new Map();
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
-  #acceptedMessageIds = new Set();
+  // Keep the accepted configuration through the existing queue/reply lifecycle.
+  #acceptedMessageIds = new Map();
   #approvalTasks = new Set();
   #commandTasks = new Set();
   #approvals;
@@ -508,6 +511,7 @@ export class WecomHarnessBridge {
     client,
     harness,
     state,
+    contextEnhancement,
     status = createWecomBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
@@ -525,6 +529,7 @@ export class WecomHarnessBridge {
     this.#client = client;
     this.#harness = harness;
     this.#state = state;
+    this.#contextEnhancement = contextEnhancement;
     this.#status = status;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
@@ -552,7 +557,10 @@ export class WecomHarnessBridge {
       || this.#acceptedMessageIds.has(messageId)) return Promise.resolve();
 
     const key = conversationKey(frame);
-    this.#acceptedMessageIds.add(messageId);
+    this.#acceptedMessageIds.set(messageId, captureContextEnhancement(
+      this.#contextEnhancement,
+      body.chattype === 'single' ? 'direct' : 'group',
+    ));
     if (body.chattype === 'single') {
       rememberConnectionTestTarget(this.#state, { chatId });
     }
@@ -948,9 +956,16 @@ export class WecomHarnessBridge {
         this.#logger.warn?.('[dsh-im:wecom] unable to start a stream; using an active reply:', error);
       }
 
-      const content = hasImages
+      let content = hasImages
         ? await promptContentForMessage(message, { signal: this.#signal })
         : undefined;
+      const snapshot = this.#acceptedMessageIds.get(messageId);
+      if (snapshot) {
+        content = enhanceContextContent(content ?? text, snapshot, () => ({
+          channel: 'wecom',
+          senderId,
+        }));
+      }
       await this.#state.markSeen(messageId);
       promptRecorded = true;
       const { answer, artifacts = [] } = await askInWorkspaceSession({

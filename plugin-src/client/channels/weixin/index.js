@@ -15,6 +15,7 @@ import {
 } from './api.js';
 import { createPollScheduler, useAnimationFrameScheduler } from '../../lifecycle.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
+import { ContextEnhancementEditor } from '../../context-enhancement.js';
 import {
   AgentPresetCatalogContext,
   AgentPresetEditor,
@@ -207,6 +208,7 @@ export function AccountCard({
   onReconnect,
   onWorkspaceSave,
   onAgentPresetSave,
+  onContextEnhancementSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -237,6 +239,12 @@ export function AccountCard({
         agentPreset: account.agentPreset,
         disabled: Boolean(busy),
         onSave: onAgentPresetSave,
+      }),
+      h(ContextEnhancementEditor, {
+        config: account.contextEnhancement,
+        groupSupported: false,
+        disabled: Boolean(busy),
+        onSave: onContextEnhancementSave,
       }),
       h('div', { className: 'dxw-accountFooter dim-cardFooter' },
         h('div', { className: 'dim-cardFooterLayout' },
@@ -280,6 +288,7 @@ function AccountList(props) {
         onReconnect: () => props.onReconnect(account),
         onWorkspaceSave: (workspace) => props.onWorkspaceSave(account, workspace),
         onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(account, agentPreset),
+        onContextEnhancementSave: (config) => props.onContextEnhancementSave(account, config),
         onRequestRemove: () => props.onRequestRemove(account),
         onConfirmRemove: () => props.onConfirmRemove(account),
         onCancelRemove: props.onCancelRemove,
@@ -594,13 +603,13 @@ export function WeixinSettingsTab({ rpcCall }) {
     }
   }, [invoke, loadStatus, setBotBusy, workspaceFence]);
 
-  const saveAgentPreset = React.useCallback(async (account, agentPreset) => {
+  const saveBotSetting = React.useCallback(async (account, operation, endpoint, payload) => {
     const snapshotVersion = workspaceFence.beginMutation();
-    setBotBusy(account.botId, 'preset');
+    setBotBusy(account.botId, operation);
     try {
       const snapshot = normalizeSnapshot(await invoke(
-        WEIXIN_ENDPOINTS.setAgentPreset,
-        { botId: account.botId, agentPreset },
+        endpoint,
+        { botId: account.botId, ...payload },
       ));
       if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
         setModel({
@@ -703,7 +712,12 @@ export function WeixinSettingsTab({ rpcCall }) {
                   removeTarget,
                   onReconnect: (account) => void reconnect(account),
                   onWorkspaceSave: saveWorkspace,
-                  onAgentPresetSave: saveAgentPreset,
+                  onAgentPresetSave: (account, agentPreset) => saveBotSetting(
+                    account, 'preset', WEIXIN_ENDPOINTS.setAgentPreset, { agentPreset },
+                  ),
+                  onContextEnhancementSave: (account, config) => saveBotSetting(
+                    account, 'context-enhancement', WEIXIN_ENDPOINTS.setContextEnhancement, { config },
+                  ),
                   onRequestRemove: (account) => setRemoveTarget(account.botId),
                   onConfirmRemove: (account) => void remove(account),
                   onCancelRemove: () => setRemoveTarget(null),

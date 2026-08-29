@@ -128,6 +128,19 @@ Use the proxy URL required by your network and restart the Host after changing i
 | --- | --- |
 | Bot workspace | Each bot stores its workspace independently. New bots start with the Host's current working directory, which can later be changed from the bot card. |
 | Agent Preset | Each bot can choose an Agent Preset on its settings card. When none is chosen, new Sessions follow the Host's `agent-presets.default`. A channel-level `config.agentPreset` is only the default for later new bots on that channel. Changing the preset never modifies or clears existing Sessions; if the current chat already has a Session, send `/new` and then a regular message to create one with the new selection. |
+| Context enhancement | Open settings from a bot card to enable groups and DMs independently. Both switches default to off, including for existing bots after an upgrade. |
+
+### Context enhancement
+
+Open **Context enhancement** on a bot card to choose conversation scopes, source fields and guidance, then **Save**. The five available fields are `channel`, `conversationType`, `senderId`, `senderName` and `botId`; only `senderId` is selected by default. Only selected values already available in the incoming message are included; no platform profile API is queried. Weixin currently supports DMs only.
+
+When enabled, ordinary user messages receive a `<dsh_im_source>` prefix. Nonempty guidance is automatically wrapped in `<dsh_im_source_guidance>` tags. Guidance starts empty; the question-mark help includes instructions and an example, while **Use example** and **Clear** only edit the draft. No selected fields means no source block. Commands, approvals and question answers keep their existing control paths.
+
+When the current conversation scope is off, text, images, files and Session behavior are unchanged, without enhancement assembly or extra network queries. Unsaved or cancelled drafts have no effect. Saving does not reconnect bots or recreate Sessions; messages already received retain their original configuration snapshot.
+
+These blocks are **user-message content**, not changes to Harness, system prompts or permissions. Identifiers may contain platform user IDs or phone-number-like values and are sent to the current model and stored in Session history. Turning the feature off stops future additions; it does not erase existing history.
+
+### Access modes
 
 Each Telegram bot has its own access-mode control on its bot card. Existing and newly connected bots both default to **Compatible mode**: DMs receive replies, while group messages require a mention of or reply to the bot. Restrictions apply only after explicitly switching that bot to **Safe mode (private-chat allowlist)**. Safe mode ignores every group message and admits only numeric User IDs in that bot's allowlist. Enter one ID per line. Switching back to Compatible mode retains the allowlist without enforcing it, so it is available when Safe mode is enabled again. An empty allowlist in Safe mode rejects all inbound messages for that bot.
 

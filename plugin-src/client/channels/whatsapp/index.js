@@ -4,6 +4,7 @@ import { WhatsappLogoGlyph } from '../../channel-logos.js';
 import { QrActionIcon } from '../../credential-binding.js';
 import { h } from '../../i18n.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
+import { ContextEnhancementEditor } from '../../context-enhancement.js';
 import {
   AgentPresetCatalogContext,
   AgentPresetEditor,
@@ -297,6 +298,7 @@ export function WhatsappAccountCard({
   onReconnect,
   onWorkspaceSave,
   onAgentPresetSave,
+  onContextEnhancementSave,
   onAccessPolicySave,
   onRequestRemove,
   onConfirmRemove,
@@ -333,6 +335,11 @@ export function WhatsappAccountCard({
         agentPreset: account.agentPreset,
         disabled: Boolean(busy),
         onSave: onAgentPresetSave,
+      }),
+      h(ContextEnhancementEditor, {
+        config: account.contextEnhancement,
+        disabled: Boolean(busy),
+        onSave: onContextEnhancementSave,
       }),
       h(WhatsappAccessSettings, {
         account,
@@ -595,6 +602,12 @@ export function WhatsappSettingsTab({ rpcCall }) {
               'preset',
               WHATSAPP_ENDPOINTS.setAgentPreset,
               { botId: account.botId, agentPreset },
+            ),
+            onContextEnhancementSave: (config) => botAction(
+              account,
+              'context-enhancement',
+              WHATSAPP_ENDPOINTS.setContextEnhancement,
+              { botId: account.botId, config },
             ),
             onAccessPolicySave: (accessPolicy) => botAction(
               account,

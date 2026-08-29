@@ -29,6 +29,7 @@ const required = [
   'plugin-src/client/channels/slack/index.js',
   'plugin-src/client/i18n.js',
   'plugin-src/client/update-panel.js',
+  'plugin-src/client/context-enhancement.js',
   'plugin-src/host/update-service.mjs',
   'plugin-src/host/update-runtime.mjs',
   'plugin-src/host/update-rpc.mjs',
@@ -51,6 +52,7 @@ const required = [
   'src/channels/discord/discord-runtime.mjs',
   'src/channels/whatsapp/whatsapp-runtime.mjs',
   'src/channels/whatsapp/whatsapp-web-session.mjs',
+  'src/channels/shared/context-enhancement.mjs',
 ];
 await Promise.all(required.map((path) => access(resolve(root, path))));
 
@@ -135,8 +137,19 @@ if ((client.match(/\.slots\.inject\(\s*["']settings\.section["']/gu) ?? []).leng
 if (client.includes('settings.plugins.tab') || clientSources.includes('settings.plugins.tab')) {
   throw new Error('client source or bundle still contains the legacy Plugins-tab settings entry');
 }
-if (/role:\s*["']switch|type:\s*["']checkbox/.test(client)) {
-  throw new Error('client bundle contains a channel enable switch');
+// Connections still have no channel-enable toggle. Only the shared context
+// editor owns checkable inputs: two scope switches and one mapped field input.
+const contextEditorSource = await readFile(resolve(root, 'plugin-src/client/context-enhancement.js'), 'utf8');
+const otherClientSources = clientSources.replace(contextEditorSource, '');
+if (/role:\s*["']switch|type:\s*["']checkbox/.test(otherClientSources)
+  || (client.match(/role:\s*["']switch["']/g) ?? []).length !== 2
+  || (client.match(/type:\s*["']checkbox["']/g) ?? []).length !== 3) {
+  throw new Error('checkable inputs must be limited to the context-enhancement editor');
+}
+for (const marker of ['bot.context-enhancement.set', '<dsh_im_source>', '<dsh_im_source_guidance>']) {
+  if (!host.includes(marker) || !client.includes(marker)) {
+    throw new Error(`context-enhancement marker missing from Host or Client bundle: ${marker}`);
+  }
 }
 if (!client.includes('container-type: inline-size')
   || !client.includes('@container (max-width: 680px)')) {

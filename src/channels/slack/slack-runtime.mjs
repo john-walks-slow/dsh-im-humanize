@@ -346,6 +346,7 @@ export class SlackRuntime {
   #appToken;
   #harness;
   #state;
+  #contextEnhancement;
   #logger;
   #replyTimeoutMs;
   #connectTimeoutMs;
@@ -369,6 +370,7 @@ export class SlackRuntime {
     appToken,
     harness,
     state,
+    contextEnhancement,
     logger = console,
     replyTimeoutMs = 600_000,
     connectTimeoutMs = 20_000,
@@ -384,6 +386,7 @@ export class SlackRuntime {
     this.#appToken = appToken;
     this.#harness = harness;
     this.#state = state;
+    this.#contextEnhancement = contextEnhancement;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#connectTimeoutMs = connectTimeoutMs;
@@ -436,6 +439,7 @@ export class SlackRuntime {
         bot: client,
         harness: this.#harness,
         state: this.#state,
+        contextEnhancement: this.#contextEnhancement,
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,

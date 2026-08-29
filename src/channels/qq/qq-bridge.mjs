@@ -21,6 +21,7 @@ import {
   runPresetCommand,
 } from '../shared/preset-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
+import { captureContextEnhancement, enhanceContextContent } from '../shared/context-enhancement.mjs';
 import {
   BatchInputManager,
   batchInputBusyMessage,
@@ -365,6 +366,7 @@ export class QqHarnessBridge {
   #ownerUserOpenid;
   #harness;
   #state;
+  #contextEnhancement;
   #status;
   #logger;
   #replyTimeoutMs;
@@ -374,7 +376,8 @@ export class QqHarnessBridge {
   #queues = new Map();
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
-  #acceptedMessageIds = new Set();
+  // Keep the accepted configuration through the existing queue/reply lifecycle.
+  #acceptedMessageIds = new Map();
   #approvalTasks = new Set();
   #commandTasks = new Set();
   #approvals;
@@ -385,6 +388,7 @@ export class QqHarnessBridge {
     ownerUserOpenid,
     harness,
     state,
+    contextEnhancement,
     status = createQqBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
@@ -403,6 +407,7 @@ export class QqHarnessBridge {
     this.#ownerUserOpenid = ownerUserOpenid;
     this.#harness = harness;
     this.#state = state;
+    this.#contextEnhancement = contextEnhancement;
     this.#status = status;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
@@ -425,7 +430,10 @@ export class QqHarnessBridge {
       || this.#state.hasSeen(messageId)
       || this.#acceptedMessageIds.has(messageId)) return Promise.resolve();
     const key = conversationKey(message);
-    this.#acceptedMessageIds.add(messageId);
+    this.#acceptedMessageIds.set(messageId, captureContextEnhancement(
+      this.#contextEnhancement,
+      message.kind === 'c2c' ? 'direct' : 'group',
+    ));
     if (message.kind === 'c2c'
       && (this.#ownerUserOpenid === '*' || sender === this.#ownerUserOpenid)
       && message.replyTarget?.scope === 'c2c'
@@ -777,9 +785,17 @@ export class QqHarnessBridge {
         return;
       }
 
-      const content = hasImages
+      let content = hasImages
         ? await promptContentForMessage(promptMessage, { signal: this.#signal })
         : undefined;
+      const snapshot = this.#acceptedMessageIds.get(messageId);
+      if (snapshot) {
+        content = enhanceContextContent(content ?? text, snapshot, () => ({
+          channel: 'qq',
+          senderId: sender,
+          senderName: message.kind === 'group' ? message.senderName : undefined,
+        }));
+      }
       // QQ stream_messages can acknowledge a final frame without rendering it in
       // some C2C clients. Standard Markdown delivery is the reliable reply path.
       const toolErrors = [];
@@ -793,7 +809,7 @@ export class QqHarnessBridge {
           harness: this.#harness,
           state: this.#state,
           key,
-          ...(hasImages ? { content } : { text }),
+          ...(content !== undefined ? { content } : { text }),
           createOptions: { signal: this.#signal },
           existsOptions: { signal: this.#signal },
           askOptions: {

@@ -108,6 +108,7 @@ export class WeixinRuntime {
   #token;
   #harness;
   #state;
+  #contextEnhancement;
   #logger;
   #replyTimeoutMs;
   #maxMessageChars;
@@ -124,6 +125,7 @@ export class WeixinRuntime {
     token,
     harness,
     state,
+    contextEnhancement,
     logger = console,
     replyTimeoutMs = 600_000,
     maxMessageChars = DEFAULT_WEIXIN_MAX_MESSAGE_CHARS,
@@ -137,6 +139,7 @@ export class WeixinRuntime {
     this.#token = token;
     this.#harness = harness;
     this.#state = state;
+    this.#contextEnhancement = contextEnhancement;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#maxMessageChars = maxMessageChars;
@@ -178,6 +181,7 @@ export class WeixinRuntime {
         ownerUserId: this.#config.ownerUserId,
         harness: this.#harness,
         state: this.#state,
+        contextEnhancement: this.#contextEnhancement,
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,

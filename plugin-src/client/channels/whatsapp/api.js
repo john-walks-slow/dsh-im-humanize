@@ -1,5 +1,6 @@
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
 import { normalizeLastMessageError } from '../../last-message-error.js';
+import { normalizeContextEnhancementConfig } from '../../../../src/channels/shared/context-enhancement.mjs';
 
 export const WHATSAPP_RPC_CHANNEL = '/whatsapp';
 
@@ -13,6 +14,7 @@ export const WHATSAPP_ENDPOINTS = Object.freeze({
   setAccessPolicy: 'bot.access-policy.set',
   setWorkspace: 'bot.workspace.set',
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
+  setContextEnhancement: 'bot.context-enhancement.set',
 });
 
 const PROVISION_STATES = new Set(['starting', 'pending', 'connecting', 'connected', 'failed', 'cancelled']);
@@ -88,6 +90,7 @@ function normalizeBot(value) {
     state: connected ? 'connected' : state,
     workspace: text(value.workspace, '', 4_096),
     agentPreset: normalizeAgentPresetId(value.agentPreset),
+    contextEnhancement: normalizeContextEnhancementConfig(value.contextEnhancement),
     accessPolicy: {
       accessMode: ['self-only', 'private-allowlist', 'open'].includes(
         value.accessPolicy?.accessMode,

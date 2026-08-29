@@ -1,4 +1,5 @@
 import QRCode from 'qrcode';
+import { SET_CONTEXT_ENHANCEMENT_ENDPOINT, validContextEnhancementPayload } from '../shared/context-enhancement-rpc.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import {
   publicWorkspaceError,
@@ -25,6 +26,7 @@ export const WEIXIN_ENDPOINTS = Object.freeze({
   deleteBot: 'bot.delete',
   setWorkspace: SET_WORKSPACE_ENDPOINT,
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
+  setContextEnhancement: SET_CONTEXT_ENHANCEMENT_ENDPOINT,
 });
 export const WEIXIN_RPC_ENDPOINTS = Object.freeze(Object.values(WEIXIN_ENDPOINTS));
 
@@ -82,6 +84,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === WEIXIN_ENDPOINTS.setAgentPreset) {
     return validAgentPresetPayload(payload)
       ? null : '请选择 Agent Preset。';
+  }
+  if (endpoint === WEIXIN_ENDPOINTS.setContextEnhancement) {
+    return validContextEnhancementPayload(payload)
+      ? null : '请提交有效的上下文增强设置。';
   }
   return 'Unknown Weixin endpoint.';
 }
@@ -206,6 +212,11 @@ export function createWeixinRpcHandler(controller, { encodeQr = qrDataUrl } = {}
         value = await publicStatus(
           await controller.updateWorkspace(payload.botId, payload.workspace),
           cachedEncode,
+        );
+      } else if (endpoint === WEIXIN_ENDPOINTS.setContextEnhancement) {
+        if (typeof controller.updateContextEnhancement !== 'function') throw new Error('Context enhancement update is unavailable');
+        value = await controller.updateContextEnhancement(
+          payload.botId, payload.config, (status) => publicStatus(status, cachedEncode),
         );
       } else if (endpoint === WEIXIN_ENDPOINTS.setAgentPreset) {
         if (typeof controller.updateAgentPreset !== 'function') throw new Error('Agent preset update is unavailable');

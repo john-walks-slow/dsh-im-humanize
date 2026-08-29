@@ -1425,6 +1425,92 @@ test('Discord runtime keeps one isolated Session per managed thread and reuses i
   await runtime.stop();
 });
 
+test('Discord captures context settings before asynchronous Thread routing and updates future messages live', async (t) => {
+  const botId = '1234567890123456789';
+  const parentId = '222222222222222290';
+  const threadId = '111111111111111190';
+  const routingStarted = deferred();
+  const releaseRouting = deferred();
+  const seen = new Set();
+  const prompts = [];
+  let socket;
+  let reads = 0;
+  let config = {
+    groupEnabled: true,
+    directEnabled: false,
+    fields: ['channel', 'conversationType', 'senderId', 'senderName', 'botId'],
+    guidance: 'accepted before routing',
+  };
+  const runtime = new DiscordRuntime({
+    config: { botId: 'discord_internal', platformId: botId, name: 'Harness Discord' },
+    token: TOKEN,
+    contextEnhancement: {
+      botId: 'discord_internal',
+      getSettings: () => { reads += 1; return config; },
+    },
+    harness: {
+      ensureRunning: async () => true,
+      sessionExists: async () => true,
+      ask: async (_sessionId, content) => { prompts.push(content); return 'answer'; },
+    },
+    state: {
+      hasSeen: (id) => seen.has(id),
+      markSeen: async (id) => seen.add(id),
+      sessionFor: () => 'session-existing',
+    },
+    createApi: () => ({
+      getCurrentUser: async () => ({ id: botId, bot: true }),
+      getGatewayBot: async () => ({ url: 'wss://gateway.discord.gg' }),
+      getChannel: async () => assert.fail('The channel is already in the gateway cache'),
+      startThreadFromMessage: async () => {
+        routingStarted.resolve();
+        await releaseRouting.promise;
+        return { id: threadId, type: 11, parent_id: parentId, owner_id: botId };
+      },
+      sendTyping: async () => {},
+      createMessage: async () => ({ id: '888888888888888890' }),
+      editMessage: async ({ messageId }) => ({ id: messageId }),
+    }),
+    createWebSocket: () => {
+      socket = new FakeSocket();
+      queueMicrotask(() => socket.emit('message', {
+        data: JSON.stringify({ op: 10, d: { heartbeat_interval: 45_000 } }),
+      }));
+      return socket;
+    },
+    random: () => 0.5,
+    logger: { warn() {}, error(...args) { assert.fail(args.join(' ')); } },
+  });
+  t.after(async () => { releaseRouting.resolve(); await runtime.stop(); });
+  await runtime.start();
+  socket.emit('message', { data: JSON.stringify({ op: 0, t: 'GUILD_CREATE', s: 2,
+    d: { id: '444444444444444444', channels: [{ id: parentId, type: 0 }], threads: [] },
+  }) });
+  socket.emit('message', { data: JSON.stringify({ op: 0, t: 'MESSAGE_CREATE', s: 3, d: {
+    id: threadId, channel_id: parentId, guild_id: '444444444444444444',
+    author: { id: '333333333333333333', bot: false, global_name: 'Global Name', username: 'username' },
+    member: { nick: 'Group Nick' }, mentions: [{ id: botId }], content: `<@${botId}> first`,
+  } }) });
+  await routingStarted.promise;
+  config = { ...config, groupEnabled: false };
+  releaseRouting.resolve();
+  await eventually(() => runtime.status.messagesReplied === 1);
+  assert.match(prompts[0], /accepted before routing/);
+  assert.deepEqual(JSON.parse(/^<dsh_im_source>(.*?)<\/dsh_im_source>/su.exec(prompts[0])[1]), {
+    channel: 'discord', conversationType: 'group', senderId: '333333333333333333',
+    senderName: 'Group Nick', botId: 'discord_internal',
+  });
+  assert.equal(reads, 1, 'routing and Bridge share one accepted configuration read');
+
+  socket.emit('message', { data: JSON.stringify({ op: 0, t: 'MESSAGE_CREATE', s: 4, d: {
+    id: '111111111111111191', channel_id: threadId, guild_id: '444444444444444444',
+    author: { id: '333333333333333333', bot: false }, content: 'second without enhancement',
+  } }) });
+  await eventually(() => runtime.status.messagesReplied === 2);
+  assert.equal(prompts[1], 'second without enhancement');
+  assert.equal(reads, 2);
+});
+
 test('Discord runtime records one uncertain Thread result and suppresses Gateway replays', async () => {
   const botId = '1234567890123456789';
   const parentChannelId = '222222222222222290';

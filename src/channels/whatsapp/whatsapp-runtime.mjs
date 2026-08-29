@@ -234,6 +234,7 @@ export function normalizeWhatsappMessage(message, accountJid, {
     messageId: `${remoteJid}:${messageId}`,
     providerMessageId: messageId,
     senderId: senderJid,
+    contextSource: () => ({ senderName: message.pushName }),
     senderAlternateId: typeof senderAlternateJid === 'string' ? senderAlternateJid : '',
     senderIsBot: false,
     kind: group ? 'group' : 'direct',
@@ -536,6 +537,7 @@ export class WhatsappRuntime {
   #authDir;
   #harness;
   #state;
+  #contextEnhancement;
   #logger;
   #replyTimeoutMs;
   #connectTimeoutMs;
@@ -555,6 +557,7 @@ export class WhatsappRuntime {
     authDir,
     harness,
     state,
+    contextEnhancement,
     logger = console,
     replyTimeoutMs = 600_000,
     connectTimeoutMs = 30_000,
@@ -568,6 +571,7 @@ export class WhatsappRuntime {
     this.#authDir = authDir;
     this.#harness = harness;
     this.#state = state;
+    this.#contextEnhancement = contextEnhancement;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#connectTimeoutMs = connectTimeoutMs;
@@ -673,6 +677,7 @@ export class WhatsappRuntime {
         bot: client,
         harness: this.#harness,
         state: this.#state,
+        contextEnhancement: this.#contextEnhancement,
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,

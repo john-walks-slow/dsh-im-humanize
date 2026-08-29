@@ -46,6 +46,7 @@ import {
 } from '../shared/preset-command.mjs';
 import { runWorkspaceCommand, resolveSessionListWorkspace, workspacePathSnapshot } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
+import { captureContextEnhancement, enhanceContextContent } from '../shared/context-enhancement.mjs';
 import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
 import {
   createDeliveryReceipt,
@@ -383,12 +384,14 @@ export class FeishuHarnessBridge {
   #channel;
   #harness;
   #state;
+  #contextEnhancement;
   #queues = new Map();
   #batchInputs = new BatchInputManager();
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
   #resolvedQuestionReplies = new Map();
-  #acceptedMessageIds = new Set();
+  // Keep the accepted configuration through the existing queue/reply lifecycle.
+  #acceptedMessageIds = new Map();
   #interactionTasks = new Set();
   #commandTasks = new Set();
   /** All accepted card work, including tasks waiting behind an earlier click. */
@@ -447,6 +450,7 @@ export class FeishuHarnessBridge {
     channel,
     harness,
     state,
+    contextEnhancement,
     status,
     allowedSenderOpenIds = new Set(),
     botId,
@@ -483,6 +487,7 @@ export class FeishuHarnessBridge {
     this.#channel = channel;
     this.#harness = harness;
     this.#state = state;
+    this.#contextEnhancement = contextEnhancement;
     this.#status = status;
     this.#allowedSenderOpenIds = allowedSenderOpenIds;
     this.#botId = nonEmptyString(botId);
@@ -551,7 +556,10 @@ export class FeishuHarnessBridge {
       if (chatId) rememberConnectionTestTarget(this.#state, { chatId });
     }
 
-    this.#acceptedMessageIds.add(messageId);
+    this.#acceptedMessageIds.set(messageId, captureContextEnhancement(
+      this.#contextEnhancement,
+      event.message.chat_type === 'p2p' ? 'direct' : event.message.chat_type === 'group' ? 'group' : null,
+    ));
     const processingReaction = this.#beginReaction(messageId);
     const commandMessage = extractInboundMessage(event, this.#client);
     const commandText = nonEmptyString(commandMessage.content) ?? '';
@@ -3143,9 +3151,16 @@ export class FeishuHarnessBridge {
       askCompleted = true;
       onAskComplete?.();
     };
-    const content = hasInboundImages(message)
+    let content = hasInboundImages(message)
       ? await promptContentForMessage(message, { signal: this.#signal })
       : undefined;
+    const snapshot = this.#acceptedMessageIds.get(messageId);
+    if (snapshot) {
+      content = enhanceContextContent(content ?? text, snapshot, () => ({
+        channel: 'feishu',
+        senderId: senderOpenId(event),
+      }));
+    }
     if (!this.#channel?.stream) {
       const { answer, artifacts = [] } = await askInWorkspaceSession({
         harness: this.#harness,

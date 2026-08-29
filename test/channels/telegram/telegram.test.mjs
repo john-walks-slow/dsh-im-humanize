@@ -1515,6 +1515,125 @@ test('Telegram runtime enforces the selected bot private allowlist', async () =>
   }
 });
 
+for (const scenario of [
+  { name: 'two private messages', kinds: ['private', 'private'], before: [true, true], after: [false, false] },
+  { name: 'mixed private/group messages', kinds: ['private', 'supergroup'], before: [false, true], after: [true, false] },
+  { name: 'disabled private messages before enabling', kinds: ['private', 'private'], before: [false, false], after: [true, true] },
+]) {
+  test(`Telegram received poll batch retains its settings across cursor writes: ${scenario.name}`, async () => {
+    const firstCursorStarted = deferred();
+    const releaseFirstCursor = deferred();
+    const allPrompts = deferred();
+    const seen = new Set();
+    const asked = [];
+    const pollOffsets = [];
+    const cursorWrites = [];
+    let cursor = 10;
+    let settingsReads = 0;
+    let nextMessageId = 500;
+    const configFor = ([directEnabled, groupEnabled], guidance) => ({
+      directEnabled, groupEnabled, fields: ['channel', 'botId'], guidance,
+    });
+    let config = configFor(scenario.before, 'before cursor write');
+    const update = (id, kind) => ({
+      update_id: id,
+      message: {
+        message_id: id + 100,
+        chat: { id: kind === 'private' ? 42 : -1001, type: kind },
+        from: { id: 7, is_bot: false, first_name: 'Ada' },
+        text: kind === 'private' ? `message ${id}` : `@HarnessBot message ${id}`,
+        entities: kind === 'private' ? [] : [{ type: 'mention', offset: 0, length: 11 }],
+      },
+    });
+    const firstBatch = scenario.kinds.map((kind, index) => update(10 + index, kind));
+    const nextBatch = ['private', 'supergroup'].map((kind, index) => update(12 + index, kind));
+    const runtime = new TelegramRuntime({
+      config: { botId: 'telegram_poll', platformId: '123456789', username: 'HarnessBot' },
+      token: TOKEN,
+      contextEnhancement: {
+        botId: 'telegram_poll',
+        getSettings: () => { settingsReads += 1; return config; },
+      },
+      state: {
+        cursor: () => cursor,
+        setCursor: async (value) => {
+          cursorWrites.push(value);
+          if (value === 11) {
+            firstCursorStarted.resolve();
+            await releaseFirstCursor.promise;
+          }
+          cursor = value;
+        },
+        hasSeen: (id) => seen.has(id),
+        markSeen: async (id) => seen.add(id),
+        sessionFor: () => 'session-existing',
+      },
+      harness: {
+        ensureRunning: async () => true,
+        sessionExists: async () => true,
+        ask: async (_sessionId, text) => {
+          asked.push(text);
+          if (asked.length === 4) allPrompts.resolve();
+          return 'done';
+        },
+      },
+      createApi: () => ({
+        getMe: async () => ({ id: 123456789, is_bot: true }),
+        getWebhookInfo: async () => ({ url: '' }),
+        setMyCommands: async () => true,
+        setChatMenuButton: async () => true,
+        getUpdates: async ({ offset, signal }) => {
+          pollOffsets.push(offset);
+          if (offset === 10) return firstBatch;
+          if (offset === 12) return nextBatch;
+          assert.equal(offset, 14);
+          return new Promise((_, reject) => {
+            if (signal.aborted) return reject(signal.reason);
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
+        },
+        setMessageReaction: async () => true,
+        sendChatAction: async () => true,
+        sendRichMessageDraft: async () => true,
+        sendRichMessage: async () => ({ message_id: nextMessageId++ }),
+        sendMessage: async () => ({ message_id: nextMessageId++ }),
+        editMessageText: async () => true,
+      }),
+      logger: { warn() {}, error() {} },
+    });
+    try {
+      await runtime.start();
+      await bounded(firstCursorStarted.promise, 'first cursor write was not reached', 5_000);
+      assert.equal(settingsReads, 2, 'every received update captures its settings before the first cursor await');
+      config = configFor(scenario.after, 'after cursor write');
+      releaseFirstCursor.resolve();
+      await bounded(allPrompts.promise, 'both poll batches did not reach Harness', 5_000);
+      for (const [index, event] of [...firstBatch, ...nextBatch].entries()) {
+        const expectedText = `message ${event.update_id}`;
+        const content = asked.find((text) => text.endsWith(expectedText));
+        assert.ok(content, `Missing prompt ${event.update_id}`);
+        const switches = index < 2 ? scenario.before : scenario.after;
+        const enabled = switches[event.message.chat.type === 'private' ? 0 : 1];
+        if (enabled) {
+          assert.match(content, index < 2 ? /before cursor write/ : /after cursor write/);
+          assert.deepEqual(JSON.parse(/^<dsh_im_source>(.*?)<\/dsh_im_source>/su.exec(content)[1]), {
+            channel: 'telegram', botId: 'telegram_poll',
+          });
+        } else {
+          assert.equal(content, expectedText);
+        }
+      }
+      assert.equal(settingsReads, 4, 'Bridge reuses the snapshot instead of reading settings again');
+      assert.deepEqual(pollOffsets, [10, 12, 14]);
+      assert.deepEqual(cursorWrites, [11, 12, 13, 14]);
+      assert.deepEqual([...seen].sort(), ['10', '11', '12', '13']);
+    } finally {
+      releaseFirstCursor.resolve();
+      await runtime.stop();
+    }
+  });
+}
+
 test('Telegram runtime keeps polling while a Harness question waits for its answer', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-im-telegram-interaction-'));
   const state = await new TelegramStateStore(join(directory, 'state.json')).load();

@@ -4,6 +4,7 @@ import { QqLogoGlyph } from '../../channel-logos.js';
 import { CredentialActionIcon, CredentialBindingPanel, QrActionIcon } from '../../credential-binding.js';
 import { h } from '../../i18n.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
+import { ContextEnhancementEditor } from '../../context-enhancement.js';
 import {
   AgentPresetCatalogContext,
   AgentPresetEditor,
@@ -166,6 +167,7 @@ export function AccountCard({
   onReconnect,
   onWorkspaceSave,
   onAgentPresetSave,
+  onContextEnhancementSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -197,6 +199,11 @@ export function AccountCard({
         agentPreset: account.agentPreset,
         disabled: Boolean(busy),
         onSave: onAgentPresetSave,
+      }),
+      h(ContextEnhancementEditor, {
+        config: account.contextEnhancement,
+        disabled: Boolean(busy),
+        onSave: onContextEnhancementSave,
       }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         h('div', { className: 'dim-cardFooterLayout' },
@@ -467,6 +474,12 @@ export function QqSettingsTab({ rpcCall }) {
               'preset',
               QQ_ENDPOINTS.setAgentPreset,
               { botId: account.botId, agentPreset },
+            ),
+            onContextEnhancementSave: (config) => botAction(
+              account,
+              'context-enhancement',
+              QQ_ENDPOINTS.setContextEnhancement,
+              { botId: account.botId, config },
             ),
             onRequestRemove: () => setRemoveTarget(account.botId),
             onCancelRemove: () => setRemoveTarget(null),

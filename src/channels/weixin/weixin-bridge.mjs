@@ -33,6 +33,7 @@ import {
 } from '../shared/preset-command.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
+import { captureContextEnhancement, enhanceContextContent } from '../shared/context-enhancement.mjs';
 import {
   hasInboundImages,
   imagePromptDiagnostic,
@@ -258,6 +259,7 @@ export class WeixinHarnessBridge {
   #ownerUserId;
   #harness;
   #state;
+  #contextEnhancement;
   #status;
   #logger;
   #replyTimeoutMs;
@@ -267,7 +269,8 @@ export class WeixinHarnessBridge {
   #queues = new Map();
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
-  #acceptedMessageIds = new Set();
+  // Keep the accepted configuration through the existing queue/reply lifecycle.
+  #acceptedMessageIds = new Map();
   #approvalTasks = new Set();
   #commandTasks = new Set();
   #approvals;
@@ -288,6 +291,7 @@ export class WeixinHarnessBridge {
     ownerUserId,
     harness,
     state,
+    contextEnhancement,
     status = createWeixinBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
@@ -307,6 +311,7 @@ export class WeixinHarnessBridge {
     this.#ownerUserId = ownerUserId;
     this.#harness = harness;
     this.#state = state;
+    this.#contextEnhancement = contextEnhancement;
     this.#status = status;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
@@ -327,7 +332,10 @@ export class WeixinHarnessBridge {
     const sender = nonEmptyString(message?.from_user_id);
     if (!messageId || !sender || this.#state.hasSeen(messageId)
       || this.#acceptedMessageIds.has(messageId)) return Promise.resolve();
-    this.#acceptedMessageIds.add(messageId);
+    this.#acceptedMessageIds.set(messageId, captureContextEnhancement(
+      this.#contextEnhancement,
+      'direct',
+    ));
     if (sender === this.#ownerUserId) {
       rememberConnectionTestTarget(this.#state, { toUserId: sender });
     }
@@ -650,16 +658,23 @@ export class WeixinHarnessBridge {
       let artifacts = [];
       await this.#startTyping(sender, contextToken);
       try {
-        const content = hasImages
+        let content = hasImages
           ? await promptContentForMessage(promptMessage, { signal: this.#signal })
           : undefined;
+        const snapshot = this.#acceptedMessageIds.get(messageId);
+        if (snapshot) {
+          content = enhanceContextContent(content ?? text, snapshot, () => ({
+            channel: 'weixin',
+            senderId: sender,
+          }));
+        }
         await this.#state.markSeen(messageId);
         promptRecorded = true;
         ({ answer, artifacts = [] } = await askInWorkspaceSession({
           harness: this.#harness,
           state: this.#state,
           key,
-          ...(hasImages ? { content } : { text }),
+          ...(content !== undefined ? { content } : { text }),
           createOptions: { signal: this.#signal },
           existsOptions: { signal: this.#signal },
           askOptions: {

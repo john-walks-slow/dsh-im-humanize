@@ -2,6 +2,7 @@ import { createEditableMessageStream, splitMessageText } from '../shared/editabl
 import { fetchFileStream } from '../shared/file-download.mjs';
 import { fetchImageBuffer } from '../shared/image-prompt.mjs';
 import { t } from '../shared/i18n.mjs';
+import { captureContextEnhancement } from '../shared/context-enhancement.mjs';
 import { DiscordApi } from './discord-api.mjs';
 import { createDiscordBridgeStatus, DiscordHarnessBridge } from './discord-bridge.mjs';
 
@@ -213,6 +214,10 @@ export function normalizeDiscordMessage(message, botId, { fetchImpl = fetch } = 
   return {
     messageId: String(message.id),
     senderId: String(message.author.id),
+    contextSource: () => ({
+      senderName: [message.member?.nick, message.author.global_name, message.author.username]
+        .find((value) => typeof value === 'string' && value.trim()),
+    }),
     senderIsBot: message.author.bot === true,
     kind: direct ? 'direct' : 'group',
     conversationId: String(message.channel_id),
@@ -427,6 +432,7 @@ export class DiscordRuntime {
   #token;
   #harness;
   #state;
+  #contextEnhancement;
   #logger;
   #replyTimeoutMs;
   #connectTimeoutMs;
@@ -457,6 +463,7 @@ export class DiscordRuntime {
     token,
     harness,
     state,
+    contextEnhancement,
     logger = console,
     replyTimeoutMs = 600_000,
     connectTimeoutMs = 20_000,
@@ -472,6 +479,7 @@ export class DiscordRuntime {
     this.#token = token;
     this.#harness = harness;
     this.#state = state;
+    this.#contextEnhancement = contextEnhancement;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#connectTimeoutMs = connectTimeoutMs;
@@ -534,6 +542,7 @@ export class DiscordRuntime {
         bot: client,
         harness: this.#harness,
         state: this.#state,
+        contextEnhancement: this.#contextEnhancement,
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
@@ -707,20 +716,25 @@ export class DiscordRuntime {
     if (!messageId || this.#state.hasSeen(messageId)) return;
     let route = this.#routing.get(messageId);
     if (!route) {
-      route = resolveDiscordMessageRoute(message, this.#config.platformId, {
+      const contextSnapshot = captureContextEnhancement(
+        this.#contextEnhancement,
+        message.guild_id ? 'group' : 'direct',
+      );
+      const pendingRoute = resolveDiscordMessageRoute(message, this.#config.platformId, {
         api: this.#api,
         channel: this.#channels.get(String(message.channel_id)),
         signal: this.#abortController?.signal,
         onChannel: (resolved) => this.#rememberChannel(resolved),
       });
+      route = { pendingRoute, contextSnapshot };
       this.#routing.set(messageId, route);
-      void route.finally(() => {
+      void pendingRoute.finally(() => {
         if (this.#routing.get(messageId) === route) this.#routing.delete(messageId);
       }).catch(() => undefined);
     }
     try {
-      const normalized = await route;
-      if (normalized) await bridge.accept(normalized);
+      const normalized = await route.pendingRoute;
+      if (normalized) await bridge.accept(normalized, { contextSnapshot: route.contextSnapshot });
     } catch (error) {
       if (error?.code === 'discord-thread-create-uncertain') {
         await this.#state.markSeen(messageId);

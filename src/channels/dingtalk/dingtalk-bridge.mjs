@@ -28,6 +28,7 @@ import {
 } from '../shared/preset-command.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
+import { captureContextEnhancement, enhanceContextContent } from '../shared/context-enhancement.mjs';
 import {
   BatchInputManager,
   batchInputBusyMessage,
@@ -372,6 +373,7 @@ export class DingtalkHarnessBridge {
   #clientSecret;
   #harness;
   #state;
+  #contextEnhancement;
   #status;
   #logger;
   #replyTimeoutMs;
@@ -383,7 +385,8 @@ export class DingtalkHarnessBridge {
   #interactionKeys = new Map();
   #interactionTasks = new Set();
   #commandTasks = new Set();
-  #acceptedMessageIds = new Set();
+  // Keep the accepted configuration through the existing queue/reply lifecycle.
+  #acceptedMessageIds = new Map();
   #approvals;
   #batchInputs = new BatchInputManager();
 
@@ -393,6 +396,7 @@ export class DingtalkHarnessBridge {
     clientSecret,
     harness,
     state,
+    contextEnhancement,
     status = createDingtalkBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
@@ -410,6 +414,7 @@ export class DingtalkHarnessBridge {
     this.#clientSecret = clientSecret.trim();
     this.#harness = harness;
     this.#state = state;
+    this.#contextEnhancement = contextEnhancement;
     this.#status = status;
     this.#logger = logger;
     this.#approvals = new HarnessApprovalQueue({ label: 'DingTalk', logger });
@@ -428,13 +433,17 @@ export class DingtalkHarnessBridge {
     return structuredClone(this.#status);
   }
 
-  accept(message) {
+  accept(message, { contextSnapshot } = {}) {
     if (this.#signal?.aborted) return Promise.resolve();
     const messageId = nonEmptyString(message?.msgId);
     const sender = senderStaffId(message);
     if (!messageId || !sender || this.#state.hasSeen(messageId)
       || this.#acceptedMessageIds.has(messageId)) return Promise.resolve();
-    this.#acceptedMessageIds.add(messageId);
+    this.#acceptedMessageIds.set(messageId, contextSnapshot === undefined ? captureContextEnhancement(
+      this.#contextEnhancement,
+      message.conversationType === '1' || message.conversationType === 1 ? 'direct'
+        : message.conversationType === '2' || message.conversationType === 2 ? 'group' : null,
+    ) : contextSnapshot);
 
     let key;
     try {
@@ -931,9 +940,17 @@ export class DingtalkHarnessBridge {
         return;
       }
 
-      const content = hasImages
+      let content = hasImages
         ? await promptContentForMessage(promptMessage, { signal: this.#signal })
         : undefined;
+      const snapshot = this.#acceptedMessageIds.get(messageId);
+      if (snapshot) {
+        content = enhanceContextContent(content ?? text, snapshot, () => ({
+          channel: 'dingtalk',
+          senderId: sender,
+          senderName: message.senderNick,
+        }));
+      }
       if (typeof this.#api.createAiCard === 'function'
         && typeof this.#api.updateAiCard === 'function'
         && typeof this.#api.finishAiCard === 'function') {
@@ -951,7 +968,7 @@ export class DingtalkHarnessBridge {
         harness: this.#harness,
         state: this.#state,
         key,
-        ...(hasImages ? { content } : { text }),
+        ...(content !== undefined ? { content } : { text }),
         createOptions: { signal: this.#signal },
         existsOptions: { signal: this.#signal },
         askOptions: {

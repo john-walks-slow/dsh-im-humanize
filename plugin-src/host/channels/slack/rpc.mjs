@@ -1,3 +1,4 @@
+import { SET_CONTEXT_ENHANCEMENT_ENDPOINT, validContextEnhancementPayload } from '../shared/context-enhancement-rpc.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicConnectionTestResult } from '../../../../src/channels/shared/connection-test.mjs';
 import {
@@ -18,6 +19,7 @@ export const SLACK_ENDPOINTS = Object.freeze({
   deleteBot: 'bot.delete',
   setWorkspace: SET_WORKSPACE_ENDPOINT,
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
+  setContextEnhancement: SET_CONTEXT_ENHANCEMENT_ENDPOINT,
 });
 export const SLACK_RPC_ENDPOINTS = Object.freeze(Object.values(SLACK_ENDPOINTS));
 
@@ -74,6 +76,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === SLACK_ENDPOINTS.setAgentPreset) {
     return validAgentPresetPayload(payload)
       ? null : '请选择 Agent Preset。';
+  }
+  if (endpoint === SLACK_ENDPOINTS.setContextEnhancement) {
+    return validContextEnhancementPayload(payload)
+      ? null : '请提交有效的上下文增强设置。';
   }
   return 'Unknown Slack endpoint.';
 }
@@ -153,6 +159,10 @@ export function createSlackRpcHandler(controller) {
       else if (endpoint === SLACK_ENDPOINTS.setWorkspace) {
         if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
         value = await controller.updateWorkspace(payload.botId, payload.workspace);
+      }
+      else if (endpoint === SLACK_ENDPOINTS.setContextEnhancement) {
+        if (typeof controller.updateContextEnhancement !== 'function') throw new Error('Context enhancement update is unavailable');
+        value = await controller.updateContextEnhancement(payload.botId, payload.config);
       }
       else if (endpoint === SLACK_ENDPOINTS.setAgentPreset) {
         if (typeof controller.updateAgentPreset !== 'function') throw new Error('Agent preset update is unavailable');

@@ -8,6 +8,7 @@
 
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId } from "../../agent-preset.js";
 import { normalizeLastMessageError } from "../../last-message-error.js";
+import { normalizeContextEnhancementConfig } from "../../../../src/channels/shared/context-enhancement.mjs";
 
 export const FEISHU_RPC_CHANNEL = "/feishu";
 
@@ -24,6 +25,7 @@ export const FEISHU_ENDPOINTS = Object.freeze({
   deleteBot: "bot.delete",
   setWorkspace: "bot.workspace.set",
   setAgentPreset: "bot.preset.set",
+  setContextEnhancement: "bot.context-enhancement.set",
   setGroupResponseMode: "bot.group-response-mode.set",
   // Kept for rolling upgrades. The multi-bot UI never calls these endpoints.
   testConnection: "connection.test",
@@ -203,6 +205,7 @@ export function normalizeBotConnection(value, fallbackBotId) {
     configured: value.configured !== false,
     workspace: optionalString(value.workspace)?.slice(0, 4_096) ?? "",
     agentPreset: normalizeAgentPresetId(value.agentPreset),
+    contextEnhancement: normalizeContextEnhancementConfig(value.contextEnhancement),
     groupResponseMode: normalizeGroupResponseMode(value.groupResponseMode),
     groupMessagePermissionGranted: value.groupMessagePermissionGranted === true,
     bot: normalizeBot(value.bot),

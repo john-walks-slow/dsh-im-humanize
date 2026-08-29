@@ -14,6 +14,11 @@ import {
   validateAgentPresetId,
 } from './agent-preset.mjs';
 import { CONNECTION_TEST_STATE_IDENTITY } from './connection-test.mjs';
+import {
+  DEFAULT_CONTEXT_ENHANCEMENT_CONFIG,
+  normalizeContextEnhancementConfig,
+  validateContextEnhancementConfig,
+} from './context-enhancement.mjs';
 import { WORKSPACE_SESSION_STALE } from './workspace-session.mjs';
 
 const EMPTY_DOCUMENT = Object.freeze({ version: 1, workspaces: Object.freeze({}) });
@@ -68,7 +73,17 @@ function normalizeDocument(value) {
       }
     }
   }
-  return { version: 1, workspaces, agentPresets };
+  const contextEnhancement = Object.create(null);
+  // Enhancement damage is isolated from the existing workspace/preset document.
+  if (value.contextEnhancement && typeof value.contextEnhancement === 'object'
+    && !Array.isArray(value.contextEnhancement)) {
+    for (const [botId, config] of Object.entries(value.contextEnhancement)) {
+      if (/^[A-Za-z0-9_-]{1,128}$/.test(botId)) {
+        contextEnhancement[botId] = normalizeContextEnhancementConfig(config);
+      }
+    }
+  }
+  return { version: 1, workspaces, agentPresets, contextEnhancement };
 }
 
 export async function validateWorkspacePath(value) {
@@ -99,6 +114,7 @@ export class BotWorkspaceStore {
   #defaultWorkspace;
   #workspaces = {};
   #agentPresets = {};
+  #contextEnhancement = {};
   #generations = new Map();
   #nextGeneration = 1;
   #incarnations = new Map();
@@ -121,10 +137,12 @@ export class BotWorkspaceStore {
       if (!normalized) throw new Error('dsh-im workspace config is invalid');
       this.#workspaces = normalized.workspaces;
       this.#agentPresets = normalized.agentPresets;
+      this.#contextEnhancement = normalized.contextEnhancement;
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
       this.#workspaces = {};
       this.#agentPresets = {};
+      this.#contextEnhancement = {};
     }
     this.#generations.clear();
     this.#nextGeneration = 1;
@@ -154,6 +172,13 @@ export class BotWorkspaceStore {
 
   agentPresetFor(botId) {
     return this.#agentPresets[botIdOf(botId)] ?? null;
+  }
+
+  contextEnhancementFor(botId) {
+    const id = botIdOf(botId);
+    return this.has(id) && Object.hasOwn(this.#contextEnhancement, id)
+      ? this.#contextEnhancement[id]
+      : DEFAULT_CONTEXT_ENHANCEMENT_CONFIG;
   }
 
   generationFor(botId) {
@@ -267,6 +292,24 @@ export class BotWorkspaceStore {
         throw error;
       }
       return agentPreset;
+    });
+  }
+
+  async setContextEnhancement(botId, value, { incarnation } = {}) {
+    const id = botIdOf(botId);
+    const expectedIncarnation = incarnation === undefined ? this.incarnationFor(id) : incarnation;
+    const config = validateContextEnhancementConfig(value);
+    return this.#enqueue(id, async () => {
+      if (!this.has(id) || expectedIncarnation !== this.incarnationFor(id)) {
+        const error = new Error('找不到要修改的机器人。');
+        error.code = 'workspace-bot-not-found';
+        throw error;
+      }
+      const next = { ...this.#contextEnhancement, [id]: config };
+      // Messages keep the previous committed snapshot until rename succeeds.
+      await this.#persist(next);
+      this.#contextEnhancement = next;
+      return config;
     });
   }
 
@@ -408,6 +451,14 @@ export class BotWorkspaceStore {
     });
   }
 
+  /** A failed retirement must reach disk before the same config ID can be rebound. */
+  flushPendingRemoval(botId) {
+    if (!this.#dirtyRemovals.has(botId)) return undefined;
+    return this.#enqueue(botId, async () => {
+      if (this.#dirtyRemovals.has(botId)) await this.#persistCurrentDocument();
+    });
+  }
+
   async remove(botId) {
     const result = await this.retireAfterConfigCommit(botId);
     if (result.error) throw result.error;
@@ -419,6 +470,7 @@ export class BotWorkspaceStore {
     const candidates = new Set([
       ...Object.keys(this.#workspaces),
       ...Object.keys(this.#agentPresets),
+      ...Object.keys(this.#contextEnhancement),
       ...this.#dirtyRemovals,
     ]);
     for (const botId of candidates) {
@@ -435,6 +487,7 @@ export class BotWorkspaceStore {
           ...bot,
           workspace: this.workspaceFor(bot.botId),
           agentPreset: this.agentPresetFor(bot.botId),
+          contextEnhancement: this.contextEnhancementFor(bot.botId),
         }
         : bot),
     };
@@ -464,9 +517,11 @@ export class BotWorkspaceStore {
   async #retireCurrentIncarnation(id) {
     const hadWorkspace = Object.hasOwn(this.#workspaces, id);
     const hadPreset = Object.hasOwn(this.#agentPresets, id);
-    const needsCleanup = hadWorkspace || hadPreset || this.#dirtyRemovals.has(id);
+    const hadContextEnhancement = Object.hasOwn(this.#contextEnhancement, id);
+    const needsCleanup = hadWorkspace || hadPreset || hadContextEnhancement || this.#dirtyRemovals.has(id);
     delete this.#workspaces[id];
     delete this.#agentPresets[id];
+    delete this.#contextEnhancement[id];
     this.#generations.delete(id);
     this.#incarnations.delete(id);
     if (!needsCleanup) return {
@@ -496,10 +551,13 @@ export class BotWorkspaceStore {
     return queued;
   }
 
-  async #persist() {
+  async #persist(contextEnhancement = this.#contextEnhancement) {
     const document = { version: 1, workspaces: this.#workspaces };
     if (Object.keys(this.#agentPresets).length > 0) {
       document.agentPresets = this.#agentPresets;
+    }
+    if (Object.keys(contextEnhancement).length > 0) {
+      document.contextEnhancement = contextEnhancement;
     }
     await mkdir(dirname(this.#path), { recursive: true, mode: 0o700 });
     const temporary = `${this.#path}.tmp`;
@@ -513,7 +571,8 @@ export class BotWorkspaceStore {
 
   async #persistCurrentDocument() {
     if (Object.keys(this.#workspaces).length > 0
-      || Object.keys(this.#agentPresets).length > 0) {
+      || Object.keys(this.#agentPresets).length > 0
+      || Object.keys(this.#contextEnhancement).length > 0) {
       await this.#persist();
       return;
     }
@@ -569,10 +628,16 @@ function targetStatus(controller) {
   return Promise.resolve(controller.status());
 }
 
-/** Observe the config store's durable removal commit without changing its API. */
+/** Observe durable removals and finish failed cleanup before a same-ID config save. */
 export function observeBotWorkspaceRemovals(
   configStore,
-  { workspaces, method = 'remove', botIdFromRemoved = (removed) => removed?.botId },
+  {
+    workspaces,
+    method = 'remove',
+    botIdFromRemoved = (removed) => removed?.botId,
+    saveMethod = 'save',
+    botIdFromSave = (config) => config?.botId,
+  },
 ) {
   if (!configStore || !workspaces || typeof configStore[method] !== 'function') {
     throw new TypeError('configStore removal observer dependencies are required');
@@ -586,6 +651,12 @@ export function observeBotWorkspaceRemovals(
           const botId = removed ? botIdFromRemoved(removed, args) : null;
           if (botId) await workspaces.retireAfterConfigCommit(botId);
           return removed;
+        };
+      }
+      if (property === saveMethod && typeof value === 'function') {
+        return (...args) => {
+          const cleanup = workspaces.flushPendingRemoval(botIdFromSave(args[0], args));
+          return cleanup ? cleanup.then(() => value.apply(target, args)) : value.apply(target, args);
         };
       }
       return typeof value === 'function' ? value.bind(target) : value;
@@ -998,6 +1069,31 @@ export function createWorkspaceAwareController(controller, { workspaces, stateFo
       );
     });
   };
+  const updateContextEnhancement = (botId, value, projectStatus) => {
+    const incarnation = workspaces.incarnationFor(botId);
+    const config = validateContextEnhancementConfig(value);
+    return withBotTransition(botId, async () => {
+      const snapshot = await controller.status();
+      if (!snapshot?.bots?.some((bot) => bot?.botId === botId)) {
+        const error = new Error('找不到要修改的机器人。');
+        error.code = 'workspace-bot-not-found';
+        throw error;
+      }
+      const catalog = await resolveAgentPresetCatalog(agentPresetCatalog);
+      const decorated = workspaces.decorateStatus(snapshot);
+      const updated = {
+        ...decorated,
+        bots: decorated.bots.map((bot) => bot?.botId === botId
+          ? { ...bot, contextEnhancement: config } : bot),
+        ...(catalog ? { agentPresetCatalog: catalog } : {}),
+      };
+      // QR/status projection can fail too. Prepare the complete response before
+      // commit so a failed save never publishes new running settings.
+      const result = projectStatus ? await projectStatus(updated) : updated;
+      await workspaces.setContextEnhancement(botId, config, { incarnation });
+      return result;
+    });
+  };
   const deleteWithWorkspace = (botId, invokeDelete) => withBotTransition(botId, async () => {
     // Fence the old runtime without changing the durable mapping. A crash
     // before the controller removes its config therefore keeps the bot's
@@ -1037,6 +1133,7 @@ export function createWorkspaceAwareController(controller, { workspaces, stateFo
     get(target, property) {
       if (property === 'updateWorkspace') return updateWorkspace;
       if (property === 'updateAgentPreset') return updateAgentPreset;
+      if (property === 'updateContextEnhancement') return updateContextEnhancement;
       const value = Reflect.get(target, property, target);
       if (typeof value !== 'function') return value;
       if (property === 'deleteBot') {

@@ -3,6 +3,7 @@ import { randomInt } from 'node:crypto';
 import { createEditableMessageStream, splitMessageText } from '../shared/editable-message-stream.mjs';
 import { createTextDeliveryBlock } from '../shared/semantic/delivery.mjs';
 import { t } from '../shared/i18n.mjs';
+import { captureContextEnhancement } from '../shared/context-enhancement.mjs';
 import { COMMANDS_MENU_BUTTON, TelegramApi } from './telegram-api.mjs';
 import { createTelegramBridgeStatus, TelegramHarnessBridge } from './telegram-bridge.mjs';
 import {
@@ -159,6 +160,11 @@ export function normalizeTelegramUpdate(update, {
   return {
     messageId: String(update.update_id),
     senderId: String(senderId),
+    contextSource: () => ({
+      senderName: [message.from?.first_name, message.from?.last_name]
+        .filter((value) => typeof value === 'string' && value.trim())
+        .map((value) => value.trim()).join(' ') || message.from?.username,
+    }),
     senderIsBot: message.from?.is_bot === true,
     kind: direct ? 'direct' : 'group',
     conversationId: messageThreadId === undefined
@@ -659,6 +665,7 @@ export class TelegramRuntime {
   #token;
   #harness;
   #state;
+  #contextEnhancement;
   #logger;
   #replyTimeoutMs;
   #createApi;
@@ -676,6 +683,7 @@ export class TelegramRuntime {
     token,
     harness,
     state,
+    contextEnhancement,
     logger = console,
     replyTimeoutMs = 600_000,
     createApi = (options) => new TelegramApi(options),
@@ -687,6 +695,7 @@ export class TelegramRuntime {
     this.#token = token;
     this.#harness = harness;
     this.#state = state;
+    this.#contextEnhancement = contextEnhancement;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#createApi = createApi;
@@ -758,6 +767,7 @@ export class TelegramRuntime {
         bot: client,
         harness: this.#harness,
         state: this.#state,
+        contextEnhancement: this.#contextEnhancement,
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
@@ -798,7 +808,19 @@ export class TelegramRuntime {
     while (!signal.aborted) {
       const updates = await this.#api.getUpdates({ offset: cursor, timeout: 25, signal });
       this.#status.lastCheckedAt = Date.now();
-      for (const update of updates) {
+      if (signal.aborted) return;
+      // All updates have arrived together; cursor persistence must not move the
+      // settings boundary for the later messages in this received batch.
+      const received = updates.map((update) => {
+        const chatType = update?.message?.chat?.type;
+        return {
+          update,
+          contextSnapshot: captureContextEnhancement(this.#contextEnhancement,
+            chatType === 'private' ? 'direct'
+              : chatType === 'group' || chatType === 'supergroup' ? 'group' : null),
+        };
+      });
+      for (const { update, contextSnapshot } of received) {
         if (signal.aborted) return;
         const message = normalizeTelegramUpdate(update, {
           botId: this.#config.platformId,
@@ -810,7 +832,7 @@ export class TelegramRuntime {
           accessMode: this.#accessMode,
           allowedPrivateUserIds: this.#allowedPrivateUserIds,
         })) {
-          void this.#bridge.accept(message).catch((error) => {
+          void this.#bridge.accept(message, { contextSnapshot }).catch((error) => {
             if (signal.aborted) return;
             this.#logger.error?.(
               `[dsh-im:telegram] bot ${this.#config.botId} message handling failed:`,

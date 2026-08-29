@@ -1,4 +1,5 @@
 import { t } from './i18n.mjs';
+import { captureContextEnhancement, enhanceContextContent } from './context-enhancement.mjs';
 import { runWorkspaceCommand } from './workspace-command.mjs';
 import { runCompactCommand } from './compact-command.mjs';
 import { isHistoryCommand, runHistoryCommand } from './history-command.mjs';
@@ -127,6 +128,7 @@ export class TextHarnessBridge {
   #bot;
   #harness;
   #state;
+  #contextEnhancement;
   #status;
   #logger;
   #replyTimeoutMs;
@@ -134,7 +136,8 @@ export class TextHarnessBridge {
   #queues = new Map();
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
-  #acceptedMessageIds = new Set();
+  // Keep the accepted configuration through the existing queue/reply lifecycle.
+  #acceptedMessageIds = new Map();
   #approvalTasks = new Set();
   #commandTasks = new Set();
   #approvals;
@@ -145,6 +148,7 @@ export class TextHarnessBridge {
     bot,
     harness,
     state,
+    contextEnhancement,
     status = createTextBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
@@ -157,6 +161,7 @@ export class TextHarnessBridge {
     this.#bot = bot;
     this.#harness = harness;
     this.#state = state;
+    this.#contextEnhancement = contextEnhancement;
     this.#status = status;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
@@ -171,7 +176,7 @@ export class TextHarnessBridge {
     return structuredClone(this.#status);
   }
 
-  accept(message) {
+  accept(message, { contextSnapshot } = {}) {
     if (this.#signal?.aborted) return Promise.resolve();
     const conversationId = cleanText(message?.conversationId);
     const kind = message?.kind === 'group' ? 'group' : 'direct';
@@ -182,7 +187,9 @@ export class TextHarnessBridge {
       || this.#state.hasSeen(messageId) || this.#acceptedMessageIds.has(messageId)) {
       return Promise.resolve();
     }
-    this.#acceptedMessageIds.add(messageId);
+    this.#acceptedMessageIds.set(messageId, contextSnapshot === undefined
+      ? captureContextEnhancement(this.#contextEnhancement, message?.kind)
+      : contextSnapshot);
     const statusReaction = beginStatusReaction({
       adapter: this.#bot,
       target: normalized.kind === 'direct' || normalized.addressed === true
@@ -614,9 +621,17 @@ export class TextHarnessBridge {
           );
         }
       }
-      const content = hasImages
+      let content = hasImages
         ? await promptContentForMessage(message, { signal: this.#signal })
         : undefined;
+      const snapshot = this.#acceptedMessageIds.get(messageId);
+      if (snapshot) {
+        content = enhanceContextContent(content ?? text, snapshot, () => ({
+          channel: this.#descriptor.key,
+          senderId,
+          senderName: message.contextSource?.()?.senderName,
+        }));
+      }
       const { answer, artifacts = [] } = await askInWorkspaceSession({
         harness: this.#harness,
         state: this.#state,

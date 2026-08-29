@@ -4,6 +4,7 @@ import { CredentialActionIcon, CredentialBindingPanel } from '../../credential-b
 import { h } from '../../i18n.js';
 import { installDingtalkStyles } from '../dingtalk/styles.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
+import { ContextEnhancementEditor } from '../../context-enhancement.js';
 import {
   AgentPresetCatalogContext,
   AgentPresetEditor,
@@ -73,7 +74,7 @@ export function createTokenChannelSettings(definition) {
     accountSettingsEndpoint = null,
   } = definition;
 
-  function AccountCard({ account, busy, testNotice, removing, onReconnect, onWorkspaceSave, onAgentPresetSave, onAccountSettingsSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
+  function AccountCard({ account, busy, testNotice, removing, onReconnect, onWorkspaceSave, onAgentPresetSave, onContextEnhancementSave, onAccountSettingsSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
     const state = busy === 'reconnect' ? 'connecting' : account.state;
     const tone = account.connected ? 'success' : state === 'error' ? 'error' : 'warning';
     const stateLabel = account.connected ? '运行正常' : state === 'connecting' ? '正在连接' : '连接未就绪';
@@ -104,6 +105,11 @@ export function createTokenChannelSettings(definition) {
           agentPreset: account.agentPreset,
           disabled: Boolean(busy),
           onSave: onAgentPresetSave,
+        }),
+        h(ContextEnhancementEditor, {
+          config: account.contextEnhancement,
+          disabled: Boolean(busy),
+          onSave: onContextEnhancementSave,
         }),
         AccountSettings ? h(AccountSettings, {
           account,
@@ -308,6 +314,12 @@ export function createTokenChannelSettings(definition) {
                 'preset',
                 endpoints.setAgentPreset,
                 { botId: account.botId, agentPreset },
+              ),
+              onContextEnhancementSave: (config) => botAction(
+                account,
+                'context-enhancement',
+                endpoints.setContextEnhancement,
+                { botId: account.botId, config },
               ),
               onAccountSettingsSave: AccountSettings && accountSettingsEndpoint
                 ? (payload) => botAction(

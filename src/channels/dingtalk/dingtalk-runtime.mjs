@@ -5,6 +5,7 @@ import {
 } from './dingtalk-bridge.mjs';
 import { sendRememberedConnectionTest } from '../shared/connection-test.mjs';
 import { t } from '../shared/i18n.mjs';
+import { captureContextEnhancement } from '../shared/context-enhancement.mjs';
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -128,6 +129,7 @@ export class DingtalkRuntime {
   #clientSecret;
   #harness;
   #state;
+  #contextEnhancement;
   #logger;
   #replyTimeoutMs;
   #maxMessageChars;
@@ -149,6 +151,7 @@ export class DingtalkRuntime {
     clientSecret,
     harness,
     state,
+    contextEnhancement,
     logger = console,
     replyTimeoutMs = 600_000,
     maxMessageChars = 4_000,
@@ -166,6 +169,7 @@ export class DingtalkRuntime {
     this.#clientSecret = clientSecret.trim();
     this.#harness = harness;
     this.#state = state;
+    this.#contextEnhancement = contextEnhancement;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#maxMessageChars = maxMessageChars;
@@ -233,6 +237,7 @@ export class DingtalkRuntime {
         approvedSenders: this.#config.approvedSenders,
         harness: this.#harness,
         state: this.#state,
+        contextEnhancement: this.#contextEnhancement,
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
@@ -268,6 +273,15 @@ export class DingtalkRuntime {
           }
         }
 
+        // Retain the committed, read-only settings at receipt without moving
+        // JSON parsing out of the existing asynchronous callback path.
+        const contextEnhancement = this.#contextEnhancement;
+        let receivedSettings;
+        try {
+          receivedSettings = contextEnhancement?.getSettings?.();
+        } catch {
+          // Optional settings failures leave the original message path active.
+        }
         const task = Promise.resolve().then(async () => {
           if (this.#bridge !== bridge) return;
           let message;
@@ -282,7 +296,12 @@ export class DingtalkRuntime {
           }
           if (!message || typeof message !== 'object') return;
           this.#status.lastCallbackAt = Date.now();
-          await bridge.accept(message);
+          const contextSnapshot = captureContextEnhancement({
+            getSettings: () => receivedSettings,
+            get botId() { return contextEnhancement?.botId; },
+          }, message.conversationType === '1' || message.conversationType === 1 ? 'direct'
+            : message.conversationType === '2' || message.conversationType === 2 ? 'group' : null);
+          await bridge.accept(message, { contextSnapshot });
         }).catch(() => {
           if (signal.aborted || this.#bridge !== bridge) return;
           this.#status.lastError = t('钉钉消息处理失败。');

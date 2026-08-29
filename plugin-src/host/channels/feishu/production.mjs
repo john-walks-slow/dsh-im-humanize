@@ -98,6 +98,8 @@ export async function createProductionController(ctx, config = {}, internals = {
         workspaces,
         method: 'removeBot',
         botIdFromRemoved: (removed) => removed.id,
+        saveMethod: 'saveBot',
+        botIdFromSave: (bot) => bot?.id,
       })
     : configStore;
   // State is lazy per bot. A corrupt legacy file can therefore fail only the
@@ -167,6 +169,7 @@ export async function createProductionController(ctx, config = {}, internals = {
         ownerOpenIds: botConfig.ownerOpenIds ?? [botConfig.ownerOpenId],
         harness: workspaceScope.harness,
         state: workspaceScope.state,
+        contextEnhancement: { botId: id, getSettings: () => workspaces.contextEnhancementFor(id) },
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
         ...(wsAgent ? { wsAgent } : {}),
         logger: {

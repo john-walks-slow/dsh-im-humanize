@@ -109,6 +109,7 @@ export async function createProductionController(ctx, config = {}, internals = {
         clientSecret,
         harness: workspaceScope.harness,
         state: workspaceScope.state,
+        contextEnhancement: { botId, getSettings: () => workspaces.contextEnhancementFor(botId) },
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
         maxMessageChars: config.maxMessageChars ?? 4_000,
         connectTimeoutMs: config.connectTimeoutMs ?? 15_000,
