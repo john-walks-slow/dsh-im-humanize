@@ -6,10 +6,20 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-08-29
+
 ### Added / 新增
+
+- 九个 IM 渠道的机器人设置新增可选“上下文增强”，可分别控制群聊与私聊，把勾选的渠道、会话类型、发送者和机器人来源字段连同自定义引导附加到普通用户消息；默认关闭、不额外查询平台资料，微信当前仅支持私聊。
+  Added optional context enhancement to bot settings across all nine IM channels. It can independently target group and direct chats and attach selected channel, conversation, sender, and bot source fields plus custom guidance to ordinary user messages. It is off by default, performs no extra profile queries, and currently supports direct chats only on Weixin.
 
 - 更新窗口新增手工更新命令及一键复制，页面更新失败时可在相同 Harness / Desktop 环境中通过 npm 更新；复制受限时可选中文本手动复制，安装完成后仍需手动重启。
   Added a manual npm update command and copy button to the update dialog for use in the same Harness / Desktop environment when the in-page update fails. The command remains selectable if clipboard access fails, and installation still requires a manual restart.
+
+### Fixed / 修复
+
+- 钉钉群聊的流式回复现在会在进度、完成和清理阶段保留对发送者的原生提及，无需额外发送提醒消息；私聊与批量回复失败处理保持原有行为。
+  DingTalk streamed group replies now preserve the native mention of the sender across progress, completion, and cleanup without sending a separate reminder; direct chats and batch-reply failure handling retain their existing behavior.
 
 ## [3.1.1] - 2026-08-28
 
@@ -451,7 +461,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.1.1...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/xmanrui/dsh-im/compare/v3.1.1...v3.2.0
 [3.1.1]: https://github.com/xmanrui/dsh-im/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/xmanrui/dsh-im/compare/v3.0.8...v3.1.0
 [3.0.8]: https://github.com/xmanrui/dsh-im/compare/v3.0.7...v3.0.8
