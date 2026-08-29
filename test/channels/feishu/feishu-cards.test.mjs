@@ -67,6 +67,8 @@ test('menu exposes the increased command set and keeps permission completion num
 test('menu and card help advertise Agent Preset, reasoning, and batch commands', () => {
   const help = menuHelpText();
   assert.match(help, /\/presetlist/);
+  assert.match(help, /\/presets/);
+  assert.match(help, /\/sessions/);
   assert.match(help, /\/preset \[序号或完整ID\]/);
   assert.match(help, /\/preset id:<ID>/);
   assert.match(help, /\/preset --default/);
@@ -79,6 +81,8 @@ test('menu and card help advertise Agent Preset, reasoning, and batch commands',
   assert.match(help, /\/version/);
 
   const card = helpCard();
+  assert.match(card, /\/presets/);
+  assert.match(card, /\/sessions/);
   assert.match(card, /\/reasoninglist/);
   assert.match(card, /\/reasonings/);
   assert.match(card, /\/reasoning \[序号、等级ID或 --default\]/);

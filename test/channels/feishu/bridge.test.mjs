@@ -3768,7 +3768,7 @@ test('preset card selection does not expose internal update errors', async () =>
 
 function cards(messages) { return messages.filter((m) => m.msgType === 'interactive'); }
 
-test('session list paginates by page number across 25 sessions', async () => {
+test('/sessions alias uses the interactive session list and paginates across 25 sessions', async () => {
   const fixture = stateFixture();
   const sent = [];
   const bridge = new FeishuHarnessBridge({
@@ -3782,7 +3782,7 @@ test('session list paginates by page number across 25 sessions', async () => {
     allowedSenderOpenIds: new Set(['ou_owner']),
   });
 
-  await bridge.accept(event('sessions-open', '/sessionlist', { senderOpenId: 'ou_owner' }));
+  await bridge.accept(event('sessions-open', ' /SESSIONS ', { senderOpenId: 'ou_owner' }));
   await bridge.waitForIdle();
   assert.equal(cards(sent).length, 1);
   const page0 = cards(sent).at(-1).content;
@@ -3870,7 +3870,7 @@ test('session pagination preserves an explicitly selected workspace', async () =
     allowedSenderOpenIds: new Set(['ou_owner']),
   });
 
-  await bridge.accept(event('selected-workspace-open', '/sessionlist 2', { senderOpenId: 'ou_owner' }));
+  await bridge.accept(event('selected-workspace-open', '/sessions 2', { senderOpenId: 'ou_owner' }));
   await bridge.waitForIdle();
   assert.equal(useActionsFromCard(cards(sent).at(-1).content)[0], 'selected-01');
 
