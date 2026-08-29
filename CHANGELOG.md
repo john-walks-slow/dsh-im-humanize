@@ -6,6 +6,13 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-08-30
+
+### Fixed / 修复
+
+- 新版 DSH 中，机器人卡片的工作区目录选择器现在使用 `uiWorkspace` 目录服务，不再调用已从 Workspace Controller 移除的 `workspaces.listDirectory` / `pickDirectory`；旧版 Host 仍保留原接口回退。
+  On current DSH releases, the bot-card workspace picker now uses the `uiWorkspace` directory service instead of the removed Workspace Controller `workspaces.listDirectory` / `pickDirectory` methods, while retaining the legacy Host fallback.
+
 ## [4.0.0] - 2026-08-29
 
 ### Fixed / 修复
@@ -468,7 +475,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.0.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.0.1...HEAD
+[4.0.1]: https://github.com/xmanrui/dsh-im/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/xmanrui/dsh-im/compare/v3.2.0...v4.0.0
 [3.2.0]: https://github.com/xmanrui/dsh-im/compare/v3.1.1...v3.2.0
 [3.1.1]: https://github.com/xmanrui/dsh-im/compare/v3.1.0...v3.1.1

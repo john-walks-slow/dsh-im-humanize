@@ -792,6 +792,71 @@ test('client registers one top-level bilingual IM settings section with a direct
   }
 });
 
+test('client directory picker uses the current DSH uiWorkspace service', async () => {
+  const registrations = [];
+  const directoryCalls = [];
+  let uiWorkspace;
+  const ctx = {
+    effect() {},
+    get(name) {
+      assert.equal(name, 'uiWorkspace');
+      return uiWorkspace;
+    },
+    locale: {
+      bind: () => (key) => key,
+      register: () => () => {},
+    },
+    connection: { rpc: { call: async () => ({ ok: true, value: {} }) } },
+    workspaces: {
+      list: {
+        getSnapshot: () => ({ items: [] }),
+        subscribe: () => () => {},
+      },
+    },
+    slots: {
+      inject(name, install) {
+        assert.equal(name, 'settings.section');
+        install();
+      },
+      register(options, component) {
+        registrations.push({ options, component });
+        return () => {};
+      },
+    },
+  };
+
+  try {
+    applyClient(ctx);
+    uiWorkspace = {
+      async listDirectory(path, signal) {
+        directoryCalls.push({ operation: 'list', path, signal });
+        return { path, entries: [] };
+      },
+      async pickDirectory() {
+        directoryCalls.push({ operation: 'pick' });
+        return '/workspace/current-host';
+      },
+    };
+
+    const injected = registrations[0].options.inject();
+    const signal = new AbortController().signal;
+    assert.deepEqual(
+      await injected.workspaceDirectoryPicker.listDirectory('/workspace/current', signal),
+      { path: '/workspace/current', entries: [] },
+    );
+    assert.equal(
+      await injected.workspaceDirectoryPicker.pickDirectory(),
+      '/workspace/current-host',
+    );
+    assert.deepEqual(directoryCalls, [
+      { operation: 'list', path: '/workspace/current', signal },
+      { operation: 'pick' },
+    ]);
+  } finally {
+    setImTranslator(null);
+  }
+});
+
 test('all nine channel settings and connected cards render English copy', () => {
   const rpcCall = async () => ({ ok: true, value: {} });
   const noop = () => {};

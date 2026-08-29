@@ -55,6 +55,16 @@ export const name = 'im-settings';
 export const inject = ['slots', 'connection', 'locale', 'workspaces'];
 export const IM_PLUGIN_VERSION = manifest.version;
 
+function callWorkspaceDirectoryApi(ctx, method, ...args) {
+  // Current DSH owns directory operations on uiWorkspace; legacy Hosts keep them on workspaces.
+  const uiWorkspace = typeof ctx.get === 'function' ? ctx.get('uiWorkspace') : undefined;
+  const service = typeof uiWorkspace?.[method] === 'function' ? uiWorkspace : ctx.workspaces;
+  if (typeof service?.[method] !== 'function') {
+    throw new Error('无法读取目录，请重试。');
+  }
+  return service[method](...args);
+}
+
 const CHANNELS = Object.freeze([
   { id: 'weixin', label: '微信' },
   { id: 'feishu', label: '飞书' },
@@ -335,8 +345,9 @@ export function apply(ctx) {
   const updateRpcCall = (endpoint, payload, signal) =>
     ctx.connection.rpc.call(UPDATE_RPC_CHANNEL, endpoint, payload, signal);
   const workspaceDirectoryPicker = Object.freeze({
-    listDirectory: (path, signal) => ctx.workspaces.listDirectory(path, signal),
-    pickDirectory: () => ctx.workspaces.pickDirectory(),
+    listDirectory: (path, signal) =>
+      callWorkspaceDirectoryApi(ctx, 'listDirectory', path, signal),
+    pickDirectory: () => callWorkspaceDirectoryApi(ctx, 'pickDirectory'),
   });
 
   ctx.slots.inject('settings.section', () => ctx.slots.register({
