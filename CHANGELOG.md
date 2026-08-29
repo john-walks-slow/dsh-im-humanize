@@ -6,6 +6,13 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-08-29
+
+### Fixed / 修复
+
+- 本机 `dsh web` 与 DSH Desktop 现在同时兼容旧版和当前版 Host：旧版继续复用内部 `apiProxy`，当前版自动适配 Typert Gateway、Session Controller 与 Workspace Controller；两者都无需回环 HTTP 地址，并继续隔离不同 Host 的会话、审批与问题交互。显式 `harnessBaseUrl` 仅保留给旧版远程 HTTP/WebSocket Harness。
+  Local `dsh web` and DSH Desktop now support both legacy and current Hosts. Legacy releases continue to reuse the internal `apiProxy`, while current releases automatically adapt the Typert Gateway plus Session and Workspace controllers. Neither requires a loopback HTTP address, and Sessions, approvals, and questions remain isolated between Hosts. Explicit `harnessBaseUrl` is retained only for legacy remote HTTP/WebSocket Harness endpoints.
+
 ## [3.2.0] - 2026-08-29
 
 ### Added / 新增
@@ -461,7 +468,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/xmanrui/dsh-im/compare/v3.2.0...v4.0.0
 [3.2.0]: https://github.com/xmanrui/dsh-im/compare/v3.1.1...v3.2.0
 [3.1.1]: https://github.com/xmanrui/dsh-im/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/xmanrui/dsh-im/compare/v3.0.8...v3.1.0
