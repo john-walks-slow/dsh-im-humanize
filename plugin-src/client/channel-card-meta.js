@@ -30,7 +30,7 @@ export function BotSettingsButton({ channel, botId, botName, connected }) {
       type: 'button',
       className: 'dim-botSettingsButton',
       'data-delivery-channel': channel,
-      'aria-label': '机器人设置',
+      'aria-label': '更多机器人设置',
       'aria-describedby': tooltipId,
       onClick: () => openBotSettings?.({
         channel,
@@ -43,7 +43,7 @@ export function BotSettingsButton({ channel, botId, botName, connected }) {
       id: tooltipId,
       className: 'dim-botSettingsTooltip',
       role: 'tooltip',
-    }, '机器人设置'));
+    }, '更多机器人设置'));
 }
 
 function messageErrorTime(value) {

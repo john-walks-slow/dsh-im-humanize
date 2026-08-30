@@ -121,10 +121,10 @@ test('all nine robot cards add one accessible settings gear beside existing cont
 
   for (const [channel, Card, props] of cards) {
     const markup = renderToStaticMarkup(React.createElement(Card, props));
-    assert.equal((markup.match(/aria-label="机器人设置"/g) ?? []).length, 1);
+    assert.equal((markup.match(/aria-label="更多机器人设置"/g) ?? []).length, 1);
     assert.match(markup, /class="dim-botCardTools"/);
     assert.match(markup, new RegExp(`data-delivery-channel="${channel}"`));
-    assert.match(markup, /role="tooltip"[^>]*>机器人设置</);
+    assert.match(markup, /role="tooltip"[^>]*>更多机器人设置</);
   }
 });
 
@@ -177,14 +177,23 @@ test('the card gear opens a bot-scoped page in the current channel panel and ret
 
   const card = renderer.root.findByProps({ 'data-bot-id': 'wx_stable_bot' });
   await act(async () => {
-    card.findByProps({ 'aria-label': '机器人设置' }).props.onClick();
+    card.findByProps({ 'aria-label': '更多机器人设置' }).props.onClick();
     await flush();
   });
   const page = renderer.root.findByProps({ className: 'dim-deliveryPage' });
   assert.match(textOf(page), /微信通知助手/);
+  assert.doesNotMatch(textOf(page), /调用标识/);
   assert.equal(
     page.findByProps({ className: 'dim-deliveryHeader' }).findAllByType('span').length,
     2,
+  );
+  assert.equal(
+    page.findByProps({ className: 'dim-deliveryHeader' }).findAllByType('h2').length,
+    0,
+  );
+  assert.equal(
+    textOf(page.findByProps({ className: 'dim-deliveryIdentity' }).findByType('h2')),
+    '微信通知助手',
   );
   const docsLink = page.findByProps({ className: 'dim-deliveryDocsLink' });
   assert.equal(textOf(docsLink), '使用文档↗');

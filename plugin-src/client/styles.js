@@ -367,7 +367,6 @@ const CSS = String.raw`
 .dim-deliveryPage { min-width: 0; display: grid; gap: 14px; }
 .dim-deliveryHeader { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .dim-deliveryHeaderMeta { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 10px; text-align: right; }
-.dim-deliveryHeader h2 { min-width: 0; overflow: hidden; margin: 0; font-size: 18px; line-height: 24px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }
 .dim-deliveryDocsLink { min-height: 30px; flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 5px 8px; border-radius: 7px; color: var(--dsw-alias-state-business-primary, #3370ff); font-size: 12px; line-height: 18px; text-decoration: none; white-space: nowrap; }
 .dim-deliveryDocsLink:hover { background: color-mix(in srgb, var(--dsw-alias-state-business-primary, #3370ff) 8%, transparent); }
 .dim-deliveryDocsLink:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #3370ff); outline-offset: 2px; }
@@ -379,7 +378,7 @@ const CSS = String.raw`
 .dim-deliveryButton[data-kind="danger"] { color: var(--dsw-alias-state-error-primary, #d54941); }
 .dim-deliveryBack { flex: none; border-color: transparent; background: transparent; }
 .dim-deliveryIdentity, .dim-deliveryTargets { min-width: 0; padding: 16px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 12px; background: var(--dsw-alias-bg-layer-3, #fff); }
-.dim-deliveryIdentity > div:first-child h3, .dim-deliverySectionHeading h3 { margin: 0; font-size: 15px; line-height: 22px; font-weight: 650; }
+.dim-deliveryBotName, .dim-deliverySectionHeading h3 { min-width: 0; overflow: hidden; margin: 0; font-size: 15px; line-height: 22px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .dim-deliveryIdentity > div:first-child p, .dim-deliverySectionHeading p { margin: 2px 0 0; color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; line-height: 18px; }
 .dim-deliveryBotId { min-width: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; align-items: center; gap: 10px; margin-top: 12px; padding: 10px 12px; border-radius: 9px; background: var(--dsw-alias-bg-module-platform, #f7f8fa); }
 .dim-deliveryBotId > span { color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; }
