@@ -11,6 +11,18 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 飞书机器人启动时调用 `app_slash_commands` OpenAPI，把常用命令注册为原生 Slash Command，使飞书单聊输入框输入 `/` 弹出命令面板；命令清单由 dsh-im 持有并推送注册，不依赖 dsh/Harness 后端。需要应用开通 `application:app_slash_command:read` / `write` 并发布版本，注册失败不影响消息收发。
   On startup the Feishu bot registers its common commands as native Slash Commands via the `app_slash_commands` OpenAPI, so the `/` panel appears in Feishu direct-message input. The command list is owned and pushed by dsh-im and does not depend on the dsh/Harness backend. Requires the app to grant `application:app_slash_command:read` / `write` and publish a version; registration failure does not affect messaging.
 
+## [4.1.1] - 2026-08-31
+
+### Fixed / 修复
+
+- QQ 扫码绑定的机器人现在会响应群内任意成员对机器人的 @ 消息，同时继续只接受扫码者的私聊；群聊仍不会响应未 @ 机器人的普通消息。
+  QQ bots connected by QR code now respond when any group member mentions the bot, while private chats remain restricted to the scanner. Ordinary group messages without a mention remain ignored.
+
+### Documentation / 文档
+
+- 中英文 README 新增上下文增强界面截图和企业微信群入口，方便查看设置效果并加入用户社区。
+  Added context-enhancement screenshots and the WeCom community-group entry to the Chinese and English READMEs, making the settings easier to preview and the user community easier to join.
+
 ## [4.1.0] - 2026-08-30
 
 ### Added / 新增
@@ -493,7 +505,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.1.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.1.1...HEAD
+[4.1.1]: https://github.com/xmanrui/dsh-im/compare/v4.1.0...v4.1.1
 [4.1.0]: https://github.com/xmanrui/dsh-im/compare/v4.0.1...v4.1.0
 [4.0.1]: https://github.com/xmanrui/dsh-im/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/xmanrui/dsh-im/compare/v3.2.0...v4.0.0

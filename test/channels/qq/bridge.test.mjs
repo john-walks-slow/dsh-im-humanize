@@ -789,6 +789,7 @@ test('QQ remembers any authorized private inbound as a connection-test target', 
   await bridge.accept(message({
     kind: 'group',
     rawEventType: 'GROUP_AT_MESSAGE_CREATE',
+    senderId: 'group-member-openid',
     groupOpenid: 'group-1',
     messageId: 'help-group',
     content: '/help',
@@ -1089,8 +1090,8 @@ test('QQ keeps a stopped turn terminal when its notice cannot be sent', async ()
   assert.equal(fixture.seen.has('qq-stopped-stream-fallback'), true);
 });
 
-test('QQ bridge accepts only the scanner and requires an at-message event in groups', async () => {
-  let asks = 0;
+test('QQ bridge keeps private chats scanner-only and accepts any mentioned group member', async () => {
+  const asks = [];
   const state = {
     hasSeen: () => false,
     markSeen: async () => {},
@@ -1102,15 +1103,31 @@ test('QQ bridge accepts only the scanner and requires an at-message event in gro
   const bridge = new QqHarnessBridge({
     bot: { sendText: async () => {} },
     ownerUserOpenid: 'owner-openid',
-    harness: { sessionExists: async () => true, ask: async () => { asks += 1; return 'ok'; } },
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, text) => { asks.push({ sessionId, text }); return 'ok'; },
+    },
     state,
   });
   await bridge.accept(message({ messageId: 'other', senderId: 'other-openid' }));
   await bridge.accept(message({
-    messageId: 'group', kind: 'group', groupOpenid: 'group-1', rawEventType: 'GROUP_MESSAGE_CREATE',
-    replyTarget: { scope: 'group', targetId: 'group-1', msgId: 'group' },
+    messageId: 'group-unmentioned',
+    kind: 'group',
+    senderId: 'other-member-openid',
+    groupOpenid: 'group-1',
+    rawEventType: 'GROUP_MESSAGE_CREATE',
+    replyTarget: { scope: 'group', targetId: 'group-1', msgId: 'group-unmentioned' },
   }));
-  assert.equal(asks, 0);
+  await bridge.accept(message({
+    messageId: 'group-mentioned',
+    kind: 'group',
+    senderId: 'other-member-openid',
+    groupOpenid: 'group-1',
+    rawEventType: 'GROUP_AT_MESSAGE_CREATE',
+    content: '群成员的问题',
+    replyTarget: { scope: 'group', targetId: 'group-1', msgId: 'group-mentioned' },
+  }));
+  assert.deepEqual(asks, [{ sessionId: 'session', text: '群成员的问题' }]);
   assert.equal(bridge.status.messagesRejected, 1);
 });
 

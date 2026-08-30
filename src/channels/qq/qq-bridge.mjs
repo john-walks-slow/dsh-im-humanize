@@ -109,6 +109,15 @@ function conversationKey(message) {
   return `${message.kind}:${message.kind === 'group' ? message.groupOpenid : message.senderId}`;
 }
 
+function senderAllowed(message, ownerUserOpenid) {
+  // QR binding yields a C2C user_openid, while group events identify senders
+  // with a group-scoped member_openid. Treat group membership plus @mention as
+  // the access boundary, and keep the scanner restriction for private chats.
+  return message?.kind === 'group'
+    || ownerUserOpenid === '*'
+    || message?.senderId === ownerUserOpenid;
+}
+
 function safeText(message) {
   return typeof message?.content === 'string' ? message.content.trim() : '';
 }
@@ -442,7 +451,7 @@ export class QqHarnessBridge {
     }
     const pending = this.#pendingInteractions.get(key);
     const commandText = safeText(message);
-    const allowed = this.#ownerUserOpenid === '*' || sender === this.#ownerUserOpenid;
+    const allowed = senderAllowed(message, this.#ownerUserOpenid);
     const addressed = message.kind !== 'group'
       || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE';
     const batchCommand = isBatchInputCommand(commandText);
@@ -569,7 +578,7 @@ export class QqHarnessBridge {
     alreadyRecorded = false,
     batchSubmission = null,
   } = {}) {
-    const allowed = this.#ownerUserOpenid === '*' || message.senderId === this.#ownerUserOpenid;
+    const allowed = senderAllowed(message, this.#ownerUserOpenid);
     const addressed = message.kind !== 'group'
       || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE';
     const preparedMessage = allowed && addressed
@@ -721,7 +730,7 @@ export class QqHarnessBridge {
       await this.#state.markSeen(messageId);
       messageRecorded = true;
     };
-    if (this.#ownerUserOpenid !== '*' && sender !== this.#ownerUserOpenid) {
+    if (!senderAllowed(message, this.#ownerUserOpenid)) {
       this.#status.messagesRejected += 1;
       this.#status.lastRejectedAt = new Date().toISOString();
       return;
