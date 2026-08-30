@@ -6,10 +6,17 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.1.1] - 2026-08-31
+
 ### Fixed / 修复
 
 - QQ 扫码绑定的机器人现在会响应群内任意成员对机器人的 @ 消息，同时继续只接受扫码者的私聊；群聊仍不会响应未 @ 机器人的普通消息。
   QQ bots connected by QR code now respond when any group member mentions the bot, while private chats remain restricted to the scanner. Ordinary group messages without a mention remain ignored.
+
+### Documentation / 文档
+
+- 中英文 README 新增上下文增强界面截图和企业微信群入口，方便查看设置效果并加入用户社区。
+  Added context-enhancement screenshots and the WeCom community-group entry to the Chinese and English READMEs, making the settings easier to preview and the user community easier to join.
 
 ## [4.1.0] - 2026-08-30
 
@@ -493,7 +500,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.1.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.1.1...HEAD
+[4.1.1]: https://github.com/xmanrui/dsh-im/compare/v4.1.0...v4.1.1
 [4.1.0]: https://github.com/xmanrui/dsh-im/compare/v4.0.1...v4.1.0
 [4.0.1]: https://github.com/xmanrui/dsh-im/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/xmanrui/dsh-im/compare/v3.2.0...v4.0.0
