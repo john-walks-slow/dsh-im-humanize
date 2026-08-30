@@ -1,8 +1,8 @@
 # Issue #85：Telegram 长轮询阻塞发送最小修复方案
 
-日期：2026-08-30。代码基线：v4.1.0 / `e08c3e9`。状态：待实施。
+方案日期：2026-08-30。实施基线：v4.2.0 / `02ddea0`。状态：已实施并验证（2026-08-31）。
 
-需求来源：[Issue #85](https://github.com/xmanrui/dsh-im/issues/85)。本文只定义关闭该 Issue 所需的最小改动；列出的测试均为待补测试。
+需求来源：[Issue #85](https://github.com/xmanrui/dsh-im/issues/85)。本文定义并记录关闭该 Issue 所需的最小改动及验收结果。
 
 ## 1. 决策
 
@@ -142,10 +142,10 @@ Runtime 注入配套的 `undici.fetch + undici.FormData`。其他直接构造 `T
 | `src/channels/telegram/telegram-runtime.mjs` | 创建、注入和释放 transport |
 | `plugin-src/host/build.mjs` | 外置 `undici` |
 | `scripts/verify-package.mjs` | 校验直接依赖和 bundle 外置 |
-| `test/channels/telegram/telegram-http.test.mjs` | 核心传输回归 |
-| `test/channels/telegram/telegram.test.mjs` | API 和 Runtime 最小测试 |
+| `test/channels/telegram/telegram-http.test.mjs` | 核心传输、真实 multipart 和 Runtime 资源所有权回归 |
+| `test/channels/telegram/telegram.test.mjs` | 复用现有 API、超时及 uncertain 语义测试，无需修改 |
 | `THIRD_PARTY_NOTICES.md`、`CHANGELOG.md` | 许可证和修复记录 |
-| `lib/index.js` | 通过现有构建命令生成 |
+| `lib/index.js`、`lib/client.js` | 通过现有构建命令生成 |
 
 ## 6. 最小测试集
 
@@ -198,6 +198,8 @@ npm pack
 - 现有 timeout、unknown delivery 和 `CHANNEL_DELIVERY_UNCERTAIN` 语义不变。
 - 没有新增最终消息或文件上传重试。
 - 完整构建、测试和干净发布包安装通过。
+
+实施验收记录：`npm run check` 构建成功且 1949 项测试全部通过；实际 tarball 在空临时目录安装后可导入 `lib/index.js`，并可从安装包执行本地 Telegram transport 请求；本机 DSH 重启加载新构建后，在 Telegram Runtime 长轮询运行期间向真实会话发送成功，HTTP 投递返回 200。
 
 ## 8. 后续加固
 

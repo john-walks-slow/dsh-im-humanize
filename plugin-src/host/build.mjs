@@ -15,6 +15,7 @@ const externalRuntimePackages = [
   '@wecom/aibot-node-sdk',
   'dingtalk-stream',
   'qrcode',
+  'undici',
 ];
 const external = externalRuntimePackages.flatMap((name) => [name, `${name}/*`]);
 

@@ -52,6 +52,7 @@ const required = [
   'src/channels/slack/slack-runtime.mjs',
   'src/channels/wecom/wecom-runtime.mjs',
   'src/channels/telegram/telegram-runtime.mjs',
+  'src/channels/telegram/telegram-http.mjs',
   'src/channels/discord/discord-runtime.mjs',
   'src/channels/whatsapp/whatsapp-runtime.mjs',
   'src/channels/whatsapp/whatsapp-web-session.mjs',
@@ -198,6 +199,7 @@ const directDependencies = {
   '@tencent-connect/qqbot-nodejs': '1.0.4',
   '@wecom/aibot-node-sdk': '1.0.7',
   qrcode: '1.5.4',
+  undici: '7.29.0',
 };
 for (const [name, version] of Object.entries(directDependencies)) {
   if (manifest.dependencies?.[name] !== version) {
@@ -225,6 +227,9 @@ if (manifest.bin?.['dsh-im'] !== 'bin/dsh-im.mjs') {
 }
 if (/(?:from\s*|import\s*\(|require\s*\()\s*["'](?:@larksuiteoapi\/node-sdk|@whiskeysockets\/baileys|https-proxy-agent|protobufjs)(?:\/[^"']*)?["']/.test(host)) {
   throw new Error('host bundle must not import a bundled SDK, proxy agent, or protobufjs at runtime');
+}
+if (!/(?:from\s*|import\s*\()\s*["']undici["']/.test(host)) {
+  throw new Error('host bundle must retain undici as an external runtime dependency');
 }
 if ((executable.mode & 0o111) === 0) throw new Error('dsh-im CLI is not executable');
 if (/private-bot-token|must-be-rolled-back|DEEPSEEK_API_KEY=/.test(client + host)) {

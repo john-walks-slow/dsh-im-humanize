@@ -8,7 +8,7 @@ The WeCom QR-authorization request sequence is adapted from the official [`@weco
 
 The Host bundle includes [`@larksuiteoapi/node-sdk`](https://github.com/larksuite/node-sdk) 1.73.0, [`@whiskeysockets/baileys`](https://github.com/WhiskeySockets/Baileys) 7.0.0-rc14, [`https-proxy-agent`](https://github.com/TooTallNate/proxy-agents) 5.0.1, and their [`protobufjs`](https://github.com/protobufjs/protobuf.js) 7.6.5 runtime. The Lark SDK, Baileys, and https-proxy-agent are licensed under the MIT License. protobufjs is licensed under the BSD 3-Clause License; both license texts are reproduced below.
 
-This package depends at runtime on [`dingtalk-stream`](https://github.com/open-dingtalk/dingtalk-stream-sdk-nodejs) 2.1.4, [`@wecom/aibot-node-sdk`](https://github.com/WecomTeam/aibot-node-sdk) 1.0.7, [`@tencent-connect/qqbot-nodejs`](https://github.com/tencent-connect/qqbot) 1.0.4, and [`qrcode`](https://github.com/soldair/node-qrcode) 1.5.4. These packages are licensed under the MIT License; `dingtalk-stream` is copyright 2023 钉钉开放平台团队.
+This package depends at runtime on [`dingtalk-stream`](https://github.com/open-dingtalk/dingtalk-stream-sdk-nodejs) 2.1.4, [`@wecom/aibot-node-sdk`](https://github.com/WecomTeam/aibot-node-sdk) 1.0.7, [`@tencent-connect/qqbot-nodejs`](https://github.com/tencent-connect/qqbot) 1.0.4, [`qrcode`](https://github.com/soldair/node-qrcode) 1.5.4, and [`undici`](https://github.com/nodejs/undici) 7.29.0. These packages are licensed under the MIT License; `dingtalk-stream` is copyright 2023 钉钉开放平台团队, and Undici is copyright Matteo Collina and Undici contributors.
 
 QQ QR binding uses Tencent Connect's official [`@tencent-connect/qqbot-connector`](https://www.npmjs.com/package/@tencent-connect/qqbot-connector) 1.2.0 package as an external runtime dependency. Its npm metadata declares `UNLICENSED`; no connector source is copied into this project.
 
@@ -37,6 +37,30 @@ ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
 IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+## Undici license
+
+MIT License
+
+Copyright (c) Matteo Collina and Undici contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ## Lark Node SDK license
 

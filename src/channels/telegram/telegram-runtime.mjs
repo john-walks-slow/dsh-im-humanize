@@ -5,6 +5,7 @@ import { createTextDeliveryBlock } from '../shared/semantic/delivery.mjs';
 import { t } from '../shared/i18n.mjs';
 import { captureContextEnhancement } from '../shared/context-enhancement.mjs';
 import { COMMANDS_MENU_BUTTON, TelegramApi } from './telegram-api.mjs';
+import { createTelegramHttpTransport } from './telegram-http.mjs';
 import { createTelegramBridgeStatus, TelegramHarnessBridge } from './telegram-bridge.mjs';
 import {
   splitTelegramRegularText,
@@ -671,9 +672,11 @@ export class TelegramRuntime {
   #logger;
   #replyTimeoutMs;
   #createApi;
+  #createHttpTransport;
   #accessMode;
   #allowedPrivateUserIds;
   #status = createTelegramRuntimeStatus();
+  #httpTransport = null;
   #api = null;
   #bridge = null;
   #abortController = null;
@@ -689,6 +692,7 @@ export class TelegramRuntime {
     logger = console,
     replyTimeoutMs = 600_000,
     createApi = (options) => new TelegramApi(options),
+    createHttpTransport = createTelegramHttpTransport,
   }) {
     if (!config || !token || !harness || !state) {
       throw new TypeError('TelegramRuntime requires config, token, Harness, and state');
@@ -701,6 +705,7 @@ export class TelegramRuntime {
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#createApi = createApi;
+    this.#createHttpTransport = createHttpTransport;
     const accessPolicy = normalizeTelegramAccessPolicy(config);
     this.#accessMode = accessPolicy.accessMode;
     this.#allowedPrivateUserIds = new Set(accessPolicy.allowedUsers);
@@ -762,9 +767,15 @@ export class TelegramRuntime {
 
     const controller = new AbortController();
     this.#abortController = controller;
-    const api = this.#createApi({ token: this.#token });
-    this.#api = api;
     try {
+      const transport = this.#createHttpTransport();
+      this.#httpTransport = transport;
+      const api = this.#createApi({
+        token: this.#token,
+        fetchImpl: transport.fetchImpl,
+        FormDataImpl: transport.FormDataImpl,
+      });
+      this.#api = api;
       const bot = await api.getMe({ signal: controller.signal });
       if (String(bot?.id ?? '') !== this.#config.platformId || bot?.is_bot !== true) {
         throw new Error('Telegram token identity does not match the saved bot');
@@ -878,9 +889,11 @@ export class TelegramRuntime {
   async stop() {
     const pollTask = this.#pollTask;
     const bridge = this.#bridge;
+    const httpTransport = this.#httpTransport;
     this.#abortController?.abort();
     this.#abortController = null;
     this.#pollTask = null;
+    this.#httpTransport = null;
     this.#api = null;
     this.#bridge = null;
     await Promise.race([
@@ -891,6 +904,11 @@ export class TelegramRuntime {
       bridge?.waitForIdle() ?? Promise.resolve(),
       new Promise((resolve) => setTimeout(resolve, 2_000)),
     ]);
+    try {
+      await httpTransport?.destroy();
+    } catch {
+      this.#logger.warn?.('[dsh-im:telegram] Telegram HTTP transport cleanup failed');
+    }
     this.#status.ready = false;
     this.#status.connectionState = 'idle';
     return this.status;

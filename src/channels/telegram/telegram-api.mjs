@@ -105,19 +105,23 @@ export const COMMANDS_MENU_BUTTON = Object.freeze({ type: 'commands' });
 export class TelegramApi {
   #token;
   #fetch;
+  #FormDataImpl;
   #baseUrl;
   #fileUploadTimeoutMs;
 
   constructor({
     token,
     fetchImpl = fetch,
+    FormDataImpl = globalThis.FormData,
     baseUrl = DEFAULT_BASE_URL,
     fileUploadTimeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS,
   }) {
     if (!validTelegramToken(token)) throw new TypeError('Telegram Bot Token is invalid');
     if (typeof fetchImpl !== 'function') throw new TypeError('TelegramApi requires fetch');
+    if (typeof FormDataImpl !== 'function') throw new TypeError('TelegramApi requires FormData');
     this.#token = token.trim();
     this.#fetch = fetchImpl;
+    this.#FormDataImpl = FormDataImpl;
     this.#baseUrl = new URL(baseUrl);
     this.#fileUploadTimeoutMs = positiveTimeout(fileUploadTimeoutMs, 'fileUploadTimeoutMs');
   }
@@ -273,7 +277,7 @@ export class TelegramApi {
       || !Buffer.isBuffer(file.bytes)) {
       throw new TypeError(`A Telegram ${mediaLabel} is required`);
     }
-    const payload = new FormData();
+    const payload = new this.#FormDataImpl();
     payload.append('chat_id', String(chatId));
     payload.append(
       fieldName,

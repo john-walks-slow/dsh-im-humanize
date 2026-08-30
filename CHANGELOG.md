@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Fixed / 修复
+
+- Telegram 机器人现在为长轮询和发送请求使用同一 Runtime 私有、代理感知的有限连接池，避免全局 HTTP 连接受限时 `getUpdates` 阻塞消息发送；停止或启动失败时会显式释放连接池。
+  Telegram bots now use a private, proxy-aware bounded connection pool per Runtime for both long polling and sends, preventing `getUpdates` from blocking delivery when global HTTP connections are constrained; the pool is explicitly released on stop and failed startup.
+
 ## [4.2.0] - 2026-08-31
 
 ### Added / 新增
