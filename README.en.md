@@ -210,6 +210,8 @@ Example: send `/models`, then `/model 2` to switch to the second model in the li
 
 If the Slack desktop app has no native Slash Command registered with the same name, it intercepts messages that begin directly with `/`. Send the command with one leading space instead, for example ` /presetlist`, ` /preset 2`, ` /history`, or ` /history 10`; the plugin command layer trims surrounding whitespace, so it executes exactly like the unspaced form.
 
+**Feishu `/` command panel**: On startup the Feishu bot registers its common commands (`menu`, `new`, `help`, `status`, `compact`, `sessionlist`, `workspacelist`, `watch`, `unwatch`, `watchlist`, `archived`) as native Slash Commands through the `app_slash_commands` OpenAPI, so typing `/` in a Feishu direct-message input box pops the command panel and tapping a command triggers it. The command list is owned and pushed by dsh-im; it does not depend on the dsh/Harness backend. The app must grant `application:app_slash_command:read` and `application:app_slash_command:write` in the developer console and publish a version for it to take effect; the Feishu client also caches the list for a few minutes. This is best-effort and never blocks message delivery.
+
 ### Command details
 
 - `/help` takes no arguments and never creates a Session. It returns the complete command list supported by the current bot.

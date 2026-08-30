@@ -213,6 +213,8 @@ dsh plugin --profile web add -w --save-exact @xmanrui/dsh-im@3.1.0 --registry=ht
 
 Slack 桌面端若未注册同名的原生 Slash Command，会拦截直接以 `/` 开头的消息。此时请加一个前导空格发送，例如 ` /presetlist`、` /preset 2`、` /history` 或 ` /history 10`；插件命令层会去除首尾空白，执行效果与无空格命令相同。
 
+**飞书输入框的 `/` 命令面板**：机器人启动时，dsh-im 会调用飞书 `app_slash_commands` OpenAPI，把常用命令（`menu`、`new`、`help`、`status`、`compact`、`sessionlist`、`workspacelist`、`watch`、`unwatch`、`watchlist`、`archived`）注册成原生 Slash Command，这样在飞书单聊输入框输入 `/` 会弹出命令面板，点选即触发。命令列表由 dsh-im 自己持有并推送注册，不依赖 dsh/Harness 后端。需要开放平台在“权限管理”里为应用开通 `application:app_slash_command:read` 和 `application:app_slash_command:write` 并发布新版本才能生效；注册后飞书客户端约有几分钟缓存延迟。该能力是尽力而为的，注册失败不会影响机器人消息收发。
+
 ### 命令说明
 
 - `/help` 不需要参数，也不会创建会话；它会返回当前机器人支持的完整命令列表。

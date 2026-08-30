@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Added / 新增
+
+- 飞书机器人启动时调用 `app_slash_commands` OpenAPI，把常用命令注册为原生 Slash Command，使飞书单聊输入框输入 `/` 弹出命令面板；命令清单由 dsh-im 持有并推送注册，不依赖 dsh/Harness 后端。需要应用开通 `application:app_slash_command:read` / `write` 并发布版本，注册失败不影响消息收发。
+  On startup the Feishu bot registers its common commands as native Slash Commands via the `app_slash_commands` OpenAPI, so the `/` panel appears in Feishu direct-message input. The command list is owned and pushed by dsh-im and does not depend on the dsh/Harness backend. Requires the app to grant `application:app_slash_command:read` / `write` and publish a version; registration failure does not affect messaging.
+
 ## [4.1.0] - 2026-08-30
 
 ### Added / 新增
