@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   listSlashCommands,
   registerSlashCommands,
+  SLASH_COMMAND_TENANT_SCOPES,
   SLASH_COMMAND_MANIFEST,
 } from '../../../src/channels/feishu/slash-command-registry.mjs';
 
@@ -29,6 +30,10 @@ const AUTH_KEY = 'POST auth/v3/tenant_access_token/internal';
 const LIST_KEY = 'GET application/v7/app_slash_commands';
 
 test('SLASH_COMMAND_MANIFEST is non-empty and has no leading slash', () => {
+  assert.deepEqual(SLASH_COMMAND_TENANT_SCOPES, [
+    'application:app_slash_command:read',
+    'application:app_slash_command:write',
+  ]);
   assert.ok(Array.isArray(SLASH_COMMAND_MANIFEST));
   assert.ok(SLASH_COMMAND_MANIFEST.length > 0);
   for (const entry of SLASH_COMMAND_MANIFEST) {
@@ -51,8 +56,7 @@ test('listSlashCommands returns the registered command items', async () => {
 
 test('registerSlashCommands creates missing and skips existing commands', async () => {
   const createdBodies = [];
-  const existing = new Set(['menu', 'help']);
-  const { http } = fakeHttpInstance({
+  const { http, requests } = fakeHttpInstance({
     [AUTH_KEY]: () => ({ code: 0, tenant_access_token: 'tenant-token' }),
     [LIST_KEY]: () => ({ code: 0, data: { items: [{ command: 'menu' }, { command: 'help' }] } }),
     'POST application/v7/app_slash_commands': (options) => {
@@ -63,8 +67,8 @@ test('registerSlashCommands creates missing and skips existing commands', async 
 
   const manifest = [
     { command: 'menu', default: '打开菜单', en_us: 'Open menu' },
-    { command: 'status', default: '状态', en_us: 'Status' },
-    { command: 'watch', default: '监听', en_us: 'Watch' },
+    { command: 'status', icon: 'ai-functions_outlined', default: '状态', en_us: 'Status' },
+    { command: 'watch', icon: 'flag_outlined', default: '关注', en_us: 'Watch' },
   ];
   const result = await registerSlashCommands({
     appId: 'a', appSecret: 's', httpInstance: http, manifest,
@@ -78,6 +82,11 @@ test('registerSlashCommands creates missing and skips existing commands', async 
   assert.ok(result.existing.includes('help'));
   assert.equal(result.failed.length, 0);
   assert.equal(createdBodies.length, 2);
+  assert.equal(requests.filter((request) => request.url.includes('/tenant_access_token/')).length, 1);
+  assert.deepEqual(createdBodies.map((body) => body.description.icon.icon_key), [
+    'ai-functions_outlined',
+    'flag_outlined',
+  ]);
   for (const body of createdBodies) {
     assert.equal(body.command.startsWith('/'), false);
     assert.ok(body.description.default_value);
@@ -87,10 +96,19 @@ test('registerSlashCommands creates missing and skips existing commands', async 
 });
 
 test('registerSlashCommands aborts batch on missing permission', async () => {
-  const { http } = fakeHttpInstance({
+  const { http, requests } = fakeHttpInstance({
     [AUTH_KEY]: () => ({ code: 0, tenant_access_token: 'tenant-token' }),
     [LIST_KEY]: () => ({ code: 0, data: { items: [] } }),
-    'POST application/v7/app_slash_commands': () => ({ code: 99991640, msg: 'lacks permission' }),
+    'POST application/v7/app_slash_commands': () => {
+      const error = new Error('Request failed with status code 400');
+      error.response = {
+        data: {
+          code: 99991672,
+          msg: 'Access denied. One of the following scopes is required: [application:app_slash_command:write]',
+        },
+      };
+      throw error;
+    },
   });
   const manifest = [
     { command: 'menu', default: 'x', en_us: 'x' },
@@ -101,6 +119,12 @@ test('registerSlashCommands aborts batch on missing permission', async () => {
   });
   assert.equal(result.created.length, 0);
   assert.equal(result.failed.length, 1);
+  assert.equal(result.failed[0].error.code, '99991672');
+  assert.equal(
+    requests.filter((request) => request.url.endsWith('/app_slash_commands')
+      && request.method === 'POST').length,
+    1,
+  );
 });
 
 test('registerSlashCommands treats duplicate-create as already-existing', async () => {

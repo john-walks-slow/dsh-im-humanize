@@ -384,7 +384,7 @@ export class FeishuRuntime {
       // so it never blocks the long-connection startup. The panel is only a
       // client-side convenience; failure here must not take the bot down.
       if (this.#slashCommands && httpInstance) {
-        void this.#registerSlashCommands(httpInstance, isCurrentStart);
+        void this.#registerSlashCommands(httpInstance, isCurrentStart, signal);
       }
       return this.status;
     } catch (error) {
@@ -616,7 +616,7 @@ export class FeishuRuntime {
     return { sent: true };
   }
 
-  async #registerSlashCommands(httpInstance, isCurrentStart) {
+  async #registerSlashCommands(httpInstance, isCurrentStart, signal) {
     this.#status.slashCommandRegistration = 'registering';
     this.#status.slashCommandsError = null;
     try {
@@ -625,6 +625,7 @@ export class FeishuRuntime {
         appSecret: this.#appSecret,
         domain: this.#domain,
         httpInstance,
+        signal,
         manifest: SLASH_COMMAND_MANIFEST,
       });
       if (!isCurrentStart()) return;
@@ -697,6 +698,7 @@ export class FeishuRuntime {
     if (bridge) await bridge.waitForIdle();
     this.#client = null;
     this.#status.feishuLongConnectionState = preserveError ? 'failed' : 'idle';
+    this.#status.slashCommandRegistration = 'idle';
     this.#status.lastError = error;
     return this.status;
   }

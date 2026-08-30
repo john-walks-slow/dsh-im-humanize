@@ -6,6 +6,7 @@ import {
   FEISHU_RESOURCE_SCOPE,
   assertCallbackRepairUrl,
 } from '../../../src/channels/feishu/repair-manager.mjs';
+import { SLASH_COMMAND_TENANT_SCOPES } from '../../../src/channels/feishu/slash-command-registry.mjs';
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -17,7 +18,7 @@ async function waitFor(predicate, timeoutMs = 1000) {
   }
 }
 
-test('CallbackRepairManager targets one real app with only the callback and media scopes', async () => {
+test('CallbackRepairManager targets one real app with only the callback and required scopes', async () => {
   let observed;
   let resolveRegistration;
   const accepted = [];
@@ -39,7 +40,13 @@ test('CallbackRepairManager targets one real app with only the callback and medi
   assert.equal(Object.hasOwn(observed, 'appPreset'), false);
   assert.deepEqual(observed.addons, {
     preset: false,
-    scopes: { tenant: [FEISHU_MESSAGE_READ_SCOPE, FEISHU_RESOURCE_SCOPE] },
+    scopes: {
+      tenant: [
+        FEISHU_MESSAGE_READ_SCOPE,
+        FEISHU_RESOURCE_SCOPE,
+        ...SLASH_COMMAND_TENANT_SCOPES,
+      ],
+    },
     callbacks: { items: ['card.action.trigger'] },
   });
   assert.equal(Object.hasOwn(observed.addons, 'events'), false);

@@ -17,6 +17,12 @@
  */
 
 const SLASH_ENDPOINT = '/open-apis/application/v7/app_slash_commands';
+const MISSING_PERMISSION_CODES = new Set(['99991640', '99991672']);
+
+export const SLASH_COMMAND_TENANT_SCOPES = Object.freeze([
+  'application:app_slash_command:read',
+  'application:app_slash_command:write',
+]);
 
 // Icon keys are the documented values in the Feishu Slash Command doc.
 const DEFAULT_ICON = 'ai-agent_outlined';
@@ -37,14 +43,14 @@ export const SLASH_COMMAND_MANIFEST = Object.freeze([
   { command: 'compact', icon: 'ai-block_outlined', default: '压缩当前会话上下文', en_us: 'Compact the current session' },
   { command: 'sessionlist', icon: 'chat-ai_outlined', default: '列出会话', en_us: 'List sessions' },
   { command: 'workspacelist', icon: 'folder_outlined', default: '列出工作区', en_us: 'List workspaces' },
-  { command: 'watch', icon: 'flag_outlined', default: '监听一个话题', en_us: 'Watch a topic' },
-  { command: 'unwatch', icon: 'clear_outlined', default: '取消监听', en_us: 'Unwatch a topic' },
-  { command: 'watchlist', icon: 'flag_outlined', default: '查看监听列表', en_us: 'List watched topics' },
-  { command: 'archived', icon: 'folder_outlined', default: '显示或隐藏归档会话', en_us: 'Toggle archived sessions' },
+  { command: 'watch', icon: 'flag_outlined', default: '关注一个会话', en_us: 'Watch a session' },
+  { command: 'unwatch', icon: 'clear_outlined', default: '取消关注会话', en_us: 'Unwatch a session' },
+  { command: 'watchlist', icon: 'flag_outlined', default: '查看关注列表', en_us: 'List watched sessions' },
+  { command: 'archived', icon: 'folder_outlined', default: '设置归档会话显隐（on/off）', en_us: 'Show or hide archived sessions (on/off)' },
 ]);
 
 // Commands that require a parameter are registered too, so the user can type
-// "/watch <topic>" from the panel. A leading placeholder hint is not part of
+// "/watch <session ID>" from the panel. A leading placeholder hint is not part of
 // the registered name; Feishu only allows a plain command token.
 
 function endpointFor(domain, path) {
@@ -65,48 +71,78 @@ function jsonResponse(body, operation) {
   return body;
 }
 
+function requestSignal(signal, timeoutMs) {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+async function requestJson(httpInstance, options, operation) {
+  try {
+    return jsonResponse(await httpInstance.request(options), operation);
+  } catch (error) {
+    const body = error?.response?.data;
+    if (body && typeof body === 'object' && !Array.isArray(body)
+      && Object.hasOwn(body, 'code')) {
+      return jsonResponse(body, operation);
+    }
+    throw error;
+  }
+}
+
 /** Fetch a tenant_access_token for the app. */
-async function fetchTenantAccessToken({ appId, appSecret, domain, httpInstance, timeoutMs }) {
+async function fetchTenantAccessToken({
+  appId, appSecret, domain, httpInstance, timeoutMs, signal,
+}) {
   if (!appId || !appSecret) throw new Error('Feishu slash registration requires app credentials');
   if (!httpInstance || typeof httpInstance.request !== 'function') {
     throw new TypeError('Feishu slash registration requires an HTTP instance');
   }
-  const body = jsonResponse(await httpInstance.request({
+  const body = await requestJson(httpInstance, {
     method: 'POST',
     url: endpointFor(domain, '/open-apis/auth/v3/tenant_access_token/internal').href,
     headers: { 'content-type': 'application/json; charset=utf-8' },
     data: { app_id: appId, app_secret: appSecret },
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: requestSignal(signal, timeoutMs),
     timeout: timeoutMs,
-  }), 'Feishu authentication');
+  }, 'Feishu authentication');
   if (!body.tenant_access_token) {
     throw new Error('Feishu authentication returned no tenant access token');
   }
   return body.tenant_access_token;
 }
 
-/** List every slash command currently registered for the app. */
-export async function listSlashCommands({ appId, appSecret, domain = 'feishu', httpInstance, timeoutMs = 15000 }) {
-  const token = await fetchTenantAccessToken({ appId, appSecret, domain, httpInstance, timeoutMs });
-  const body = jsonResponse(await httpInstance.request({
+async function listSlashCommandsWithToken({
+  tenantAccessToken, domain, httpInstance, timeoutMs, signal,
+}) {
+  const body = await requestJson(httpInstance, {
     method: 'GET',
     url: endpointFor(domain, SLASH_ENDPOINT).href,
     headers: {
-      authorization: `Bearer ${token}`,
+      authorization: `Bearer ${tenantAccessToken}`,
       'content-type': 'application/json; charset=utf-8',
     },
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: requestSignal(signal, timeoutMs),
     timeout: timeoutMs,
-  }), 'Feishu slash command list');
+  }, 'Feishu slash command list');
   return Array.isArray(body.data?.items) ? body.data.items : [];
 }
 
-/** Register a single slash command. Returns the server-assigned command_id. */
-export async function createSlashCommand({
-  appId, appSecret, domain = 'feishu', httpInstance, timeoutMs = 15000,
+/** List every slash command currently registered for the app. */
+export async function listSlashCommands({
+  appId, appSecret, domain = 'feishu', httpInstance, timeoutMs = 15000, signal,
+}) {
+  const tenantAccessToken = await fetchTenantAccessToken({
+    appId, appSecret, domain, httpInstance, timeoutMs, signal,
+  });
+  return listSlashCommandsWithToken({
+    tenantAccessToken, domain, httpInstance, timeoutMs, signal,
+  });
+}
+
+async function createSlashCommandWithToken({
+  tenantAccessToken, domain, httpInstance, timeoutMs, signal,
   command, description, icon = DEFAULT_ICON,
 }) {
-  const token = await fetchTenantAccessToken({ appId, appSecret, domain, httpInstance, timeoutMs });
   const data = { command };
   if (description && (description.default_value || description.i18n)) {
     data.description = description;
@@ -114,32 +150,48 @@ export async function createSlashCommand({
     data.description = { default_value: description.trim() };
   }
   if (icon) data.description = { ...(data.description ?? {}), icon: { icon_key: icon } };
-  const body = jsonResponse(await httpInstance.request({
+  const body = await requestJson(httpInstance, {
     method: 'POST',
     url: endpointFor(domain, SLASH_ENDPOINT).href,
     headers: {
-      authorization: `Bearer ${token}`,
+      authorization: `Bearer ${tenantAccessToken}`,
       'content-type': 'application/json; charset=utf-8',
     },
     data,
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: requestSignal(signal, timeoutMs),
     timeout: timeoutMs,
-  }), `Feishu slash command create (/${command})`);
+  }, `Feishu slash command create (/${command})`);
   return body.data?.command_id ?? null;
+}
+
+/** Register a single slash command. Returns the server-assigned command_id. */
+export async function createSlashCommand({
+  appId, appSecret, domain = 'feishu', httpInstance, timeoutMs = 15000,
+  signal, command, description, icon = DEFAULT_ICON,
+}) {
+  const tenantAccessToken = await fetchTenantAccessToken({
+    appId, appSecret, domain, httpInstance, timeoutMs, signal,
+  });
+  return createSlashCommandWithToken({
+    tenantAccessToken, domain, httpInstance, timeoutMs, signal,
+    command, description, icon,
+  });
 }
 
 /** Delete a registered slash command by its server command_id. */
 export async function deleteSlashCommand({
-  appId, appSecret, domain = 'feishu', httpInstance, timeoutMs = 15000, commandId,
+  appId, appSecret, domain = 'feishu', httpInstance, timeoutMs = 15000, signal, commandId,
 }) {
-  const token = await fetchTenantAccessToken({ appId, appSecret, domain, httpInstance, timeoutMs });
-  await jsonResponse(await httpInstance.request({
+  const tenantAccessToken = await fetchTenantAccessToken({
+    appId, appSecret, domain, httpInstance, timeoutMs, signal,
+  });
+  await requestJson(httpInstance, {
     method: 'DELETE',
     url: endpointFor(domain, `${SLASH_ENDPOINT}/${commandId}`).href,
-    headers: { authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(timeoutMs),
+    headers: { authorization: `Bearer ${tenantAccessToken}` },
+    signal: requestSignal(signal, timeoutMs),
     timeout: timeoutMs,
-  }), 'Feishu slash command delete');
+  }, 'Feishu slash command delete');
 }
 
 /**
@@ -152,9 +204,14 @@ export async function deleteSlashCommand({
  */
 export async function registerSlashCommands({
   appId, appSecret, domain = 'feishu', httpInstance, timeoutMs = 15000,
-  manifest = SLASH_COMMAND_MANIFEST,
+  signal, manifest = SLASH_COMMAND_MANIFEST,
 }) {
-  const existing = new Set((await listSlashCommands({ appId, appSecret, domain, httpInstance, timeoutMs }))
+  const tenantAccessToken = await fetchTenantAccessToken({
+    appId, appSecret, domain, httpInstance, timeoutMs, signal,
+  });
+  const existing = new Set((await listSlashCommandsWithToken({
+    tenantAccessToken, domain, httpInstance, timeoutMs, signal,
+  }))
     .map((item) => item.command));
 
   const created = [];
@@ -170,10 +227,10 @@ export async function registerSlashCommands({
           zh_cn: entry.default ?? command,
           en_us: entry.en_us ?? entry.default ?? command,
         },
-        icon: { icon_key: entry.icon ?? DEFAULT_ICON },
       };
-      const commandId = await createSlashCommand({
-        appId, appSecret, domain, httpInstance, timeoutMs, command, description,
+      const commandId = await createSlashCommandWithToken({
+        tenantAccessToken, domain, httpInstance, timeoutMs, signal,
+        command, description, icon: entry.icon ?? DEFAULT_ICON,
       });
       created.push({ command, command_id: commandId });
     } catch (error) {
@@ -182,7 +239,8 @@ export async function registerSlashCommands({
         existing.add(command);
         continue;
       }
-      if (error?.code === '99991640' || /lacks permission/i.test(error?.msg ?? '')) {
+      if (MISSING_PERMISSION_CODES.has(error?.code)
+        || /(?:lacks permission|access denied)/i.test(error?.msg ?? '')) {
         // Missing app_slash_command:write permission; abort the batch.
         failed.push({ command, error });
         break;

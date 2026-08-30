@@ -1165,6 +1165,7 @@ test('production assembly uses ctx credentials and the active Host apiProxy with
   }, {
     dshHome: '/tmp/dsh-feishu-host-test',
     workspace: '/tmp/dsh-feishu-workspace',
+    slashCommands: false,
   }, {
     lark: { registerApp: async () => ({}), defaultHttpInstance: httpInstance },
     Controller: FakeController,
@@ -1209,6 +1210,7 @@ test('production assembly uses ctx credentials and the active Host apiProxy with
   assert.match(constructed.statePath, /integrations\/dsh-feishu\/state\.json$/);
   assert.equal(constructed.runtime.appSecret, 'host-only');
   assert.equal(constructed.runtime.wsAgent, wsAgent);
+  assert.equal(constructed.runtime.slashCommands, false);
   const repair = { start() {}, status() {}, cancel() {} };
   await constructed.controller.createRuntime({
     botId: 'bot_alpha',

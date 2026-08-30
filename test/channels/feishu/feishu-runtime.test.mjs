@@ -110,6 +110,14 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+async function waitFor(predicate, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('condition timed out');
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
 test('FeishuRuntime becomes chat-ready only after Harness and Feishu are connected', async () => {
   let harnessChecks = 0;
   let harnessSignal;
@@ -204,6 +212,74 @@ test('FeishuRuntime becomes chat-ready only after Harness and Feishu are connect
   assert.deepEqual(runtime.status, stoppedStatus);
   FakeWSClient.instances[0].becomeReconnected();
   assert.deepEqual(runtime.status, stoppedStatus);
+});
+
+test('FeishuRuntime keeps Slash registration non-blocking and aborts it on stop', async () => {
+  const lark = fakeLark();
+  const requests = [];
+  let createSignal;
+  lark.defaultHttpInstance.request = async (options) => {
+    requests.push(options);
+    if (options.url.includes('/tenant_access_token/')) {
+      return { code: 0, tenant_access_token: 'tenant-token' };
+    }
+    if (options.method === 'GET') return { code: 0, data: { items: [] } };
+    createSignal = options.signal;
+    return new Promise((_resolve, reject) => {
+      const abort = () => reject(createSignal.reason);
+      createSignal.addEventListener('abort', abort, { once: true });
+      if (createSignal.aborted) abort();
+    });
+  };
+  const runtime = new FeishuRuntime({
+    lark,
+    appId: 'cli_slash',
+    appSecret: 'secret',
+    ownerOpenIds: ['ou_owner'],
+    harness: { async ensureRunning() {} },
+    state: { hasSeen: () => false },
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  const starting = runtime.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  FakeWSClient.instances[0].becomeReady();
+  const ready = await starting;
+  assert.equal(ready.ready, true);
+  await waitFor(() => createSignal !== undefined);
+  assert.equal(runtime.status.slashCommandRegistration, 'registering');
+  assert.equal(requests.filter((request) => request.url.includes('/tenant_access_token/')).length, 1);
+
+  await runtime.stop();
+  assert.equal(createSignal.aborted, true);
+  assert.equal(runtime.status.slashCommandRegistration, 'idle');
+});
+
+test('FeishuRuntime can disable Slash registration', async () => {
+  const lark = fakeLark();
+  let requests = 0;
+  lark.defaultHttpInstance.request = async () => {
+    requests += 1;
+    return { code: 0 };
+  };
+  const runtime = new FeishuRuntime({
+    lark,
+    appId: 'cli_no_slash',
+    appSecret: 'secret',
+    ownerOpenIds: ['ou_owner'],
+    harness: { async ensureRunning() {} },
+    state: { hasSeen: () => false },
+    slashCommands: false,
+  });
+
+  const starting = runtime.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  FakeWSClient.instances[0].becomeReady();
+  await starting;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests, 0);
+  assert.equal(runtime.status.slashCommandRegistration, 'idle');
+  await runtime.stop();
 });
 
 test('FeishuRuntime uses a remembered private target for wildcard-only manual bots', async () => {

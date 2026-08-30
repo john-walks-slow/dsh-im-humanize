@@ -72,8 +72,8 @@ export default {
   '旧授权链接已作废，已生成新的修复链接。':
     'The previous authorization link was invalidated and a new repair link was generated.',
   '🔧 准备补全权限与回调。': '🔧 Preparing to complete permissions and the callback.',
-  '本次最多增量添加三项：卡片回调 card.action.trigger；飞书显示为“获取单聊、群组消息”的租户权限 im:message:readonly（用于读取用户消息中的图片或文件）；以及 im:resource（用于上传机器人发送的图片或文件）。确认页只会显示当前缺少的项；若出现上述范围之外的配置，请取消。':
-    'This may incrementally add up to three items: the card callback card.action.trigger; the tenant scope im:message:readonly, shown by Feishu as “Read direct and group messages” and used to read images or files in user messages; and im:resource, used to upload images or files sent by the bot. The confirmation page shows only items the app is currently missing; cancel if anything outside this scope appears.',
+  '本次会增量添加当前缺少项：卡片回调 card.action.trigger；飞书显示为“获取单聊、群组消息”的租户权限 im:message:readonly（用于读取用户消息中的图片或文件）；im:resource（用于上传机器人发送的图片或文件）；以及原生命令面板所需的 application:app_slash_command:read / write。确认页只会显示当前缺少的项；若出现上述范围之外的配置，请取消。':
+    'This incrementally adds the currently missing items: the card callback card.action.trigger; the tenant scope im:message:readonly, shown by Feishu as “Read direct and group messages” and used to read images or files in user messages; im:resource, used to upload images or files sent by the bot; and application:app_slash_command:read / write for the native command panel. The confirmation page shows only items the app is currently missing; cancel if anything outside this scope appears.',
   '当前设备直接打开：': 'Open directly on this device:',
   '若要用另一台设备扫码，发送 /repair qr。{expiry}。':
     'To scan with another device, send /repair qr. {expiry}.',
