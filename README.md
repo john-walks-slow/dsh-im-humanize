@@ -63,7 +63,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 其他 IM 平台可继续按同一渠道适配器结构接入。
 
-九个内置渠道均支持把 JPEG、PNG、WebP 图片，以及以图片文件方式发送的 GIF，连同可选文字说明发送给 Harness；单张图片上限为 5 MB，单条消息中的图片总大小上限为 20 MB。飞书下载用户消息中的图片或文件需要租户权限 `im:message:readonly`，确认页将其显示为“获取单聊、群组消息”；飞书目前没有为该下载接口提供仅限图片的更窄权限。扫码新建的应用会默认申请；已有或手动绑定的应用可私聊机器人执行 `/repair`，或在「IM机器人」设置页点击“补全权限”，扫码增量补全该权限、上传机器人图片或文件所需的 `im:resource`，以及卡片回调。
+九个内置渠道均支持把 JPEG、PNG、WebP 图片，以及以图片文件方式发送的 GIF，连同可选文字说明发送给 Harness；单张图片上限为 5 MB，单条消息中的图片总大小上限为 20 MB。飞书下载用户消息中的图片或文件需要租户权限 `im:message:readonly`，确认页将其显示为“获取单聊、群组消息”；飞书目前没有为该下载接口提供仅限图片的更窄权限。扫码新建的应用会默认申请；已有或手动绑定的应用可私聊机器人执行 `/repair`，或在「IM机器人」设置页点击“补全权限”，扫码增量补全该权限、上传机器人图片或文件所需的 `im:resource`、原生命令面板所需的 `application:app_slash_command:read` / `write`，以及卡片回调。
 
 ### 结果文件与图片回传
 
@@ -201,7 +201,7 @@ dsh plugin --profile web add -w --save-exact @xmanrui/dsh-im@3.1.0 --registry=ht
 | `/batch` | 在私聊中开启批量输入，最多收集 10 条纯文字消息。 |
 | `/send` | 将已收集的消息按原顺序作为一次输入提交。 |
 | `/cancel` | 取消批量输入并丢弃已收集的消息。 |
-| `/repair` | 在飞书私聊中增量修复卡片回调，并补全读取及上传消息图片或文件所需的权限。 |
+| `/repair` | 在飞书私聊中增量修复卡片回调，并补全媒体与原生 Slash Command 面板所需的权限。 |
 | `/compact` | 立即压缩当前聊天绑定会话的较早上下文。 |
 | `/workspace <工作区绝对路径>` | 切换当前机器人的 Harness 工作区。 |
 | `/workspacelist` | 列出当前 Harness Host 上仍然存在的工作区绝对路径。 |
@@ -214,6 +214,8 @@ dsh plugin --profile web add -w --save-exact @xmanrui/dsh-im@3.1.0 --registry=ht
 示例：先发送 `/models`，再发送 `/model 2` 切换到列表中的第 2 个模型；先发送 `/reasoninglist`，再发送 `/reasoning 2` 切换到当前模型的第 2 个推理等级；先发送 `/presetlist`，再发送 `/preset 2` 为当前机器人选择第 2 个 Agent Preset。其他命令示例：`/help`、`/new`、`/status`、`/version`、`/model deepseek-official/deepseek-v4-pro max`、`/reasoning --default`、`/preset marketing-jeep`、`/preset --default`、`/steer 只检查配置文件`、`/stop`、`/compact`、`/workspace /Users/alice/projects/my-app`、`/sessionlist 2`、`/sessionlist /Users/alice/projects/my-app`、`/session session-id`、`/history` 或 `/history 5`
 
 Slack 桌面端若未注册同名的原生 Slash Command，会拦截直接以 `/` 开头的消息。此时请加一个前导空格发送，例如 ` /presetlist`、` /preset 2`、` /history` 或 ` /history 10`；插件命令层会去除首尾空白，执行效果与无空格命令相同。
+
+**飞书输入框的 `/` 命令面板**：机器人启动时，dsh-im 会调用飞书 `app_slash_commands` OpenAPI，把常用命令（`menu`、`new`、`help`、`status`、`compact`、`sessionlist`、`workspacelist`、`watch`、`unwatch`、`watchlist`、`archived`）注册成原生 Slash Command，这样在飞书单聊输入框输入 `/` 会弹出命令面板，点选即触发。命令列表由 dsh-im 自己持有并推送注册，不依赖 dsh/Harness 后端。扫码新建的应用会默认申请 `application:app_slash_command:read` 和 `application:app_slash_command:write`；已有应用可通过“补全权限”或私聊 `/repair` 增量补全并按飞书提示发布。注册后飞书客户端约有几分钟缓存延迟。该能力是尽力而为的，注册失败不会影响机器人消息收发。
 
 ### 命令说明
 
@@ -232,7 +234,7 @@ Slack 桌面端若未注册同名的原生 Slash Command，会拦截直接以 `/
 - `/stop` 和 `/steer` 只控制当前聊天自己发起的运行任务，即使多个聊天绑定同一个 Session，也不会有意控制其他聊天的任务。`/stop` 不删除会话或历史，并保留尚未开始的排队消息；重复发送是安全的。
 - `/steer` 只接受文字，可包含多行；它不会创建新会话或第二个任务。没有运行任务时请直接发送普通消息；等待审批或问题回答时请先处理交互，或使用 `/stop`。
 - `/batch`、`/send` 和 `/cancel` 仅在与机器人的私聊中可用。发送 `/batch` 后，接下来的纯文字消息会暂存，最多 10 条；第 10 条仍会收录并提示提交，之后的消息不会收录，也不会自动提交。发送 `/send` 后，机器人会按原顺序将整批内容作为一次输入处理；发送 `/cancel` 会直接丢弃当前批次。图片、文件和其他命令不会被收录。机器人重启会丢失尚未提交的批次。未进入批量输入模式时，普通聊天流程不变。
-- 飞书 `/repair` 仅在私聊中可用，并与其他命令一样只服从当前飞书机器人的渠道访问策略；插件不另行区分管理员和普通用户。它最多增量补全 `card.action.trigger`、`im:message:readonly` 和 `im:resource`，确认页只显示当前应用缺少的项。授权页必须由在飞书开放平台中有权访问目标应用的账号打开。普通 `/repair` 会启动修复；若旧任务仍在等待授权，会先作废旧的一次性链接再生成新链接。发送 `/repair qr` 获取当前链接的二维码，`/repair status` 查询当前任务，`/repair verify` 重新查询验证状态，`/repair cancel` 取消任务；这四个补充命令均不会另起授权。平台已接受更新、正在等待测试按钮回调时，不会并发启动第二次修复。
+- 飞书 `/repair` 仅在私聊中可用，并与其他命令一样只服从当前飞书机器人的渠道访问策略；插件不另行区分管理员和普通用户。它增量补全当前缺少的 `card.action.trigger`、`im:message:readonly`、`im:resource`、`application:app_slash_command:read` 和 `application:app_slash_command:write`，确认页只显示当前应用缺少的项。授权页必须由在飞书开放平台中有权访问目标应用的账号打开。普通 `/repair` 会启动修复；若旧任务仍在等待授权，会先作废旧的一次性链接再生成新链接。发送 `/repair qr` 获取当前链接的二维码，`/repair status` 查询当前任务，`/repair verify` 重新查询验证状态，`/repair cancel` 取消任务；这四个补充命令均不会另起授权。平台已接受更新、正在等待测试按钮回调时，不会并发启动第二次修复。
 - `/compact` 只作用于当前聊天已经绑定的 Harness 会话，不会把命令发送给模型。当前聊天尚未创建会话、会话正在生成回复或没有可压缩历史时，机器人会直接返回对应状态。
 - 只接受已经存在的绝对目录；路径无效时机器人会返回具体提示和正确用法。
 - `/workspacelist` 不需要参数。它合并 Harness 全局登记项与当前机器人的路径；当前路径仍存在且可安全显示时会排在首位并标记为“当前”。结果可直接复制到 `/workspace` 命令。

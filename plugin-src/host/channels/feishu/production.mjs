@@ -172,6 +172,7 @@ export async function createProductionController(ctx, config = {}, internals = {
         state: workspaceScope.state,
         contextEnhancement: { botId: id, getSettings: () => workspaces.contextEnhancementFor(id) },
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
+        slashCommands: config.slashCommands !== false,
         ...(wsAgent ? { wsAgent } : {}),
         logger: {
           error: (...args) => logger.error?.(`[${botId ?? botConfig.id}]`, ...args),

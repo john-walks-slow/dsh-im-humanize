@@ -4,6 +4,10 @@ import { cardActionProbeCard } from './feishu-cards.mjs';
 import { VerifiedFeishuChannel } from './feishu-channel.mjs';
 import { normalizeFeishuGroupResponseMode } from './group-response-mode.mjs';
 import {
+  registerSlashCommands,
+  SLASH_COMMAND_MANIFEST,
+} from './slash-command-registry.mjs';
+import {
   connectionTestTargetUnavailable,
   sendRememberedConnectionTest,
 } from '../shared/connection-test.mjs';
@@ -84,6 +88,11 @@ export function createBridgeStatus({ allowedSenderCount = 1 } = {}) {
     agentPreset: 'standard',
     authorizationMode: 'sender-open-id-allowlist',
     allowedSenderCount,
+    slashCommandRegistration: 'idle',
+    slashCommandsRegistered: 0,
+    slashCommandsExisting: 0,
+    slashCommandsFailed: 0,
+    slashCommandsError: null,
   };
 }
 
@@ -119,6 +128,7 @@ export class FeishuRuntime {
   #abortController = null;
   #pendingCardActionProbes = new Map();
   #status;
+  #slashCommands = true;
 
   constructor({
     lark,
@@ -137,6 +147,7 @@ export class FeishuRuntime {
     replyTimeoutMs = 600000,
     connectTimeoutMs = 15000,
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    slashCommands = true,
     wsAgent,
     logger = console,
   }) {
@@ -169,6 +180,7 @@ export class FeishuRuntime {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#requestTimeoutMs = requestTimeoutMs;
+    this.#slashCommands = Boolean(slashCommands);
     this.#wsAgent = wsAgent;
     this.#logger = logger;
     this.#status = createBridgeStatus({ allowedSenderCount: normalizedOwners.length });
@@ -368,6 +380,12 @@ export class FeishuRuntime {
         });
       await Promise.all([wsStarted, ready]);
       assertCurrentStart();
+      // Register the native Slash Command panel best-effort and asynchronously
+      // so it never blocks the long-connection startup. The panel is only a
+      // client-side convenience; failure here must not take the bot down.
+      if (this.#slashCommands && httpInstance) {
+        void this.#registerSlashCommands(httpInstance, isCurrentStart, signal);
+      }
       return this.status;
     } catch (error) {
       // stop() owns the terminal idle state for an explicitly aborted start.
@@ -598,6 +616,44 @@ export class FeishuRuntime {
     return { sent: true };
   }
 
+  async #registerSlashCommands(httpInstance, isCurrentStart, signal) {
+    this.#status.slashCommandRegistration = 'registering';
+    this.#status.slashCommandsError = null;
+    try {
+      const result = await registerSlashCommands({
+        appId: this.#appId,
+        appSecret: this.#appSecret,
+        domain: this.#domain,
+        httpInstance,
+        signal,
+        manifest: SLASH_COMMAND_MANIFEST,
+      });
+      if (!isCurrentStart()) return;
+      this.#status.slashCommandRegistration = 'done';
+      this.#status.slashCommandsRegistered = result.created.length;
+      this.#status.slashCommandsExisting = result.existing.length;
+      this.#status.slashCommandsFailed = result.failed.length;
+      this.#status.slashCommandsError = result.failed.length > 0
+        ? result.failed.map((f) => `/${f.command}: ${f.error?.message ?? String(f.error)}`).join('; ')
+        : null;
+      if (result.created.length > 0) {
+        this.#logger.info?.(`[dsh-feishu] registered ${result.created.length} slash command(s)`);
+      }
+      if (result.failed.length > 0) {
+        this.#logger.warn?.(
+          `[dsh-feishu] ${result.failed.length} slash command(s) failed to register: ${this.#status.slashCommandsError}`,
+        );
+      }
+    } catch (error) {
+      if (!isCurrentStart()) return;
+      this.#status.slashCommandRegistration = 'failed';
+      this.#status.slashCommandsError = error?.message ?? String(error);
+      this.#logger.warn?.(
+        `[dsh-feishu] slash command registration skipped: ${this.#status.slashCommandsError}`,
+      );
+    }
+  }
+
   stop(options = {}) {
     if (this.#stopping) return this.#stopping;
 
@@ -642,6 +698,7 @@ export class FeishuRuntime {
     if (bridge) await bridge.waitForIdle();
     this.#client = null;
     this.#status.feishuLongConnectionState = preserveError ? 'failed' : 'idle';
+    this.#status.slashCommandRegistration = 'idle';
     this.#status.lastError = error;
     return this.status;
   }

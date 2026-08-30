@@ -86,6 +86,8 @@ test('QR success stores the secret off-config and becomes immediately chat-ready
   assert.ok(fx.getSdkOptions().addons.scopes.tenant.includes('im:message:send_as_bot'));
   assert.ok(fx.getSdkOptions().addons.scopes.tenant.includes('im:resource'));
   assert.equal(fx.getSdkOptions().addons.scopes.tenant.includes('im:resource:upload'), false);
+  assert.ok(fx.getSdkOptions().addons.scopes.tenant.includes('application:app_slash_command:read'));
+  assert.ok(fx.getSdkOptions().addons.scopes.tenant.includes('application:app_slash_command:write'));
   assert.ok(fx.getSdkOptions().addons.scopes.tenant.includes('cardkit:card:write'));
   fx.getSdkOptions().onQRCodeReady({ url: 'https://accounts.feishu.cn/qr', expireIn: 600 });
   fixture.resolveRegistration({
