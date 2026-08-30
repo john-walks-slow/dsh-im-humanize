@@ -1068,6 +1068,30 @@ test('/sessionlist supports the current workspace, list numbers, and absolute pa
   assert.equal(workspaceListCalls, 1, 'only numeric selection needs the workspace registry order');
 });
 
+test('/sessions reuses /sessionlist parsing for current, numbered, and absolute workspaces', async (t) => {
+  const { defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const calls = [];
+  const harness = {
+    currentWorkspace() { return defaultWorkspace; },
+    async listWorkspaces() { return [alternateWorkspace]; },
+    async listWorkspaceSessions(workspace) {
+      calls.push(workspace);
+      return { workspace, sessions: [] };
+    },
+  };
+
+  await runWorkspaceCommand(' /SESSIONS ', harness);
+  await runWorkspaceCommand('/sessions 2', harness);
+  await runWorkspaceCommand(`/sessions ${alternateWorkspace}`, harness);
+
+  assert.deepEqual(calls, [defaultWorkspace, alternateWorkspace, alternateWorkspace]);
+  assert.equal(await runWorkspaceCommand('/sessionsx', harness), null);
+  assert.match(
+    (await runWorkspaceCommand('/sessions relative/path', harness)).message,
+    /工作区必须是绝对路径/,
+  );
+});
+
 test('/sessionlist returns actionable and safe errors', async (t) => {
   const { root, defaultWorkspace } = await fixture(t);
   const file = join(root, 'not-a-workspace.txt');
@@ -1226,7 +1250,7 @@ test('all nine channel bridge families advertise and fan out workspace command r
   for (const file of bridgeFiles) {
     const source = await readFile(new URL(file, import.meta.url), 'utf8');
     assert.match(source, /\/workspacelist  列出工作区绝对路径/);
-    assert.match(source, /\/sessionlist \[工作区序号或绝对路径\]  列出会话 ID 和标题/);
+    assert.match(source, /\/sessionlist 或 \/sessions \[工作区序号或绝对路径\]  列出会话 ID 和标题/);
     assert.match(source, /workspaceCommand\.messages \?\? \[workspaceCommand\.message\]/);
   }
 });

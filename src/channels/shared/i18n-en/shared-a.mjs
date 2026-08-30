@@ -124,6 +124,8 @@ export default {
   '/workspacelist  列出工作区绝对路径': '/workspacelist  List absolute workspace paths',
   '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题':
     '/sessionlist [workspace index or absolute path]  List session IDs and titles',
+  '/sessionlist 或 /sessions [工作区序号或绝对路径]  列出会话 ID 和标题':
+    '/sessionlist or /sessions [workspace index or absolute path]  List session IDs and titles',
   '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话':
     '/session <Session ID or workspace index>  Bind this chat to the specified session',
   '/models  按序号列出所有可用模型': '/models  List all available models by index',
@@ -139,6 +141,8 @@ export default {
   '示例：先发 /models，再发 /model 2 [推理等级ID]':
     'Example: send /models first, then /model 2 [reasoning effort ID]',
   '/presetlist  按序号列出可用 Agent Preset': '/presetlist  List available Agent Presets by index',
+  '/presetlist 或 /presets  按序号列出可用 Agent Preset':
+    '/presetlist or /presets  List available Agent Presets by index',
   '/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset':
     '/preset [index or full ID]  Show or set the Agent Preset of this bot',
   '纯数字 ID：/preset id:<ID>': 'Numeric-only ID: /preset id:<ID>',

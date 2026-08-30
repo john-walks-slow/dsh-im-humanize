@@ -46,18 +46,33 @@ function fixture({
   return { calls, harness, state: {}, selected: () => selected };
 }
 
-test('isPresetCommand recognizes only /presetlist and /preset command prefixes', () => {
+test('isPresetCommand recognizes /presets, /presetlist, and /preset command prefixes', () => {
   for (const command of [
-    '/presetlist', ' /PRESETLIST ', '/presetlist ignored',
+    '/presetlist', ' /PRESETLIST ', '/presetlist ignored', '/presets', ' /PRESETS ',
     '/preset', '/PrEsEt coding',
   ]) {
     assert.equal(isPresetCommand(command), true, command);
   }
   for (const value of [
-    null, '', 'preset', '/presetx', '/presetlisting', 'hello /preset',
+    null, '', 'preset', '/presetx', '/presetlisting', '/presetss', 'hello /preset',
   ]) {
     assert.equal(isPresetCommand(value), false, String(value));
   }
+});
+
+test('/presets reuses /presetlist validation, listing, and snapshot behavior', async () => {
+  const { calls, harness, state } = fixture({ agentPreset: 'coding' });
+  const listed = await runPresetCommand('  /PRESETS  ', harness, state, 'direct:alias');
+
+  assert.match(listed.message, /2\. Coding（coding）（当前选择）/);
+  assert.deepEqual(calls, [['agentPresetSettings', {}]]);
+
+  const selected = await runPresetCommand('/preset 1', harness, state, 'direct:alias');
+  assert.match(selected.message, /Standard（standard）/);
+  assert.deepEqual(calls.at(-1), ['updateAgentPreset', 'standard', {}]);
+
+  const invalid = await runPresetCommand('/presets unexpected', harness, state, 'direct:alias');
+  assert.match(invalid.message, /用法：\/presetlist/);
 });
 
 test('/presetlist dynamically lists, annotates, and snapshots presets without updating', async () => {

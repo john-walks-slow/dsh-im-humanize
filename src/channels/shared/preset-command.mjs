@@ -8,7 +8,7 @@ import { splitWorkspaceCommandMessage } from './workspace-command.mjs';
 import { WORKSPACE_SESSION_STALE } from './workspace-session.mjs';
 
 const PRESET_COMMAND = /^\/preset(?=$|\s)/iu;
-const PRESET_LIST_COMMAND = /^\/presetlist(?=$|\s)/iu;
+const PRESET_LIST_COMMAND = /^\/(?:presetlist|presets)(?=$|\s)/iu;
 const PRESET_LIST_USAGE = '用法：/presetlist（不带参数）';
 const PRESET_USAGE = [
   '用法：',
@@ -257,7 +257,7 @@ export async function runPresetCommand(text, harness, state, key, options = {}) 
   const requestOptions = rpcOptions(options.signal);
 
   if (PRESET_LIST_COMMAND.test(command)) {
-    if (!/^\/presetlist[ \t]*$/iu.test(command)) return commandResult(t(PRESET_LIST_USAGE));
+    if (!/^\/(?:presetlist|presets)[ \t]*$/iu.test(command)) return commandResult(t(PRESET_LIST_USAGE));
     try {
       const current = await settings(harness, requestOptions);
       saveSnapshot(state, key, current.agentPresetCatalog.items);

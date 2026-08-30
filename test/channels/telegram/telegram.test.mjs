@@ -218,9 +218,10 @@ test('Telegram API registers the command menu and commands-type menu button', as
   await api.setChatMenuButton();
   assert.equal(calls.length, 2);
   assert.deepEqual(
-    TELEGRAM_COMMAND_MENU.filter(({ command }) => command === 'presetlist' || command === 'preset'),
+    TELEGRAM_COMMAND_MENU.filter(({ command }) => ['presetlist', 'presets', 'preset'].includes(command)),
     [
       { command: 'presetlist', description: '列出可用 Agent Preset' },
+      { command: 'presets', description: '列出可用 Agent Preset' },
       { command: 'preset', description: '查看或设置新会话 Agent Preset' },
     ],
   );
