@@ -23,6 +23,7 @@ import {
 } from '../../agent-preset.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import {
+  BotSettingsButton,
   BotStatusMeta,
   ChannelListHeading,
   LastMessageErrorSummary,
@@ -222,14 +223,21 @@ export function AccountCard({
         h('div', { className: 'dxw-accountIdentity dim-botIdentity' },
           h('div', { className: 'dxw-avatar dim-botAvatar', 'aria-hidden': 'true' }, h(WeixinLogoGlyph, { size: 27 })),
           h('div', { className: 'dim-botName' }, h('h3', null, account.bot.name), h('p', null, account.bot.accountIdMasked))),
-        h(BotStatusMeta, {
-          className: 'dxw-health',
-          dotClassName: 'dxw-dot',
-          tone,
-          stateLabel: account.connected ? '运行正常' : state === 'connecting' ? '正在连接' : '连接未就绪',
-          lastCheckedAt: account.health.lastCheckedAt,
-          formatCheckedTime: checkedTime,
-        })),
+        h('div', { className: 'dim-botCardTools' },
+          h(BotStatusMeta, {
+            className: 'dxw-health',
+            dotClassName: 'dxw-dot',
+            tone,
+            stateLabel: account.connected ? '运行正常' : state === 'connecting' ? '正在连接' : '连接未就绪',
+            lastCheckedAt: account.health.lastCheckedAt,
+            formatCheckedTime: checkedTime,
+          }),
+          h(BotSettingsButton, {
+            channel: 'weixin',
+            botId: account.botId,
+            botName: account.bot.name,
+            connected: account.connected,
+          }))),
       h(WorkspaceEditor, {
         workspace: account.workspace,
         disabled: Boolean(busy),

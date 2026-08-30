@@ -719,6 +719,25 @@ export class WhatsappRuntime {
     return { sent: true };
   }
 
+  async sendProactiveText(target, text, { signal } = {}) {
+    const jid = typeof target?.route?.jid === 'string' ? target.route.jid.trim() : '';
+    const validUser = target?.kind === 'user'
+      && /^[^@\s]+@(s\.whatsapp\.net|lid)$/.test(jid);
+    const validGroup = target?.kind === 'group' && /^[^@\s]+@g\.us$/.test(jid);
+    if (!validUser && !validGroup) {
+      const error = new TypeError('Invalid WhatsApp proactive delivery target');
+      error.code = 'invalid-target';
+      throw error;
+    }
+    if (!this.#status.ready || !this.#client) {
+      const error = new Error(t('WhatsApp机器人尚未连接'));
+      error.code = 'bot-not-connected';
+      throw error;
+    }
+    signal?.throwIfAborted();
+    return this.#client.sendText({ jid }, text);
+  }
+
   async stop() {
     const session = this.#session;
     const client = this.#client;

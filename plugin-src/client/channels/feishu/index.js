@@ -24,6 +24,7 @@ import {
 } from "../../agent-preset.js";
 import { useWorkspaceSnapshotFence } from "../../workspace-snapshot-fence.js";
 import {
+  BotSettingsButton,
   BotStatusMeta,
   ChannelListHeading,
   LastMessageErrorSummary,
@@ -593,15 +594,22 @@ export function BotCard({
             h("h3", { id: titleId, title: bot.name }, bot.name),
             h("p", { title: bot.appIdMasked }, bot.appIdMasked ?? "应用标识已安全保存")),
         ),
-        h(BotStatusMeta, {
-          className: "bxf-healthPill",
-          dotClassName: "bxf-dot",
-          tone,
-          stateLabel: HEALTH_LABELS[stateForDisplay] ?? "状态未知",
-          lastCheckedAt: health.lastCheckedAt,
-          formatCheckedTime,
-          healthState: stateForDisplay,
-        }),
+        h("div", { className: "dim-botCardTools" },
+          h(BotStatusMeta, {
+            className: "bxf-healthPill",
+            dotClassName: "bxf-dot",
+            tone,
+            stateLabel: HEALTH_LABELS[stateForDisplay] ?? "状态未知",
+            lastCheckedAt: health.lastCheckedAt,
+            formatCheckedTime,
+            healthState: stateForDisplay,
+          }),
+          h(BotSettingsButton, {
+            channel: "feishu",
+            botId: connection.botId,
+            botName: bot.name,
+            connected,
+          })),
       ),
       h(WorkspaceEditor, {
         workspace: connection.workspace,

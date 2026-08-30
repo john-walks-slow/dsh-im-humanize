@@ -42,6 +42,14 @@ test('Enterprise WeChat runtime sends a connection test only to the remembered p
     chatId: 'member-private',
     body: { msgtype: 'markdown', markdown: { content: '测试' } },
   }]);
+  assert.deepEqual(await runtime.sendProactiveText({
+    kind: 'group',
+    route: { chatId: 'group-target' },
+  }, '主动投递'), { sent: true });
+  assert.deepEqual(client.sent[1], {
+    chatId: 'group-target',
+    body: { msgtype: 'markdown', markdown: { content: '主动投递' } },
+  });
   await runtime.stop();
 });
 

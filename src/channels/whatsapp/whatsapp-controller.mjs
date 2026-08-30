@@ -224,6 +224,20 @@ export class WhatsappController {
     });
   }
 
+  async sendProactiveText(botId, target, text, options = {}) {
+    const config = this.#configStore.get(botId);
+    if (!config) throw new Error('Unknown WhatsApp bot');
+    return this.#withBotTransition(botId, async () => {
+      const runtime = this.#runtimes.get(botId);
+      if (!runtime?.status?.ready || typeof runtime.sendProactiveText !== 'function') {
+        const error = new Error(t('WhatsApp机器人尚未连接'));
+        error.code = 'bot-not-connected';
+        throw error;
+      }
+      return runtime.sendProactiveText(target, text, options);
+    });
+  }
+
   async setAccessPolicy(botId, value) {
     if (this.#closed) throw new Error('WhatsApp controller is closed');
     const accessPolicy = normalizeWhatsappAccessPolicy(value);

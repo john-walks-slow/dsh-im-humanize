@@ -407,6 +407,30 @@ export class SlackRuntime {
     return this.#bridge.sendConnectionTest(text);
   }
 
+  async sendProactiveText(target, text, options = {}) {
+    if (!this.#status.ready || !this.#bridge) {
+      const error = new Error('Slack bot is not connected');
+      error.code = 'bot-not-connected';
+      throw error;
+    }
+    const channelId = typeof target?.route?.channelId === 'string'
+      ? target.route.channelId.trim() : '';
+    const threadTs = typeof target?.route?.threadTs === 'string'
+      ? target.route.threadTs.trim() : '';
+    if (!channelId
+      || (target?.kind !== 'conversation' && target?.kind !== 'thread')
+      || (target.kind === 'thread' && !threadTs)
+      || (target.kind === 'conversation' && threadTs)) {
+      const error = new TypeError('Invalid Slack proactive delivery target');
+      error.code = 'invalid-target';
+      throw error;
+    }
+    return this.#bridge.sendProactiveText({
+      channelId,
+      ...(threadTs ? { threadTs } : {}),
+    }, text, options);
+  }
+
   async start() {
     if (this.#status.ready && this.#socket) return this.status;
     if (this.#starting) return this.#starting;

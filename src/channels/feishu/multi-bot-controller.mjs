@@ -537,6 +537,21 @@ export class MultiBotDshFeishuController {
     });
   }
 
+  async sendProactiveText(botId, target, text, options = {}) {
+    this.#assertOpen();
+    return this.#withBotTransition(botId, async () => {
+      this.#requireBot(botId);
+      const runtime = this.#runtimes.get(botId);
+      if (!isConnected(connectionStatus(runtime))
+        || typeof runtime.sendProactiveText !== 'function') {
+        const error = new Error('飞书机器人尚未连接');
+        error.code = 'bot-not-connected';
+        throw error;
+      }
+      return runtime.sendProactiveText(target, text, options);
+    });
+  }
+
   async disconnectBot(botId) {
     this.#assertOpen();
     // An operational pause only: credentials/config remain durable, so the

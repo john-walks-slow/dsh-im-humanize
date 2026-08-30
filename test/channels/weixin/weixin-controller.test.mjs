@@ -50,6 +50,7 @@ function configFixture() {
 function runtimeFactory({ failStart = false, startError, lastMessageError = null } = {}) {
   const runtimes = [];
   const connectionTests = [];
+  const proactiveSends = [];
   const createRuntime = async ({ config, token }) => {
     let ready = false;
     const runtime = {
@@ -71,11 +72,15 @@ function runtimeFactory({ failStart = false, startError, lastMessageError = null
       },
       async stop() { ready = false; },
       async sendConnectionTest(text) { connectionTests.push({ botId: config.botId, text }); },
+      async sendProactiveText(target, text, options) {
+        proactiveSends.push({ botId: config.botId, target, text, options });
+        return { sent: true };
+      },
     };
     runtimes.push(runtime);
     return runtime;
   };
-  return { runtimes, connectionTests, createRuntime };
+  return { runtimes, connectionTests, proactiveSends, createRuntime };
 }
 
 test('confirmed QR login stores bot_token only in credentials and starts a redacted account', async () => {
@@ -139,6 +144,16 @@ test('confirmed QR login stores bot_token only in credentials and starts a redac
   assert.equal(runtimes.connectionTests[0].botId, completed.botId);
   assert.match(runtimes.connectionTests[0].text, /DeepSeek Harness 连接测试成功/);
   assert.match(runtimes.connectionTests[0].text, /微信机器人（accoun••••\.bot）/);
+  const target = { kind: 'user', route: { toUserId: 'target-user' } };
+  assert.deepEqual(await controller.sendProactiveText(completed.botId, target, '主动投递'), {
+    sent: true,
+  });
+  assert.deepEqual(runtimes.proactiveSends[0], {
+    botId: completed.botId,
+    target,
+    text: '主动投递',
+    options: {},
+  });
 
   await controller.deleteBot(completed.botId);
   assert.equal(credentials.values.size, 0);

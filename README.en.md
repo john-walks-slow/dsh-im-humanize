@@ -130,6 +130,12 @@ Use the proxy URL required by your network and restart the Host after changing i
 | Agent Preset | Each bot can choose an Agent Preset on its settings card. When none is chosen, new Sessions follow the Host's `agent-presets.default`. A channel-level `config.agentPreset` is only the default for later new bots on that channel. Changing the preset never modifies or clears existing Sessions; if the current chat already has a Session, send `/new` and then a regular message to create one with the new selection. |
 | Context enhancement | Open settings from a bot card to enable groups and DMs independently. Both switches default to off, including for existing bots after an upgrade. |
 
+### Proactive delivery
+
+All nine IM channels can proactively send text through a stable `botId + targetId` pair. Bot settings support choosing a known conversation or entering a target manually, testing the current route before saving, and copying call parameters. Same-Host plugins and Connection RPC share the same target configuration.
+
+See the [Proactive Delivery Guide](PROACTIVE_DELIVERY.en.md) ([简体中文](PROACTIVE_DELIVERY.md)) for setup steps, native fields for all nine channels, complete call examples, management endpoints, error codes, and troubleshooting.
+
 ### Context enhancement
 
 Open **Context enhancement** on a bot card to choose conversation scopes, source fields and guidance, then **Save**. The five available fields are `channel`, `conversationType`, `senderId`, `senderName` and `botId`; only `senderId` is selected by default. Only selected values already available in the incoming message are included; no platform profile API is queried. Weixin currently supports DMs only.

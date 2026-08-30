@@ -630,6 +630,7 @@ test('Telegram config and controller store only a credential reference in bot da
   const credentialStore = credentials();
   const runtimes = [];
   const connectionTests = [];
+  const proactiveSends = [];
   const controller = new TelegramController({
     credentials: credentialStore,
     configStore,
@@ -647,6 +648,10 @@ test('Telegram config and controller store only a credential reference in bot da
         async start() {},
         async stop() {},
         async sendConnectionTest(text) { connectionTests.push(text); },
+        async sendProactiveText(...args) {
+          proactiveSends.push(args);
+          return { sent: true };
+        },
       };
       runtimes.push(runtime);
       return runtime;
@@ -673,6 +678,11 @@ test('Telegram config and controller store only a credential reference in bot da
   await controller.sendConnectionTest(identity.botId);
   assert.match(connectionTests[0], /Harness Telegram/);
   assert.match(connectionTests[0], /123•••/);
+  const target = { kind: 'chat', route: { chatId: '123456' } };
+  assert.deepEqual(await controller.sendProactiveText(identity.botId, target, 'proactive-test'), {
+    sent: true,
+  });
+  assert.deepEqual(proactiveSends, [[target, 'proactive-test', {}]]);
   await controller.deleteBot(identity.botId);
   assert.equal(credentialStore.values.has(identity.tokenRef), false);
   assert.equal(controller.status().totals.configured, 0);
@@ -1352,6 +1362,10 @@ test('Telegram runtime validates webhook state and starts a cancellable long pol
         reject(new DOMException('Aborted', 'AbortError'));
       }, { once: true }));
     },
+    sendMessage: async (request) => {
+      calls.push({ method: 'sendMessage', ...request });
+      return { message_id: 900 };
+    },
   };
   const runtime = new TelegramRuntime({
     config: {
@@ -1367,6 +1381,15 @@ test('Telegram runtime validates webhook state and starts a cancellable long pol
   await runtime.start();
   assert.equal(runtime.status.ready, true);
   assert.equal(runtime.status.connectionState, 'connected');
+  assert.deepEqual(await runtime.sendProactiveText({
+    kind: 'topic',
+    route: { chatId: '-1001234567890', messageThreadId: 42 },
+  }, 'proactive-test'), { providerMessageIds: ['900'] });
+  const proactiveCall = calls.find(({ method }) => method === 'sendMessage');
+  assert.equal(proactiveCall.chatId, -1001234567890);
+  assert.equal(proactiveCall.messageThreadId, 42);
+  assert.equal(proactiveCall.replyToMessageId, undefined);
+  assert.equal(proactiveCall.text, 'proactive-test');
   await runtime.stop();
   assert.equal(runtime.status.ready, false);
   assert.deepEqual(calls[0], { method: 'setMyCommands', commands: TELEGRAM_COMMAND_MENU });

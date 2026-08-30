@@ -97,6 +97,7 @@ test('QQ controller delegates the shared connection-test message to the selected
     botId: 'qq_bot', appId: 'app-id', secretRef: 'qq.secret', ownerUserOpenid: 'owner-openid',
   };
   const sent = [];
+  const proactiveSends = [];
   const controller = new QqController({
     qrAuth: { start() { return () => {}; } },
     credentials: {
@@ -116,6 +117,10 @@ test('QQ controller delegates the shared connection-test message to the selected
       start: async () => {},
       stop: async () => {},
       sendConnectionTest: async (text) => sent.push(text),
+      sendProactiveText: async (...args) => {
+        proactiveSends.push(args);
+        return { sent: true };
+      },
     }),
   });
 
@@ -124,6 +129,11 @@ test('QQ controller delegates the shared connection-test message to the selected
   assert.deepEqual(sent, [
     connectionTestMessage(`QQ 机器人（${maskQqAppId(config.appId)}）`),
   ]);
+  const target = { kind: 'user', route: { userOpenId: 'user-openid' } };
+  assert.deepEqual(await controller.sendProactiveText(config.botId, target, '主动投递'), {
+    sent: true,
+  });
+  assert.deepEqual(proactiveSends, [[target, '主动投递', {}]]);
   await controller.close();
 });
 

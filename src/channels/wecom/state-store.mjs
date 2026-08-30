@@ -72,6 +72,10 @@ export class WecomStateStore {
     await this.#persist();
   }
 
+  snapshot() {
+    return structuredClone(this.#state);
+  }
+
   async remove() {
     try {
       await unlink(this.#path);

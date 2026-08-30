@@ -57,9 +57,11 @@ function configFixture(initial = [], events = []) {
 function runtimeFactory({ events = [], pendingByClient = new Map(), failStart = false } = {}) {
   const runtimes = [];
   const connectionTests = [];
+  const proactiveSends = [];
   return {
     runtimes,
     connectionTests,
+    proactiveSends,
     createRuntime: async ({ botId, config, clientSecret }) => {
       events.push(['create', botId]);
       let ready = false;
@@ -95,6 +97,10 @@ function runtimeFactory({ events = [], pendingByClient = new Map(), failStart = 
         },
         async sendConnectionTest(text) {
           connectionTests.push({ botId, text });
+        },
+        async sendProactiveText(...args) {
+          proactiveSends.push({ botId, args });
+          return { sent: true };
         },
       };
       runtimes.push(runtime);
@@ -154,6 +160,14 @@ test('successful QR poll stores secret then config then starts runtime without p
   assert.equal(runtimes.connectionTests[0].botId, completed.botId);
   assert.match(runtimes.connectionTests[0].text, /DeepSeek Harness 连接测试成功/);
   assert.match(runtimes.connectionTests[0].text, /钉钉机器人（ding••••vate）/);
+  const target = { kind: 'user', route: { userId: 'staff-one' } };
+  assert.deepEqual(await controller.sendProactiveText(completed.botId, target, '主动投递'), {
+    sent: true,
+  });
+  assert.deepEqual(runtimes.proactiveSends, [{
+    botId: completed.botId,
+    args: [target, '主动投递', {}],
+  }]);
   await controller.close();
 });
 

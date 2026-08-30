@@ -100,6 +100,78 @@ test('BotWorkspaceStore persists the creation default and keeps bots isolated', 
   assert.equal(reloaded.workspaceFor('bot_two'), defaultWorkspace);
 });
 
+test('BotWorkspaceStore migrates v1 on the first delivery target and persists target CRUD', async (t) => {
+  const { path, defaultWorkspace } = await fixture(t);
+  await writeFile(path, `${JSON.stringify({
+    version: 1,
+    workspaces: { bot_delivery: defaultWorkspace },
+  })}\n`);
+  const store = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  assert.deepEqual(store.listDeliveryTargets('bot_delivery'), []);
+
+  const input = {
+    targetId: 'daily-report',
+    name: '  每日汇报群  ',
+    kind: 'group',
+    route: { chatId: 'chat-one' },
+  };
+  assert.deepEqual(await store.createDeliveryTarget('bot_delivery', input), {
+    targetId: 'daily-report',
+    name: '每日汇报群',
+    kind: 'group',
+    route: { chatId: 'chat-one' },
+  });
+  input.route.chatId = 'mutated-outside-store';
+  await store.updateDeliveryTarget('bot_delivery', 'daily-report', {
+    kind: 'group',
+    route: { chatId: 'chat-two' },
+  });
+
+  const saved = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(saved.version, 2);
+  assert.deepEqual(saved.deliveryTargets.bot_delivery['daily-report'], {
+    kind: 'group',
+    route: { chatId: 'chat-two' },
+  });
+  const reloaded = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  assert.deepEqual(reloaded.deliveryTargetFor('bot_delivery', 'daily-report'), {
+    targetId: 'daily-report',
+    kind: 'group',
+    route: { chatId: 'chat-two' },
+  });
+  assert.equal(await reloaded.deleteDeliveryTarget('bot_delivery', 'daily-report'), true);
+  assert.deepEqual(reloaded.listDeliveryTargets('bot_delivery'), []);
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).version, 2);
+});
+
+test('BotWorkspaceStore keeps delivery targets bot-scoped and removes them with the bot', async (t) => {
+  const { path, defaultWorkspace } = await fixture(t);
+  const store = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await Promise.all([store.ensure('bot_one'), store.ensure('bot_two')]);
+  const target = {
+    targetId: 'same-target',
+    kind: 'user',
+    route: { userId: 'user-one' },
+  };
+  await store.createDeliveryTarget('bot_one', target);
+  await store.createDeliveryTarget('bot_two', {
+    ...target,
+    route: { userId: 'user-two' },
+  });
+  await assert.rejects(store.createDeliveryTarget('bot_one', target), { code: 'target-conflict' });
+  await assert.rejects(
+    store.updateDeliveryTarget('bot_one', 'missing', { kind: 'user', route: { userId: 'x' } }),
+    { code: 'unknown-target' },
+  );
+
+  await store.remove('bot_one');
+  assert.throws(() => store.listDeliveryTargets('bot_one'), { code: 'unknown-bot' });
+  assert.equal(store.deliveryTargetFor('bot_two', 'same-target').route.userId, 'user-two');
+  const saved = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(saved.deliveryTargets.bot_one, undefined);
+  assert.equal(saved.deliveryTargets.bot_two['same-target'].route.userId, 'user-two');
+});
+
 test('BotWorkspaceStore uses process.cwd() when a bot has no configured workspace', async (t) => {
   const { root } = await fixture(t);
   const store = await new BotWorkspaceStore(join(root, 'cwd-workspaces.json')).load();

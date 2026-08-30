@@ -10,6 +10,8 @@ import { apply as applyWeixin } from './channels/weixin/index.mjs';
 import { apply as applyWhatsapp } from './channels/whatsapp/index.mjs';
 import { installOutboundArtifactTool } from '../../src/channels/shared/semantic/artifact.mjs';
 import { setImHostLanguage } from '../../src/channels/shared/i18n.mjs';
+import { installDeliveryRpc } from './delivery-rpc.mjs';
+import { createDeliveryService } from './delivery-service.mjs';
 import { installUpdateRpc } from './update-rpc.mjs';
 
 export const name = 'dsh-im-host';
@@ -19,15 +21,18 @@ export const inject = [
   'typertGateway',
 ];
 
-function channelConfig(config, name) {
+function channelConfig(config, name, deliveryService) {
   const channel = config[name] ?? {};
-  return config.rpcAuthority === undefined
+  const withAuthority = config.rpcAuthority === undefined
     ? channel
     : { ...channel, rpcAuthority: config.rpcAuthority };
+  return name === 'office' ? withAuthority : { ...withAuthority, deliveryService };
 }
 
 export function createImHostPlugin(internals = {}) {
   const startUpdate = internals.installUpdateRpc ?? installUpdateRpc;
+  const startDelivery = internals.installDeliveryRpc ?? installDeliveryRpc;
+  const makeDeliveryService = internals.createDeliveryService ?? createDeliveryService;
   const startFeishu = internals.applyFeishu ?? applyFeishu;
   const startWeixin = internals.applyWeixin ?? applyWeixin;
   const startDingtalk = internals.applyDingtalk ?? applyDingtalk;
@@ -54,8 +59,17 @@ export function createImHostPlugin(internals = {}) {
     name,
     inject,
     async apply(ctx, config = {}) {
+      const deliveryService = makeDeliveryService();
+      if (typeof ctx?.provide === 'function') {
+        ctx.provide('dshIm', Object.freeze({
+          send: (botId, targetId, text, options) => (
+            deliveryService.send(botId, targetId, text, options)
+          ),
+          listTargets: async (botId) => (await deliveryService.listTargets(botId)).targets,
+        }));
+      }
       const activate = async (readyCtx) => {
-        await activateChannels(readyCtx, config);
+        await activateChannels(readyCtx, config, deliveryService);
       };
       if (typeof ctx?.inject === 'function') {
         const modern = typeof ctx?.typertGateway?.stream === 'function';
@@ -69,7 +83,7 @@ export function createImHostPlugin(internals = {}) {
     },
   });
 
-  async function activateChannels(ctx, config) {
+  async function activateChannels(ctx, config, deliveryService) {
     setImHostLanguage(config.language ?? process.env.DSH_IM_LANGUAGE);
     if (typeof ctx?.inject === 'function') {
       ctx.inject(['tools', 'systemPrompt'], (artifactCtx) => {
@@ -87,11 +101,16 @@ export function createImHostPlugin(internals = {}) {
       } catch (error) {
         logger.error?.('[dsh-im] failed to activate update management; continuing with channels', error);
       }
+      try {
+        startDelivery(ctx, deliveryService, { authority: config.rpcAuthority });
+      } catch (error) {
+        logger.error?.('[dsh-im] failed to activate delivery management; continuing with channels', error);
+      }
     }
     const failures = [];
     for (const [channel, start] of channels) {
       try {
-        await start(ctx, channelConfig(config, channel));
+        await start(ctx, channelConfig(config, channel, deliveryService));
       } catch (error) {
         failures.push(error);
         logger.error?.(`[dsh-im] failed to activate ${channel}; continuing with the remaining channels`, error);

@@ -13,6 +13,10 @@ import {
   observeBotWorkspaceRemovals,
 } from '../../../../src/channels/shared/bot-workspace-store.mjs';
 import { listAgentPresetCatalog } from '../../../../src/channels/shared/agent-preset.mjs';
+import {
+  createDeliveryAdapter,
+  supportsDeliveryChannel,
+} from '../../delivery-adapter.mjs';
 
 export function pluginPaths(config, channel) {
   const dshHome = resolve(config.dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh'));
@@ -142,6 +146,9 @@ export async function createTokenProductionController(ctx, config, internals, de
   }).start();
   return {
     controller,
+    ...(supportsDeliveryChannel(channel) ? {
+      deliveryAdapter: createDeliveryAdapter({ channel, workspaces, coreController, stateFor }),
+    } : {}),
     ready: supervisor.ready,
     async close() {
       await supervisor.close();

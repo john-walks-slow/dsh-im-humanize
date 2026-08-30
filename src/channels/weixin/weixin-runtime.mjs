@@ -329,4 +329,28 @@ export class WeixinRuntime {
     });
     return { sent: true };
   }
+
+  async sendProactiveText(target, text, { signal } = {}) {
+    const toUserId = typeof target?.route?.toUserId === 'string'
+      ? target.route.toUserId.trim() : '';
+    if (target?.kind !== 'user' || !toUserId) {
+      const error = new TypeError('Invalid Weixin proactive delivery target');
+      error.code = 'invalid-target';
+      throw error;
+    }
+    if (!this.#status.ready || !this.#abortController) {
+      const error = new Error('Weixin runtime is not connected');
+      error.code = 'bot-not-connected';
+      throw error;
+    }
+    signal?.throwIfAborted();
+    await this.#api.sendText({
+      baseUrl: this.#config.baseUrl,
+      token: this.#token,
+      toUserId,
+      text,
+      signal: signal ?? this.#abortController.signal,
+    });
+    return { sent: true };
+  }
 }

@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { Context } from '@deepseek-ai/cordis';
+
 import { createImHostPlugin, inject, name } from '../plugin-src/host/index.mjs';
 
 test('Host composes nine IM channels and the AI Office connector inside one plugin context', async () => {
   const calls = [];
+  const deliveryService = { marker: 'shared-delivery-service' };
   const plugin = createImHostPlugin({
+    createDeliveryService: () => deliveryService,
     applyFeishu: async (ctx, config) => calls.push(['feishu', ctx, config]),
     applyWeixin: async (ctx, config) => calls.push(['weixin', ctx, config]),
     applyDingtalk: async (ctx, config) => calls.push(['dingtalk', ctx, config]),
@@ -41,17 +45,107 @@ test('Host composes nine IM channels and the AI Office connector inside one plug
     'typertGateway',
   ]);
   assert.deepEqual(calls, [
-    ['feishu', ctx, { ...config.feishu, rpcAuthority: 'trusted-host' }],
-    ['weixin', ctx, { ...config.weixin, rpcAuthority: 'trusted-host' }],
-    ['dingtalk', ctx, { ...config.dingtalk, rpcAuthority: 'trusted-host' }],
-    ['wecom', ctx, { ...config.wecom, rpcAuthority: 'trusted-host' }],
-    ['qq', ctx, { ...config.qq, rpcAuthority: 'trusted-host' }],
-    ['slack', ctx, { ...config.slack, rpcAuthority: 'trusted-host' }],
-    ['telegram', ctx, { ...config.telegram, rpcAuthority: 'trusted-host' }],
-    ['discord', ctx, { ...config.discord, rpcAuthority: 'trusted-host' }],
-    ['whatsapp', ctx, { ...config.whatsapp, rpcAuthority: 'trusted-host' }],
+    ['feishu', ctx, { ...config.feishu, rpcAuthority: 'trusted-host', deliveryService }],
+    ['weixin', ctx, { ...config.weixin, rpcAuthority: 'trusted-host', deliveryService }],
+    ['dingtalk', ctx, { ...config.dingtalk, rpcAuthority: 'trusted-host', deliveryService }],
+    ['wecom', ctx, { ...config.wecom, rpcAuthority: 'trusted-host', deliveryService }],
+    ['qq', ctx, { ...config.qq, rpcAuthority: 'trusted-host', deliveryService }],
+    ['slack', ctx, { ...config.slack, rpcAuthority: 'trusted-host', deliveryService }],
+    ['telegram', ctx, { ...config.telegram, rpcAuthority: 'trusted-host', deliveryService }],
+    ['discord', ctx, { ...config.discord, rpcAuthority: 'trusted-host', deliveryService }],
+    ['whatsapp', ctx, { ...config.whatsapp, rpcAuthority: 'trusted-host', deliveryService }],
     ['office', ctx, { ...config.office, rpcAuthority: 'trusted-host' }],
   ]);
+});
+
+test('Host provides #65 and installs #84 with the same delivery service', async () => {
+  const sent = [];
+  const deliveryService = {
+    async send(...args) { sent.push(args); return { sent: true }; },
+    async listTargets(botId) {
+      return { botId, channel: 'telegram', targets: [{ targetId: 'target' }] };
+    },
+  };
+  const provided = [];
+  const rpc = [];
+  const channelServices = [];
+  const internals = Object.fromEntries(CHANNELS.map(([channel, applyName]) => [
+    applyName,
+    async (_ctx, config) => {
+      if (channel !== 'office') channelServices.push(config.deliveryService);
+    },
+  ]));
+  Object.assign(internals, {
+    createDeliveryService: () => deliveryService,
+    installUpdateRpc: () => {},
+    installDeliveryRpc: (...args) => rpc.push(args),
+  });
+  const ctx = {
+    connection: { rpc: {} },
+    provide: (...args) => provided.push(args),
+  };
+
+  await createImHostPlugin(internals).apply(ctx, { rpcAuthority: 'trusted-host' });
+
+  assert.equal(provided[0][0], 'dshIm');
+  assert.equal(rpc[0][1], deliveryService);
+  assert.deepEqual(rpc[0][2], { authority: 'trusted-host' });
+  assert.ok(channelServices.every((service) => service === deliveryService));
+  assert.deepEqual(await provided[0][1].listTargets('bot_one'), [{ targetId: 'target' }]);
+  assert.deepEqual(await provided[0][1].send('bot_one', 'target', 'hello'), { sent: true });
+  assert.deepEqual(sent, [['bot_one', 'target', 'hello', undefined]]);
+});
+
+test('#65 activates a real Cordis consumer without crossing the Connection RPC', async (t) => {
+  const ctx = new Context();
+  const rpcCalls = [];
+  ctx.provide('connection', {
+    rpc: {
+      handle: () => async () => {},
+      call: (...args) => rpcCalls.push(args),
+    },
+  });
+  ctx.provide('credentials', {});
+  ctx.provide('typertGateway', { stream() {} });
+  ctx.provide('sessionController', {});
+  ctx.provide('workspaceController', {});
+
+  const sent = [];
+  const deliveryService = {
+    async send(...args) {
+      sent.push(args);
+      return { sent: true };
+    },
+    async listTargets() { return { targets: [] }; },
+  };
+  const internals = Object.fromEntries(CHANNELS.map(([, applyName]) => [
+    applyName,
+    async () => {},
+  ]));
+  Object.assign(internals, {
+    createDeliveryService: () => deliveryService,
+    installUpdateRpc: () => async () => {},
+    installDeliveryRpc: () => async () => {},
+  });
+
+  const host = ctx.plugin(createImHostPlugin(internals));
+  t.after(() => host.dispose());
+  await host.await();
+
+  let result;
+  const consumer = ctx.plugin({
+    name: 'dsh-im-delivery-consumer-test',
+    inject: ['dshIm'],
+    async apply(consumerCtx) {
+      result = await consumerCtx.dshIm.send('bot_one', 'daily-report', '测试消息');
+    },
+  });
+  t.after(() => consumer.dispose());
+  await consumer.await();
+
+  assert.deepEqual(result, { sent: true });
+  assert.deepEqual(sent, [['bot_one', 'daily-report', '测试消息', undefined]]);
+  assert.equal(rpcCalls.length, 0);
 });
 
 test('Host waits for apiProxy on legacy Harness and Controllers on modern Harness', async () => {

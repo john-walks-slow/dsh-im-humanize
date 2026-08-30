@@ -719,6 +719,30 @@ export class TelegramRuntime {
     return this.#bridge.sendConnectionTest(text);
   }
 
+  async sendProactiveText(target, text, options = {}) {
+    if (!this.#status.ready || !this.#bridge) {
+      const error = new Error('Telegram bot is not connected');
+      error.code = 'bot-not-connected';
+      throw error;
+    }
+    const chatIdText = typeof target?.route?.chatId === 'string'
+      ? target.route.chatId.trim() : '';
+    const chatId = Number(chatIdText);
+    const messageThreadId = target?.route?.messageThreadId;
+    if (!/^-?\d+$/.test(chatIdText) || !Number.isSafeInteger(chatId)
+      || (target?.kind !== 'chat' && target?.kind !== 'topic')
+      || (target.kind === 'topic' && (!Number.isSafeInteger(messageThreadId) || messageThreadId <= 0))
+      || (target.kind === 'chat' && messageThreadId !== undefined)) {
+      const error = new TypeError('Invalid Telegram proactive delivery target');
+      error.code = 'invalid-target';
+      throw error;
+    }
+    return this.#bridge.sendProactiveText({
+      chatId,
+      ...(target.kind === 'topic' ? { messageThreadId } : {}),
+    }, text, options);
+  }
+
   async start() {
     if (this.#status.ready && this.#pollTask) return this.status;
     if (this.#starting) return this.#starting;

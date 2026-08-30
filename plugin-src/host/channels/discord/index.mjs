@@ -9,8 +9,13 @@ export async function apply(ctx, config = {}) {
     return installDiscordRpc(ctx, config.controller, config.rpcAuthority);
   }
   const production = await createProductionController(ctx, config, config.internals ?? {});
+  const unregisterDelivery = config.deliveryService && production.deliveryAdapter
+    ? config.deliveryService.registerAdapter(production.deliveryAdapter) : undefined;
   const disposeRpc = installDiscordRpc(ctx, production.controller, config.rpcAuthority);
-  ctx.effect(() => async () => production.close(), 'dsh-im: close Discord bot connections');
+  ctx.effect(() => async () => {
+    await unregisterDelivery?.();
+    await production.close();
+  }, 'dsh-im: close Discord bot connections');
   return disposeRpc;
 }
 

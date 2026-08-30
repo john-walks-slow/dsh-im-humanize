@@ -9,13 +9,18 @@ export async function apply(ctx, config = {}) {
     return installWhatsappRpc(ctx, config.controller, config.rpcOptions, config.rpcAuthority);
   }
   const production = await createProductionController(ctx, config, config.internals ?? {});
+  const unregisterDelivery = config.deliveryService && production.deliveryAdapter
+    ? config.deliveryService.registerAdapter(production.deliveryAdapter) : undefined;
   const disposeRpc = installWhatsappRpc(
     ctx,
     production.controller,
     config.rpcOptions,
     config.rpcAuthority,
   );
-  ctx.effect(() => async () => production.close(), 'dsh-im: close WhatsApp Web connections');
+  ctx.effect(() => async () => {
+    await unregisterDelivery?.();
+    await production.close();
+  }, 'dsh-im: close WhatsApp Web connections');
   return disposeRpc;
 }
 

@@ -469,6 +469,11 @@ export class TextHarnessBridge {
     });
   }
 
+  sendProactiveText(target, text, { signal } = {}) {
+    signal?.throwIfAborted();
+    return this.#bot.sendText(target, text);
+  }
+
   async #deliverArtifacts(target, replyTo, artifacts = [], baseReceipt) {
     const delivery = await deliverOutboundArtifacts({
       artifacts,

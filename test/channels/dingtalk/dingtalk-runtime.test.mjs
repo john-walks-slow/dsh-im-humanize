@@ -48,6 +48,8 @@ function stateFixture() {
 test('runtime sends a DingTalk connection test only through the remembered private webhook', async () => {
   const state = stateFixture();
   const sends = [];
+  const proactiveSends = [];
+  let proactiveFailure = null;
   const client = {
     connected: true,
     socket: { readyState: 1 },
@@ -61,7 +63,13 @@ test('runtime sends a DingTalk connection test only through the remembered priva
     clientSecret: 'host-secret',
     harness: { ensureRunning: async () => true },
     state,
-    api: { sendText: async (request) => sends.push(request) },
+    api: {
+      sendText: async (request) => sends.push(request),
+      sendRobotText: async (request) => {
+        proactiveSends.push(request);
+        if (proactiveFailure) throw proactiveFailure;
+      },
+    },
     streamFactory: async () => ({ client, topic: 'robot-topic' }),
   });
 
@@ -78,6 +86,23 @@ test('runtime sends a DingTalk connection test only through the remembered priva
   assert.equal(sends[0].clientSecret, 'host-secret');
   assert.equal(sends[0].sessionWebhook, 'https://oapi.dingtalk.com/robot/reply?ticket=inbound-private');
   assert.equal(sends[0].text, '连接测试');
+  assert.deepEqual(await runtime.sendProactiveText({
+    kind: 'group',
+    route: { openConversationId: 'cid-proactive' },
+  }, '主动投递'), { sent: true });
+  assert.equal(proactiveSends.length, 1);
+  assert.deepEqual(proactiveSends[0].target, {
+    type: 'group',
+    robotCode: 'ding-client',
+    openConversationId: 'cid-proactive',
+  });
+  assert.equal(proactiveSends[0].text, '主动投递');
+  assert.equal('sessionWebhook' in proactiveSends[0], false);
+  proactiveFailure = Object.assign(new Error('provider detail'), { code: 'send-rejected' });
+  await assert.rejects(() => runtime.sendProactiveText({
+    kind: 'user',
+    route: { userId: 'staff-one' },
+  }, '失败投递'), { code: 'target-rejected' });
   await runtime.stop();
 });
 

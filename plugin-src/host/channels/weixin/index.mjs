@@ -10,6 +10,8 @@ export async function apply(ctx, config = {}) {
   }
 
   const production = await createProductionController(ctx, config, config.internals);
+  const unregisterDelivery = config.deliveryService && production.deliveryAdapter
+    ? config.deliveryService.registerAdapter(production.deliveryAdapter) : undefined;
   const disposeRpc = installWeixinRpc(
     ctx,
     production.controller,
@@ -17,6 +19,7 @@ export async function apply(ctx, config = {}) {
     config.rpcAuthority,
   );
   ctx.effect(() => async () => {
+    await unregisterDelivery?.();
     await production.close();
   }, 'dsh-weixin: close account connections');
   return disposeRpc;

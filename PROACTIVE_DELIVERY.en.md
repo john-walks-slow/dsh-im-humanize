@@ -1,0 +1,279 @@
+# Proactive Delivery Guide
+
+[简体中文](PROACTIVE_DELIVERY.md) · **English**
+
+Proactive delivery lets an application send a text message through a bot connected to DSH-IM without waiting for a new user message. The caller stores only a stable `botId + targetId` pair—never a Harness `sessionId`, chat reference, message ID, or temporary webhook.
+
+All nine built-in channels support proactive delivery: Weixin, Feishu, DingTalk, WeCom, QQ, Slack, Telegram, Discord, and WhatsApp.
+
+## Quick start
+
+1. Open **Settings → IM Bot** and find the bot that should send the message.
+2. Select the gear icon in the bot card's upper-right corner.
+3. Copy the **Bot ID** under **Call identifiers**.
+4. Select **New target**, then choose a known conversation or select **Enter manually (advanced)** and enter the platform-native ID.
+5. Review or enter the **Target ID**, target type, and native platform ID.
+6. Select **Test**. After the target receives `DSH-IM 主动投递测试成功。`, select **Save target**.
+7. Select **Copy call parameters** on the saved target and store the resulting `{ botId, targetId }` in the calling application.
+8. Send messages through same-Host `ctx.dshIm.send()` or the Connection RPC `message.send` endpoint.
+
+## Configure a delivery target
+
+### 1. Get the Bot ID
+
+`botId` is the real call identifier of the currently connected bot. Copy it from the settings page and treat it as an opaque string. Do not infer the channel from its prefix, and do not substitute the bot name, a platform App ID, or a masked ID from a card.
+
+Targets belong to this bot record. Removing a bot also removes its delivery targets. After connecting it again, copy its `botId` again and recreate the required targets.
+
+### 2. Create a target
+
+After selecting **New target**, the page opens a **Choose from conversations** dropdown:
+
+- Suggestions come from conversation mappings already persisted for this bot. They are neither a platform address book nor a complete, strictly time-ordered recent-chat list.
+- A suggestion contains only the target type and native platform ID required for delivery. It does not contain a Harness `sessionId`, message text, message ID, conversation name, or last-active time.
+- A target already configured in the dropdown is marked **Added** and disabled.
+- When the dropdown is empty, send the bot a message on that platform and select **Refresh**. If it still does not appear, use **Enter manually (advanced)**.
+
+Choosing a conversation only pre-fills a draft. It does not save anything automatically.
+
+### 3. Understand Target ID
+
+`targetId` is the stable alias you define for callers. It is not a platform user, group, or channel ID.
+
+- It must be unique only within one bot. Different bots may use the same `targetId`.
+- It may contain uppercase and lowercase letters, numbers, dots, underscores, colons, `@`, or hyphens, with a length of 1–128 characters.
+- New targets default to `tgt_` plus 16 random hexadecimal characters, such as `tgt_7f3a91c8d2e64b10`.
+- You may change it before the first save—for example, to `daily-report` or `release-alerts`.
+- After saving, `targetId` is read-only. You may still edit the name, target type, and native route while callers keep using the same `botId + targetId` pair.
+
+### 4. Test, save, and copy
+
+The **Test** button appears in conversation-filled drafts, manually entered drafts, and edit forms:
+
+- It is enabled only while the bot is online and every native ID required by the current target type is present.
+- It tests the target type and native ID currently shown in the form. It does not create, update, or save the target first.
+- Changing a tested native ID clears the old success result; test the new value again.
+- The **Test** button on a saved target row tests that target's currently saved route.
+- A successful test means the platform accepted the send request or its SDK returned success. It does not mean the message was read.
+
+After saving, **Copy call parameters** copies JSON in this shape:
+
+```json
+{
+  "botId": "bot_9577c8572d454122a4ef7fb4d8420a91",
+  "targetId": "release-alerts"
+}
+```
+
+### Configuration example: a Feishu alert group
+
+Assume the Feishu bot has already received a message in the alert group:
+
+1. Open that bot's settings page and copy its **Bot ID**.
+2. Select **New target**, then choose the alert group from the dropdown.
+3. Change the generated **Target ID** to `release-alerts` and set the display name to `Release alerts`.
+4. Confirm that the target type is **Group** and the group Chat ID is filled in.
+5. Select **Test** and confirm the test message in the Feishu group.
+6. Select **Save target**, then **Copy call parameters**.
+
+If the group Chat ID is edited later, callers can continue using the same `botId + release-alerts` pair.
+
+## Native fields for all nine channels
+
+Choose a known conversation whenever possible. Obtain and enter a platform-native ID manually only when the target is missing from the suggestions.
+
+| Channel | Target type | Required field | Example or note |
+| --- | --- | --- | --- |
+| Weixin | `user` | Weixin user ID (`toUserId`) | Enter the user ID that should receive messages |
+| Feishu | `user` | Open ID (`openId`) | For example, `ou_xxx` |
+| Feishu | `group` | Group Chat ID (`chatId`) | For example, `oc_xxx` |
+| DingTalk | `user` | User ID (`userId`) | Enter the DingTalk user ID |
+| DingTalk | `group` | Group Open Conversation ID (`openConversationId`) | Proactive delivery never uses a temporary `sessionWebhook` |
+| WeCom | `user` | User ID (route field: `chatId`) | Enter the user ID for a direct message |
+| WeCom | `group` | Group Chat ID (`chatId`) | Enter the group's `chatid` |
+| QQ | `user` | User Open ID (`userOpenId`) | The platform's `user_openid` |
+| QQ | `group` | Group Open ID (`groupOpenId`) | The platform's `group_openid` |
+| Slack | `conversation` | Channel ID (`channelId`) | For example, `C0123456789` |
+| Slack | `thread` | Channel ID + thread timestamp (`channelId`, `threadTs`) | For example, `1712345678.123456` |
+| Telegram | `chat` | Chat ID (`chatId`) | A decimal string, such as `-1001234567890` |
+| Telegram | `topic` | Chat ID + Topic ID (`chatId`, `messageThreadId`) | Topic ID must be a positive integer |
+| Discord | `channel` | Channel ID (`channelId`) | DMs, channels, and Threads all use a messageable Channel ID |
+| WhatsApp | `user` | User JID (`jid`) | For example, `8613800000000@s.whatsapp.net` |
+| WhatsApp | `group` | Group JID (`jid`) | For example, `1234567890-123456@g.us` |
+
+Native ID strings must be nonempty and have no leading or trailing whitespace. A target accepts only the fields required by the selected channel and type; extra fields are rejected.
+
+## Send from a plugin in the same Host
+
+A consumer plugin can declare the `dshIm` injection and call the shared service directly without going through Connection RPC.
+
+This minimal example sends one message when the plugin loads:
+
+```js
+export const inject = ['dshIm'];
+
+export async function apply(ctx) {
+  const result = await ctx.dshIm.send(
+    'bot_9577c8572d454122a4ef7fb4d8420a91',
+    'release-alerts',
+    'The build has completed.',
+  );
+
+  if (result.sent !== true) {
+    throw new Error('Proactive delivery did not return success');
+  }
+}
+```
+
+In a real plugin, call `ctx.dshIm.send()` from your existing scheduled job, build callback, or business-event handler. Its optional fourth argument currently supports an abort signal:
+
+```js
+await ctx.dshIm.send(botId, targetId, text, { signal });
+```
+
+A same-Host plugin may also list the saved targets for one bot:
+
+```js
+const targets = await ctx.dshIm.listTargets(botId);
+// [{ targetId, name?, kind, route }, ...]
+```
+
+On failure, the Promise rejects with an Error whose `code` is one of the public error codes below.
+
+## Send through Connection RPC
+
+Connection RPC is for a local caller that already holds a `connection` client for the current DSH Host. Proactive delivery is not an HTTP, REST, or webhook endpoint, so the following example cannot be translated directly into `curl`.
+
+First unwrap the RPC success and error envelopes:
+
+```js
+const DELIVERY_CHANNEL = '/dsh-im-delivery';
+
+async function callDelivery(connection, endpoint, payload, signal) {
+  const result = await connection.rpc.call(
+    DELIVERY_CHANNEL,
+    endpoint,
+    payload,
+    signal,
+  );
+
+  if (result?.ok !== true) {
+    const error = new Error(result?.error?.message || 'delivery-failed');
+    error.code = result?.error?.code || 'delivery-failed';
+    throw error;
+  }
+  return result.value;
+}
+```
+
+Then send text with the copied `botId + targetId` pair:
+
+```js
+const result = await callDelivery(connection, 'message.send', {
+  botId: 'bot_9577c8572d454122a4ef7fb4d8420a91',
+  targetId: 'release-alerts',
+  text: 'The build has completed.',
+});
+
+// result: { sent: true }
+```
+
+`message.send` accepts exactly `{ botId, targetId, text }`. Do not add a native route, `sessionId`, `chatRef`, temporary webhook, or `idempotencyKey`.
+
+### Example: deliver a daily report
+
+```js
+async function sendDailyReport(connection, summary) {
+  try {
+    await callDelivery(connection, 'message.send', {
+      botId: 'bot_9577c8572d454122a4ef7fb4d8420a91',
+      targetId: 'daily-report',
+      text: `Daily operations summary\n\n${summary}`,
+    });
+  } catch (error) {
+    if (error.code === 'bot-not-connected') {
+      // Let the application decide whether to retry after reconnection.
+      return { delivered: false, reason: 'offline' };
+    }
+    throw error;
+  }
+  return { delivered: true };
+}
+```
+
+## Management RPC reference
+
+The settings page manages targets through the same Connection RPC channel. Most callers need only `message.send`; use the other endpoints only when the caller must manage targets itself.
+
+Every response is either `{ ok: true, value }` or `{ ok: false, error: { code, message, details } }`.
+
+| Endpoint | Payload | Successful `value` |
+| --- | --- | --- |
+| `message.send` | `{ botId, targetId, text }` | `{ sent: true }` |
+| `target.list` | `{ botId }` | `{ botId, channel, targets }` |
+| `target.suggestion.list` | `{ botId }` | `{ botId, channel, suggestions }` |
+| `target.create` | `{ botId, target: { targetId, name?, kind, route } }` | The complete created target |
+| `target.update` | `{ botId, targetId, target: { name?, kind, route } }` | The complete updated target |
+| `target.delete` | `{ botId, targetId }` | `{ deleted: true }` |
+| `target.test` | `{ botId, targetId }` | `{ sent: true }` |
+| `target.test` | `{ botId, target: { kind, route } }` | `{ sent: true }`; tests a draft without saving it |
+
+Payloads are validated with exact fields. The inner `target` in `target.update` must not contain `targetId`; a draft test must not contain `targetId` or `name`.
+
+## Error handling
+
+| Error code | Meaning and suggested action |
+| --- | --- |
+| `bad-request` | Invalid request shape, ID format, or text; check field names and remove extra fields |
+| `unknown-bot` | The current Host does not own this `botId`; copy it again from bot settings |
+| `unknown-target` | The bot has no such `targetId`; check the copied pair or whether the target was deleted |
+| `target-conflict` | The same bot already has this `targetId`; choose another alias |
+| `invalid-target` | The target type or native ID violates this channel's rules; select the correct type and verify the ID |
+| `bot-not-connected` | The bot is offline; let the caller decide whether to retry after reconnection |
+| `target-rejected` | The platform explicitly rejected the target or the bot lacks permission; check platform permissions and the target ID |
+| `delivery-failed` | A network, platform, or other safely redacted delivery failure; check bot state and Host logs |
+| `cancelled` | The call was cancelled; stop or start a new call as required by the application |
+
+## Delivery semantics and limits
+
+- Proactive delivery currently accepts nonempty text only. This API does not send images, files, cards, or rich content.
+- `{ sent: true }` means the platform accepted the send request or its SDK returned success. It does not guarantee final delivery or a read receipt.
+- DSH-IM stores no proactive-delivery history, generates no `deliveryHandle` or `idempotencyKey`, and performs no automatic retry.
+- Retrying after a caller timeout can create duplicate messages. When business idempotency matters, the caller must store its own event ID and processing result.
+- Normal delivery uses only a saved `botId + targetId`. Keep the native route in target configuration instead of sending it with every message.
+- One call sends to one target. Notify multiple targets with separate calls and handle each result separately.
+- Targets remain editable while a bot is offline, but testing and delivery require a connected bot.
+
+## RPC reachability
+
+Connection RPC accepts loopback callers by default. If a Web profile is deliberately served on a trusted LAN, it can reuse the existing Host authority in that profile's `cordis.patch.yml`:
+
+```yaml
+- id: xmanrui-dsh-im
+  config:
+    rpcAuthority: trusted-host
+```
+
+`trusted-host` is only a Host/Origin reachability boundary, not user authentication. Callers that can reach that trusted-network authority can also access bot-management endpoints. Enable it only on a trusted network.
+
+## Troubleshooting
+
+### The target conversation is missing from the dropdown
+
+Send that bot a message on the platform, return to settings, and refresh. Suggestions are not a complete platform conversation directory. Use **Enter manually (advanced)** if the target still does not appear.
+
+### The Test button is disabled
+
+Make sure the bot is online and every native ID required by the current target type is present. A Slack Thread and a Telegram Topic both require two fields.
+
+### Can Target ID be changed after saving?
+
+No. You can edit its name, type, and native route without changing call parameters. If the alias itself must change, create a new target, migrate callers, and then delete the old target.
+
+### Why not use sessionId?
+
+A `sessionId` identifies a Harness Session. It is not a uniform, stable message address across the nine platforms. Proactive delivery uses the stable bot and saved-target pair instead.
+
+### The test succeeded, but the recipient cannot see the message
+
+A successful test proves only that the platform accepted the send. Check bot permissions, platform restrictions, target accuracy, and client-side filtering or archive settings.

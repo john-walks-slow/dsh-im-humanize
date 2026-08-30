@@ -501,6 +501,22 @@ export class DiscordRuntime {
     return this.#bridge.sendConnectionTest(text);
   }
 
+  async sendProactiveText(target, text, options = {}) {
+    if (!this.#status.ready || !this.#bridge) {
+      const error = new Error('Discord bot is not connected');
+      error.code = 'bot-not-connected';
+      throw error;
+    }
+    const channelId = typeof target?.route?.channelId === 'string'
+      ? target.route.channelId.trim() : '';
+    if (target?.kind !== 'channel' || !channelId) {
+      const error = new TypeError('Invalid Discord proactive delivery target');
+      error.code = 'invalid-target';
+      throw error;
+    }
+    return this.#bridge.sendProactiveText({ channelId }, text, options);
+  }
+
   async start() {
     if (this.#status.ready && this.#socket) return this.status;
     if (this.#starting) return this.#starting;

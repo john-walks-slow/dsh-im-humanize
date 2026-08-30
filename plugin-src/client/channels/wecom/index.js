@@ -12,6 +12,7 @@ import {
 } from '../../agent-preset.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import {
+  BotSettingsButton,
   BotStatusMeta,
   ChannelListHeading,
   LastMessageErrorSummary,
@@ -181,14 +182,21 @@ export function AccountCard({
           h('div', { className: 'ddt-avatar dim-botAvatar dwecom-avatar', 'aria-hidden': 'true' }, h(WecomLogoGlyph, { size: 29 })),
           h('div', { className: 'dim-botName' },
             h('h3', null, account.bot.name), h('p', null, account.bot.appIdMasked))),
-        h(BotStatusMeta, {
-          className: 'ddt-health',
-          dotClassName: 'ddt-dot',
-          tone,
-          stateLabel,
-          lastCheckedAt: account.health.lastCheckedAt,
-          formatCheckedTime: checkedTime,
-        })),
+        h('div', { className: 'dim-botCardTools' },
+          h(BotStatusMeta, {
+            className: 'ddt-health',
+            dotClassName: 'ddt-dot',
+            tone,
+            stateLabel,
+            lastCheckedAt: account.health.lastCheckedAt,
+            formatCheckedTime: checkedTime,
+          }),
+          h(BotSettingsButton, {
+            channel: 'wecom',
+            botId: account.botId,
+            botName: account.bot.name,
+            connected: account.connected,
+          }))),
       h(WorkspaceEditor, {
         workspace: account.workspace,
         disabled: Boolean(busy),

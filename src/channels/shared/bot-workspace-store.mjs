@@ -49,8 +49,90 @@ function botIdOf(value) {
   return value;
 }
 
+function deliveryTargetError(code, message, options) {
+  const error = new Error(message, options);
+  error.code = code;
+  return error;
+}
+
+function targetIdOf(value) {
+  if (typeof value !== 'string'
+    || !/^[A-Za-z0-9._:@-]{1,128}$/.test(value)) {
+    throw deliveryTargetError('invalid-target', 'Invalid target id');
+  }
+  return value;
+}
+
+function jsonRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw deliveryTargetError('invalid-target', 'Invalid target route');
+  }
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) throw new TypeError('route is not JSON');
+    const route = JSON.parse(serialized);
+    if (!route || typeof route !== 'object' || Array.isArray(route)) {
+      throw new TypeError('route is not an object');
+    }
+    return route;
+  } catch (cause) {
+    throw deliveryTargetError('invalid-target', 'Invalid target route', { cause });
+  }
+}
+
+function normalizeDeliveryTarget(value, { targetId } = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw deliveryTargetError('invalid-target', 'Invalid delivery target');
+  }
+  const allowed = targetId === undefined
+    ? new Set(['targetId', 'name', 'kind', 'route'])
+    : new Set(['name', 'kind', 'route']);
+  if (Object.keys(value).some((key) => !allowed.has(key))) {
+    throw deliveryTargetError('invalid-target', 'Invalid delivery target');
+  }
+  const id = targetIdOf(targetId ?? value.targetId);
+  if (typeof value.kind !== 'string' || !/^[a-z][a-z0-9-]{0,31}$/.test(value.kind)) {
+    throw deliveryTargetError('invalid-target', 'Invalid target kind');
+  }
+  let name;
+  if (value.name !== undefined) {
+    if (typeof value.name !== 'string' || !value.name.trim() || value.name.trim().length > 80) {
+      throw deliveryTargetError('invalid-target', 'Invalid target name');
+    }
+    name = value.name.trim();
+  }
+  return {
+    targetId: id,
+    ...(name === undefined ? {} : { name }),
+    kind: value.kind,
+    route: jsonRecord(value.route),
+  };
+}
+
+function normalizeDeliveryTargets(value) {
+  const deliveryTargets = Object.create(null);
+  if (value === undefined) return deliveryTargets;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  try {
+    for (const [botId, targets] of Object.entries(value)) {
+      botIdOf(botId);
+      if (!targets || typeof targets !== 'object' || Array.isArray(targets)) return null;
+      const normalizedTargets = Object.create(null);
+      for (const [targetId, target] of Object.entries(targets)) {
+        const normalized = normalizeDeliveryTarget(target, { targetId });
+        const { targetId: _targetId, ...stored } = normalized;
+        normalizedTargets[targetId] = stored;
+      }
+      deliveryTargets[botId] = normalizedTargets;
+    }
+  } catch {
+    return null;
+  }
+  return deliveryTargets;
+}
+
 function normalizeDocument(value) {
-  if (!value || value.version !== 1 || !value.workspaces
+  if (!value || ![1, 2].includes(value.version) || !value.workspaces
     || typeof value.workspaces !== 'object' || Array.isArray(value.workspaces)) return null;
   const workspaces = {};
   for (const [botId, workspace] of Object.entries(value.workspaces)) {
@@ -83,7 +165,16 @@ function normalizeDocument(value) {
       }
     }
   }
-  return { version: 1, workspaces, agentPresets, contextEnhancement };
+  if (value.version === 1 && value.deliveryTargets !== undefined) return null;
+  const deliveryTargets = normalizeDeliveryTargets(value.deliveryTargets);
+  if (!deliveryTargets) return null;
+  return {
+    version: value.version,
+    workspaces,
+    agentPresets,
+    contextEnhancement,
+    deliveryTargets,
+  };
 }
 
 export async function validateWorkspacePath(value) {
@@ -112,9 +203,11 @@ export async function validateWorkspacePath(value) {
 export class BotWorkspaceStore {
   #path;
   #defaultWorkspace;
+  #version = 1;
   #workspaces = {};
   #agentPresets = {};
   #contextEnhancement = {};
+  #deliveryTargets = Object.create(null);
   #generations = new Map();
   #nextGeneration = 1;
   #incarnations = new Map();
@@ -135,14 +228,18 @@ export class BotWorkspaceStore {
     try {
       const normalized = normalizeDocument(JSON.parse(await readFile(this.#path, 'utf8')));
       if (!normalized) throw new Error('dsh-im workspace config is invalid');
+      this.#version = normalized.version;
       this.#workspaces = normalized.workspaces;
       this.#agentPresets = normalized.agentPresets;
       this.#contextEnhancement = normalized.contextEnhancement;
+      this.#deliveryTargets = normalized.deliveryTargets;
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
+      this.#version = 1;
       this.#workspaces = {};
       this.#agentPresets = {};
       this.#contextEnhancement = {};
+      this.#deliveryTargets = Object.create(null);
     }
     this.#generations.clear();
     this.#nextGeneration = 1;
@@ -179,6 +276,83 @@ export class BotWorkspaceStore {
     return this.has(id) && Object.hasOwn(this.#contextEnhancement, id)
       ? this.#contextEnhancement[id]
       : DEFAULT_CONTEXT_ENHANCEMENT_CONFIG;
+  }
+
+  listDeliveryTargets(botId) {
+    const id = botIdOf(botId);
+    if (!this.has(id)) throw deliveryTargetError('unknown-bot', 'Unknown bot');
+    return Object.entries(this.#deliveryTargets[id] ?? {})
+      .map(([targetId, target]) => normalizeDeliveryTarget(target, { targetId }))
+      .sort((left, right) => left.targetId.localeCompare(right.targetId));
+  }
+
+  deliveryTargetFor(botId, targetId) {
+    const id = botIdOf(botId);
+    const targetKey = targetIdOf(targetId);
+    if (!this.has(id)) throw deliveryTargetError('unknown-bot', 'Unknown bot');
+    const target = this.#deliveryTargets[id]?.[targetKey];
+    return target ? normalizeDeliveryTarget(target, { targetId: targetKey }) : null;
+  }
+
+  async createDeliveryTarget(botId, value) {
+    const id = botIdOf(botId);
+    const target = normalizeDeliveryTarget(value);
+    return this.#enqueue(id, async () => {
+      if (!this.has(id)) throw deliveryTargetError('unknown-bot', 'Unknown bot');
+      if (Object.hasOwn(this.#deliveryTargets[id] ?? {}, target.targetId)) {
+        throw deliveryTargetError('target-conflict', 'Target already exists');
+      }
+      const { targetId, ...stored } = target;
+      const next = {
+        ...this.#deliveryTargets,
+        [id]: { ...(this.#deliveryTargets[id] ?? {}), [targetId]: stored },
+      };
+      await this.#persist(this.#contextEnhancement, next, 2);
+      this.#deliveryTargets = next;
+      this.#version = 2;
+      return normalizeDeliveryTarget(stored, { targetId });
+    });
+  }
+
+  async updateDeliveryTarget(botId, targetId, value) {
+    const id = botIdOf(botId);
+    const targetKey = targetIdOf(targetId);
+    const replacement = normalizeDeliveryTarget(value, { targetId: targetKey });
+    return this.#enqueue(id, async () => {
+      if (!this.has(id)) throw deliveryTargetError('unknown-bot', 'Unknown bot');
+      if (!Object.hasOwn(this.#deliveryTargets[id] ?? {}, targetKey)) {
+        throw deliveryTargetError('unknown-target', 'Unknown target');
+      }
+      const { targetId: _targetId, ...stored } = replacement;
+      const next = {
+        ...this.#deliveryTargets,
+        [id]: { ...this.#deliveryTargets[id], [targetKey]: stored },
+      };
+      await this.#persist(this.#contextEnhancement, next, 2);
+      this.#deliveryTargets = next;
+      this.#version = 2;
+      return normalizeDeliveryTarget(stored, { targetId: targetKey });
+    });
+  }
+
+  async deleteDeliveryTarget(botId, targetId) {
+    const id = botIdOf(botId);
+    const targetKey = targetIdOf(targetId);
+    return this.#enqueue(id, async () => {
+      if (!this.has(id)) throw deliveryTargetError('unknown-bot', 'Unknown bot');
+      if (!Object.hasOwn(this.#deliveryTargets[id] ?? {}, targetKey)) {
+        throw deliveryTargetError('unknown-target', 'Unknown target');
+      }
+      const botTargets = { ...this.#deliveryTargets[id] };
+      delete botTargets[targetKey];
+      const next = { ...this.#deliveryTargets };
+      if (Object.keys(botTargets).length > 0) next[id] = botTargets;
+      else delete next[id];
+      await this.#persist(this.#contextEnhancement, next, 2);
+      this.#deliveryTargets = next;
+      this.#version = 2;
+      return true;
+    });
   }
 
   generationFor(botId) {
@@ -471,6 +645,7 @@ export class BotWorkspaceStore {
       ...Object.keys(this.#workspaces),
       ...Object.keys(this.#agentPresets),
       ...Object.keys(this.#contextEnhancement),
+      ...Object.keys(this.#deliveryTargets),
       ...this.#dirtyRemovals,
     ]);
     for (const botId of candidates) {
@@ -518,10 +693,13 @@ export class BotWorkspaceStore {
     const hadWorkspace = Object.hasOwn(this.#workspaces, id);
     const hadPreset = Object.hasOwn(this.#agentPresets, id);
     const hadContextEnhancement = Object.hasOwn(this.#contextEnhancement, id);
-    const needsCleanup = hadWorkspace || hadPreset || hadContextEnhancement || this.#dirtyRemovals.has(id);
+    const hadDeliveryTargets = Object.hasOwn(this.#deliveryTargets, id);
+    const needsCleanup = hadWorkspace || hadPreset || hadContextEnhancement
+      || hadDeliveryTargets || this.#dirtyRemovals.has(id);
     delete this.#workspaces[id];
     delete this.#agentPresets[id];
     delete this.#contextEnhancement[id];
+    delete this.#deliveryTargets[id];
     this.#generations.delete(id);
     this.#incarnations.delete(id);
     if (!needsCleanup) return {
@@ -551,13 +729,20 @@ export class BotWorkspaceStore {
     return queued;
   }
 
-  async #persist(contextEnhancement = this.#contextEnhancement) {
-    const document = { version: 1, workspaces: this.#workspaces };
+  async #persist(
+    contextEnhancement = this.#contextEnhancement,
+    deliveryTargets = this.#deliveryTargets,
+    version = this.#version,
+  ) {
+    const document = { version, workspaces: this.#workspaces };
     if (Object.keys(this.#agentPresets).length > 0) {
       document.agentPresets = this.#agentPresets;
     }
     if (Object.keys(contextEnhancement).length > 0) {
       document.contextEnhancement = contextEnhancement;
+    }
+    if (version >= 2 && Object.keys(deliveryTargets).length > 0) {
+      document.deliveryTargets = deliveryTargets;
     }
     await mkdir(dirname(this.#path), { recursive: true, mode: 0o700 });
     const temporary = `${this.#path}.tmp`;
@@ -572,7 +757,8 @@ export class BotWorkspaceStore {
   async #persistCurrentDocument() {
     if (Object.keys(this.#workspaces).length > 0
       || Object.keys(this.#agentPresets).length > 0
-      || Object.keys(this.#contextEnhancement).length > 0) {
+      || Object.keys(this.#contextEnhancement).length > 0
+      || Object.keys(this.#deliveryTargets).length > 0) {
       await this.#persist();
       return;
     }

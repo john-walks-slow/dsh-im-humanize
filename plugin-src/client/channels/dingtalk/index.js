@@ -11,6 +11,7 @@ import {
 } from '../../agent-preset.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import {
+  BotSettingsButton,
   BotStatusMeta,
   ChannelListHeading,
   LastMessageErrorSummary,
@@ -238,14 +239,21 @@ export function AccountCard({
           h('div', { className: 'dim-botName' },
             h('h3', { title: account.bot.name }, account.bot.name),
             h('p', { title: account.bot.clientIdMasked }, account.bot.clientIdMasked))),
-        h(BotStatusMeta, {
-          className: 'ddt-health',
-          dotClassName: 'ddt-dot',
-          tone,
-          stateLabel,
-          lastCheckedAt: account.health.lastCheckedAt,
-          formatCheckedTime: checkedTime,
-        })),
+        h('div', { className: 'dim-botCardTools' },
+          h(BotStatusMeta, {
+            className: 'ddt-health',
+            dotClassName: 'ddt-dot',
+            tone,
+            stateLabel,
+            lastCheckedAt: account.health.lastCheckedAt,
+            formatCheckedTime: checkedTime,
+          }),
+          h(BotSettingsButton, {
+            channel: 'dingtalk',
+            botId: account.botId,
+            botName: account.bot.name,
+            connected: account.connected,
+          }))),
       h(WorkspaceEditor, {
         workspace: account.workspace,
         disabled: Boolean(busy),

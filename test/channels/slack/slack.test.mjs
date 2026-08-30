@@ -709,6 +709,7 @@ test('Slack controller stores two protected credential references and exposes ne
   const configStore = await new SlackConfigStore(configPath).load();
   const credentialStore = credentials();
   const connectionTests = [];
+  const proactiveSends = [];
   const controller = new SlackController({
     credentials: credentialStore,
     configStore,
@@ -729,6 +730,10 @@ test('Slack controller stores two protected credential references and exposes ne
       async start() {},
       async stop() {},
       async sendConnectionTest(text) { connectionTests.push(text); },
+      async sendProactiveText(...args) {
+        proactiveSends.push(args);
+        return { sent: true };
+      },
     }),
   });
   const status = await controller.bindCredentials({ botToken: BOT_TOKEN, appToken: APP_TOKEN });
@@ -744,6 +749,11 @@ test('Slack controller stores two protected credential references and exposes ne
   await controller.sendConnectionTest(identity.botId);
   assert.match(connectionTests[0], /DeepSeek Harness/);
   assert.match(connectionTests[0], /T1234••• · U1234•••/);
+  const target = { kind: 'conversation', route: { channelId: 'C12345678' } };
+  assert.deepEqual(await controller.sendProactiveText(identity.botId, target, 'proactive-test'), {
+    sent: true,
+  });
+  assert.deepEqual(proactiveSends, [[target, 'proactive-test', {}]]);
   await controller.deleteBot(identity.botId);
   assert.equal(credentialStore.values.has(identity.botTokenRef), false);
   assert.equal(credentialStore.values.has(identity.appTokenRef), false);
@@ -1048,6 +1058,7 @@ test('Slack runtime opens Socket Mode, acknowledges envelopes, and becomes ready
   const abortMark = deferred();
   let abortMarkStarted = false;
   const errors = [];
+  const proactiveCalls = [];
   const runtime = new SlackRuntime({
     config: {
       botId: 'slack_test',
@@ -1073,6 +1084,10 @@ test('Slack runtime opens Socket Mode, acknowledges envelopes, and becomes ready
     createApi: () => ({
       authTest: async () => ({ team_id: 'T12345678', user_id: 'U12345678' }),
       openConnection: async () => ({ url: 'wss://wss-primary.slack.com/link/?ticket=test' }),
+      postMessage: async (request) => {
+        proactiveCalls.push(request);
+        return { ts: '1700000000.900' };
+      },
     }),
     createWebSocket: () => {
       socket = new FakeSocket();
@@ -1091,6 +1106,14 @@ test('Slack runtime opens Socket Mode, acknowledges envelopes, and becomes ready
   });
   await runtime.start();
   assert.equal(runtime.status.ready, true);
+  assert.deepEqual(await runtime.sendProactiveText({
+    kind: 'thread',
+    route: { channelId: 'C12345678', threadTs: '1700000000.100' },
+  }, 'proactive-test'), { providerMessageIds: ['1700000000.900'] });
+  assert.equal(proactiveCalls.length, 1);
+  assert.equal(proactiveCalls[0].channelId, 'C12345678');
+  assert.equal(proactiveCalls[0].threadTs, '1700000000.100');
+  assert.equal(proactiveCalls[0].text, 'proactive-test');
   socket.emit('message', {
     data: JSON.stringify({
       envelope_id: 'env-1',

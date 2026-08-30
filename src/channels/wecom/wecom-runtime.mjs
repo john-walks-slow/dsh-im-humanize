@@ -220,6 +220,27 @@ export class WecomRuntime {
     });
   }
 
+  async sendProactiveText(target, text, { signal } = {}) {
+    const chatId = typeof target?.route?.chatId === 'string'
+      ? target.route.chatId.trim() : '';
+    if ((target?.kind !== 'user' && target?.kind !== 'group') || !chatId) {
+      const error = new TypeError('Invalid Enterprise WeChat proactive delivery target');
+      error.code = 'invalid-target';
+      throw error;
+    }
+    if (!this.#status.ready || !this.#client) {
+      const error = new Error('Enterprise WeChat runtime is not connected');
+      error.code = 'bot-not-connected';
+      throw error;
+    }
+    signal?.throwIfAborted();
+    await this.#client.sendMessage(chatId, {
+      msgtype: 'markdown',
+      markdown: { content: text },
+    });
+    return { sent: true };
+  }
+
   async #stopActive() {
     const client = this.#client;
     const bridge = this.#bridge;

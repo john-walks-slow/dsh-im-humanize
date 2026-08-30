@@ -1049,6 +1049,39 @@ export function createDingtalkApi({
       return true;
     },
 
+    async sendRobotText({ clientId, clientSecret, target, text, signal }) {
+      if (typeof text !== 'string' || !text.trim()) throw new TypeError('text is required');
+      const content = text;
+      const normalizedTarget = normalizeFileTarget(target);
+      const token = await accessToken({ clientId, clientSecret, signal });
+      const body = {
+        robotCode: normalizedTarget.robotCode,
+        msgKey: 'sampleText',
+        msgParam: JSON.stringify({ content }),
+        ...(normalizedTarget.type === 'group'
+          ? { openConversationId: normalizedTarget.openConversationId }
+          : { userIds: [normalizedTarget.userId] }),
+      };
+      const pathname = normalizedTarget.type === 'group'
+        ? 'v1.0/robot/groupMessages/send'
+        : 'v1.0/robot/oToMessages/batchSend';
+      const response = await requestJson(fetchImpl, endpoint(apiBase, pathname), {
+        body,
+        headers: { 'x-acs-dingtalk-access-token': token },
+        signal,
+        action: '主动文字消息发送',
+      });
+      const rejection = rejectedProviderResponse(response);
+      if (rejection) {
+        throw new DingtalkApiError(
+          'send-rejected',
+          '钉钉服务拒绝了主动文字消息。',
+          { providerCode: rejection },
+        );
+      }
+      return response;
+    },
+
     async sendFile(request) {
       return sendArtifact(request, {
         uploadType: 'file',

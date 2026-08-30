@@ -29,6 +29,8 @@ export async function apply(ctx, config = {}) {
   }
 
   const production = await createProductionController(ctx, config);
+  const unregisterDelivery = config.deliveryService && production.deliveryAdapter
+    ? config.deliveryService.registerAdapter(production.deliveryAdapter) : undefined;
   const disposeRpc = installFeishuRpc(
     ctx,
     production.controller,
@@ -36,6 +38,7 @@ export async function apply(ctx, config = {}) {
     config.rpcAuthority,
   );
   ctx.effect(() => async () => {
+    await unregisterDelivery?.();
     await production.close();
   }, 'dsh-feishu: close controller and live connection');
   return disposeRpc;

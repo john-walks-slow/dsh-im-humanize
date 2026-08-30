@@ -388,6 +388,45 @@ export class DingtalkRuntime {
     });
   }
 
+  async sendProactiveText(target, text, { signal } = {}) {
+    const userId = typeof target?.route?.userId === 'string'
+      ? target.route.userId.trim() : '';
+    const openConversationId = typeof target?.route?.openConversationId === 'string'
+      ? target.route.openConversationId.trim() : '';
+    if ((target?.kind === 'user' && (!userId || openConversationId))
+      || (target?.kind === 'group' && (!openConversationId || userId))
+      || (target?.kind !== 'user' && target?.kind !== 'group')) {
+      const error = new TypeError('Invalid DingTalk proactive delivery target');
+      error.code = 'invalid-target';
+      throw error;
+    }
+    if (!this.#status.ready || !this.#abortController) {
+      const error = new Error('DingTalk runtime is not connected');
+      error.code = 'bot-not-connected';
+      throw error;
+    }
+    signal?.throwIfAborted();
+    try {
+      await this.#api.sendRobotText({
+        clientId: this.#config.clientId,
+        clientSecret: this.#clientSecret,
+        target: {
+          type: target.kind,
+          robotCode: this.#config.clientId,
+          ...(target.kind === 'user' ? { userId } : { openConversationId }),
+        },
+        text,
+        signal: signal ?? this.#abortController.signal,
+      });
+    } catch (cause) {
+      if (cause?.code !== 'send-rejected') throw cause;
+      const error = new Error('DingTalk rejected the proactive delivery target', { cause });
+      error.code = 'target-rejected';
+      throw error;
+    }
+    return { sent: true };
+  }
+
   #pendingSenders() {
     return typeof this.#state.pendingSenders === 'function'
       ? this.#state.pendingSenders()

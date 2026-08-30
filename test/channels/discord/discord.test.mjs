@@ -392,6 +392,7 @@ test('Discord controller persists a credential reference and exposes only masked
   const configPath = join(directory, 'config.json');
   const configStore = await new DiscordConfigStore(configPath).load();
   const credentialStore = credentials();
+  const proactiveSends = [];
   const controller = new DiscordController({
     credentials: credentialStore,
     configStore,
@@ -409,6 +410,10 @@ test('Discord controller persists a credential reference and exposes only masked
       },
       async start() {},
       async stop() {},
+      async sendProactiveText(...args) {
+        proactiveSends.push(args);
+        return { sent: true };
+      },
     }),
   });
   const status = await controller.bindCredentials({ token: TOKEN });
@@ -426,6 +431,11 @@ test('Discord controller persists a credential reference and exposes only masked
   const identity = deriveDiscordBotIdentity('1234567890123456789');
   assert.equal(credentialStore.values.get(identity.tokenRef), TOKEN);
   assert.doesNotMatch(await readFile(configPath, 'utf8'), new RegExp(TOKEN.replaceAll('.', '\\.')));
+  const target = { kind: 'channel', route: { channelId: '222222222222222222' } };
+  assert.deepEqual(await controller.sendProactiveText(identity.botId, target, 'proactive-test'), {
+    sent: true,
+  });
+  assert.deepEqual(proactiveSends, [[target, 'proactive-test', {}]]);
   await controller.deleteBot(identity.botId);
   assert.equal(credentialStore.values.has(identity.tokenRef), false);
 });
@@ -1608,6 +1618,7 @@ test('Discord runtime identifies on Gateway v10 and becomes ready', async () => 
   const abortMark = deferred();
   let abortMarkStarted = false;
   const errors = [];
+  const proactiveCalls = [];
   const runtime = new DiscordRuntime({
     config: {
       botId: 'discord_test',
@@ -1632,6 +1643,10 @@ test('Discord runtime identifies on Gateway v10 and becomes ready', async () => 
     createApi: () => ({
       getCurrentUser: async () => ({ id: '1234567890123456789', bot: true }),
       getGatewayBot: async () => ({ url: 'wss://gateway.discord.gg' }),
+      createMessage: async (request) => {
+        proactiveCalls.push(request);
+        return { id: '111111111111111900' };
+      },
     }),
     createWebSocket: () => {
       socket = new FakeSocket();
@@ -1648,6 +1663,14 @@ test('Discord runtime identifies on Gateway v10 and becomes ready', async () => 
   });
   await runtime.start();
   assert.equal(runtime.status.ready, true);
+  assert.deepEqual(await runtime.sendProactiveText({
+    kind: 'channel',
+    route: { channelId: '222222222222222900' },
+  }, 'proactive-test'), { providerMessageIds: ['111111111111111900'] });
+  assert.equal(proactiveCalls.length, 1);
+  assert.equal(proactiveCalls[0].channelId, '222222222222222900');
+  assert.equal(proactiveCalls[0].content, 'proactive-test');
+  assert.equal(proactiveCalls[0].replyToMessageId, undefined);
   const identify = socket.sent.find((packet) => packet.op === 2);
   assert.equal(identify.d.token, TOKEN);
   assert.equal(identify.d.intents, 37_377);

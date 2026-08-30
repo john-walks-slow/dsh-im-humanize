@@ -98,6 +98,14 @@ test('QQ runtime sends a proactive connection test to the explicit owner fallbac
     target: { scope: 'c2c', targetId: 'owner-openid' },
     text: 'connection-test',
   }]);
+  await runtime.sendProactiveText({
+    kind: 'group',
+    route: { groupOpenId: 'group-openid' },
+  }, 'proactive-test');
+  assert.deepEqual(bot.sent[1], {
+    target: { scope: 'group', targetId: 'group-openid' },
+    text: 'proactive-test',
+  });
   await runtime.stop();
 });
 

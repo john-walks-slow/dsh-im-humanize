@@ -165,6 +165,14 @@ test('runtime sends a connection test to the bound Weixin owner without reply co
   assert.equal(sends[0].text, '连接测试');
   assert.equal(sends[0].contextToken, undefined);
   assert.equal(sends[0].runId, undefined);
+  assert.deepEqual(await runtime.sendProactiveText({
+    kind: 'user',
+    route: { toUserId: 'target-user' },
+  }, '主动投递'), { sent: true });
+  assert.equal(sends[1].toUserId, 'target-user');
+  assert.equal(sends[1].text, '主动投递');
+  assert.equal(sends[1].contextToken, undefined);
+  assert.equal(sends[1].runId, undefined);
   await runtime.stop();
 });
 

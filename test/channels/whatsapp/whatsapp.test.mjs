@@ -1341,7 +1341,14 @@ test('WhatsApp runtime sends a connection test to self and suppresses its outbou
 
   await runtime.start();
   assert.deepEqual(await runtime.sendConnectionTest('连接测试'), { sent: true });
-  assert.deepEqual(sent, [[ACCOUNT_JID, { text: '连接测试' }]]);
+  assert.deepEqual(await runtime.sendProactiveText({
+    kind: 'group',
+    route: { jid: '120363000000000000@g.us' },
+  }, '主动投递'), { providerMessageIds: ['connection-test-1'] });
+  assert.deepEqual(sent, [
+    [ACCOUNT_JID, { text: '连接测试' }],
+    ['120363000000000000@g.us', { text: '主动投递' }],
+  ]);
   await callbacks.onMessage({
     key: { remoteJid: ACCOUNT_JID, id: 'connection-test-1', fromMe: true },
     message: { conversation: '连接测试' },
@@ -1355,6 +1362,7 @@ test('WhatsApp controller delegates connection test copy to the current runtime'
   const configStore = await new WhatsappConfigStore(join(root, 'config.json')).load();
   const config = await configStore.save(linkedConfig());
   const sent = [];
+  const proactiveSends = [];
   const controller = new WhatsappController({
     configStore,
     authPath: (name) => join(root, 'auth', name),
@@ -1371,6 +1379,10 @@ test('WhatsApp controller delegates connection test copy to the current runtime'
         sent.push(text);
         return { sent: true };
       },
+      sendProactiveText: async (...args) => {
+        proactiveSends.push(args);
+        return { sent: true };
+      },
     }),
   });
   t.after(() => controller.close());
@@ -1380,6 +1392,11 @@ test('WhatsApp controller delegates connection test copy to the current runtime'
   assert.deepEqual(sent, [
     '✅ DeepSeek Harness 连接测试成功\n这条消息由「IM机器人」设置页中的“Harness WhatsApp（1650••••0123）”机器人卡片发出。',
   ]);
+  const target = { kind: 'user', route: { jid: '16505550199@s.whatsapp.net' } };
+  assert.deepEqual(await controller.sendProactiveText(config.botId, target, 'proactive-test'), {
+    sent: true,
+  });
+  assert.deepEqual(proactiveSends, [[target, 'proactive-test', {}]]);
 });
 
 test('WhatsApp reconnect RPC sends tests only for the connected target and keeps failures non-fatal', async () => {

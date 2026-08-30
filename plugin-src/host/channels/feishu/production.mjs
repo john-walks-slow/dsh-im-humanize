@@ -23,6 +23,7 @@ import {
   observeBotWorkspaceRemovals,
 } from '../../../../src/channels/shared/bot-workspace-store.mjs';
 import { listAgentPresetCatalog } from '../../../../src/channels/shared/agent-preset.mjs';
+import { createDeliveryAdapter } from '../../delivery-adapter.mjs';
 
 function webSocketProxyUrl(env) {
   for (const key of ['https_proxy', 'HTTPS_PROXY', 'http_proxy', 'HTTP_PROXY']) {
@@ -204,6 +205,9 @@ export async function createProductionController(ctx, config = {}, internals = {
   }).start();
   return {
     controller,
+    deliveryAdapter: createDeliveryAdapter({
+      channel: 'feishu', workspaces, coreController, stateFor: stateForBotId,
+    }),
     ready: supervisor.ready,
     async close() {
       await supervisor.close();

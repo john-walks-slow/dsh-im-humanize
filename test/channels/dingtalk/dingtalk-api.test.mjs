@@ -153,6 +153,70 @@ test('session text replies include populated mention targets and omit empty ment
   for (const body of sent) assert.equal(body.text.content, '回答');
 });
 
+test('DingTalk sends proactive text through stable user and group robot endpoints', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url: url.toString(), options });
+    if (url.pathname.endsWith('/oauth2/accessToken')) {
+      return jsonResponse({ accessToken: 'proactive-access-token', expireIn: 7_200 });
+    }
+    return jsonResponse({ processQueryKey: `query-${calls.length}` });
+  };
+  const api = createDingtalkApi({ fetchImpl });
+  await api.sendRobotText({
+    clientId: 'ding-proactive-client',
+    clientSecret: 'host-only-secret',
+    target: { type: 'user', robotCode: 'ding-proactive-client', userId: 'staff-one' },
+    text: ' 用户主动消息\n',
+  });
+  await api.sendRobotText({
+    clientId: 'ding-proactive-client',
+    clientSecret: 'host-only-secret',
+    target: {
+      type: 'group',
+      robotCode: 'ding-proactive-client',
+      openConversationId: 'cid-one',
+    },
+    text: '群主动消息',
+  });
+
+  assert.equal(calls[1].url, `${DINGTALK_API_BASE_URL}v1.0/robot/oToMessages/batchSend`);
+  assert.equal(calls[2].url, `${DINGTALK_API_BASE_URL}v1.0/robot/groupMessages/send`);
+  assert.equal(calls[1].options.headers['x-acs-dingtalk-access-token'], 'proactive-access-token');
+  assert.equal(calls[2].options.headers['x-acs-dingtalk-access-token'], 'proactive-access-token');
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    robotCode: 'ding-proactive-client',
+    msgKey: 'sampleText',
+    msgParam: JSON.stringify({ content: ' 用户主动消息\n' }),
+    userIds: ['staff-one'],
+  });
+  assert.deepEqual(JSON.parse(calls[2].options.body), {
+    robotCode: 'ding-proactive-client',
+    msgKey: 'sampleText',
+    msgParam: JSON.stringify({ content: '群主动消息' }),
+    openConversationId: 'cid-one',
+  });
+  assert.doesNotMatch(JSON.stringify(calls.slice(1)), /sessionWebhook|sendBySession/);
+});
+
+test('DingTalk exposes a stable rejection code for rejected proactive text', async () => {
+  const api = createDingtalkApi({
+    fetchImpl: async (url) => url.pathname.endsWith('/oauth2/accessToken')
+      ? jsonResponse({ accessToken: 'rejected-text-token', expireIn: 7_200 })
+      : jsonResponse({ code: 'Forbidden.AccessDenied' }),
+  });
+  await assert.rejects(() => api.sendRobotText({
+    clientId: 'ding-rejected-text-client',
+    clientSecret: 'host-only-secret',
+    target: { type: 'user', robotCode: 'ding-rejected-text-client', userId: 'staff-one' },
+    text: '主动投递',
+  }), (error) => {
+    assert.equal(error.code, 'send-rejected');
+    assert.equal(error.providerCode, 'Forbidden.AccessDenied');
+    return true;
+  });
+});
+
 test('DingTalk adds, recalls, and replaces its native status reactions', async () => {
   const calls = [];
   const fetchImpl = async (url, options) => {

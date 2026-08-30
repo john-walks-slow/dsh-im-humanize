@@ -43,6 +43,11 @@ import { WHATSAPP_RPC_CHANNEL } from './channels/whatsapp/api.js';
 import { WhatsappSettingsTab } from './channels/whatsapp/index.js';
 import { installWhatsappStyles } from './channels/whatsapp/styles.js';
 import { en, h, IM_LOCALE_NAMESPACE, setImTranslator, zh } from './i18n.js';
+import { BotSettingsContext } from './channel-card-meta.js';
+import {
+  DELIVERY_RPC_CHANNEL,
+  DeliveryTargetSettingsPage,
+} from './delivery-settings.js';
 import {
   createLoopbackAwareRpcCalls,
   replacePageLocation,
@@ -167,6 +172,7 @@ export function IMSettingsTab({
   whatsappRpcCall,
   officeRpcCall,
   updateRpcCall,
+  deliveryRpcCall,
   workspaceDirectoryPicker,
   browserLocation = globalThis.location,
   navigateToRecoveryUrl = replacePageLocation,
@@ -174,6 +180,7 @@ export function IMSettingsTab({
   const [selected, setSelected] = React.useState('weixin');
   const [loopbackRecovery, setLoopbackRecovery] = React.useState(null);
   const [runningVersion, setRunningVersion] = React.useState(IM_PLUGIN_VERSION);
+  const [deliverySettings, setDeliverySettings] = React.useState(null);
   const githubTooltipId = React.useId();
   const active = CHANNELS.find((channel) => channel.id === selected) ?? CHANNELS[0];
   const reportLoopbackRecovery = React.useCallback((recovery) => {
@@ -194,6 +201,7 @@ export function IMSettingsTab({
     whatsappRpcCall,
     officeRpcCall,
     updateRpcCall,
+    deliveryRpcCall,
   }, {
     location: browserLocation,
     onRecovery: reportLoopbackRecovery,
@@ -201,6 +209,7 @@ export function IMSettingsTab({
     browserLocation,
     dingtalkRpcCall,
     discordRpcCall,
+    deliveryRpcCall,
     feishuRpcCall,
     officeRpcCall,
     qqRpcCall,
@@ -212,6 +221,9 @@ export function IMSettingsTab({
     weixinRpcCall,
     whatsappRpcCall,
   ]);
+  const botSettingsContext = React.useMemo(() => Object.freeze({
+    openBotSettings: setDeliverySettings,
+  }), []);
   return h(WorkspaceDirectoryPickerContext.Provider, { value: workspaceDirectoryPicker },
     h('section', { className: 'dim-page', 'aria-label': 'IM机器人设置' },
     h('header', { className: 'dim-title' },
@@ -253,7 +265,10 @@ export function IMSettingsTab({
           className: 'dim-channel',
           'aria-selected': channel.id === active.id,
           'aria-controls': `dim-panel-${channel.id}`,
-          onClick: () => setSelected(channel.id),
+          onClick: () => {
+            setSelected(channel.id);
+            setDeliverySettings(null);
+          },
         },
         h(ChannelLogo, { channel: channel.id }),
         h('span', { className: 'dim-channelCopy' },
@@ -273,25 +288,33 @@ export function IMSettingsTab({
             onNavigate: navigateToRecoveryUrl,
           })
         : null,
-      active.id === 'weixin'
-        ? h(WeixinSettingsTab, { rpcCall: rpcCalls.weixinRpcCall })
-        : active.id === 'feishu'
-          ? h(FeishuSettingsTab, { rpcCall: rpcCalls.feishuRpcCall })
-          : active.id === 'dingtalk'
-            ? h(DingtalkSettingsTab, { rpcCall: rpcCalls.dingtalkRpcCall })
-            : active.id === 'wecom'
-              ? h(WecomSettingsTab, { rpcCall: rpcCalls.wecomRpcCall })
-              : active.id === 'qq'
-                ? h(QqSettingsTab, { rpcCall: rpcCalls.qqRpcCall })
-                : active.id === 'slack'
-                  ? h(SlackSettingsTab, { rpcCall: rpcCalls.slackRpcCall })
-                : active.id === 'telegram'
-                  ? h(TelegramSettingsTab, { rpcCall: rpcCalls.telegramRpcCall })
-                  : active.id === 'discord'
-                    ? h(DiscordSettingsTab, { rpcCall: rpcCalls.discordRpcCall })
-                    : active.id === 'whatsapp'
-                      ? h(WhatsappSettingsTab, { rpcCall: rpcCalls.whatsappRpcCall })
-                      : h(OfficeSettingsTab, { rpcCall: rpcCalls.officeRpcCall })),
+      h(BotSettingsContext.Provider, { value: botSettingsContext },
+        deliverySettings?.channel === active.id
+          ? h(DeliveryTargetSettingsPage, {
+              channel: active.id,
+              account: deliverySettings,
+              rpcCall: rpcCalls.deliveryRpcCall,
+              onBack: () => setDeliverySettings(null),
+            })
+          : active.id === 'weixin'
+            ? h(WeixinSettingsTab, { rpcCall: rpcCalls.weixinRpcCall })
+            : active.id === 'feishu'
+              ? h(FeishuSettingsTab, { rpcCall: rpcCalls.feishuRpcCall })
+              : active.id === 'dingtalk'
+                ? h(DingtalkSettingsTab, { rpcCall: rpcCalls.dingtalkRpcCall })
+                : active.id === 'wecom'
+                  ? h(WecomSettingsTab, { rpcCall: rpcCalls.wecomRpcCall })
+                  : active.id === 'qq'
+                    ? h(QqSettingsTab, { rpcCall: rpcCalls.qqRpcCall })
+                    : active.id === 'slack'
+                      ? h(SlackSettingsTab, { rpcCall: rpcCalls.slackRpcCall })
+                    : active.id === 'telegram'
+                      ? h(TelegramSettingsTab, { rpcCall: rpcCalls.telegramRpcCall })
+                      : active.id === 'discord'
+                        ? h(DiscordSettingsTab, { rpcCall: rpcCalls.discordRpcCall })
+                        : active.id === 'whatsapp'
+                          ? h(WhatsappSettingsTab, { rpcCall: rpcCalls.whatsappRpcCall })
+                          : h(OfficeSettingsTab, { rpcCall: rpcCalls.officeRpcCall }))),
     ),
   ));
 }
@@ -344,6 +367,8 @@ export function apply(ctx) {
     ctx.connection.rpc.call(OFFICE_RPC_CHANNEL, endpoint, payload, signal);
   const updateRpcCall = (endpoint, payload, signal) =>
     ctx.connection.rpc.call(UPDATE_RPC_CHANNEL, endpoint, payload, signal);
+  const deliveryRpcCall = (endpoint, payload, signal) =>
+    ctx.connection.rpc.call(DELIVERY_RPC_CHANNEL, endpoint, payload, signal);
   const workspaceDirectoryPicker = Object.freeze({
     listDirectory: (path, signal) =>
       callWorkspaceDirectoryApi(ctx, 'listDirectory', path, signal),
@@ -368,6 +393,7 @@ export function apply(ctx) {
       whatsappRpcCall,
       officeRpcCall,
       updateRpcCall,
+      deliveryRpcCall,
       workspaceDirectoryPicker,
     }),
   }, IMSettingsTab));

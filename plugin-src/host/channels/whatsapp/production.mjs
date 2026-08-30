@@ -15,6 +15,7 @@ import {
   observeBotWorkspaceRemovals,
 } from '../../../../src/channels/shared/bot-workspace-store.mjs';
 import { listAgentPresetCatalog } from '../../../../src/channels/shared/agent-preset.mjs';
+import { createDeliveryAdapter } from '../../delivery-adapter.mjs';
 import { createTokenConnectionSupervisor } from '../shared/connection-supervisor.mjs';
 import { createHarnessCommandExecutor } from '../../harness-command-executor.mjs';
 import { harnessConnection } from '../../harness-connection.mjs';
@@ -151,6 +152,9 @@ export async function createProductionController(ctx, config = {}, internals = {
   }).start();
   return {
     controller,
+    deliveryAdapter: createDeliveryAdapter({
+      channel: 'whatsapp', workspaces, coreController, stateFor,
+    }),
     ready: supervisor.ready,
     async close() {
       await supervisor.close();

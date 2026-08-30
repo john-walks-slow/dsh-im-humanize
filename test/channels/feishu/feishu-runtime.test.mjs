@@ -176,6 +176,19 @@ test('FeishuRuntime becomes chat-ready only after Harness and Feishu are connect
     },
   }]);
 
+  assert.deepEqual(await runtime.sendProactiveText({
+    kind: 'group',
+    route: { chatId: 'oc_proactive_group' },
+  }, '主动投递'), { sent: true });
+  assert.deepEqual(FakeClient.sent[1], {
+    params: { receive_id_type: 'chat_id' },
+    data: {
+      receive_id: 'oc_proactive_group',
+      msg_type: 'text',
+      content: JSON.stringify({ text: '主动投递' }),
+    },
+  });
+
   const stopped = await runtime.stop();
   assert.equal(stopped.ready, false);
   assert.equal(stopped.feishuLongConnectionState, 'idle');

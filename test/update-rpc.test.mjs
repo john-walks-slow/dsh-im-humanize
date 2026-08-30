@@ -56,6 +56,7 @@ test('Host update initialization failure leaves all channel activations availabl
   const channels = ['Feishu', 'Weixin', 'Dingtalk', 'Wecom', 'Qq', 'Slack', 'Telegram', 'Discord', 'Whatsapp', 'Office'];
   const internals = Object.fromEntries(channels.map((channel) => [`apply${channel}`, async () => calls.push(channel)]));
   internals.installUpdateRpc = () => { throw new Error('updater unavailable'); };
+  internals.installDeliveryRpc = () => {};
   const errors = [];
   await createImHostPlugin(internals).apply({
     connection: { rpc: {} }, logger: { error: (...args) => errors.push(args) },

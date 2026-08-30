@@ -133,6 +133,12 @@ dsh web
 | Agent Preset | 每个机器人可在设置页卡片中选择 Agent Preset。未选择时跟随 Host 的 `agent-presets.default`；渠道级 `config.agentPreset` 只作为该渠道之后新接入机器人的默认值。切换不会修改或清空已有会话；若当前聊天已有会话，需先发送 `/new`，再发送一条普通消息，才会按新选择创建会话。 |
 | 上下文增强 | 从机器人卡片打开设置，分别决定群聊、私聊是否增强；两个开关默认均关闭，旧机器人升级后也不会自动开启。 |
 
+### 主动投递
+
+九个 IM 渠道都可以使用稳定的 `botId + targetId` 主动发送文字消息。机器人设置页支持从已聊会话选择或手工填写目标、保存前测试当前路由，以及复制调用参数；同 Host 插件和 Connection RPC 共用同一目标配置。
+
+设置步骤、九渠道字段、完整调用示例、管理端点、错误码与排错说明请查看[《主动投递使用指南》](PROACTIVE_DELIVERY.md)（[English](PROACTIVE_DELIVERY.en.md)）。
+
 ### 上下文增强
 
 点击机器人卡片中的「上下文增强」，设置群聊/私聊范围、来源字段和增强提示词，点击「保存」后生效。五个可选字段为 `channel`、`conversationType`、`senderId`、`senderName`、`botId`，默认只选择 `senderId`；只发送勾选且当前消息已有的值，不查询平台 API 补全。微信当前只支持私聊。

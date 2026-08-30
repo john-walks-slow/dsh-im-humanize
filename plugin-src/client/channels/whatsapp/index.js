@@ -12,6 +12,7 @@ import {
 } from '../../agent-preset.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import {
+  BotSettingsButton,
   BotStatusMeta,
   ChannelListHeading,
   LastMessageErrorSummary,
@@ -318,14 +319,21 @@ export function WhatsappAccountCard({
           }, h(WhatsappLogoGlyph, { size: 29 })),
           h('div', { className: 'dim-botName' },
             h('h3', null, account.bot.name), h('p', null, account.bot.idMasked))),
-        h(BotStatusMeta, {
-          className: 'ddt-health',
-          dotClassName: 'ddt-dot',
-          tone,
-          stateLabel,
-          lastCheckedAt: account.health.lastCheckedAt,
-          formatCheckedTime: checkedTime,
-        })),
+        h('div', { className: 'dim-botCardTools' },
+          h(BotStatusMeta, {
+            className: 'ddt-health',
+            dotClassName: 'ddt-dot',
+            tone,
+            stateLabel,
+            lastCheckedAt: account.health.lastCheckedAt,
+            formatCheckedTime: checkedTime,
+          }),
+          h(BotSettingsButton, {
+            channel: 'whatsapp',
+            botId: account.botId,
+            botName: account.bot.name,
+            connected: account.connected,
+          }))),
       h(WorkspaceEditor, {
         workspace: account.workspace,
         disabled: Boolean(busy),

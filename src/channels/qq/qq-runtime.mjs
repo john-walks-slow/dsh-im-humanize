@@ -97,6 +97,29 @@ export class QqRuntime {
     return { sent: true };
   }
 
+  async sendProactiveText(target, text, { signal } = {}) {
+    const nativeId = target?.kind === 'user'
+      ? (typeof target?.route?.userOpenId === 'string' ? target.route.userOpenId.trim() : '')
+      : target?.kind === 'group'
+        ? (typeof target?.route?.groupOpenId === 'string' ? target.route.groupOpenId.trim() : '')
+        : '';
+    if (!nativeId) {
+      const error = new TypeError('Invalid QQ proactive delivery target');
+      error.code = 'invalid-target';
+      throw error;
+    }
+    if (!this.#status.ready || !this.#bot) {
+      const error = new Error('QQ bot is not connected');
+      error.code = 'bot-not-connected';
+      throw error;
+    }
+    signal?.throwIfAborted();
+    return this.#bot.sendText({
+      scope: target.kind === 'user' ? 'c2c' : 'group',
+      targetId: nativeId,
+    }, text);
+  }
+
   async start() {
     if (this.#status.ready && this.#bot) return this.status;
     if (this.#starting) return this.#starting;

@@ -563,6 +563,41 @@ export class FeishuRuntime {
     });
   }
 
+  async sendProactiveText(target, text, { signal } = {}) {
+    if (!this.#status.ready || !this.#client) {
+      const error = new Error('飞书机器人尚未连接');
+      error.code = 'bot-not-connected';
+      throw error;
+    }
+    const receiveIdType = target?.kind === 'user' ? 'open_id'
+      : target?.kind === 'group' ? 'chat_id' : null;
+    const receiveId = target?.kind === 'user'
+      ? nonEmptyString(target?.route?.openId)
+      : target?.kind === 'group'
+        ? nonEmptyString(target?.route?.chatId)
+        : null;
+    if (!receiveIdType || !receiveId) {
+      const error = new TypeError('Invalid Feishu proactive delivery target');
+      error.code = 'invalid-target';
+      throw error;
+    }
+    signal?.throwIfAborted();
+    const response = await this.#client.im.v1.message.create({
+      params: { receive_id_type: receiveIdType },
+      data: {
+        receive_id: receiveId,
+        msg_type: 'text',
+        content: JSON.stringify({ text }),
+      },
+    });
+    if (response?.code && response.code !== 0) {
+      const error = new Error(`Feishu proactive delivery failed: ${response.msg || response.code}`);
+      error.code = 'target-rejected';
+      throw error;
+    }
+    return { sent: true };
+  }
+
   stop(options = {}) {
     if (this.#stopping) return this.#stopping;
 
