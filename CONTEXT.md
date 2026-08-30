@@ -24,6 +24,10 @@ _Avoid_: 回答里的路径、最新文件
 唯一确定消息所属机器人、聊天及话题或线程的会话位置。
 _Avoid_: Chat ID、会话 Key
 
+**投递目标（Delivery Target）**：
+由 `botId + targetId` 稳定标识、并绑定到可更新会话路由的主动投递位置；它不依赖当前 Harness Session 或最近一条入站消息。
+_Avoid_: Session ID、ChatRef、临时 Webhook
+
 **渠道能力（Channel Capability）**：
 某个机器人实例在当前权限和运行条件下可以可靠提供的原生输入、交互或呈现能力。
 _Avoid_: 平台支持、SDK 功能
