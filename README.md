@@ -304,11 +304,12 @@ IM 管理 RPC 默认仅接受回环浏览器。如果 Web profile 在受信任�
 
 ## 联系方式
 
-欢迎通过邮箱、微信、小红书或 WhatsApp 联系我。
+欢迎加入企业微信群，或通过邮箱、微信、小红书或 WhatsApp 联系我。
 
 <table>
   <tr>
     <th align="center">邮箱</th>
+    <th align="center">企业微信群</th>
     <th align="center">微信</th>
     <th align="center">小红书</th>
     <th align="center">WhatsApp</th>
@@ -316,6 +317,9 @@ IM 管理 RPC 默认仅接受回环浏览器。如果 Web profile 在受信任�
   <tr>
     <td align="center" valign="middle">
       <a href="mailto:longmanr307@gmail.com">longmanr307@gmail.com</a>
+    </td>
+    <td align="center" valign="top">
+      <a href="docs/images/wecom.jpg"><img src="docs/images/wecom.jpg" alt="dsh-im 企业微信群二维码" width="240"></a>
     </td>
     <td align="center" valign="top">
       <a href="docs/images/weixin.jpg"><img src="docs/images/weixin.jpg" alt="微信二维码" width="240"></a>

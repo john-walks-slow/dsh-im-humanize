@@ -301,11 +301,12 @@ Without a setting, Chinese is used. Chinese is always the fallback language — 
 
 ## Contact
 
-You can reach me by email, WeChat, Xiaohongshu, or WhatsApp.
+Join the WeCom community group, or reach me by email, WeChat, Xiaohongshu, or WhatsApp.
 
 <table>
   <tr>
     <th align="center">Email</th>
+    <th align="center">WeCom Group</th>
     <th align="center">WeChat</th>
     <th align="center">Xiaohongshu</th>
     <th align="center">WhatsApp</th>
@@ -313,6 +314,9 @@ You can reach me by email, WeChat, Xiaohongshu, or WhatsApp.
   <tr>
     <td align="center" valign="middle">
       <a href="mailto:longmanr307@gmail.com">longmanr307@gmail.com</a>
+    </td>
+    <td align="center" valign="top">
+      <a href="docs/images/wecom.jpg"><img src="docs/images/wecom.jpg" alt="dsh-im WeCom group QR code" width="240"></a>
     </td>
     <td align="center" valign="top">
       <a href="docs/images/weixin.jpg"><img src="docs/images/weixin.jpg" alt="WeChat QR code" width="240"></a>
