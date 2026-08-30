@@ -6,6 +6,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-08-30
+
 ### Added / 新增
 
 - 九个 IM 渠道统一支持基于稳定 `botId + targetId` 的主动投递：普通外部程序可调用 `POST /api/dsh-im/delivery/messages`，同 Host Cordis 插件可调用 `ctx.dshIm`，已有 Connection 客户端可调用 `/dsh-im-delivery` RPC；三个入口共用同一投递核心。机器人卡片新增设置页，可复制 Bot ID、管理多个目标并逐个真实测试。新建目标时优先从九渠道已持久化的 conversation keys 选择已聊会话并自动预填稳定路由及随机 `targetId`，手动填写保留为高级兜底并同样预填随机 `targetId`。候选不包含 Harness Session ID、聊天正文、会话名称或活跃时间，也不代表平台全量聊天。
@@ -13,6 +15,9 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 - 新增中英文主动投递使用指南，覆盖设置流程、九渠道字段、HTTP POST、同 Host 插件与 Connection RPC 示例、错误处理和排错；机器人投递设置页可按当前界面语言直接打开对应指南。
   Added Chinese and English proactive-delivery guides covering setup, native fields for all nine channels, HTTP POST, same-Host plugin and Connection RPC examples, errors, and troubleshooting. Bot delivery settings link directly to the guide matching the current UI language.
+
+- 九个 IM 渠道新增 `/presets` 与 `/sessions` 快捷命令，分别作为 `/presetlist` 与 `/sessionlist` 的等价别名，不改变原有会话、工作区或 Agent Preset 行为。
+  Added `/presets` and `/sessions` shortcuts across all nine IM channels as equivalent aliases for `/presetlist` and `/sessionlist`, without changing existing Session, workspace, or Agent Preset behavior.
 
 ## [4.0.1] - 2026-08-30
 
@@ -483,7 +488,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.0.1...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.1.0...HEAD
+[4.1.0]: https://github.com/xmanrui/dsh-im/compare/v4.0.1...v4.1.0
 [4.0.1]: https://github.com/xmanrui/dsh-im/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/xmanrui/dsh-im/compare/v3.2.0...v4.0.0
 [3.2.0]: https://github.com/xmanrui/dsh-im/compare/v3.1.1...v3.2.0
