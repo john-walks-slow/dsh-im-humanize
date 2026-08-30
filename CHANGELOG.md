@@ -6,6 +6,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-08-31
+
 ### Added / 新增
 
 - 飞书机器人启动时调用 `app_slash_commands` OpenAPI，把常用命令注册为原生 Slash Command，使飞书单聊输入框输入 `/` 弹出命令面板；命令清单由 dsh-im 持有并推送注册，不依赖 dsh/Harness 后端。扫码新建的应用默认申请所需权限，已有应用可通过“补全权限”或 `/repair` 增量补全；注册失败不影响消息收发。
@@ -505,7 +507,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.1.1...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.2.0...HEAD
+[4.2.0]: https://github.com/xmanrui/dsh-im/compare/v4.1.1...v4.2.0
 [4.1.1]: https://github.com/xmanrui/dsh-im/compare/v4.1.0...v4.1.1
 [4.1.0]: https://github.com/xmanrui/dsh-im/compare/v4.0.1...v4.1.0
 [4.0.1]: https://github.com/xmanrui/dsh-im/compare/v4.0.0...v4.0.1
