@@ -6,14 +6,15 @@
 
 ## 1. 最终决定
 
-两项需求一起实现，共用一套主动投递核心，只保留两个不同入口：
+两项需求一起实现，共用一套主动投递核心，提供三个薄调用入口：
 
 | 场景 | 调用入口 | 适用调用方 |
 | --- | --- | --- |
 | #65 | Host 进程内 Cordis 服务 `ctx.dshIm` | 与 dsh-im 运行在同一 Host 的 cron、提醒、看板等插件 |
-| #84 | Connection RPC 通道 `/dsh-im-delivery` | Host 进程外的本机程序、编排器和管理页面 |
+| #84 | `POST /api/dsh-im/delivery/messages` | 普通外部程序、自动化平台和编排器 |
+| 内部管理 | Connection RPC 通道 `/dsh-im-delivery` | 机器人设置页和已有 Connection 客户端 |
 
-两个入口都只使用 `botId + targetId` 定位投递位置，再加本次要发送的 `text`。它们必须调用同一个 `DeliveryService.send()`，不能各自解析路由、维护目标或连接渠道。
+三个入口都只使用 `botId + targetId` 定位投递位置，再加本次要发送的 `text`。它们必须调用同一个 `DeliveryService.send()`，不能各自解析路由、维护目标或连接渠道。
 
 ```text
 路由地址 = botId + targetId
@@ -79,7 +80,7 @@
 6. 设置页展示可复制的真实 `botId`，并提供目标的新建、编辑、删除和复制调用参数；每个已保存的 `targetId` 都有自己的测试按钮。
 7. 目标配置不依赖机器人在线；实际发送和测试要求机器人当前已连接。
 8. 设置页优先列出该机器人已持久化的聊天会话候选；用户选择后自动填入渠道原生路由，再确认稳定的 `targetId`。无候选或需要其他地址时，仍可手动填写并查看字段格式提示。
-9. 严格校验 RPC 端点、字段和渠道路由，不把平台原始错误、凭据或临时回复上下文返回给调用方。
+9. 严格校验 HTTP、RPC 端点、字段和渠道路由，不把平台原始错误、凭据或临时回复上下文返回给调用方。
 10. 保持所有现有入站回复、连接检查和文件发送行为不变。
 
 ### 3.2 本期明确不做
@@ -91,7 +92,7 @@
 - 不支持图片、文件、卡片、Markdown 类型选择；首期公共能力只有文字，渠道内部继续复用现有文字分段逻辑。
 - 不实现定时任务、消息队列、离线补发、自动重试、回执查询、已读状态或发送历史。
 - 不接收或生成 `idempotencyKey`；调用方重试造成的重复消息由调用方负责。
-- 不新增 API Key、签名或用户权限模型。本期只沿用现有 Connection RPC 的 `loopback` / `trusted-host` 可达性边界；该边界不是业务鉴权。
+- 不新增 API Key、签名或用户权限模型。HTTP 只复用现有 WebServer 的监听地址，RPC 继续沿用 `loopback` / `trusted-host` 可达性边界；两者都不是业务鉴权，不能直接暴露到公网。
 - 不为 AI Office 增加主动投递。本文“九渠道”不包含实验性的 AI Office。
 - 不保证平台原生目标永久有效；被平台删除、机器人无权限或用户屏蔽后，发送应明确失败。
 
@@ -130,7 +131,9 @@ Bot（现有机器人）
 ```mermaid
 flowchart LR
     A[同 Host Cordis 插件<br/>Issue #65] -->|ctx.dshIm.send| C[DeliveryService]
-    B[进程外调用方<br/>Issue #84] -->|Connection RPC| R[Delivery RPC]
+    B[普通外部调用方<br/>Issue #84] -->|HTTP POST| H[Delivery HTTP]
+    H --> C
+    E[已有 Connection 客户端] -->|message.send| R[Delivery RPC]
     U[机器人设置页] -->|候选 / 目标管理 / 测试| R
     R --> C
     C -->|按 botId 选择| G[九渠道 Adapter Registry]
@@ -146,14 +149,15 @@ flowchart LR
 | 渠道适配器 | 判断是否拥有机器人、把本渠道持久化 conversation key 解析为候选、校验 `kind/route`、调用对应核心 controller | 不暴露 RPC，不管理调用方业务 |
 | `BotWorkspaceStore` | 持久化机器人下的已保存目标，复用现有原子写入、机器人队列和删除清理 | 不发送消息，不把候选自动保存为目标 |
 | Cordis 服务 | 把 #65 调用转发给 `DeliveryService` | 不复制渠道选择逻辑 |
-| Delivery RPC | 把 #84 和设置页请求转发给 `DeliveryService`，转换安全错误包络 | 不直接调用 Runtime |
+| Delivery HTTP | 把 #84 的普通 JSON POST 转发给 `DeliveryService`，映射安全 HTTP 状态和错误 | 不直接调用 Runtime，不另开端口 |
+| Delivery RPC | 把设置页和已有 Connection 客户端请求转发给 `DeliveryService`，转换安全错误包络 | 不直接调用 Runtime |
 | 设置页 | 展示 `botId`、让用户从已聊候选选择或手动编辑渠道路由、调用测试 | 不解析 conversation key，不读取聊天正文，不查询平台全量目录 |
 
-### 5.1 为什么使用单独 RPC 通道
+### 5.1 为什么 HTTP 和 RPC 都保留
 
 现有 `/dsh-im` 通道只承载更新功能，并固定为 `loopback`。如果把主动投递直接塞进该通道，想让 #84 使用现有 `trusted-host` 配置时会同时改变更新接口的暴露边界。
 
-因此新增 `/dsh-im-delivery`，但继续复用现有 `ctx.connection.rpc.handle/call`、统一结果包络、取消信号和 `resolveRpcAuthority()`，不新增 HTTP Server，也不改动 `/dsh-im` 更新接口。
+因此设置页和已有 Connection 客户端继续使用 `/dsh-im-delivery`；普通外部应用使用 `POST /api/dsh-im/delivery/messages`。HTTP 路由通过现有 `ctx.webServer.register()` 注册，不新增 HTTP Server 或端口，并直接复用 RPC 的严格 payload 校验与同一个 `DeliveryService`。两者都不改动 `/dsh-im` 更新接口。
 
 ## 6. 目标持久化
 
@@ -316,15 +320,34 @@ await ctx.dshIm.send(
 - Cordis 服务和 RPC 持有的是同一个 `DeliveryService` 实例；测试必须证明两者不是两套 registry。
 - Host/渠道关闭时用现有 `ctx.effect()` 注销服务、RPC 和渠道适配器，不留下失效 Runtime 引用。
 
-## 9. #84：进程外 Connection RPC
+## 9. #84：HTTP POST 与管理 RPC
 
-### 9.1 通道和端点
+### 9.1 普通外部调用接口
 
-新增通道常量：
+HTTP 只提供一个发送端点：
 
-```js
-export const DELIVERY_RPC_CHANNEL = '/dsh-im-delivery';
+```http
+POST /api/dsh-im/delivery/messages
+Content-Type: application/json
+
+{
+  "botId": "bot_7f4c1234",
+  "targetId": "daily-report",
+  "text": "流水线正在等待审批。"
+}
 ```
+
+成功返回 HTTP 200：
+
+```json
+{ "sent": true }
+```
+
+HTTP handler 通过现有 `ctx.webServer.register()` 注册 exact route，不新增 Server 或端口。它调用 `createDeliveryRpcHandler(service)` 的 `message.send` 分支，复用严格字段校验、安全错误码和同一个 `DeliveryService.send()`。请求 JSON 上限为 1 MiB；当前不实现鉴权、CORS、目标 CRUD、队列或幂等。
+
+### 9.2 Connection RPC 管理端点
+
+设置页和已有 Connection 客户端继续使用通道 `/dsh-im-delivery`：
 
 | endpoint | payload | 成功 value |
 | --- | --- | --- |
@@ -336,41 +359,17 @@ export const DELIVERY_RPC_CHANNEL = '/dsh-im-delivery';
 | `target.delete` | `{ botId, targetId }` | `{ deleted: true }` |
 | `target.test` | 已保存目标：`{ botId, targetId }`；表单草稿：`{ botId, target: { kind, route } }` | `{ sent: true }` |
 
-`target.test` 使用固定本地化文案“DSH-IM 主动投递测试成功。”。已保存目标行传 `{ botId, targetId }`，由同一个 `DeliveryService.send()` 解析已保存路由；新建或编辑表单传 `{ botId, target: { kind, route } }`，直接校验并测试当前表单路由。两种 payload 严格二选一，表单测试不携带 `targetId/name`，也不创建、更新或落盘目标。它与现有“检查连接”是两个功能：检查连接验证机器人连接，目标测试验证指定渠道路由能否真正发送消息。
+`target.test` 使用固定文案“DSH-IM 主动投递测试成功。”。表单草稿测试不携带 `targetId/name`，也不创建、更新或落盘目标。`target.suggestion.list` 只返回从持久 conversation keys 解析的 `kind/route`，不返回 `sessionId`、聊天正文或临时回复对象。
 
-`target.suggestion.list` 是设置页专用的候选查询：渠道适配器从该机器人的持久化 conversation keys 解析出可主动投递的 `kind/route`。每个 suggestion 严格只含这两个字段，不含 `targetId`、`name`、时间、`sessionId`、聊天正文、消息 ID 或回复对象。选择 suggestion 只是预填新建表单，不会自动创建目标。
+RPC 结果继续使用 `{ ok: true, value }` / `{ ok: false, error }` 包络；HTTP 则把成功 value 解包为 `{ sent: true }`，并把公共错误码映射为 4xx/5xx。
 
-### 9.2 调用示例
+### 9.3 可达性边界
 
-```js
-const result = await connection.rpc.call(
-  '/dsh-im-delivery',
-  'message.send',
-  {
-    botId: 'bot_7f4c...',
-    targetId: 'daily-report',
-    text: '流水线正在等待审批。',
-  },
-  signal,
-);
-```
-
-结果继续使用仓库已有包络：
-
-```json
-{ "ok": true, "value": { "sent": true } }
-```
-
-调用方只需要长期保存 `botId` 和 `targetId`。没有 `deliveryHandle`、`sessionId`、`chatRef` 或 `idempotencyKey`。
-
-### 9.3 RPC 边界
-
-- 默认 `authority: 'loopback'`，满足同机进程外调用和管理页面。
-- 顶层已有 `rpcAuthority: 'trusted-host'` 配置时沿用现有解析机制；不新增第二个同义配置。
-- `target.*` 和 `message.send` 使用相同可达性边界。本期不进一步区分管理员和发送者权限。
-- 每个端点只接受表中列出的键；缺字段、额外字段、数组冒充对象或已取消请求均拒绝。
-- `target.suggestion.list` 不要求机器人当前在线；未知机器人仍返回 `unknown-bot`，无候选时成功返回空数组。
-- 该 RPC 是 #84 的对外程序接口；不再另建 Express 路由、REST Server 或 Webhook 接收器。
+- HTTP 仅在当前 Host 存在 WebServer 时注册，并复用其 host/port；默认回环地址只能本机调用。
+- HTTP 当前没有鉴权，只能在本机、可信局域网、防火墙或反向代理之后使用，不能直接暴露公网。
+- RPC 默认 `authority: 'loopback'`；顶层 `rpcAuthority: 'trusted-host'` 时沿用现有解析机制。
+- 每个端点只接受列出的键；缺字段、额外字段、数组冒充对象或已取消请求均拒绝。
+- `target.suggestion.list` 不要求机器人在线；未知机器人返回 `unknown-bot`，无候选时成功返回空数组。
 
 ## 10. 九渠道适配
 
@@ -672,7 +671,7 @@ await ctx.dshIm.send('bot_test', 'daily-report', '测试消息');
 本次按下表执行最小真实验收。每个渠道只选一个当前可用机器人和一个目标，并对同一组 `botId + targetId` 分别发送两条容易区分的消息：
 
 - #65：同 Host 测试插件调用 `ctx.dshIm.send()`，消息带 `#65` 标识。
-- #84：进程外测试调用 `/dsh-im-delivery` 的 `message.send`，消息带 `#84` 标识。
+- #84：进程外测试调用 `POST /api/dsh-im/delivery/messages`，消息带 `#84 HTTP` 标识。
 
 | 渠道 | 机器人和目标 | #65 | #84 | 目标测试 |
 | --- | --- | --- | --- | --- |
@@ -686,7 +685,7 @@ await ctx.dshIm.send('bot_test', 'daily-report', '测试消息');
 | Discord | 1 组已连接机器人和脱敏目标 | 通过 | 通过 | 通过 |
 | WhatsApp | 1 组已连接机器人和脱敏目标 | 通过 | 通过 | 通过 |
 
-每个入口和目标测试各验证一次成功发送，不扩展到该渠道的所有目标类型，也不增加重启、并发或故障注入。验收记录只保存渠道、脱敏 `botId/targetId`、两个入口的时间和结果，不保存凭据或完整原生用户 ID。
+每个要求验收的入口各验证一次成功发送，不扩展到该渠道的所有目标类型，也不增加并发或故障注入。验收记录只保存渠道、脱敏 `botId/targetId`、入口、时间和结果，不保存凭据或完整原生用户 ID。
 
 ### 13.8 当前实施验证记录（2026-08-30）
 
@@ -695,10 +694,11 @@ await ctx.dshIm.send('bot_test', 'daily-report', '测试消息');
 - 真实宿主页面共加载 19 张现有机器人卡片，九个渠道的机器人卡片数量与齿轮按钮数量完全一致；九个设置页均能显示 Bot ID、新建表单和对应渠道的原生路由字段，浏览器控制台无错误。
 - 已增加九渠道表驱动候选测试，固定 conversation key 到 `kind/route` 的映射、去重、畸形 key 过滤和临时字段隔离；RPC 和客户端测试另覆盖 `target.suggestion.list`、选择预填、已添加禁用及手动高级兜底。
 - 在最新版 DSH 的真实设置页面逐渠道调用 `target.suggestion.list`，九个渠道均读取到至少一个已有会话候选；QQ 在选择存在历史会话的机器人后同样读取成功。点选候选可自动预填目标类型、原生路由和未占用的随机调用别名；验证过程未保存草稿、未发送消息，浏览器控制台无错误。
-- 经使用者明确授权，从九渠道已有真实私聊/自聊的持久化入站路由中提取平台原生地址，为每个渠道保存一个机器人级 `self` 目标；只把平台地址写入 `route`，没有把 `sessionId` 当作投递地址。九份 `workspaces.json` 均由 v1 正常迁移为 v2，并可通过 `target.list` 回读。
-- #84 进程外调用 `/dsh-im-delivery` 的 `message.send`，九渠道各真实发送一次，9/9 成功。
+- 经使用者明确授权，从九渠道已有真实私聊/自聊的持久化入站路由中提取平台原生地址，为每个渠道保存一个机器人级投递目标；只把平台地址写入 `route`，没有把 `sessionId` 当作投递地址。九份 `workspaces.json` 均由 v1 正常迁移为 v2，并可通过 `target.list` 回读。
+- 在增加普通 HTTP 接口前，曾通过 `/dsh-im-delivery` 的 `message.send` 对九渠道各真实发送一次，9/9 成功；该记录保留为 Connection RPC 回归证据。
 - 首次真实 #65 验证发现 `dshIm` 在最新版 DSH 的现代依赖注入组合中被提供在过窄作用域。实现已改为在 Host 插件根上下文提供服务，再把同一个 `DeliveryService` 传入延迟激活的渠道；现代 Cordis 注入回归测试已固定该行为。
 - Host 重启后，一次性同 Host Cordis 插件仅注入 `dshIm` 并调用 `ctx.dshIm.send()`，九渠道各真实发送一次，9/9 成功；测试插件没有注入或调用 Connection RPC。
+- 使用进程外脚本依次调用 `POST /api/dsh-im/delivery/messages`，从本机已有配置自动选择九渠道各一个在线机器人和私聊目标；九次请求均只提交 `botId + targetId + text`，全部返回 HTTP 200 与 `{ "sent": true }`，9/9 成功且没有自动重试。
 - 每个已保存目标又通过测试按钮所调用的 `target.test` 端点真实发送一次，九渠道 9/9 成功。WhatsApp 测试前发生一次平台连接离线，使用现有 `bot.reconnect` 恢复后，同一 `botId + targetId` 无需修改即测试成功。
 - 验收记录只保留渠道和结果，不记录完整 `botId`、平台原生地址、凭据或会话 ID。
 
@@ -708,9 +708,9 @@ await ctx.dshIm.send('bot_test', 'daily-report', '测试消息');
 
 1. 同 Host 插件可以注入 `dshIm`，使用 `send(botId, targetId, text)` 完成投递。
 2. #65 自动化测试通过真实 Cordis `inject: ['dshIm']` 激活消费插件，成功发送期间 `connection.rpc.call` 为 0 次。
-3. 进程外调用方可以通过 `/dsh-im-delivery` 的 `message.send` 使用同一组参数完成投递。
-4. 自动化测试证明两个入口调用同一个 `DeliveryService`，不存在两套路由解析或渠道连接。
-5. 九渠道各选择一个可用机器人和目标，#65 `ctx.dshIm.send()` 与 #84 `message.send` 均真实发送成功一次。
+3. 普通进程外调用方可以通过 `POST /api/dsh-im/delivery/messages` 使用同一组参数完成投递。
+4. 自动化测试证明 HTTP、Cordis 和 Connection RPC 三个入口调用同一个 `DeliveryService`，不存在多套路由解析或渠道连接。
+5. 九渠道各选择一个可用机器人和私聊目标，#84 HTTP POST 均真实发送成功一次；已有 #65 与 Connection RPC 验收记录继续作为回归证据。
 6. Host 重启后同一 `botId + targetId` 仍可使用；编辑渠道路由后公共 pair 不变且下一次发送走新路由。
 7. 公共发送接口没有 `sessionId`、`chatRef`、`sessionWebhook`、`deliveryHandle` 或 `idempotencyKey`。
 8. 钉钉主动投递只使用稳定用户/群接口；临时 `sessionWebhook` 仅保留在原即时回复链。
@@ -721,7 +721,7 @@ await ctx.dshIm.send('bot_test', 'daily-report', '测试消息');
 13. 机器人离线时仍可管理目标并读取已持久化的候选；发送返回明确的 `bot-not-connected`，不建立隐式队列。
 14. 删除机器人会清理其全部目标；删除失败回滚不会丢失目标。
 15. dsh-im 不落主动发送历史、不自动重试、不管理幂等状态。
-16. `npm run check` 全部通过，九渠道现有接入、回复和连接检查回归通过。
+16. `npm run check` 全部通过，HTTP 协议测试和九渠道现有接入、回复、主动投递与连接检查回归通过。
 
 ## 15. 风险与控制
 
@@ -731,7 +731,7 @@ await ctx.dshIm.send('bot_test', 'daily-report', '测试消息');
 | 候选被误解为平台全量最近聊天 | 文案明确仅来自持久化 conversation keys，不显示伪造的名称/时间，缺少时使用手动兜底 |
 | 平台目标以后失效 | 保持 `targetId` 不变，用户只更新内部 route |
 | 配置文件升级损坏原设置 | v1→v2 迁移、原子写入、失败回滚和迁移测试 |
-| #65 与 #84 行为逐渐分叉 | 两个入口只做协议转换，测试直接断言同一 service 实例 |
+| #65 与 #84 行为逐渐分叉 | 三个入口只做协议转换，测试直接断言同一 service 实例 |
 | 九渠道复制实现 | 目标 Store、Service、RPC 和设置页共享；渠道层只保留路由校验和薄发送委托 |
 | 钉钉误用临时 Webhook | 主动发送 API 不接受该字段，并以负向测试固定 |
 | 对外 RPC 被误认为已有完整鉴权 | 文档明确本期只复用可达性边界；真正远程开放前另行设计鉴权 |

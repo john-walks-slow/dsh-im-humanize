@@ -11,6 +11,7 @@ import { apply as applyWhatsapp } from './channels/whatsapp/index.mjs';
 import { installOutboundArtifactTool } from '../../src/channels/shared/semantic/artifact.mjs';
 import { setImHostLanguage } from '../../src/channels/shared/i18n.mjs';
 import { installDeliveryRpc } from './delivery-rpc.mjs';
+import { installDeliveryHttp } from './delivery-http.mjs';
 import { createDeliveryService } from './delivery-service.mjs';
 import { installUpdateRpc } from './update-rpc.mjs';
 
@@ -32,6 +33,7 @@ function channelConfig(config, name, deliveryService) {
 export function createImHostPlugin(internals = {}) {
   const startUpdate = internals.installUpdateRpc ?? installUpdateRpc;
   const startDelivery = internals.installDeliveryRpc ?? installDeliveryRpc;
+  const startDeliveryHttp = internals.installDeliveryHttp ?? installDeliveryHttp;
   const makeDeliveryService = internals.createDeliveryService ?? createDeliveryService;
   const startFeishu = internals.applyFeishu ?? applyFeishu;
   const startWeixin = internals.applyWeixin ?? applyWeixin;
@@ -77,9 +79,15 @@ export function createImHostPlugin(internals = {}) {
           modern ? ['sessionController', 'workspaceController'] : ['apiProxy'],
           activate,
         );
+        ctx.inject(['webServer'], (httpCtx) => {
+          startDeliveryHttp(httpCtx, deliveryService);
+        });
         return;
       }
       await activate(ctx);
+      if (ctx?.webServer?.register && typeof ctx?.effect === 'function') {
+        startDeliveryHttp(ctx, deliveryService);
+      }
     },
   });
 

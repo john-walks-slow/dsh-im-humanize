@@ -15,7 +15,7 @@ All nine built-in channels support proactive delivery: Weixin, Feishu, DingTalk,
 5. Review or enter the **Target ID**, target type, and native platform ID.
 6. Select **Test**. After the target receives `DSH-IM 主动投递测试成功。`, select **Save target**.
 7. Select **Copy call parameters** on the saved target and store the resulting `{ botId, targetId }` in the calling application.
-8. Send messages through same-Host `ctx.dshIm.send()` or the Connection RPC `message.send` endpoint.
+8. Send messages through HTTP POST, same-Host `ctx.dshIm.send()`, or the Connection RPC `message.send` endpoint.
 
 ## Configure a delivery target
 
@@ -103,6 +103,33 @@ Choose a known conversation whenever possible. Obtain and enter a platform-nativ
 
 Native ID strings must be nonempty and have no leading or trailing whitespace. A target accepts only the fields required by the selected channel and type; extra fields are rejected.
 
+## Send through HTTP POST
+
+An ordinary external application can call the Host's proactive-delivery endpoint directly:
+
+```bash
+curl --request POST \
+  http://127.0.0.1:3080/api/dsh-im/delivery/messages \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "botId": "bot_9577c8572d454122a4ef7fb4d8420a91",
+    "targetId": "release-alerts",
+    "text": "The build has completed."
+  }'
+```
+
+A successful request returns:
+
+```json
+{ "sent": true }
+```
+
+The body accepts exactly `botId`, `targetId`, and `text`, with a maximum total JSON size of 1 MiB. Do not add a native platform route, `sessionId`, `chatRef`, temporary webhook, or `idempotencyKey`.
+
+The fixed endpoint is `POST /api/dsh-im/delivery/messages`. It reuses the current DSH Host WebServer and does not open another port. Port `3080` is the default for the Web profile; use the address printed by the running Host when it differs.
+
+The HTTP endpoint currently has no authentication and does not provide CORS. Use it only on the local machine or a trusted network; never expose it directly to the public internet.
+
 ## Send from a plugin in the same Host
 
 A consumer plugin can declare the `dshIm` injection and call the shared service directly without going through Connection RPC.
@@ -142,7 +169,7 @@ On failure, the Promise rejects with an Error whose `code` is one of the public 
 
 ## Send through Connection RPC
 
-Connection RPC is for a local caller that already holds a `connection` client for the current DSH Host. Proactive delivery is not an HTTP, REST, or webhook endpoint, so the following example cannot be translated directly into `curl`.
+Connection RPC is for a caller that already holds a `connection` client for the current DSH Host. The settings page also uses it to manage targets. Ordinary external applications should prefer the HTTP POST endpoint above.
 
 First unwrap the RPC success and error envelopes:
 
@@ -222,21 +249,26 @@ Payloads are validated with exact fields. The inner `target` in `target.update` 
 
 ## Error handling
 
-| Error code | Meaning and suggested action |
-| --- | --- |
-| `bad-request` | Invalid request shape, ID format, or text; check field names and remove extra fields |
-| `unknown-bot` | The current Host does not own this `botId`; copy it again from bot settings |
-| `unknown-target` | The bot has no such `targetId`; check the copied pair or whether the target was deleted |
-| `target-conflict` | The same bot already has this `targetId`; choose another alias |
-| `invalid-target` | The target type or native ID violates this channel's rules; select the correct type and verify the ID |
-| `bot-not-connected` | The bot is offline; let the caller decide whether to retry after reconnection |
-| `target-rejected` | The platform explicitly rejected the target or the bot lacks permission; check platform permissions and the target ID |
-| `delivery-failed` | A network, platform, or other safely redacted delivery failure; check bot state and Host logs |
-| `cancelled` | The call was cancelled; stop or start a new call as required by the application |
+An HTTP failure returns `{ "error": { "code", "message", "details" } }`. Same-Host and RPC calls use the same error codes without an HTTP status.
+
+| Error code | HTTP status | Meaning and suggested action |
+| --- | --- | --- |
+| `bad-request` | 400 | Invalid request shape, ID format, JSON, or text; check field names and remove extra fields |
+| `unknown-bot` | 404 | The current Host does not own this `botId`; copy it again from bot settings |
+| `unknown-target` | 404 | The bot has no such `targetId`; check the copied pair or whether the target was deleted |
+| `target-conflict` | 409 | The same bot already has this `targetId`; choose another alias |
+| `invalid-target` | 422 | The target type or native ID violates this channel's rules; select the correct type and verify the ID |
+| `bot-not-connected` | 503 | The bot is offline; let the caller decide whether to retry after reconnection |
+| `target-rejected` | 422 | The platform explicitly rejected the target or the bot lacks permission; check platform permissions and the target ID |
+| `delivery-failed` | 502 | A network, platform, or other safely redacted delivery failure; check bot state and Host logs |
+| `cancelled` | 408 | The call was cancelled; stop or start a new call as required by the application |
+
+The HTTP protocol layer may also return `method-not-allowed` (405), `unsupported-media-type` (415), or `payload-too-large` (413).
 
 ## Delivery semantics and limits
 
 - Proactive delivery currently accepts nonempty text only. This API does not send images, files, cards, or rich content.
+- The maximum HTTP JSON request body is 1 MiB.
 - `{ sent: true }` means the platform accepted the send request or its SDK returned success. It does not guarantee final delivery or a read receipt.
 - DSH-IM stores no proactive-delivery history, generates no `deliveryHandle` or `idempotencyKey`, and performs no automatic retry.
 - Retrying after a caller timeout can create duplicate messages. When business idempotency matters, the caller must store its own event ID and processing result.
@@ -244,7 +276,17 @@ Payloads are validated with exact fields. The inner `target` in `target.update` 
 - One call sends to one target. Notify multiple targets with separate calls and handle each result separately.
 - Targets remain editable while a bot is offline, but testing and delivery require a connected bot.
 
-## RPC reachability
+## HTTP and RPC reachability
+
+The HTTP endpoint is registered only when the current Host provides a WebServer, and it uses that server's existing listen address and port. A Web profile normally defaults to `127.0.0.1:3080`, which is reachable only from the same machine. To call it from another machine, bind the WebServer to a reachable address in that profile's `cordis.patch.yml`, then restart the Host. For example:
+
+```yaml
+- id: webserver
+  config:
+    host: '0.0.0.0'
+```
+
+This also expands network reachability for the other pages and routes on that WebServer. Because the proactive-delivery HTTP endpoint currently has no authentication, use it only with a trusted LAN, firewall, or reverse proxy, and never expose it directly to the public internet.
 
 Connection RPC accepts loopback callers by default. If a Web profile is deliberately served on a trusted LAN, it can reuse the existing Host authority in that profile's `cordis.patch.yml`:
 

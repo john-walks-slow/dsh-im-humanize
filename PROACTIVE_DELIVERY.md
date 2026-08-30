@@ -15,7 +15,7 @@
 5. 填写或确认 `Target ID`、目标类型和平台原生 ID。
 6. 点击「测试」。目标收到 `DSH-IM 主动投递测试成功。` 后，再点击「保存目标」。
 7. 在已保存目标上点击「复制调用参数」，得到可供应用保存的 `{ botId, targetId }`。
-8. 使用同 Host 的 `ctx.dshIm.send()` 或 Connection RPC 的 `message.send` 发送消息。
+8. 使用 HTTP POST、同 Host 的 `ctx.dshIm.send()` 或 Connection RPC 的 `message.send` 发送消息。
 
 ## 配置投递目标
 
@@ -103,6 +103,33 @@
 
 平台 ID 字符串不能为空或带首尾空格。一个目标只接受所选渠道和类型要求的字段，额外字段会被拒绝。
 
+## 通过 HTTP POST 发送
+
+普通外部应用可以直接调用 Host 的主动投递接口：
+
+```bash
+curl --request POST \
+  http://127.0.0.1:3080/api/dsh-im/delivery/messages \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "botId": "bot_9577c8572d454122a4ef7fb4d8420a91",
+    "targetId": "release-alerts",
+    "text": "构建已经完成。"
+  }'
+```
+
+成功返回：
+
+```json
+{ "sent": true }
+```
+
+请求体严格只接受 `botId`、`targetId` 和 `text`，JSON 总大小不能超过 1 MiB。不要附加平台原生路由、`sessionId`、`chatRef`、临时 Webhook 或 `idempotencyKey`。
+
+接口路径固定为 `POST /api/dsh-im/delivery/messages`，复用当前 DSH Host 的 WebServer，不会另开端口。示例中的 `3080` 是 Web profile 的默认端口；实际地址以 Host 启动时显示的地址为准。
+
+当前 HTTP 接口不包含鉴权，也不提供 CORS。只应在本机或可信网络中使用，不要直接暴露到公网。
+
 ## 在同一 Host 的插件中发送
 
 消费插件声明 `dshIm` 注入后，可以直接调用共享服务，不经过 Connection RPC。
@@ -142,7 +169,7 @@ const targets = await ctx.dshIm.listTargets(botId);
 
 ## 通过 Connection RPC 发送
 
-Connection RPC 适合已经持有当前 DSH Host `connection` 客户端的本机调用方。主动投递不是 HTTP、REST 或 Webhook 接口，因此不能把以下示例直接改写成 `curl`。
+Connection RPC 适合已经持有当前 DSH Host `connection` 客户端的调用方，也是设置页管理目标所使用的接口。普通外部应用优先使用上面的 HTTP POST。
 
 先封装 RPC 成功与错误包络：
 
@@ -222,21 +249,26 @@ async function sendDailyReport(connection, summary) {
 
 ## 错误处理
 
-| 错误码 | 含义与处理建议 |
-| --- | --- |
-| `bad-request` | 请求结构、ID 格式或文字无效；检查字段名并移除额外字段 |
-| `unknown-bot` | `botId` 不属于当前 Host；重新从机器人设置页复制 |
-| `unknown-target` | 该机器人下不存在 `targetId`；检查是否复制错误或目标已被删除 |
-| `target-conflict` | 同一机器人下已经存在相同 `targetId`；更换别名 |
-| `invalid-target` | 目标类型或平台原生 ID 不符合当前渠道规则；重新选择类型并核对 ID |
-| `bot-not-connected` | 机器人当前离线；恢复连接后由调用方决定是否重试 |
-| `target-rejected` | 平台明确拒绝目标或机器人缺少发送权限；检查平台权限和目标 ID |
-| `delivery-failed` | 网络、平台或其他无法安全细分的发送失败；检查连接状态和 Host 日志 |
-| `cancelled` | 调用被取消；按业务需要结束或重新发起 |
+HTTP 失败响应格式为 `{ "error": { "code", "message", "details" } }`。同 Host 和 RPC 使用相同错误码，但没有 HTTP 状态码。
+
+| 错误码 | HTTP 状态 | 含义与处理建议 |
+| --- | --- | --- |
+| `bad-request` | 400 | 请求结构、ID 格式、JSON 或文字无效；检查字段名并移除额外字段 |
+| `unknown-bot` | 404 | `botId` 不属于当前 Host；重新从机器人设置页复制 |
+| `unknown-target` | 404 | 该机器人下不存在 `targetId`；检查是否复制错误或目标已被删除 |
+| `target-conflict` | 409 | 同一机器人下已经存在相同 `targetId`；更换别名 |
+| `invalid-target` | 422 | 目标类型或平台原生 ID 不符合当前渠道规则；重新选择类型并核对 ID |
+| `bot-not-connected` | 503 | 机器人当前离线；恢复连接后由调用方决定是否重试 |
+| `target-rejected` | 422 | 平台明确拒绝目标或机器人缺少发送权限；检查平台权限和目标 ID |
+| `delivery-failed` | 502 | 网络、平台或其他无法安全细分的发送失败；检查连接状态和 Host 日志 |
+| `cancelled` | 408 | 调用被取消；按业务需要结束或重新发起 |
+
+HTTP 协议层还可能返回 `method-not-allowed`（405）、`unsupported-media-type`（415）或 `payload-too-large`（413）。
 
 ## 投递语义与限制
 
 - 当前主动投递只发送非空文字，不支持在该接口中发送图片、文件、卡片或富文本。
+- HTTP JSON 请求体上限为 1 MiB。
 - `{ sent: true }` 表示平台发送接口接受请求或 SDK 成功返回，不承诺最终送达或已读。
 - DSH-IM 不保存主动投递历史，不生成 `deliveryHandle` 或 `idempotencyKey`，也不自动重试。
 - 调用方超时后重试可能产生重复消息；需要业务幂等时，由调用方保存自己的业务事件 ID 和处理结果。
@@ -244,7 +276,17 @@ async function sendDailyReport(connection, summary) {
 - 一个调用只发送到一个目标。需要通知多个目标时，应分别调用并分别处理结果。
 - 机器人离线时仍可编辑目标，但不能测试或主动发送。
 
-## RPC 可达范围
+## HTTP 与 RPC 可达范围
+
+HTTP 接口只在当前 Host 提供 WebServer 时注册，并使用同一个监听地址和端口。默认 Web profile 地址通常是 `127.0.0.1:3080`，只能由本机访问。若要从其他机器调用，需要在对应 profile 的 `cordis.patch.yml` 中把 WebServer 绑定到可达地址并重启 Host，例如：
+
+```yaml
+- id: webserver
+  config:
+    host: '0.0.0.0'
+```
+
+这会同时扩大该 WebServer 上其他页面和路由的网络可达范围。当前主动投递 HTTP 接口没有鉴权，因此只能配合可信局域网、防火墙或反向代理使用，不能直接暴露到公网。
 
 Connection RPC 默认只允许当前 Host 的回环调用。若 Web profile 明确运行在受信任局域网，可在该 profile 的 `cordis.patch.yml` 中复用现有 Host authority：
 

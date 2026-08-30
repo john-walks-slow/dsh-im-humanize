@@ -8,11 +8,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ### Added / 新增
 
-- 九个 IM 渠道统一支持基于稳定 `botId + targetId` 的主动投递：同 Host Cordis 插件可通过 `ctx.dshIm` 调用，进程外程序可通过 `/dsh-im-delivery` Connection RPC 调用；两个入口共用同一投递核心。机器人卡片新增设置页，可复制 Bot ID、管理多个目标并逐个真实测试。新建目标时优先从九渠道已持久化的 conversation keys 选择已聊会话并自动预填稳定路由及随机 `targetId`，手动填写保留为高级兜底并同样预填随机 `targetId`。候选不包含 Harness Session ID、聊天正文、会话名称或活跃时间，也不代表平台全量聊天。
-  Added stable `botId + targetId` proactive delivery across all nine IM channels. Same-Host Cordis plugins can call `ctx.dshIm`, while external processes can use the `/dsh-im-delivery` Connection RPC; both entry points share one delivery core. Bot cards now open a settings page for copying Bot IDs, managing multiple targets, and testing each target with a real send. Creating a target now starts with conversations derived from persisted conversation keys across all nine channels and pre-fills both the stable native route and a random `targetId`; advanced manual entry also starts with a random `targetId`. Suggestions contain no Harness Session ID, message text, conversation name, or activity timestamp and are not a complete platform chat directory.
+- 九个 IM 渠道统一支持基于稳定 `botId + targetId` 的主动投递：普通外部程序可调用 `POST /api/dsh-im/delivery/messages`，同 Host Cordis 插件可调用 `ctx.dshIm`，已有 Connection 客户端可调用 `/dsh-im-delivery` RPC；三个入口共用同一投递核心。机器人卡片新增设置页，可复制 Bot ID、管理多个目标并逐个真实测试。新建目标时优先从九渠道已持久化的 conversation keys 选择已聊会话并自动预填稳定路由及随机 `targetId`，手动填写保留为高级兜底并同样预填随机 `targetId`。候选不包含 Harness Session ID、聊天正文、会话名称或活跃时间，也不代表平台全量聊天。
+  Added stable `botId + targetId` proactive delivery across all nine IM channels. Ordinary external programs can call `POST /api/dsh-im/delivery/messages`, same-Host Cordis plugins can call `ctx.dshIm`, and existing Connection clients can call `/dsh-im-delivery` RPC; all three entry points share one delivery core. Bot cards now open a settings page for copying Bot IDs, managing multiple targets, and testing each target with a real send. Creating a target now starts with conversations derived from persisted conversation keys across all nine channels and pre-fills both the stable native route and a random `targetId`; advanced manual entry also starts with a random `targetId`. Suggestions contain no Harness Session ID, message text, conversation name, or activity timestamp and are not a complete platform chat directory.
 
-- 新增中英文主动投递使用指南，覆盖设置流程、九渠道字段、同 Host 插件与 Connection RPC 示例、错误处理和排错；机器人投递设置页可按当前界面语言直接打开对应指南。
-  Added Chinese and English proactive-delivery guides covering setup, native fields for all nine channels, same-Host plugin and Connection RPC examples, errors, and troubleshooting. Bot delivery settings link directly to the guide matching the current UI language.
+- 新增中英文主动投递使用指南，覆盖设置流程、九渠道字段、HTTP POST、同 Host 插件与 Connection RPC 示例、错误处理和排错；机器人投递设置页可按当前界面语言直接打开对应指南。
+  Added Chinese and English proactive-delivery guides covering setup, native fields for all nine channels, HTTP POST, same-Host plugin and Connection RPC examples, errors, and troubleshooting. Bot delivery settings link directly to the guide matching the current UI language.
 
 ## [4.0.1] - 2026-08-30
 

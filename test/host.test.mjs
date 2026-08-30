@@ -68,6 +68,7 @@ test('Host provides #65 and installs #84 with the same delivery service', async 
   };
   const provided = [];
   const rpc = [];
+  const http = [];
   const channelServices = [];
   const internals = Object.fromEntries(CHANNELS.map(([channel, applyName]) => [
     applyName,
@@ -79,9 +80,12 @@ test('Host provides #65 and installs #84 with the same delivery service', async 
     createDeliveryService: () => deliveryService,
     installUpdateRpc: () => {},
     installDeliveryRpc: (...args) => rpc.push(args),
+    installDeliveryHttp: (...args) => http.push(args),
   });
   const ctx = {
     connection: { rpc: {} },
+    webServer: { register() {} },
+    effect() {},
     provide: (...args) => provided.push(args),
   };
 
@@ -90,6 +94,7 @@ test('Host provides #65 and installs #84 with the same delivery service', async 
   assert.equal(provided[0][0], 'dshIm');
   assert.equal(rpc[0][1], deliveryService);
   assert.deepEqual(rpc[0][2], { authority: 'trusted-host' });
+  assert.equal(http[0][1], deliveryService);
   assert.ok(channelServices.every((service) => service === deliveryService));
   assert.deepEqual(await provided[0][1].listTargets('bot_one'), [{ targetId: 'target' }]);
   assert.deepEqual(await provided[0][1].send('bot_one', 'target', 'hello'), { sent: true });
@@ -164,7 +169,7 @@ test('Host waits for apiProxy on legacy Harness and Controllers on modern Harnes
       typertGateway: modern ? { stream() {} } : { invoke() {} },
       inject(dependencies, callback) {
         injections.push(dependencies);
-        if (dependencies.includes('tools')) return {};
+        if (dependencies.includes('tools') || dependencies.includes('webServer')) return {};
         return {
           then(resolve, reject) {
             Promise.resolve(callback(ctx)).then(resolve, reject);
