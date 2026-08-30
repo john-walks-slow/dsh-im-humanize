@@ -6,6 +6,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.2.1] - 2026-08-31
+
 ### Fixed / 修复
 
 - Telegram 机器人现在为长轮询和发送请求使用同一 Runtime 私有、代理感知的有限连接池，避免全局 HTTP 连接受限时 `getUpdates` 阻塞消息发送；停止或启动失败时会显式释放连接池。
@@ -512,7 +514,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.2.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.2.1...HEAD
+[4.2.1]: https://github.com/xmanrui/dsh-im/compare/v4.2.0...v4.2.1
 [4.2.0]: https://github.com/xmanrui/dsh-im/compare/v4.1.1...v4.2.0
 [4.1.1]: https://github.com/xmanrui/dsh-im/compare/v4.1.0...v4.1.1
 [4.1.0]: https://github.com/xmanrui/dsh-im/compare/v4.0.1...v4.1.0
