@@ -774,7 +774,7 @@ export class FeishuHarnessBridge {
         await this.#state.markSeen(messageId);
         this.#status.lastMessageAt = new Date().toISOString();
         this.#status.messagesReceived += 1;
-        if (result?.message) await this.#send(event.message.chat_id, result.message);
+        if (result?.message) await this.#send(event.message.chat_id, result.message, { replyTo: event.message.message_id });
         this.#status.lastError = null;
       })
       .then(() => this.#finishReaction(messageId, processingReaction, 'DONE'))
@@ -843,7 +843,7 @@ export class FeishuHarnessBridge {
     const text = options.appendMessage
       ? `${messageFailureText(failure)}\n\n${options.appendMessage}`
       : messageFailureText(failure);
-    await this.#send(chatId, text).catch(() => undefined);
+    await this.#send(chatId, text, { replyTo: options.replyTo }).catch(() => undefined);
     return failure;
   }
 
@@ -874,6 +874,7 @@ export class FeishuHarnessBridge {
     await this.#send(
       event.message.chat_id,
       failureText,
+      { replyTo: event.message.message_id },
     ).catch(() => undefined);
   }
 
@@ -1630,7 +1631,7 @@ export class FeishuHarnessBridge {
     }
     this.#logger.warn?.('[dsh-feishu] card action queue is full; dropping callbacks');
     let tracked;
-    tracked = this.#send(entry.chatId, t('操作过于频繁，请稍后再试。'))
+    tracked = this.#send(entry.chatId, t('操作过于频繁，请稍后再试。'), { replyTo: entry.messageId ?? null })
       .catch(() => undefined)
       .finally(() => {
         this.#cardActionTasks.delete(tracked);
@@ -1711,7 +1712,7 @@ export class FeishuHarnessBridge {
       })
       .catch(async (error) => {
         if (this.#signal?.aborted) return;
-        await this.#sendFailure(entry.chatId, error, { logLabel: 'card action' });
+        await this.#sendFailure(entry.chatId, error, { logLabel: 'card action', replyTo: entry.messageId });
       })
       .finally(() => {
         if (this.#cardActionInFlight.get(dedupeKey) === tracked) {
@@ -2081,7 +2082,7 @@ export class FeishuHarnessBridge {
         },
       );
     } catch (error) {
-      await this.#sendFailure(chatId, error, { logLabel: 'session list' });
+      await this.#sendFailure(chatId, error, { logLabel: 'session list', replyTo });
     }
   }
 
@@ -2098,7 +2099,7 @@ export class FeishuHarnessBridge {
         { key, updateMessageId, replyTo },
       );
     } catch (error) {
-      await this.#sendFailure(chatId, error, { logLabel: 'workspace list' });
+      await this.#sendFailure(chatId, error, { logLabel: 'workspace list', replyTo });
     }
   }
 
@@ -2114,6 +2115,7 @@ export class FeishuHarnessBridge {
     } catch (error) {
       await this.#sendFailure(chatId, error, {
         logLabel: 'session binding',
+        replyTo,
         userMessage: t('绑定失败：{message}', { message: safeErrorText(error) }),
       });
     }
@@ -2127,6 +2129,7 @@ export class FeishuHarnessBridge {
     } catch (error) {
       await this.#sendFailure(chatId, error, {
         logLabel: 'workspace switch',
+        replyTo,
         userMessage: t('切换失败：{message}', { message: safeErrorText(error) }),
       });
     }
@@ -2350,7 +2353,7 @@ export class FeishuHarnessBridge {
       catalog._currentId = settings.agentPreset;
       await this.#sendCard(chatId, presetCard(catalog), { key, updateMessageId });
     } catch (error) {
-      await this.#sendFailure(chatId, error, { logLabel: 'preset card' });
+      await this.#sendFailure(chatId, error, { logLabel: 'preset card', replyTo: updateMessageId });
     }
   }
 
@@ -2375,7 +2378,7 @@ export class FeishuHarnessBridge {
       }
       await this.#sendCard(chatId, modelCard(catalog), { key, updateMessageId });
     } catch (error) {
-      await this.#sendFailure(chatId, error, { logLabel: 'model card' });
+      await this.#sendFailure(chatId, error, { logLabel: 'model card', replyTo: updateMessageId });
     }
   }
 
@@ -2403,7 +2406,7 @@ export class FeishuHarnessBridge {
       }
       await this.#send(chatId, lines.join('\n'), { replyTo });
     } catch (error) {
-      await this.#sendFailure(chatId, error, { logLabel: 'status text' });
+      await this.#sendFailure(chatId, error, { logLabel: 'status text', replyTo });
     }
   }
 
@@ -2455,7 +2458,7 @@ export class FeishuHarnessBridge {
 
       await this.#sendCard(chatId, statusCard(info), { key, updateMessageId });
     } catch (error) {
-      await this.#sendFailure(chatId, error, { logLabel: 'status card' });
+      await this.#sendFailure(chatId, error, { logLabel: 'status card', replyTo: updateMessageId });
     }
   }
 
@@ -2480,7 +2483,7 @@ export class FeishuHarnessBridge {
       );
       await this.#send(chatId, result?.message || t('上下文压缩失败。'), { replyTo });
     } catch (error) {
-      await this.#sendFailure(chatId, error, { logLabel: 'compact' });
+      await this.#sendFailure(chatId, error, { logLabel: 'compact', replyTo });
     }
   }
 
@@ -2503,7 +2506,7 @@ export class FeishuHarnessBridge {
       }
       await this.#send(chatId, result?.message || t('/stop 执行完成。'), { replyTo });
     } catch (error) {
-      await this.#sendFailure(chatId, error, { logLabel: 'stop' });
+      await this.#sendFailure(chatId, error, { logLabel: 'stop', replyTo });
     }
   }
 
@@ -2543,7 +2546,7 @@ export class FeishuHarnessBridge {
         if (reply) await this.#send(chatId, reply, { replyTo });
       }
     } catch (error) {
-      await this.#sendFailure(chatId, error, { logLabel: 'preset reset' });
+      await this.#sendFailure(chatId, error, { logLabel: 'preset reset', replyTo: updateMessageId });
       return;
     }
     try {
@@ -2566,7 +2569,7 @@ export class FeishuHarnessBridge {
         if (reply) await this.#send(chatId, reply, { replyTo });
       }
     } catch (error) {
-      await this.#sendFailure(chatId, error, { logLabel: 'preset selection' });
+      await this.#sendFailure(chatId, error, { logLabel: 'preset selection', replyTo: updateMessageId });
       return;
     }
     try {
@@ -2598,7 +2601,7 @@ export class FeishuHarnessBridge {
         if (reply) await this.#send(chatId, reply, { replyTo });
       }
     } catch (error) {
-      await this.#sendFailure(chatId, error, { logLabel: 'model selection' });
+      await this.#sendFailure(chatId, error, { logLabel: 'model selection', replyTo: updateMessageId });
       return;
     }
     try {
