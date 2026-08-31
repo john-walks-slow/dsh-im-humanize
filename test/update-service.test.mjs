@@ -167,6 +167,7 @@ test('installation pins the confirmed version, verifies disk and waits for a man
   assert.equal(finished.installedVersion, '3.0.8');
   assert.equal(finished.blockedReason, 'pending-restart');
   assert.equal(finished.canInstall, false);
+  await f.service.close();
   const restarted = await f.restart().status();
   assert.equal(restarted.job.state, 'completed');
   assert.equal(restarted.runningVersion, '3.0.8');
@@ -270,6 +271,7 @@ test('an external version change after installation is not reported as this job 
   const f = await fixture(t);
   await f.submit();
   await waitForJob(f.service, 'restart-required');
+  await f.service.close();
   f.environment.installedVersion = '3.0.9';
   const result = await f.restart('3.0.9').status();
   assert.equal(result.job.state, 'interrupted');
