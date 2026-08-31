@@ -1238,6 +1238,103 @@ test('a threaded Feishu reply answers a pending Harness question before the orig
   assert.equal(status.messagesReplied, 1);
 });
 
+test('a Harness question is presented as a threaded reply inside a topic group', async () => {
+  const sent = [];
+  const replied = [];
+  const streamed = [];
+  const seen = new Set();
+  const sessions = new Map();
+  const status = {
+    messagesReceived: 0,
+    messagesReplied: 0,
+    messagesRejected: 0,
+    lastMessageAt: null,
+    lastReplyAt: null,
+    lastRejectedAt: null,
+    lastError: null,
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: {
+      im: { v1: { message: {
+        create: async (request) => {
+          sent.push({ text: JSON.parse(request.data.content).text });
+          return { code: 0, data: { message_id: `om_sent_${sent.length}` } };
+        },
+        reply: async (request) => {
+          replied.push({
+            to: request.path.message_id,
+            text: JSON.parse(request.data.content).text,
+          });
+          return { code: 0, data: { message_id: `om_replied_${replied.length}` } };
+        },
+      } } },
+    },
+    channel: {
+      stream: async (_chatId, input) => {
+        await input.markdown({
+          setContent: async (content) => streamed.push(content),
+        });
+        return { messageId: 'om_stream' };
+      },
+    },
+    harness: {
+      ensureRunning: async () => true,
+      sessionExists: async () => false,
+      createSession: async () => 'session-topic',
+      ask: async (_sessionId, _text, options) => {
+        await options.onUpdate({ type: 'tool', name: 'ask_user_question' });
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'question-rpc',
+          rpcId: 'question-rpc',
+          sessionId: 'session-topic',
+          payload: {
+            type: 'question/requested',
+            sessionId: 'session-topic',
+            questions: [{
+              id: 'environment',
+              header: '测试环境',
+              question: '请选择测试环境',
+              options: [{ label: '测试环境' }, { label: '生产环境' }],
+            }],
+          },
+          respond: async () => ({ accepted: true }),
+        });
+        return '已完成';
+      },
+    },
+    state: {
+      hasSeen: (id) => seen.has(id),
+      markSeen: async (id) => seen.add(id),
+      sessionFor: (key) => sessions.get(key) ?? null,
+      setSession: async (key, sessionId) => sessions.set(key, sessionId),
+      clearSession: async (key) => sessions.delete(key),
+    },
+    status,
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  bridge.accept(event('om_prompt', '请先调用 ask_user_question', {
+    chat_type: 'group',
+    chat_id: 'oc_topic_group',
+    thread_id: 'omt_prompt',
+  }));
+  await bridge.waitForIdle();
+
+  assert.deepEqual(
+    replied,
+    [{ to: 'om_prompt', text: replied[0]?.text }],
+    'the question must be delivered through the reply API targeting the triggering message',
+  );
+  assert.ok(replied[0]?.text.includes('请选择测试环境'));
+  assert.equal(
+    sent.some(({ text }) => text.includes('请选择测试环境')),
+    false,
+    'the question must not be sent as a plain chat message that lands outside the topic',
+  );
+  assert.equal(streamed.at(-1), '已完成');
+});
+
 test('pending Harness questions are isolated by Feishu conversation', async () => {
   const fixture = stateFixture([
     ['p2p:ou_a', 'session-a'],

@@ -3068,6 +3068,7 @@ export class FeishuHarnessBridge {
         actor: senderOpenId(event),
         chatId: event.message.chat_id,
         requiresMention: event.message.chat_type !== 'p2p',
+        replyToMessageId: event.message.message_id,
       }),
       onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
       files,
@@ -3368,11 +3369,11 @@ export class FeishuHarnessBridge {
     const pending = this.#pendingInteractions.get(key);
     if (!pending || pending !== expected || pending.submitting) {
       if (this.#isResolvedQuestionReply(event, key)) {
-        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT()).catch(() => undefined);
+        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT(), { replyTo: event.message.message_id }).catch(() => undefined);
         return;
       }
       if (claimed && (!pending || pending !== expected)) {
-        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT());
+        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT(), { replyTo: event.message.message_id });
         return;
       }
       return this.#enqueueMessage(event, messageId, key, processingReaction, {
@@ -3430,7 +3431,7 @@ export class FeishuHarnessBridge {
       if (error?.code === 'interaction-not-pending') {
         this.#rememberResolvedInteraction(key, pending);
         this.#clearPendingInteraction(key, pending.interactionId);
-        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT()).catch(() => undefined);
+        await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT(), { replyTo: event.message.message_id }).catch(() => undefined);
         return;
       }
       pending.submitting = false;
@@ -3448,6 +3449,7 @@ export class FeishuHarnessBridge {
     actor,
     chatId,
     requiresMention,
+    replyToMessageId,
   }) {
     if (await this.#approvals.handleRequested(interaction, {
       key,
@@ -3484,6 +3486,7 @@ export class FeishuHarnessBridge {
       await this.#send(
         chatId,
         t('检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。'),
+        { replyTo: replyToMessageId },
       ).catch(() => undefined);
       return;
     }
@@ -3519,6 +3522,7 @@ export class FeishuHarnessBridge {
       answers: [],
       index: 0,
       chatId,
+      replyToMessageId,
       queue: null,
       claimedReplyMessageId: null,
       submitting: false,
@@ -3553,6 +3557,9 @@ export class FeishuHarnessBridge {
         pending.questions.length,
         { requiresMention: pending.requiresMention },
       ),
+      // Reply to the message that started the turn so the question lands in
+      // the same Feishu thread/topic instead of the group's default area.
+      { replyTo: pending.replyToMessageId },
     );
     if (messageId) {
       pending.questionMessageIds.add(messageId);
@@ -3585,7 +3592,7 @@ export class FeishuHarnessBridge {
     await this.#state.markSeen(messageId);
     this.#status.lastMessageAt = new Date().toISOString();
     this.#status.messagesReceived += 1;
-    await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT()).catch(() => undefined);
+    await this.#send(event.message.chat_id, INTERACTION_RESOLVED_TEXT(), { replyTo: event.message.message_id }).catch(() => undefined);
   }
 
   #takePendingInteraction(key, interactionId) {
@@ -3651,13 +3658,33 @@ export class FeishuHarnessBridge {
     else processingReaction.success();
   }
 
-  async #send(chatId, text) {
+  async #send(chatId, text, { replyTo } = {}) {
+    const content = JSON.stringify({ text });
+    if (replyTo) {
+      try {
+        const response = await this.#client.im.v1.message.reply({
+          path: { message_id: replyTo },
+          data: { msg_type: 'text', content },
+        });
+        if (response?.code && response.code !== 0) {
+          throw new Error(`Feishu reply failed: ${response.msg || response.code}`);
+        }
+        return nonEmptyString(response?.data?.message_id);
+      } catch (error) {
+        // The referenced message may be gone (recalled/deleted); keep the
+        // delivery promise by falling back to a plain chat message.
+        this.#logger.warn?.(
+          '[dsh-feishu] threaded reply failed; falling back to a plain message:',
+          error?.message ?? String(error),
+        );
+      }
+    }
     const response = await this.#client.im.v1.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
         receive_id: chatId,
         msg_type: 'text',
-        content: JSON.stringify({ text }),
+        content,
       },
     });
     if (response?.code && response.code !== 0) {
