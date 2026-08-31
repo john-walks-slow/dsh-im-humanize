@@ -1,4 +1,4 @@
-import { QQBot, typingIndicator } from '@tencent-connect/qqbot-nodejs';
+import { QQBot, contentSanitizer, typingIndicator } from '@tencent-connect/qqbot-nodejs';
 
 import {
   connectionTestTarget,
@@ -171,6 +171,10 @@ export class QqRuntime {
       replyTimeoutMs: this.#replyTimeoutMs,
       signal: controller.signal,
     });
+    // QQ delivers emoji/face messages as opaque `<faceType=..,faceId="..",ext="..">`
+    // tags. Parse them into readable text so the Harness sees what the sender
+    // actually meant instead of an unusable markup fragment.
+    bot.use(contentSanitizer({ parseFaceTags: true }));
     bot.use?.(this.#typingMiddleware({
       keepAlive: true,
       predicate: (ctx) => this.#config.ownerUserOpenid === '*'

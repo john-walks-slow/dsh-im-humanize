@@ -47,10 +47,11 @@ test('QQ runtime waits for gateway ready, installs typing, and stops its client'
   const status = await runtime.start();
   assert.equal(status.ready, true);
   assert.equal(status.qqConnectionState, 'connected');
-  assert.equal(bot.middlewares[0].name, 'typing-middleware');
-  assert.equal(bot.middlewares[0].options.keepAlive, true);
-  assert.equal(bot.middlewares[0].options.predicate({ message: { senderId: 'owner' } }), true);
-  assert.equal(bot.middlewares[0].options.predicate({ message: { senderId: 'other' } }), false);
+  assert.equal(typeof bot.middlewares[0], 'function'); // contentSanitizer (face-tag parsing)
+  assert.equal(bot.middlewares[1].name, 'typing-middleware');
+  assert.equal(bot.middlewares[1].options.keepAlive, true);
+  assert.equal(bot.middlewares[1].options.predicate({ message: { senderId: 'owner' } }), true);
+  assert.equal(bot.middlewares[1].options.predicate({ message: { senderId: 'other' } }), false);
   assert.equal(botOptions.markdownSupport, false);
   botOptions.logger.debug('raw gateway payload');
   botOptions.logger.info('gateway ready');
