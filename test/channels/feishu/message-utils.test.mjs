@@ -232,6 +232,38 @@ test('conversationKey isolates p2p users and groups', () => {
   }), 'group:oc_group');
 });
 
+test('conversationKey isolates topic-group threads without affecting regular groups', () => {
+  // Topic groups: each message belongs to a thread, so every topic gets its own session.
+  assert.equal(conversationKey({
+    sender: { sender_id: { open_id: 'ou_test' } },
+    message: { chat_type: 'group', chat_id: 'oc_topic_group', thread_id: 'om_thread_a' },
+  }), 'group:oc_topic_group:thread:om_thread_a');
+  assert.equal(conversationKey({
+    sender: { sender_id: { open_id: 'ou_other' } },
+    message: { chat_type: 'group', chat_id: 'oc_topic_group', thread_id: 'om_thread_b' },
+  }), 'group:oc_topic_group:thread:om_thread_b');
+  assert.notEqual(
+    conversationKey({
+      sender: { sender_id: { open_id: 'ou_test' } },
+      message: { chat_type: 'group', chat_id: 'oc_topic_group', thread_id: 'om_thread_a' },
+    }),
+    conversationKey({
+      sender: { sender_id: { open_id: 'ou_test' } },
+      message: { chat_type: 'group', chat_id: 'oc_topic_group', thread_id: 'om_thread_b' },
+    }),
+  );
+  // Regular group chats: no thread_id keeps the single shared group key.
+  assert.equal(conversationKey({
+    sender: { sender_id: { open_id: 'ou_test' } },
+    message: { chat_type: 'group', chat_id: 'oc_group' },
+  }), 'group:oc_group');
+  // Blank thread_id values fall back to the shared group key.
+  assert.equal(conversationKey({
+    sender: { sender_id: { open_id: 'ou_test' } },
+    message: { chat_type: 'group', chat_id: 'oc_group', thread_id: '   ' },
+  }), 'group:oc_group');
+});
+
 test('splitText preserves all text', () => {
   const input = `${'a'.repeat(12)}\n${'b'.repeat(12)}`;
   const chunks = splitText(input, 15);
