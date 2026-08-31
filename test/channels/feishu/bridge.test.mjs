@@ -1412,6 +1412,124 @@ test('command replies in a topic group are threaded to the triggering message', 
   );
 });
 
+test('bind confirmations from card actions are threaded to the card message', async (t) => {
+  const created = [];
+  const replied = [];
+  const seen = new Set();
+  const sessions = new Map([['group:oc_topic:thread:omt_cmd', 'session-cmd']]);
+  const bridge = new FeishuHarnessBridge({
+    client: {
+      im: { v1: { message: {
+        create: async (request) => {
+          created.push({
+            type: request.data.msg_type,
+            text: request.data.msg_type === 'text'
+              ? JSON.parse(request.data.content).text
+              : null,
+          });
+          return { code: 0, data: { message_id: `om_created_${created.length}` } };
+        },
+        reply: async (request) => {
+          const sentMessageId = `om_replied_${replied.length + 1}`;
+          replied.push({
+            id: sentMessageId,
+            to: request.path.message_id,
+            type: request.data.msg_type,
+            text: request.data.msg_type === 'text'
+              ? JSON.parse(request.data.content).text
+              : null,
+          });
+          return { code: 0, data: { message_id: sentMessageId } };
+        },
+      } } },
+    },
+    harness: {
+      ensureRunning: async () => true,
+      bindWorkspaceSession: async (key, sessionId) => ({ sessionId, title: 'Test Session' }),
+    },
+    state: {
+      hasSeen: (id) => seen.has(id),
+      markSeen: async (id) => seen.add(id),
+      sessionFor: (key) => sessions.get(key) ?? null,
+      setSession: async (key, sessionId) => sessions.set(key, sessionId),
+      clearSession: async (key) => sessions.delete(key),
+    },
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  await bridge.accept(event('om_cmd', '/new', {
+    chat_type: 'group',
+    chat_id: 'oc_topic',
+    thread_id: 'omt_cmd',
+  }));
+  await eventually(() => replied.length >= 1, 'the menu card was not created');
+  const menuCardMessageId = replied.filter((item) => item.type === 'interactive').at(-1).id;
+
+  await bridge.onCardAction(cardActionEvent(menuCardMessageId, 'use:session-1', 'ou_user'));
+  await eventually(
+    () => replied.some(({ to, text }) => to === menuCardMessageId && text?.includes('已绑定会话')),
+    'the bind confirmation must be threaded to the card message',
+  );
+  assert.equal(
+    created.some(({ text }) => text?.includes('已绑定会话')),
+    false,
+    'the bind confirmation must not be sent as a fresh chat message outside the topic',
+  );
+});
+
+test('watch completion pushes are threaded to the message that created the watch', async (t) => {
+  const { state } = await watchStoreFixture();
+  const harness = watchHarness({
+    sessionsByWorkspace: { 'C:/work': [{ sessionId: 'race-session', title: 'Race Session' }] },
+  });
+  const completionReplies = [];
+  const completionCreates = [];
+  const client = {
+    im: { v1: { message: {
+      create: async (request) => {
+        completionCreates.push(request.data.msg_type);
+        return { code: 0, data: { message_id: `om_created_${completionCreates.length}` } };
+      },
+      reply: async (request) => {
+        completionReplies.push({ to: request.path.message_id, type: request.data.msg_type });
+        return { code: 0, data: { message_id: `om_replied_${completionReplies.length}` } };
+      },
+    } } },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('watch-anchor', '/watch 1', { senderOpenId: 'ou_owner' }));
+  const entry = state.watchEntry('p2p:ou_owner', 'race-session');
+  assert.equal(entry?.replyToMessageId, 'watch-anchor', 'the watch entry must remember the anchor message');
+
+  harness._listeners[0].onSessionEvent({
+    sessionId: 'race-session',
+    event: { type: 'turn/end', seq: 10, time: entry.watchStartedAt, data: { reason: { kind: 'completed' } } },
+  });
+  await eventually(
+    () => completionReplies.some(({ type }) => type === 'interactive'),
+    'the completion card was not delivered',
+  );
+  assert.equal(
+    completionReplies.at(-1).to,
+    'watch-anchor',
+    'the completion push must be threaded to the /watch command message',
+  );
+  assert.equal(
+    completionCreates.length,
+    0,
+    'the completion push must not be sent as a fresh message outside the topic',
+  );
+});
+
 test('pending Harness questions are isolated by Feishu conversation', async () => {
   const fixture = stateFixture([
     ['p2p:ou_a', 'session-a'],
