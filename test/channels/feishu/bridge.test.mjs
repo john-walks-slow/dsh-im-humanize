@@ -1335,6 +1335,83 @@ test('a Harness question is presented as a threaded reply inside a topic group',
   assert.equal(streamed.at(-1), '已完成');
 });
 
+test('command replies in a topic group are threaded to the triggering message', async () => {
+  const created = [];
+  const replied = [];
+  const seen = new Set();
+  const sessions = new Map([['group:oc_topic:thread:omt_cmd', 'session-cmd']]);
+  const bridge = new FeishuHarnessBridge({
+    client: {
+      im: { v1: { message: {
+        create: async (request) => {
+          created.push({
+            type: request.data.msg_type,
+            text: request.data.msg_type === 'text'
+              ? JSON.parse(request.data.content).text
+              : null,
+          });
+          return { code: 0, data: { message_id: `om_created_${created.length}` } };
+        },
+        reply: async (request) => {
+          replied.push({
+            to: request.path.message_id,
+            type: request.data.msg_type,
+            text: request.data.msg_type === 'text'
+              ? JSON.parse(request.data.content).text
+              : null,
+          });
+          return { code: 0, data: { message_id: `om_replied_${replied.length}` } };
+        },
+      } } },
+    },
+    harness: {
+      ensureRunning: async () => true,
+      sessionExists: async () => true,
+    },
+    state: {
+      hasSeen: (id) => seen.has(id),
+      markSeen: async (id) => seen.add(id),
+      sessionFor: (key) => sessions.get(key) ?? null,
+      setSession: async (key, sessionId) => sessions.set(key, sessionId),
+      clearSession: async (key) => sessions.delete(key),
+    },
+    status: {
+      messagesReceived: 0,
+      messagesReplied: 0,
+      messagesRejected: 0,
+      lastMessageAt: null,
+      lastReplyAt: null,
+      lastRejectedAt: null,
+      lastError: null,
+    },
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  bridge.accept(event('om_cmd', '/new', {
+    chat_type: 'group',
+    chat_id: 'oc_topic',
+    thread_id: 'omt_cmd',
+  }));
+  await eventually(
+    () => replied.length >= 2,
+    'the /new replies were not presented as threaded replies',
+  );
+
+  assert.ok(
+    replied.some(({ to, text }) => to === 'om_cmd' && text?.includes('已开启全新')),
+    'the /new confirmation must be delivered through the reply API targeting the command message',
+  );
+  assert.ok(
+    replied.some(({ to, type }) => to === 'om_cmd' && type === 'interactive'),
+    'the menu card must also be threaded to the command message',
+  );
+  assert.equal(
+    created.some(({ text }) => text?.includes('已开启全新')),
+    false,
+    'the /new confirmation must not be sent as a plain chat message outside the topic',
+  );
+});
+
 test('pending Harness questions are isolated by Feishu conversation', async () => {
   const fixture = stateFixture([
     ['p2p:ou_a', 'session-a'],

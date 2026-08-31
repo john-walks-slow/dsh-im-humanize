@@ -686,7 +686,7 @@ export class FeishuHarnessBridge {
         ? pending.queue
         : null,
       isQuestionPending: () => this.#pendingInteractions.has(key),
-      send: (text) => this.#send(event.message.chat_id, text),
+      send: (text) => this.#send(event.message.chat_id, text, { replyTo: event.message.message_id }),
     });
     if (approvalReply) {
       const processing = approvalReply.process(async () => {
@@ -851,7 +851,7 @@ export class FeishuHarnessBridge {
     if (error?.code === 'turn-stopped') {
       await this.#removeProcessingReaction(messageId, processingReaction);
       if (error?.batchInputMessage) {
-        await this.#send(event.message.chat_id, error.batchInputMessage).catch(() => undefined);
+        await this.#send(event.message.chat_id, error.batchInputMessage, { replyTo: event.message.message_id }).catch(() => undefined);
       }
       return;
     }
@@ -940,7 +940,7 @@ export class FeishuHarnessBridge {
       ]);
     }
     for (const reply of result?.messages ?? [result?.message]) {
-      if (reply) await this.#send(event.message.chat_id, reply);
+      if (reply) await this.#send(event.message.chat_id, reply, { replyTo: event.message.message_id });
     }
     this.#status.lastError = null;
   }
@@ -964,7 +964,7 @@ export class FeishuHarnessBridge {
     // accept() 侧已用 nonEmptyString(content) 判定，两侧保持一致。
     const commandText = !hasImages && !hasFiles && text ? text.trim() : null;
     if (!text && !hasImages && !hasFiles) {
-      await this.#send(event.message.chat_id, t('目前支持文字、图片和文件消息。'));
+      await this.#send(event.message.chat_id, t('目前支持文字、图片和文件消息。'), { replyTo: event.message.message_id });
       return;
     }
 
@@ -973,11 +973,11 @@ export class FeishuHarnessBridge {
       return;
     }
     if (commandText === '/help') {
-      await this.#send(event.message.chat_id, menuHelpText());
+      await this.#send(event.message.chat_id, menuHelpText(), { replyTo: event.message.message_id });
       return;
     }
     if (MENU_COMMAND.test(commandText)) {
-      await this.#sendMenuCard(key, event.message.chat_id);
+      await this.#sendMenuCard(key, event.message.chat_id, { replyTo: event.message.message_id });
       return;
     }
     if (commandText === '/new') {
@@ -985,53 +985,54 @@ export class FeishuHarnessBridge {
         await this.#send(
           event.message.chat_id,
           t('当前任务仍在运行，请先停止任务或等待任务完成后再开启新会话。'),
+          { replyTo: event.message.message_id },
         );
         return;
       }
       await this.#state.clearSession(key);
-      await this.#send(event.message.chat_id, t('已开启全新 Harness 会话。'));
-      await this.#sendMenuCard(key, event.message.chat_id);
+      await this.#send(event.message.chat_id, t('已开启全新 Harness 会话。'), { replyTo: event.message.message_id });
+      await this.#sendMenuCard(key, event.message.chat_id, { replyTo: event.message.message_id });
       return;
     }
     if (commandText === '/status') {
-      await this.#showStatusText(key, event.message.chat_id);
+      await this.#showStatusText(key, event.message.chat_id, event.message.message_id);
       return;
     }
     if (commandText === '/compact') {
       const compactCommand = await runCompactCommand(commandText, this.#harness, this.#state, key, { signal: this.#signal });
       if (compactCommand) {
-        await this.#send(event.message.chat_id, compactCommand.message);
+        await this.#send(event.message.chat_id, compactCommand.message, { replyTo: event.message.message_id });
       }
       return;
     }
     if (SESSION_LIST_PREFIX.test(commandText)) {
       const selector = commandText.replace(/^\/(?:sessionlist|sessions)/i, '').trim() || null;
-      await this.#showSessions({ chatId: event.message.chat_id, key }, selector, 0);
+      await this.#showSessions({ chatId: event.message.chat_id, key, replyTo: event.message.message_id }, selector, 0);
       return;
     }
     if (WORKSPACE_LIST_COMMAND.test(commandText)) {
-      await this.#showWorkspaces({ chatId: event.message.chat_id, key });
+      await this.#showWorkspaces({ chatId: event.message.chat_id, key, replyTo: event.message.message_id });
       return;
     }
     if (WATCH_COMMAND.test(commandText)) {
       const target = (WATCH_COMMAND.exec(commandText)?.[1] ?? '').trim() || null;
-      await this.#runWatch(key, event.message.chat_id, target);
+      await this.#runWatch(key, event.message.chat_id, target, { replyTo: event.message.message_id });
       return;
     }
     if (UNWATCH_COMMAND.test(commandText)) {
       const target = (UNWATCH_COMMAND.exec(commandText)?.[1] ?? '').trim() || null;
-      await this.#runUnwatch(key, event.message.chat_id, target);
+      await this.#runUnwatch(key, event.message.chat_id, target, { replyTo: event.message.message_id });
       return;
     }
     if (WATCHLIST_COMMAND.test(commandText)) {
-      await this.#showWatchList(key, event.message.chat_id);
+      await this.#showWatchList(key, event.message.chat_id, { replyTo: event.message.message_id });
       return;
     }
     if (ARCHIVED_COMMAND.test(commandText)) {
       const match = ARCHIVED_COMMAND.exec(commandText);
       const value = match[1]?.toLowerCase();
       if (value !== 'on' && value !== 'off') {
-        await this.#send(event.message.chat_id, t('用法：/archived on（包含归档会话）或 /archived off（隐藏归档会话）'));
+        await this.#send(event.message.chat_id, t('用法：/archived on（包含归档会话）或 /archived off（隐藏归档会话）'), { replyTo: event.message.message_id });
         return;
       }
       if (typeof this.#state?.setIncludeArchivedSessions === 'function') {
@@ -1040,6 +1041,7 @@ export class FeishuHarnessBridge {
       await this.#send(
         event.message.chat_id,
         value === 'on' ? t('已开启：会话列表包含归档会话。') : t('已关闭：会话列表隐藏归档会话。'),
+        { replyTo: event.message.message_id },
       );
       return;
     }
@@ -1059,7 +1061,7 @@ export class FeishuHarnessBridge {
       : await runWorkspaceCommand(text, this.#harness, key);
     if (workspaceCommand) {
       for (const reply of workspaceCommand.messages ?? [workspaceCommand.message]) {
-        await this.#send(event.message.chat_id, reply);
+        await this.#send(event.message.chat_id, reply, { replyTo: event.message.message_id });
       }
       return;
     }
@@ -1073,7 +1075,7 @@ export class FeishuHarnessBridge {
           { signal: this.#signal },
         );
     if (compactCommand) {
-      await this.#send(event.message.chat_id, compactCommand.message);
+      await this.#send(event.message.chat_id, compactCommand.message, { replyTo: event.message.message_id });
       return;
     }
 
@@ -2030,7 +2032,7 @@ export class FeishuHarnessBridge {
   }
 
   async #showSessions(
-    { chatId, key },
+    { chatId, key, replyTo = null },
     selector,
     page = 0,
     { updateMessageId = null } = {},
@@ -2039,14 +2041,14 @@ export class FeishuHarnessBridge {
       const signal = this.#cardDataSignal();
       const resolved = await resolveSessionListWorkspace(selector ?? '', this.#harness, { signal });
       if (resolved.error) {
-        await this.#send(chatId, resolved.error);
+        await this.#send(chatId, resolved.error, { replyTo });
         return;
       }
       const listed = await this.#harness.listWorkspaceSessions(resolved.workspace, { signal });
       const sessions = this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : []);
       const workspace = listed?.workspace ?? resolved.workspace;
       if (sessions.length === 0) {
-        await this.#send(chatId, t('工作区：{workspace}\n该工作区暂无会话。', { workspace }));
+        await this.#send(chatId, t('工作区：{workspace}\n该工作区暂无会话。', { workspace }), { replyTo });
         return;
       }
       const pageCount = Math.ceil(sessions.length / MENU_PAGE_SIZE);
@@ -2065,6 +2067,7 @@ export class FeishuHarnessBridge {
         {
           key,
           updateMessageId,
+          replyTo,
           // Keep the canonical selector result for later page callbacks. The
           // list response's workspace is display data and is not authoritative.
           sessionWorkspace: resolved.workspace,
@@ -2076,7 +2079,7 @@ export class FeishuHarnessBridge {
     }
   }
 
-  async #showWorkspaces({ chatId, key }, { updateMessageId = null } = {}) {
+  async #showWorkspaces({ chatId, key, replyTo = null }, { updateMessageId = null } = {}) {
     try {
       const { current, paths } = await workspacePathSnapshot(
         this.#harness,
@@ -2086,7 +2089,7 @@ export class FeishuHarnessBridge {
       await this.#sendCard(
         chatId,
         workspaceListCard(paths, current),
-        { key, updateMessageId },
+        { key, updateMessageId, replyTo },
       );
     } catch (error) {
       await this.#sendFailure(chatId, error, { logLabel: 'workspace list' });
@@ -2144,6 +2147,7 @@ export class FeishuHarnessBridge {
 
   async #sendCard(chatId, cardJson, options = {}) {
     const updateMessageId = nonEmptyString(options.updateMessageId);
+    const replyTo = nonEmptyString(options.replyTo);
 
     if (updateMessageId) {
       try {
@@ -2161,6 +2165,28 @@ export class FeishuHarnessBridge {
       }
     }
 
+    // A brand-new card triggered by an inbound message is delivered as a
+    // threaded reply so it lands inside the same Feishu topic. Falls back to
+    // a plain chat message when the referenced message is gone.
+    const content = cardJson;
+    if (replyTo) {
+      try {
+        const response = await this.#client.im.v1.message.reply({
+          path: { message_id: replyTo },
+          data: { msg_type: 'interactive', content },
+        });
+        if (response?.code && response.code !== 0) {
+          throw new Error(`Feishu card reply failed: ${response.msg || response.code}`);
+        }
+        const repliedMessageId = nonEmptyString(response?.data?.message_id);
+        if (repliedMessageId) {
+          this.#rememberCardRoute(repliedMessageId, chatId, options);
+          return repliedMessageId;
+        }
+      } catch (error) {
+        this.#logger.warn?.('[dsh-feishu] threaded card reply failed; sending a plain card:', error?.message ?? String(error));
+      }
+    }
     const response = await this.#client.im.v1.message.create({
       params: { receive_id_type: 'chat_id' },
       data: { receive_id: chatId, msg_type: 'interactive', content: cardJson },
@@ -2173,7 +2199,7 @@ export class FeishuHarnessBridge {
     return messageId;
   }
 
-  async #sendMenuCard(key, chatId, { updateMessageId = null } = {}) {
+  async #sendMenuCard(key, chatId, { updateMessageId = null, replyTo = null } = {}) {
     let currentSessionId = null;
     let directSessionTitle = null;
     try {
@@ -2268,7 +2294,7 @@ export class FeishuHarnessBridge {
         currentSession: currentSessionId ? { id: currentSessionId, title: currentSessionTitle } : null,
         sessions, archiveVisible, presetCatalog, modelCatalog,
       }),
-      { key, updateMessageId },
+      { key, updateMessageId, replyTo },
     );
   }
 
@@ -2350,7 +2376,7 @@ export class FeishuHarnessBridge {
   /**
    * Gather system status and show the status card.
    */
-  async #showStatusText(key, chatId) {
+  async #showStatusText(key, chatId, replyTo = null) {
     try {
       await this.#harness.ensureRunning({ signal: this.#signal });
       const lines = [t('连接正常')];
@@ -2369,7 +2395,7 @@ export class FeishuHarnessBridge {
             : (settings.agentPreset || t('跟随默认')),
         }));
       }
-      await this.#send(chatId, lines.join('\n'));
+      await this.#send(chatId, lines.join('\n'), { replyTo });
     } catch (error) {
       await this.#sendFailure(chatId, error, { logLabel: 'status text' });
     }
@@ -2787,11 +2813,12 @@ export class FeishuHarnessBridge {
     notify = true,
     validatedTarget = null,
     workspaceHint = null,
+    replyTo = null,
   } = {}) {
     const watchRequestedAt = Date.now();
     const reply = async (message) => {
       if (!notify) return;
-      await this.#send(chatId, message).catch((error) => {
+      await this.#send(chatId, message, { replyTo }).catch((error) => {
         this.#logger.warn?.('[dsh-feishu] watch notification failed:', error.message);
       });
     };
@@ -2854,10 +2881,10 @@ export class FeishuHarnessBridge {
     return { ok: true, changed: !existingEntry, entry: this.#state.watchEntry?.(key, resolved.sessionId) };
   }
 
-  async #runUnwatch(key, chatId, target, { notify = true } = {}) {
+  async #runUnwatch(key, chatId, target, { notify = true, replyTo = null } = {}) {
     const reply = async (message) => {
       if (!notify) return;
-      await this.#send(chatId, message).catch((error) => {
+      await this.#send(chatId, message, { replyTo }).catch((error) => {
         this.#logger.warn?.('[dsh-feishu] unwatch notification failed:', error.message);
       });
     };
@@ -2883,7 +2910,7 @@ export class FeishuHarnessBridge {
     return { ok: true, changed: true, entry };
   }
 
-  async #showWatchList(key, chatId, { updateMessageId = null } = {}) {
+  async #showWatchList(key, chatId, { updateMessageId = null, replyTo = null } = {}) {
     const entries = this.#state.watchEntries?.(key) ?? [];
     // 收集可选会话（用于「添加关注」多选下拉）；失败则传空数组 → 只渲染移除/列表。
     let availableSessions = [];
@@ -2913,6 +2940,7 @@ export class FeishuHarnessBridge {
       {
         key,
         updateMessageId,
+        replyTo,
         sessionWorkspace: currentWorkspace,
       },
     );
@@ -3075,11 +3103,11 @@ export class FeishuHarnessBridge {
     };
   }
 
-  async #sendAnswerText(chatId, answer, { deliveryId, presentation }) {
+  async #sendAnswerText(chatId, answer, { deliveryId, presentation, replyTo = null }) {
     const providerMessageIds = [];
     for (const chunk of splitText(answer)) {
       this.#signal?.throwIfAborted();
-      const messageId = await this.#send(chatId, chunk);
+      const messageId = await this.#send(chatId, chunk, { replyTo });
       if (messageId) providerMessageIds.push(messageId);
     }
     return createDeliveryReceipt({
@@ -3183,6 +3211,7 @@ export class FeishuHarnessBridge {
           {
             deliveryId: messageId,
             presentation: 'feishu-text',
+            replyTo: messageId,
           },
         );
       } catch (error) {
@@ -3253,6 +3282,7 @@ export class FeishuHarnessBridge {
             {
               deliveryId: messageId,
               presentation: 'feishu-text-fallback',
+              replyTo: messageId,
             },
           );
         } catch (fallbackError) {
@@ -3303,6 +3333,7 @@ export class FeishuHarnessBridge {
           {
             deliveryId: messageId,
             presentation: 'feishu-text-fallback',
+            replyTo: messageId,
           },
         );
       } catch (fallbackError) {
@@ -3455,7 +3486,7 @@ export class FeishuHarnessBridge {
       key,
       actor,
       requiresMention,
-      send: (text) => this.#send(chatId, text),
+      send: (text) => this.#send(chatId, text, { replyTo: replyToMessageId }),
     })) return;
 
     // Approval requests return above; the existing question state machine stays unchanged.
