@@ -16,6 +16,11 @@ export function conversationKey(event) {
   }
   const chatId = event?.message?.chat_id;
   if (!chatId) throw new Error('Feishu group event has no chat id');
+  // Topic groups: every message belongs to a thread, so key the session per
+  // thread to keep each topic's Harness conversation isolated. Regular group
+  // chats carry no thread_id and keep the single shared `group:<chat_id>` key.
+  const threadId = event?.message?.thread_id;
+  if (typeof threadId === 'string' && threadId.trim()) return `group:${chatId}:thread:${threadId}`;
   return `group:${chatId}`;
 }
 
