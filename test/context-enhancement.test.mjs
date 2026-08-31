@@ -13,12 +13,19 @@ import {
 } from '../src/channels/shared/context-enhancement.mjs';
 
 function config(overrides = {}) {
+  const {
+    groupEnabled = true,
+    directEnabled = false,
+    fields = CONTEXT_ENHANCEMENT_FIELDS,
+    guidance = '',
+    group = {},
+    direct = {},
+    ...extra
+  } = overrides;
   return {
-    ...DEFAULT_CONTEXT_ENHANCEMENT_CONFIG,
-    groupEnabled: true,
-    fields: CONTEXT_ENHANCEMENT_FIELDS,
-    guidance: '',
-    ...overrides,
+    group: { enabled: groupEnabled, fields, guidance, ...group },
+    direct: { enabled: directEnabled, fields, guidance, ...direct },
+    ...extra,
   };
 }
 
@@ -32,29 +39,52 @@ function sourceOf(text) {
 }
 
 test('context config defaults are off with sender ID only and empty guidance', () => {
-  assert.equal(DEFAULT_CONTEXT_ENHANCEMENT_CONFIG.groupEnabled, false);
-  assert.equal(DEFAULT_CONTEXT_ENHANCEMENT_CONFIG.directEnabled, false);
-  assert.equal(DEFAULT_CONTEXT_ENHANCEMENT_CONFIG.guidance, '');
-  assert.deepEqual(DEFAULT_CONTEXT_ENHANCEMENT_CONFIG.fields, ['senderId']);
-  assert.equal(Object.isFrozen(DEFAULT_CONTEXT_ENHANCEMENT_CONFIG.fields), true);
+  for (const kind of ['group', 'direct']) {
+    assert.equal(DEFAULT_CONTEXT_ENHANCEMENT_CONFIG[kind].enabled, false);
+    assert.equal(DEFAULT_CONTEXT_ENHANCEMENT_CONFIG[kind].guidance, '');
+    assert.deepEqual(DEFAULT_CONTEXT_ENHANCEMENT_CONFIG[kind].fields, ['senderId']);
+    assert.equal(Object.isFrozen(DEFAULT_CONTEXT_ENHANCEMENT_CONFIG[kind].fields), true);
+  }
   for (const guidance of ['', ' \r\n\t ']) {
     assert.deepEqual(validateContextEnhancementConfig(config({ fields: [], guidance })), {
-      groupEnabled: true, directEnabled: false, fields: [], guidance: '',
+      group: { enabled: true, fields: [], guidance: '' },
+      direct: { enabled: false, fields: [], guidance: '' },
     });
   }
   const canonical = validateContextEnhancementConfig(config({
     fields: ['botId', 'senderName', 'botId', 'channel'], guidance: '  custom text\n',
   }));
-  assert.deepEqual(canonical.fields, ['channel', 'senderName', 'botId']);
-  assert.equal(canonical.guidance, '  custom text\n');
+  assert.deepEqual(canonical.group.fields, ['channel', 'senderName', 'botId']);
+  assert.deepEqual(canonical.direct.fields, ['channel', 'senderName', 'botId']);
+  assert.equal(canonical.group.guidance, '  custom text\n');
   assert.equal(Object.isFrozen(canonical), true);
-  assert.equal(Object.isFrozen(canonical.fields), true);
+  assert.equal(Object.isFrozen(canonical.group), true);
+  assert.equal(Object.isFrozen(canonical.group.fields), true);
+});
+
+test('legacy context settings migrate in memory without weakening new-save validation', () => {
+  const legacy = {
+    groupEnabled: true,
+    directEnabled: false,
+    fields: ['botId', 'channel', 'botId'],
+    guidance: 'legacy guidance',
+  };
+  assert.throws(() => validateContextEnhancementConfig(legacy));
+  assert.deepEqual(normalizeContextEnhancementConfig(legacy), {
+    group: { enabled: true, fields: ['channel', 'botId'], guidance: 'legacy guidance' },
+    direct: { enabled: false, fields: ['channel', 'botId'], guidance: 'legacy guidance' },
+  });
+  assert.equal(normalizeContextEnhancementConfig({
+    ...legacy,
+    group: { enabled: true, fields: [], guidance: 'mixed' },
+  }), DEFAULT_CONTEXT_ENHANCEMENT_CONFIG);
 });
 
 test('context saves reject missing, unknown and mistyped fields while normalization fails off', () => {
   const invalid = [
     undefined, null, [], {}, true,
     { ...config(), unexpected: true },
+    { group: config().group },
     { groupEnabled: true, directEnabled: false, fields: [] },
     config({ groupEnabled: 'true' }), config({ directEnabled: 1 }),
     config({ fields: null }), config({ fields: 'channel' }),
@@ -63,7 +93,7 @@ test('context saves reject missing, unknown and mistyped fields while normalizat
     config({ guidance: null }),
     config({ guidance: 'x'.repeat(CONTEXT_ENHANCEMENT_GUIDANCE_MAX_LENGTH + 1) }),
     new Proxy({}, { getPrototypeOf() { throw new Error('bad config'); } }),
-    { ...config(), get guidance() { throw new Error('bad guidance'); } },
+    { ...config(), group: { ...config().group, get guidance() { throw new Error('bad guidance'); } } },
   ];
   for (const value of invalid) {
     assert.throws(() => validateContextEnhancementConfig(value));
@@ -72,7 +102,7 @@ test('context saves reject missing, unknown and mistyped fields while normalizat
   }
   assert.equal(validateContextEnhancementConfig(config({
     guidance: 'x'.repeat(CONTEXT_ENHANCEMENT_GUIDANCE_MAX_LENGTH),
-  })).guidance.length, CONTEXT_ENHANCEMENT_GUIDANCE_MAX_LENGTH);
+  })).group.guidance.length, CONTEXT_ENHANCEMENT_GUIDANCE_MAX_LENGTH);
 });
 
 test('off path preserves content identity and never reads fields, guidance, source or formatter', (t) => {
@@ -81,9 +111,16 @@ test('off path preserves content identity and never reads fields, guidance, sour
   let settingReads = 0;
   const throwIfRead = () => { throw new Error('off path must not inspect this'); };
   const settings = {
-    groupEnabled: false, directEnabled: false,
-    get fields() { return throwIfRead(); },
-    get guidance() { return throwIfRead(); },
+    group: {
+      enabled: false,
+      get fields() { return throwIfRead(); },
+      get guidance() { return throwIfRead(); },
+    },
+    direct: {
+      enabled: false,
+      get fields() { return throwIfRead(); },
+      get guidance() { return throwIfRead(); },
+    },
   };
   const provider = {
     get botId() { return throwIfRead(); },
@@ -123,12 +160,29 @@ test('only the actual conversation type can enable capture, regardless of select
   }
   for (const kind of ['group', 'direct']) {
     const offSettings = {
-      [kind === 'group' ? 'groupEnabled' : 'directEnabled']: false,
-      get fields() { throw new Error('no field projection'); },
-      get guidance() { throw new Error('no guidance lookup'); },
+      [kind]: {
+        enabled: false,
+        get fields() { throw new Error('no field projection'); },
+        get guidance() { throw new Error('no guidance lookup'); },
+      },
     };
     assert.equal(snapshot(offSettings, kind), null);
   }
+});
+
+test('group and direct messages use only their own fields and guidance', () => {
+  const settings = config({
+    group: { enabled: true, fields: ['channel'], guidance: 'GROUP-ONLY-TOKEN' },
+    direct: { enabled: true, fields: ['botId'], guidance: 'DIRECT-ONLY-TOKEN' },
+  });
+  const group = enhanceContextContent('group text', snapshot(settings, 'group'), () => ({ channel: 'feishu' }));
+  const direct = enhanceContextContent('direct text', snapshot(settings, 'direct'), () => ({ channel: 'feishu' }));
+  assert.deepEqual(sourceOf(group), { channel: 'feishu' });
+  assert.match(group, /GROUP-ONLY-TOKEN/);
+  assert.doesNotMatch(group, /DIRECT-ONLY-TOKEN|botId/);
+  assert.deepEqual(sourceOf(direct), { botId: 'bot_one' });
+  assert.match(direct, /DIRECT-ONLY-TOKEN/);
+  assert.doesNotMatch(direct, /GROUP-ONLY-TOKEN|channel/);
 });
 
 test('all 32 source-field subsets are projected in canonical order with no hidden fields', () => {
@@ -231,9 +285,9 @@ test('queued snapshots are immutable and retain a complete setting version after
   let settings = config({ fields: ['senderId'], guidance: 'old guidance' });
   const provider = { botId: 'bot_queued', getSettings: () => settings };
   const before = captureContextEnhancement(provider, 'group');
-  settings.fields.push('senderName');
-  settings.guidance = 'new guidance';
-  settings.groupEnabled = false;
+  settings.group.fields.push('senderName');
+  settings.group.guidance = 'new guidance';
+  settings.group.enabled = false;
   assert.equal(captureContextEnhancement(provider, 'group'), null);
   assert.deepEqual(before.config.fields, ['senderId']);
   const result = enhanceContextContent('queued', before, () => ({ senderId: 'old', senderName: 'new' }));

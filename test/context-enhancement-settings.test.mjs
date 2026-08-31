@@ -45,10 +45,22 @@ const CHANNELS = [
   ['whatsapp', createWhatsappRpcHandler, WHATSAPP_ENDPOINTS],
 ];
 
-const enabled = (overrides = {}) => ({
-  groupEnabled: true, directEnabled: true, fields: ['channel', 'botId'], guidance: 'saved guidance',
-  ...overrides,
-});
+const enabled = (overrides = {}) => {
+  const {
+    groupEnabled = true,
+    directEnabled = true,
+    fields = ['channel', 'botId'],
+    guidance = 'saved guidance',
+    group = {},
+    direct = {},
+    ...extra
+  } = overrides;
+  return {
+    group: { enabled: groupEnabled, fields, guidance, ...group },
+    direct: { enabled: directEnabled, fields, guidance, ...direct },
+    ...extra,
+  };
+};
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-im-context-settings-'));
@@ -105,6 +117,37 @@ test('old workspace files remain untouched and default enhancement off', async (
   assert.equal(await readFile(path, 'utf8'), original, 'reading/decorating old config must not migrate/write it');
 });
 
+test('legacy enhancement settings migrate in memory and persist lazily on the next successful write', async (t) => {
+  const { directory, path } = await fixture(t);
+  const legacy = {
+    groupEnabled: true,
+    directEnabled: false,
+    fields: ['botId', 'channel', 'botId'],
+    guidance: 'legacy guidance',
+  };
+  const original = JSON.stringify({
+    version: 1,
+    workspaces: { legacy_bot: directory },
+    contextEnhancement: { legacy_bot: legacy },
+  });
+  await writeFile(path, original);
+  const store = await new BotWorkspaceStore(path).load();
+  assert.deepEqual(store.contextEnhancementFor('legacy_bot'), enabled({
+    directEnabled: false,
+    fields: ['channel', 'botId'],
+    guidance: 'legacy guidance',
+  }));
+  assert.equal(await readFile(path, 'utf8'), original, 'loading legacy settings must not write');
+  await store.setAgentPreset('legacy_bot', 'preset-one');
+  const migrated = JSON.parse(await readFile(path, 'utf8')).contextEnhancement.legacy_bot;
+  assert.deepEqual(migrated, enabled({
+    directEnabled: false,
+    fields: ['channel', 'botId'],
+    guidance: 'legacy guidance',
+  }));
+  assert.equal(Object.hasOwn(migrated, 'guidance'), false);
+});
+
 test('complete per-bot settings persist all switch combinations and explicit empty fields/text', async (t) => {
   const { path, directory, store } = await fixture(t);
   await store.ensure('bot_one', { defaultAgentPreset: 'preset-one' });
@@ -113,7 +156,7 @@ test('complete per-bot settings persist all switch combinations and explicit emp
   const incarnation = store.incarnationFor('bot_one');
   for (const groupEnabled of [false, true]) {
     for (const directEnabled of [false, true]) {
-      const selected = { groupEnabled, directEnabled, fields: [], guidance: '' };
+      const selected = enabled({ groupEnabled, directEnabled, fields: [], guidance: '' });
       const saved = await store.setContextEnhancement('bot_one', selected);
       assert.deepEqual(saved, selected);
       assert.equal(store.contextEnhancementFor('bot_one'), saved);
@@ -185,7 +228,8 @@ test('pending and failed writes never publish an uncommitted context snapshot', 
   assert.match(text, /saved guidance/);
   assert.match(text, /"botId":"bot_one"/);
   assert.equal(Object.isFrozen(first), true);
-  assert.equal(Object.isFrozen(first.fields), true);
+  assert.equal(Object.isFrozen(first.group.fields), true);
+  assert.equal(Object.isFrozen(first.direct.fields), true);
 });
 
 test('invalid saves reject atomically and deleted or rebound bot incarnations cannot receive stale updates', async (t) => {
@@ -259,7 +303,7 @@ test('failed cleanup retires context settings and startup reconciliation heals s
   assert.equal(store.contextEnhancementFor('bot_one'), DEFAULT_CONTEXT_ENHANCEMENT_CONFIG);
   await rm(`${path}.tmp`, { recursive: true });
   const reloaded = await new BotWorkspaceStore(path).load();
-  assert.equal(reloaded.contextEnhancementFor('bot_one').groupEnabled, true);
+  assert.equal(reloaded.contextEnhancementFor('bot_one').group.enabled, true);
   await reloaded.reconcile(['bot_two']);
   assert.equal(reloaded.contextEnhancementFor('bot_one'), DEFAULT_CONTEXT_ENHANCEMENT_CONFIG);
   assert.equal(JSON.parse(await readFile(path, 'utf8')).contextEnhancement, undefined);
@@ -515,7 +559,9 @@ for (const [channel, createHandler, endpoints] of CHANNELS) {
     await rm(`${path}.tmp`, { recursive: true });
     const cleared = await handler(endpoints.setContextEnhancement, { botId, config: enabled({ fields: [], guidance: '' }) });
     assert.equal(cleared.ok, true);
-    assert.deepEqual(cleared.value.bots[0].contextEnhancement.fields, []);
-    assert.equal(cleared.value.bots[0].contextEnhancement.guidance, '');
+    assert.deepEqual(cleared.value.bots[0].contextEnhancement.group.fields, []);
+    assert.deepEqual(cleared.value.bots[0].contextEnhancement.direct.fields, []);
+    assert.equal(cleared.value.bots[0].contextEnhancement.group.guidance, '');
+    assert.equal(cleared.value.bots[0].contextEnhancement.direct.guidance, '');
   });
 }

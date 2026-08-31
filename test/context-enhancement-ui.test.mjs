@@ -5,9 +5,10 @@ import * as React from 'react';
 import TestRenderer from 'react-test-renderer';
 
 import {
+  CONTEXT_DIRECT_GUIDANCE_EXAMPLE,
   CONTEXT_ENHANCEMENT_FIELDS,
   CONTEXT_ENHANCEMENT_GUIDANCE_MAX_LENGTH,
-  CONTEXT_GUIDANCE_EXAMPLE,
+  CONTEXT_GROUP_GUIDANCE_EXAMPLE,
   DEFAULT_CONTEXT_ENHANCEMENT_CONFIG,
 } from '../src/channels/shared/context-enhancement.mjs';
 import { ContextEnhancementEditor, contextEnhancementLabel } from '../plugin-src/client/context-enhancement.js';
@@ -42,12 +43,40 @@ function button(root, name) {
   return found;
 }
 
-function fields(root) {
-  return root.findAllByType('input').filter((node) => CONTEXT_ENHANCEMENT_FIELDS.includes(node.props.name));
+function scope(root, kind) {
+  return root.findAllByType('fieldset').find((node) => node.props['data-context-kind'] === kind);
 }
 
-function switches(root) {
-  return root.findAllByProps({ role: 'switch' });
+function fields(root, kind) {
+  const parent = kind ? scope(root, kind) : root;
+  return parent.findAllByType('input').filter((node) => (
+    typeof node.props.name === 'string'
+    && CONTEXT_ENHANCEMENT_FIELDS.includes(node.props.name.replace(/^(?:group|direct)-/, ''))
+  ));
+}
+
+function fieldNames(nodes) {
+  return nodes.map((node) => node.props.name.replace(/^(?:group|direct)-/, ''));
+}
+
+function guidance(root, kind) {
+  return scope(root, kind).findByType('textarea');
+}
+
+function scopeSwitch(root, kind) {
+  return scope(root, kind).findByProps({ role: 'switch' });
+}
+
+function switchStates(root) {
+  return ['group', 'direct'].map((kind) => scopeSwitch(root, kind).props.checked);
+}
+
+function tabs(root) {
+  return root.findAllByProps({ role: 'tab' });
+}
+
+function panels(root) {
+  return root.findAllByProps({ role: 'tabpanel' });
 }
 
 function badge(root) {
@@ -64,6 +93,10 @@ async function open(root) {
 
 async function click(root, label) {
   await act(async () => { button(root, label).props.onClick(); await flush(); });
+}
+
+async function clickScope(root, kind, label) {
+  await act(async () => { button(scope(root, kind), label).props.onClick(); await flush(); });
 }
 
 function deferred() {
@@ -118,7 +151,10 @@ test('context settings default to off with sender ID and empty guidance, and exp
     [false, false, '未开启'], [true, false, '仅群聊'],
     [false, true, '仅私聊'], [true, true, '群聊和私聊'],
   ]) {
-    const config = { ...DEFAULT_CONTEXT_ENHANCEMENT_CONFIG, groupEnabled, directEnabled };
+    const config = {
+      group: { ...DEFAULT_CONTEXT_ENHANCEMENT_CONFIG.group, enabled: groupEnabled },
+      direct: { ...DEFAULT_CONTEXT_ENHANCEMENT_CONFIG.direct, enabled: directEnabled },
+    };
     assert.equal(contextEnhancementLabel(config), label);
   }
   const saved = [];
@@ -132,26 +168,50 @@ test('context settings default to off with sender ID and empty guidance, and exp
   assert.equal(renderer.root.findByProps({ role: 'dialog' }).props['aria-describedby'], contextTooltip.props.id);
   assert.match(textOf(contextTooltip), /选择在哪些会话中启用.*不查询平台 API/);
   assert.equal(renderer.root.findAllByType('p').some((node) => textOf(node).startsWith('选择在哪些会话中启用')), false);
-  assert.deepEqual(switches(renderer.root).map((node) => node.props.checked), [false, false]);
-  assert.equal(renderer.root.findByType('textarea').props.rows, 4);
-  assert.deepEqual(fields(renderer.root).map((node) => node.props.name), CONTEXT_ENHANCEMENT_FIELDS);
-  assert.deepEqual(fields(renderer.root).filter((node) => node.props.checked).map((node) => node.props.name), ['senderId']);
-  assert.deepEqual(renderer.root.findAllByProps({ className: 'dim-contextFieldKey' }).map(textOf), CONTEXT_ENHANCEMENT_FIELDS);
-  const fieldsHelp = renderer.root.findByProps({ 'aria-label': '查看来源字段说明' });
+  assert.deepEqual(tabs(renderer.root).map(textOf), ['私聊', '群聊']);
+  assert.deepEqual(tabs(renderer.root).map((node) => node.props['aria-selected']), [true, false]);
+  assert.deepEqual(tabs(renderer.root).map((node) => node.props.tabIndex), [0, -1]);
+  assert.deepEqual(panels(renderer.root).map((node) => node.props.hidden), [false, true]);
+  assert.deepEqual(tabs(renderer.root).map((node) => node.props['aria-controls']), panels(renderer.root).map((node) => node.props.id));
+  let prevented = false;
+  await act(async () => {
+    tabs(renderer.root)[0].props.onKeyDown({ key: 'ArrowRight', preventDefault() { prevented = true; } });
+  });
+  assert.equal(prevented, true);
+  assert.deepEqual(tabs(renderer.root).map((node) => node.props['aria-selected']), [false, true]);
+  assert.deepEqual(panels(renderer.root).map((node) => node.props.hidden), [true, false]);
+  await act(async () => { tabs(renderer.root)[1].props.onKeyDown({ key: 'Home', preventDefault() {} }); });
+  assert.deepEqual(tabs(renderer.root).map((node) => node.props['aria-selected']), [true, false]);
+  assert.deepEqual(renderer.root.findAllByProps({ className: 'dim-contextSwitchRow' }).map(textOf), ['启用', '启用']);
+  assert.deepEqual(renderer.root.findAllByType('label').filter((node) => (
+    typeof node.props.htmlFor === 'string' && node.props.htmlFor.endsWith('-guidance')
+  )).map(textOf), ['增强提示词', '增强提示词']);
+  assert.deepEqual(switchStates(renderer.root), [false, false]);
+  assert.ok(renderer.root.findAllByType('textarea').every((node) => node.props.rows === 4));
+  for (const kind of ['group', 'direct']) {
+    assert.deepEqual(fieldNames(fields(renderer.root, kind)), CONTEXT_ENHANCEMENT_FIELDS);
+    assert.deepEqual(fieldNames(fields(renderer.root, kind).filter((node) => node.props.checked)), ['senderId']);
+  }
+  assert.deepEqual(renderer.root.findAllByProps({ className: 'dim-contextFieldKey' }).map(textOf), [
+    ...CONTEXT_ENHANCEMENT_FIELDS, ...CONTEXT_ENHANCEMENT_FIELDS,
+  ]);
+  const fieldsHelp = renderer.root.findByProps({ 'aria-label': '查看群聊来源字段说明' });
   const fieldsTooltip = renderer.root.findByProps({ id: fieldsHelp.props['aria-describedby'] });
   assert.match(textOf(fieldsTooltip), /增强提示词中请使用字段名（如 senderId、conversationType）.*不会额外查询或补全/);
   assert.equal(renderer.root.findAllByType('p').some((node) => textOf(node).startsWith('增强提示词中请使用字段名')), false);
-  assert.equal(renderer.root.findByType('textarea').props.value, '');
-  assert.equal(renderer.root.findByType('textarea').props.placeholder, CONTEXT_GUIDANCE_EXAMPLE);
-  const help = renderer.root.findByProps({ 'aria-label': '查看增强提示词使用说明' });
+  assert.equal(guidance(renderer.root, 'group').props.value, '');
+  assert.equal(guidance(renderer.root, 'direct').props.value, '');
+  assert.equal(guidance(renderer.root, 'group').props.placeholder, CONTEXT_GROUP_GUIDANCE_EXAMPLE);
+  assert.equal(guidance(renderer.root, 'direct').props.placeholder, CONTEXT_DIRECT_GUIDANCE_EXAMPLE);
+  const help = renderer.root.findByProps({ 'aria-label': '查看群聊增强提示词使用说明' });
   const tooltip = renderer.root.findByProps({ id: help.props['aria-describedby'] });
   assert.equal(help.props.type, 'button');
   assert.equal(help.props['aria-describedby'], tooltip.props.id);
-  assert.match(textOf(tooltip), /使用说明.*dsh_im_source.*生效规则.*清空并保存.*隐私提示.*会话历史.*使用示例.*conversationType/s);
-  assert.equal(textOf(tooltip.findByProps({ className: 'dim-contextTooltipExample' })), CONTEXT_GUIDANCE_EXAMPLE);
-  assert.equal(renderer.root.findByType('textarea').props['aria-describedby'], tooltip.props.id);
+  assert.match(textOf(tooltip), /使用说明.*dsh_im_source.*生效规则.*清空并保存.*隐私提示.*会话历史.*使用示例.*群聊/s);
+  assert.equal(textOf(tooltip.findByProps({ className: 'dim-contextTooltipExample' })), CONTEXT_GROUP_GUIDANCE_EXAMPLE);
+  assert.equal(guidance(renderer.root, 'group').props['aria-describedby'], tooltip.props.id);
   assert.equal(renderer.root.findAllByType('p').some((node) => /只需填写正文|发送者标识可能包含/.test(textOf(node))), false);
-  const senderNameHelp = renderer.root.findByProps({ 'aria-label': '查看发送者昵称字段说明' });
+  const senderNameHelp = renderer.root.findByProps({ 'aria-label': '查看群聊发送者昵称字段说明' });
   const senderNameTooltip = renderer.root.findByProps({ id: senderNameHelp.props['aria-describedby'] });
   assert.equal(senderNameHelp.props.type, 'button');
   assert.equal(senderNameHelp.parent.props.className, 'dim-contextHelp dim-contextFieldHelp');
@@ -165,18 +225,18 @@ test('switches, fields, and guidance are local drafts until Save; Cancel and clo
   const renderer = await mount(t, ContextEnhancementEditor, { onSave: (value) => saved.push(value) });
   for (const dismiss of ['取消', 'close', 'escape', 'backdrop']) {
     await open(renderer.root);
-    await act(async () => { switches(renderer.root)[0].props.onChange({ target: { checked: true } }); });
-    assert.deepEqual(switches(renderer.root).map((node) => node.props.checked), [true, false]);
-    await act(async () => { switches(renderer.root)[1].props.onChange({ target: { checked: true } }); });
-    assert.deepEqual(switches(renderer.root).map((node) => node.props.checked), [true, true]);
+    await act(async () => { scopeSwitch(renderer.root, 'group').props.onChange({ target: { checked: true } }); });
+    assert.deepEqual(switchStates(renderer.root), [true, false]);
+    await act(async () => { scopeSwitch(renderer.root, 'direct').props.onChange({ target: { checked: true } }); });
+    assert.deepEqual(switchStates(renderer.root), [true, true]);
     await act(async () => {
-      switches(renderer.root)[0].props.onChange({ target: { checked: false } });
-      fields(renderer.root)[0].props.onChange({ target: { checked: false } });
+      scopeSwitch(renderer.root, 'group').props.onChange({ target: { checked: false } });
+      fields(renderer.root, 'group')[0].props.onChange({ target: { checked: false } });
     });
-    assert.deepEqual(switches(renderer.root).map((node) => node.props.checked), [false, true]);
-    await click(renderer.root, '清空');
+    assert.deepEqual(switchStates(renderer.root), [false, true]);
+    await clickScope(renderer.root, 'group', '清空');
     assert.equal(badge(renderer.root), '未开启');
-    assert.equal(renderer.root.findByType('textarea').props.value, '');
+    assert.equal(guidance(renderer.root, 'group').props.value, '');
     assert.deepEqual(saved, []);
     await act(async () => {
       if (dismiss === 'close') renderer.root.findByProps({ 'aria-label': '关闭弹窗' }).props.onClick();
@@ -191,9 +251,11 @@ test('switches, fields, and guidance are local drafts until Save; Cancel and clo
     });
     assert.equal(renderer.root.findAllByProps({ role: 'dialog' }).length, 0);
     await open(renderer.root);
-    assert.deepEqual(switches(renderer.root).map((node) => node.props.checked), [false, false]);
-    assert.deepEqual(fields(renderer.root).filter((node) => node.props.checked).map((node) => node.props.name), ['senderId']);
-    assert.equal(renderer.root.findByType('textarea').props.value, '');
+    assert.deepEqual(switchStates(renderer.root), [false, false]);
+    for (const kind of ['group', 'direct']) {
+      assert.deepEqual(fieldNames(fields(renderer.root, kind).filter((node) => node.props.checked)), ['senderId']);
+      assert.equal(guidance(renderer.root, kind).props.value, '');
+    }
     await click(renderer.root, '取消');
   }
   assert.deepEqual(saved, []);
@@ -211,30 +273,39 @@ test('Save submits one complete config, preserves explicit empty fields/guidance
   }
   const renderer = await mount(t, Fixture);
   await open(renderer.root);
-  await act(async () => { switches(renderer.root)[0].props.onChange({ target: { checked: true } }); });
+  await act(async () => { scopeSwitch(renderer.root, 'group').props.onChange({ target: { checked: true } }); });
   // Read each freshly rendered checkbox so every independent edit uses the current draft.
   for (const name of CONTEXT_ENHANCEMENT_FIELDS) {
-    await act(async () => { renderer.root.findByProps({ name }).props.onChange({ target: { checked: false } }); });
+    await act(async () => {
+      scope(renderer.root, 'group').findByProps({ name: `group-${name}` }).props.onChange({ target: { checked: false } });
+    });
   }
-  await click(renderer.root, '清空');
+  await clickScope(renderer.root, 'group', '清空');
   await click(renderer.root, '保存');
   assert.equal(calls.length, 1);
-  assert.deepEqual(saved, { groupEnabled: true, directEnabled: false, fields: [], guidance: '' });
+  assert.deepEqual(saved, {
+    group: { enabled: true, fields: [], guidance: '' },
+    direct: { enabled: false, fields: ['senderId'], guidance: '' },
+  });
   assert.equal(renderer.root.findAllByProps({ role: 'dialog' }).length, 0);
   assert.equal(badge(renderer.root), '仅群聊');
   await open(renderer.root);
-  assert.ok(fields(renderer.root).every((node) => !node.props.checked));
-  assert.equal(renderer.root.findByType('textarea').props.value, '');
-  assert.equal(renderer.root.findByType('textarea').props.placeholder, CONTEXT_GUIDANCE_EXAMPLE);
-  await click(renderer.root, '填入示例');
-  assert.equal(renderer.root.findByType('textarea').props.value, CONTEXT_GUIDANCE_EXAMPLE);
-  assert.ok(fields(renderer.root).every((node) => !node.props.checked));
-  assert.deepEqual(switches(renderer.root).map((node) => node.props.checked), [true, false]);
+  assert.ok(fields(renderer.root, 'group').every((node) => !node.props.checked));
+  assert.deepEqual(fieldNames(fields(renderer.root, 'direct').filter((node) => node.props.checked)), ['senderId']);
+  assert.equal(guidance(renderer.root, 'group').props.value, '');
+  assert.equal(guidance(renderer.root, 'group').props.placeholder, CONTEXT_GROUP_GUIDANCE_EXAMPLE);
+  await clickScope(renderer.root, 'group', '填入示例');
+  assert.equal(guidance(renderer.root, 'group').props.value, CONTEXT_GROUP_GUIDANCE_EXAMPLE);
+  assert.equal(guidance(renderer.root, 'direct').props.value, '');
+  assert.ok(fields(renderer.root, 'group').every((node) => !node.props.checked));
+  assert.deepEqual(switchStates(renderer.root), [true, false]);
   await click(renderer.root, '取消');
   const reloaded = await mount(t, ContextEnhancementEditor, { config: JSON.parse(JSON.stringify(saved)) });
   await open(reloaded.root);
-  assert.equal(reloaded.root.findByType('textarea').props.value, '');
-  assert.ok(fields(reloaded.root).every((node) => !node.props.checked));
+  assert.equal(guidance(reloaded.root, 'group').props.value, '');
+  assert.equal(guidance(reloaded.root, 'direct').props.value, '');
+  assert.ok(fields(reloaded.root, 'group').every((node) => !node.props.checked));
+  assert.deepEqual(fieldNames(fields(reloaded.root, 'direct').filter((node) => node.props.checked)), ['senderId']);
 });
 
 test('failed atomic saves retain the draft, lock edits and duplicate submits, and can be retried', async (t) => {
@@ -246,8 +317,8 @@ test('failed atomic saves retain the draft, lock edits and duplicate submits, an
   });
   await open(renderer.root);
   await act(async () => {
-    switches(renderer.root)[1].props.onChange({ target: { checked: true } });
-    renderer.root.findByType('textarea').props.onChange({ target: { value: 'local draft' } });
+    scopeSwitch(renderer.root, 'direct').props.onChange({ target: { checked: true } });
+    guidance(renderer.root, 'direct').props.onChange({ target: { value: 'local draft' } });
   });
   const saveButton = button(renderer.root, '保存');
   await act(async () => { saveButton.props.onClick(); saveButton.props.onClick(); await flush(); });
@@ -256,18 +327,18 @@ test('failed atomic saves retain the draft, lock edits and duplicate submits, an
   assert.ok(renderer.root.findAllByType('input').every((node) => node.props.disabled));
   assert.ok(renderer.root.findAllByType('button').every((node) => node.props.disabled || node.props.className === 'dim-contextEntry'));
   await act(async () => {
-    renderer.root.findByType('textarea').props.onChange({ target: { value: 'do not commit' } });
+    guidance(renderer.root, 'direct').props.onChange({ target: { value: 'do not commit' } });
     renderer.root.findByProps({ role: 'dialog' }).props.onKeyDown({ key: 'Escape', preventDefault() {}, stopPropagation() {} });
     button(renderer.root, '取消').props.onClick();
   });
   assert.equal(renderer.root.findAllByProps({ role: 'dialog' }).length, 1);
-  assert.equal(renderer.root.findByType('textarea').props.value, 'local draft');
+  assert.equal(guidance(renderer.root, 'direct').props.value, 'local draft');
   assert.equal(badge(renderer.root), '未开启');
   request.reject(new Error('Save rejected'));
   await act(async () => { await flush(); });
   assert.equal(textOf(renderer.root.findByProps({ role: 'alert' })), 'Save rejected');
-  assert.equal(renderer.root.findByType('textarea').props.value, 'local draft');
-  assert.deepEqual(switches(renderer.root).map((node) => node.props.checked), [false, true]);
+  assert.equal(guidance(renderer.root, 'direct').props.value, 'local draft');
+  assert.deepEqual(switchStates(renderer.root), [false, true]);
   assert.equal(badge(renderer.root), '未开启');
   await click(renderer.root, '保存');
   assert.equal(calls.length, 2);
@@ -279,25 +350,39 @@ test('Weixin displays and saves only its supported direct scope', async (t) => {
   const saved = [];
   const renderer = await mount(t, ContextEnhancementEditor, {
     groupSupported: false,
-    config: { ...DEFAULT_CONTEXT_ENHANCEMENT_CONFIG, groupEnabled: true },
+    config: {
+      group: { enabled: true, fields: ['botId'], guidance: 'preserve group' },
+      direct: DEFAULT_CONTEXT_ENHANCEMENT_CONFIG.direct,
+    },
     onSave(value) { saved.push(value); },
   });
   assert.equal(badge(renderer.root), '未开启');
   await open(renderer.root);
-  const group = switches(renderer.root)[0];
+  assert.deepEqual(tabs(renderer.root).map((node) => node.props['aria-selected']), [true, false]);
+  assert.deepEqual(panels(renderer.root).map((node) => node.props.hidden), [false, true]);
+  const group = scopeSwitch(renderer.root, 'group');
   assert.equal(group.props.checked, false);
   assert.equal(group.props.disabled, true);
   const groupNotice = renderer.root.findByProps({ id: group.props['aria-describedby'] });
   assert.equal(textOf(groupNotice), '（当前渠道不支持群聊）');
   assert.equal(groupNotice.props.className, 'dim-contextUnavailable');
   assert.equal(groupNotice.parent.props.className, 'dim-contextSwitchLabel');
+  assert.ok(scope(renderer.root, 'group').findAllByType('input').every((node) => node.props.disabled));
+  assert.equal(guidance(renderer.root, 'group').props.disabled, true);
+  await act(async () => { tabs(renderer.root)[1].props.onClick(); });
+  assert.deepEqual(panels(renderer.root).map((node) => node.props.hidden), [true, false]);
   await act(async () => {
     group.props.onChange({ target: { checked: true } });
-    switches(renderer.root)[1].props.onChange({ target: { checked: true } });
+    tabs(renderer.root)[0].props.onClick();
+  });
+  await act(async () => {
+    scopeSwitch(renderer.root, 'direct').props.onChange({ target: { checked: true } });
   });
   await click(renderer.root, '保存');
-  assert.equal(saved[0].groupEnabled, false);
-  assert.equal(saved[0].directEnabled, true);
+  assert.equal(saved[0].group.enabled, false);
+  assert.deepEqual(saved[0].group.fields, ['botId']);
+  assert.equal(saved[0].group.guidance, 'preserve group');
+  assert.equal(saved[0].direct.enabled, true);
 });
 
 test('dialog traps Tab and external focus, cancels with Escape, and restores entry focus', async (t) => {
@@ -349,16 +434,16 @@ test('all context dialog copy and validation errors localize without translating
   assert.equal(badge(renderer.root), 'Not enabled');
   await open(renderer.root);
   assert.doesNotMatch(textOf(renderer.root), /[\p{Script=Han}]/u);
-  assert.equal(renderer.root.findByType('textarea').props.value, '');
-  assert.equal(renderer.root.findByType('textarea').props.placeholder, en[CONTEXT_GUIDANCE_EXAMPLE]);
-  assert.equal(renderer.root.findByType('textarea').props.maxLength, CONTEXT_ENHANCEMENT_GUIDANCE_MAX_LENGTH);
-  const localizedExample = textOf(renderer.root.findByProps({ className: 'dim-contextTooltipExample' }));
-  assert.equal(localizedExample, en[CONTEXT_GUIDANCE_EXAMPLE]);
-  await click(renderer.root, 'Use example');
-  assert.equal(renderer.root.findByType('textarea').props.value, localizedExample);
-  await click(renderer.root, 'Clear');
+  assert.equal(guidance(renderer.root, 'direct').props.value, '');
+  assert.equal(guidance(renderer.root, 'direct').props.placeholder, en[CONTEXT_DIRECT_GUIDANCE_EXAMPLE]);
+  assert.equal(guidance(renderer.root, 'direct').props.maxLength, CONTEXT_ENHANCEMENT_GUIDANCE_MAX_LENGTH);
+  const localizedExample = textOf(scope(renderer.root, 'direct').findByProps({ className: 'dim-contextTooltipExample' }));
+  assert.equal(localizedExample, en[CONTEXT_DIRECT_GUIDANCE_EXAMPLE]);
+  await clickScope(renderer.root, 'direct', 'Use example');
+  assert.equal(guidance(renderer.root, 'direct').props.value, localizedExample);
+  await clickScope(renderer.root, 'direct', 'Clear');
   await act(async () => {
-    renderer.root.findByType('textarea').props.onChange({ target: { value: 'x'.repeat(CONTEXT_ENHANCEMENT_GUIDANCE_MAX_LENGTH + 1) } });
+    guidance(renderer.root, 'direct').props.onChange({ target: { value: 'x'.repeat(CONTEXT_ENHANCEMENT_GUIDANCE_MAX_LENGTH + 1) } });
   });
   await click(renderer.root, 'Save');
   assert.match(textOf(renderer.root.findByProps({ role: 'alert' })), /Guidance must not exceed 8000 characters/);
@@ -368,20 +453,32 @@ test('all context dialog copy and validation errors localize without translating
 test('all nine APIs preserve canonical, empty, absent and damaged context configurations', () => {
   for (const channel of channels) {
     assert.equal(channel.endpoints.setContextEnhancement, 'bot.context-enhancement.set');
-    const empty = { groupEnabled: true, directEnabled: false, fields: [], guidance: '' };
+    const empty = {
+      group: { enabled: true, fields: [], guidance: '' },
+      direct: { enabled: false, fields: ['senderId'], guidance: '' },
+    };
     const raw = snapshot(channel.name, [undefined, empty]);
     const normalized = channel.normalize(raw);
     assert.deepEqual(normalized.bots[0].contextEnhancement, DEFAULT_CONTEXT_ENHANCEMENT_CONFIG, channel.name);
     assert.deepEqual(normalized.bots[1].contextEnhancement, empty, channel.name);
     const canonical = channel.normalize(snapshot(channel.name, [{
-      groupEnabled: false, directEnabled: true, fields: ['botId', 'channel', 'botId'], guidance: ' \n ',
+      group: { enabled: false, fields: ['botId', 'channel', 'botId'], guidance: ' \n ' },
+      direct: { enabled: true, fields: [], guidance: 'direct only' },
     }]));
     assert.deepEqual(canonical.bots[0].contextEnhancement, {
-      groupEnabled: false, directEnabled: true, fields: ['channel', 'botId'], guidance: '',
+      group: { enabled: false, fields: ['channel', 'botId'], guidance: '' },
+      direct: { enabled: true, fields: [], guidance: 'direct only' },
+    }, channel.name);
+    const legacy = channel.normalize(snapshot(channel.name, [{
+      groupEnabled: true, directEnabled: false, fields: ['botId'], guidance: 'legacy',
+    }]));
+    assert.deepEqual(legacy.bots[0].contextEnhancement, {
+      group: { enabled: true, fields: ['botId'], guidance: 'legacy' },
+      direct: { enabled: false, fields: ['botId'], guidance: 'legacy' },
     }, channel.name);
     const damaged = channel.normalize(snapshot(channel.name, [{ groupEnabled: 'true', fields: ['secret'] }]));
-    assert.equal(damaged.bots[0].contextEnhancement.groupEnabled, false, channel.name);
-    assert.equal(damaged.bots[0].contextEnhancement.directEnabled, false, channel.name);
+    assert.equal(damaged.bots[0].contextEnhancement.group.enabled, false, channel.name);
+    assert.equal(damaged.bots[0].contextEnhancement.direct.enabled, false, channel.name);
     assert.deepEqual(raw.bots[1].contextEnhancement, empty);
   }
 });
@@ -406,18 +503,21 @@ test('all nine cards save through their existing RPC path, isolate bots and pres
     assert.deepEqual(editors.map((node) => node.type), [WorkspaceEditor, AgentPresetEditor, ContextEnhancementEditor]);
     assert.equal(badge(first()), '未开启');
     await open(first());
-    await act(async () => { switches(first())[1].props.onChange({ target: { checked: true } }); });
+    await act(async () => { scopeSwitch(first(), 'direct').props.onChange({ target: { checked: true } }); });
     for (const name of CONTEXT_ENHANCEMENT_FIELDS) await act(async () => {
-      first().findByProps({ name }).props.onChange({ target: { checked: false } });
+      scope(first(), 'direct').findByProps({ name: `direct-${name}` }).props.onChange({ target: { checked: false } });
     });
-    await click(first(), '清空');
+    await clickScope(first(), 'direct', '清空');
     assert.deepEqual(calls.map((call) => call.endpoint), ['connection.status']);
     assert.equal(badge(first()), '未开启');
     assert.equal(badge(second()), '未开启');
     await click(first(), '保存');
     const mutations = calls.filter((call) => call.endpoint !== 'connection.status');
     assert.deepEqual(mutations, [{ endpoint: 'bot.context-enhancement.set', payload: {
-      botId: `${channel.name}_0`, config: { groupEnabled: false, directEnabled: true, fields: [], guidance: '' },
+      botId: `${channel.name}_0`, config: {
+        group: { enabled: false, fields: ['senderId'], guidance: '' },
+        direct: { enabled: true, fields: [], guidance: '' },
+      },
     } }]);
     assert.equal(badge(first()), '仅私聊');
     assert.equal(badge(second()), '未开启');
@@ -425,8 +525,9 @@ test('all nine cards save through their existing RPC path, isolate bots and pres
     assert.equal(current.bots[0].workspace, '/workspace/0');
     const reloaded = await mount(t, channel.Settings, { rpcCall });
     await open(reloaded.root.findByProps({ 'data-bot-id': `${channel.name}_0` }));
-    assert.equal(reloaded.root.findByProps({ role: 'dialog' }).findByType('textarea').props.value, '');
-    assert.ok(fields(reloaded.root).every((node) => !node.props.checked));
+    assert.equal(guidance(reloaded.root, 'direct').props.value, '');
+    assert.ok(fields(reloaded.root, 'direct').every((node) => !node.props.checked));
+    assert.deepEqual(fieldNames(fields(reloaded.root, 'group').filter((node) => node.props.checked)), ['senderId']);
   });
 });
 
@@ -437,7 +538,10 @@ test('all nine settings fence stale polls and reconcile against the actual saved
     const original = snapshot(channel.name);
     let current = original;
     let reads = 0;
-    const actual = { groupEnabled: false, directEnabled: true, fields: ['botId'], guidance: '' };
+    const actual = {
+      group: { enabled: false, fields: ['senderId'], guidance: '' },
+      direct: { enabled: true, fields: ['botId'], guidance: '' },
+    };
     const rpcCall = async (endpoint) => {
       if (endpoint === 'connection.status') {
         reads += 1;
@@ -459,8 +563,8 @@ test('all nine settings fence stale polls and reconcile against the actual saved
     await act(async () => { await flush(); });
     assert.equal(badge(first()), '仅私聊');
     await open(first());
-    assert.deepEqual(fields(first()).filter((node) => node.props.checked).map((node) => node.props.name), ['botId']);
-    assert.equal(first().findByProps({ role: 'dialog' }).findByType('textarea').props.value, '');
+    assert.deepEqual(fieldNames(fields(first(), 'direct').filter((node) => node.props.checked)), ['botId']);
+    assert.equal(guidance(first(), 'direct').props.value, '');
   });
 });
 
@@ -482,7 +586,7 @@ test('all nine settings ignore an older concurrent bot mutation after context se
     const second = renderer.root.findByProps({ 'data-bot-id': `${channel.name}_1` });
     await act(async () => { button(second, '检查连接').props.onClick(); await flush(); });
     await open(first());
-    await act(async () => { switches(first())[1].props.onChange({ target: { checked: true } }); });
+    await act(async () => { scopeSwitch(first(), 'direct').props.onChange({ target: { checked: true } }); });
     await click(first(), '保存');
     assert.equal(badge(first()), '仅私聊');
     reconnect.resolve({ ok: true, value: original });
@@ -506,20 +610,20 @@ test('all nine failed save RPCs keep runtime state and drafts intact through sta
     const renderer = await mount(t, channel.Settings, { rpcCall });
     const first = () => renderer.root.findByProps({ 'data-bot-id': `${channel.name}_0` });
     await open(first());
-    await act(async () => { switches(first())[1].props.onChange({ target: { checked: true } }); });
-    await click(first(), '清空');
+    await act(async () => { scopeSwitch(first(), 'direct').props.onChange({ target: { checked: true } }); });
+    await clickScope(first(), 'direct', '清空');
     await click(first(), '保存');
     assert.equal(badge(first()), '未开启');
-    assert.equal(switches(first())[1].props.checked, true);
+    assert.equal(scopeSwitch(first(), 'direct').props.checked, true);
     const dialog = first().findByProps({ role: 'dialog' });
-    assert.equal(dialog.findByType('textarea').props.value, '');
+    assert.equal(guidance(first(), 'direct').props.value, '');
     assert.ok(textOf(dialog.findByProps({ role: 'alert' })));
     assert.equal(original.bots[0].contextEnhancement, undefined);
     assert.equal(calls.filter((call) => call.endpoint !== 'connection.status').length, 1);
     await click(first(), '取消');
     await open(first());
-    assert.equal(switches(first())[1].props.checked, false);
-    assert.equal(first().findByProps({ role: 'dialog' }).findByType('textarea').props.value, '');
+    assert.equal(scopeSwitch(first(), 'direct').props.checked, false);
+    assert.equal(guidance(first(), 'direct').props.value, '');
   });
 });
 
@@ -528,8 +632,10 @@ test('the approved neutral entry and theme-aware modal keep responsive labels an
   assert.match(styles, /\.dim-contextEntry \{[^}]*min-height: 40px;[^}]*minmax\(0, 1fr\)[^}]*border-radius: 8px;[^}]*font-size: 13px;/);
   assert.match(styles, /\.dim-contextStatus\[data-active="true"\] \{[^}]*--dsw-alias-state-business-primary/);
   assert.match(styles, /\.dim-contextDialog \{[^}]*width: min\(450px, 100%\);[^}]*overflow-y: auto;[^}]*border-radius: 12px;[^}]*--dsw-alias-bg-layer-3/);
+  assert.match(styles, /\.dim-contextTabs \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);[^}]*border-radius: 8px;/);
+  assert.match(styles, /\.dim-contextTab\[aria-selected="true"\] \{[^}]*--dsw-alias-state-business-primary[^}]*box-shadow:/);
+  assert.match(styles, /\.dim-contextTabPanel\[hidden\] \{[^}]*display: none;/);
   assert.match(styles, /\.dim-contextFields \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
-  assert.match(styles, /\.dim-contextSwitches \{[^}]*grid-template-columns: 1fr;[^}]*gap: 2px;/);
   assert.match(styles, /\.dim-contextGuidance textarea \{[^}]*min-height: 88px;/);
   assert.match(styles, /\.dim-contextGuidance textarea::placeholder \{[^}]*--dsw-alias-label-tertiary[^}]*opacity: 1;/);
   assert.match(styles, /\.dim-contextFieldKey \{[^}]*ui-monospace/);

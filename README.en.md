@@ -140,9 +140,11 @@ See the [Proactive Delivery Guide](PROACTIVE_DELIVERY.en.md) ([简体中文](PRO
 
 ### Context enhancement
 
-Open **Context enhancement** on a bot card to choose conversation scopes, source fields and guidance, then **Save**. The five available fields are `channel`, `conversationType`, `senderId`, `senderName` and `botId`; only `senderId` is selected by default. Only selected values already available in the incoming message are included; no platform profile API is queried. Weixin currently supports DMs only.
+Open **Context enhancement** on a bot card to configure separate enable switches, source fields, and guidance for group and direct chats, then **Save** to apply the complete configuration atomically. The two scopes do not share settings. Each offers `channel`, `conversationType`, `senderId`, `senderName`, and `botId`, with only `senderId` selected by default. Only values selected for the current scope and already available in the incoming message are included; no platform profile API is queried. Weixin currently supports DMs only.
 
-When enabled, ordinary user messages receive a `<dsh_im_source>` prefix. Nonempty guidance is automatically wrapped in `<dsh_im_source_guidance>` tags. Guidance starts empty; the question-mark help includes instructions and an example, while **Use example** and **Clear** only edit the draft. No selected fields means no source block. Commands, approvals and question answers keep their existing control paths.
+When enabled, ordinary user messages receive the current scope's `<dsh_im_source>` prefix. Nonempty guidance for that scope is automatically wrapped in `<dsh_im_source_guidance>` tags. Both guidance fields start empty and have their own instructions, example, **Use example**, and **Clear** actions. No fields selected in the current scope means no source block. Commands, approvals and question answers keep their existing control paths.
+
+Existing shared fields and guidance are automatically copied into both group and direct configurations during upgrade, while their original enable switches remain independent. The first read does not rewrite the settings file; the new structure is persisted through the existing mechanism on the next successful bot-settings write, with no manual migration required.
 
 When the current conversation scope is off, text, images, files and Session behavior are unchanged, without enhancement assembly or extra network queries. Unsaved or cancelled drafts have no effect. Saving does not reconnect bots or recreate Sessions; messages already received retain their original configuration snapshot.
 

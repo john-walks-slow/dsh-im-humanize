@@ -77,18 +77,24 @@ for (const channel of ['wecom', 'weixin', 'feishu', 'dingtalk', 'qq', 'slack', '
     assert.equal(provider.getSettings(), DEFAULT_CONTEXT_ENHANCEMENT_CONFIG);
     assert.equal(captureContextEnhancement(provider, 'direct'), null);
     const generation = workspaces.generationFor(botIds[0]);
-    const selected = { groupEnabled: false, directEnabled: true, fields: [], guidance: 'runtime update' };
+    const selected = {
+      group: { enabled: false, fields: ['botId'], guidance: 'stored group guidance' },
+      direct: { enabled: true, fields: [], guidance: 'runtime update' },
+    };
     const saved = await production.controller.updateContextEnhancement(botIds[0], selected);
     assert.deepEqual(saved.bots[0].contextEnhancement, selected);
     assert.deepEqual(provider.getSettings(), selected);
     const beforeDisable = captureContextEnhancement(provider, 'direct');
-    assert.deepEqual(beforeDisable.config, selected);
+    assert.deepEqual(beforeDisable.config, selected.direct);
     assert.equal(runtimes[0].contextEnhancement, provider, 'runtime does not need reconstruction');
     assert.equal(runtimes[1].contextEnhancement.getSettings(), DEFAULT_CONTEXT_ENHANCEMENT_CONFIG);
     assert.equal(runtimes[1].contextEnhancement.botId, botIds[1]);
-    await production.controller.updateContextEnhancement(botIds[0], { ...selected, directEnabled: false });
+    await production.controller.updateContextEnhancement(botIds[0], {
+      ...selected,
+      direct: { ...selected.direct, enabled: false },
+    });
     assert.equal(captureContextEnhancement(provider, 'direct'), null);
-    assert.equal(beforeDisable.config.directEnabled, true, 'an already received message keeps its snapshot');
+    assert.equal(beforeDisable.config.enabled, true, 'an already received message keeps its snapshot');
     assert.equal(workspaces.generationFor(botIds[0]), generation);
     assert.equal(runtimes.length, 2);
     assert.equal(stateLoads, 2);

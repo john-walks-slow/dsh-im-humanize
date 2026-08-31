@@ -25,7 +25,20 @@ const FILE = Buffer.from('unchanged file bytes');
 const logger = { info() {}, warn() {}, error() {} };
 
 function settings(overrides = {}) {
-  return { groupEnabled: true, directEnabled: true, fields: [...CONTEXT_ENHANCEMENT_FIELDS], guidance: '', ...overrides };
+  const {
+    groupEnabled = true,
+    directEnabled = true,
+    fields = [...CONTEXT_ENHANCEMENT_FIELDS],
+    guidance = '',
+    group = {},
+    direct = {},
+    ...extra
+  } = overrides;
+  return {
+    group: { enabled: groupEnabled, fields: [...fields], guidance, ...group },
+    direct: { enabled: directEnabled, fields: [...fields], guidance, ...direct },
+    ...extra,
+  };
 }
 
 function provider(channel, config) {
@@ -304,6 +317,24 @@ for (const channel of CHANNELS) {
     });
   }
 
+  if (channel !== 'weixin') {
+    test(`${channel}: group and direct fields and guidance stay isolated`, async () => {
+      const config = settings({
+        group: { enabled: true, fields: ['channel'], guidance: 'GROUP-ONLY-TOKEN' },
+        direct: { enabled: true, fields: ['botId'], guidance: 'DIRECT-ONLY-TOKEN' },
+      });
+      const current = fixture(channel, { contextEnhancement: provider(channel, config) });
+      await current.bridge.accept(current.event(1, 'direct message', { kind: 'direct' }));
+      await current.bridge.accept(current.event(2, 'group message', { kind: 'group' }));
+      assert.deepEqual(sourceOf(current.prompts[0]), { botId: `${channel}_internal` });
+      assert.match(current.prompts[0], /DIRECT-ONLY-TOKEN/);
+      assert.doesNotMatch(current.prompts[0], /GROUP-ONLY-TOKEN|"channel"/);
+      assert.deepEqual(sourceOf(current.prompts[1]), { channel });
+      assert.match(current.prompts[1], /GROUP-ONLY-TOKEN/);
+      assert.doesNotMatch(current.prompts[1], /DIRECT-ONLY-TOKEN|"botId"/);
+    });
+  }
+
   test(`${channel}: enabled image/file assembly adds one prefix and preserves the remaining payload`, async () => {
     for (const media of ['image', 'file', 'mixed']) {
       const plain = fixture(channel);
@@ -338,7 +369,7 @@ for (const channel of CHANNELS) {
     const first = current.bridge.accept(current.event(1, 'first'));
     await started.promise;
     const queued = current.bridge.accept(current.event(2, 'queued'));
-    config.guidance = 'mutated after acceptance';
+    config.direct.guidance = 'mutated after acceptance';
     config = settings({ fields: ['botId'], guidance: 'version two' });
     const newer = current.bridge.accept(current.event(3, 'newer'));
     config = settings({ groupEnabled: false, directEnabled: false });
@@ -409,8 +440,8 @@ for (const channel of CHANNELS) {
     for (const config of [settings({ fields: ['channel'] }), settings({ fields: [], guidance: 'custom' }), settings({ fields: [], guidance: '' })]) {
       const current = fixture(channel, { contextEnhancement: provider(channel, config) });
       await current.bridge.accept(current.event(1, 'hello'));
-      if (config.fields.length) assert.deepEqual(sourceOf(current.prompts[0]), { channel });
-      else if (config.guidance) assert.equal(current.prompts[0], '<dsh_im_source_guidance>\ncustom\n</dsh_im_source_guidance>\n\nhello');
+      if (config.direct.fields.length) assert.deepEqual(sourceOf(current.prompts[0]), { channel });
+      else if (config.direct.guidance) assert.equal(current.prompts[0], '<dsh_im_source_guidance>\ncustom\n</dsh_im_source_guidance>\n\nhello');
       else assert.equal(current.prompts[0], 'hello');
     }
   });

@@ -1556,7 +1556,8 @@ for (const scenario of [
     let settingsReads = 0;
     let nextMessageId = 500;
     const configFor = ([directEnabled, groupEnabled], guidance) => ({
-      directEnabled, groupEnabled, fields: ['channel', 'botId'], guidance,
+      group: { enabled: groupEnabled, fields: ['channel', 'botId'], guidance },
+      direct: { enabled: directEnabled, fields: ['channel', 'botId'], guidance },
     });
     let config = configFor(scenario.before, 'before cursor write');
     const update = (id, kind) => ({

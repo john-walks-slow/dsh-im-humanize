@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Changed / 变更
+
+- 上下文增强现在为群聊和私聊分别保存启用开关、来源字段与增强提示词，接收消息时只使用当前会话类型对应的配置。旧版共用字段与提示词会在升级后自动映射到两个场景，并在下一次成功写入机器人设置时无损保存为新结构，无需手工迁移。
+  Context enhancement now stores independent enable switches, source fields, and guidance for group and direct chats, and inbound messages use only the matching conversation configuration. Existing shared fields and guidance are automatically mapped to both scopes after upgrade and are losslessly persisted in the new structure on the next successful bot-settings write, with no manual migration required.
+
 ## [4.2.1] - 2026-08-31
 
 ### Fixed / 修复

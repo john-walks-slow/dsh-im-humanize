@@ -1446,10 +1446,12 @@ test('Discord captures context settings before asynchronous Thread routing and u
   let socket;
   let reads = 0;
   let config = {
-    groupEnabled: true,
-    directEnabled: false,
-    fields: ['channel', 'conversationType', 'senderId', 'senderName', 'botId'],
-    guidance: 'accepted before routing',
+    group: {
+      enabled: true,
+      fields: ['channel', 'conversationType', 'senderId', 'senderName', 'botId'],
+      guidance: 'accepted before routing',
+    },
+    direct: { enabled: false, fields: [], guidance: 'direct must not leak' },
   };
   const runtime = new DiscordRuntime({
     config: { botId: 'discord_internal', platformId: botId, name: 'Harness Discord' },
@@ -1502,7 +1504,7 @@ test('Discord captures context settings before asynchronous Thread routing and u
     member: { nick: 'Group Nick' }, mentions: [{ id: botId }], content: `<@${botId}> first`,
   } }) });
   await routingStarted.promise;
-  config = { ...config, groupEnabled: false };
+  config = { ...config, group: { ...config.group, enabled: false } };
   releaseRouting.resolve();
   await eventually(() => runtime.status.messagesReplied === 1);
   assert.match(prompts[0], /accepted before routing/);

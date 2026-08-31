@@ -142,12 +142,13 @@ if (client.includes('settings.plugins.tab') || clientSources.includes('settings.
   throw new Error('client source or bundle still contains the legacy Plugins-tab settings entry');
 }
 // Connections still have no channel-enable toggle. Only the shared context
-// editor owns checkable inputs: two scope switches and one mapped field input.
+// editor owns checkable inputs. Its reusable scope component contains one
+// switch template and one mapped field-input template; it renders both twice.
 const contextEditorSource = await readFile(resolve(root, 'plugin-src/client/context-enhancement.js'), 'utf8');
 const otherClientSources = clientSources.replace(contextEditorSource, '');
 if (/role:\s*["']switch|type:\s*["']checkbox/.test(otherClientSources)
-  || (client.match(/role:\s*["']switch["']/g) ?? []).length !== 2
-  || (client.match(/type:\s*["']checkbox["']/g) ?? []).length !== 3) {
+  || (client.match(/role:\s*["']switch["']/g) ?? []).length !== 1
+  || (client.match(/type:\s*["']checkbox["']/g) ?? []).length !== 2) {
   throw new Error('checkable inputs must be limited to the context-enhancement editor');
 }
 for (const marker of ['bot.context-enhancement.set', '<dsh_im_source>', '<dsh_im_source_guidance>']) {

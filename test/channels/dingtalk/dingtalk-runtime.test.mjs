@@ -260,7 +260,8 @@ for (const scenario of [
     const order = [];
     const asked = [];
     const configFor = ([directEnabled, groupEnabled], guidance) => ({
-      directEnabled, groupEnabled, fields: ['channel', 'botId'], guidance,
+      group: { enabled: groupEnabled, fields: ['channel', 'botId'], guidance },
+      direct: { enabled: directEnabled, fields: ['channel', 'botId'], guidance },
     });
     let config = configFor(scenario.before, 'before callback returned');
     let callback;

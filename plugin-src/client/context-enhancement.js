@@ -2,9 +2,10 @@ import * as React from 'react';
 import { createPortal } from 'react-dom';
 
 import {
+  CONTEXT_DIRECT_GUIDANCE_EXAMPLE,
   CONTEXT_ENHANCEMENT_FIELDS,
   CONTEXT_ENHANCEMENT_GUIDANCE_MAX_LENGTH,
-  CONTEXT_GUIDANCE_EXAMPLE,
+  CONTEXT_GROUP_GUIDANCE_EXAMPLE,
   normalizeContextEnhancementConfig,
   validateContextEnhancementConfig,
 } from '../../src/channels/shared/context-enhancement.mjs';
@@ -18,11 +19,34 @@ const FIELD_LABELS = Object.freeze({
   botId: '机器人标识',
 });
 
+const SCOPE_COPY = Object.freeze({
+  group: Object.freeze({
+    title: '群聊',
+    enable: '启用',
+    fieldsHelpLabel: '查看群聊来源字段说明',
+    senderNameHelpLabel: '查看群聊发送者昵称字段说明',
+    guidanceLabel: '增强提示词',
+    guidanceHelpLabel: '查看群聊增强提示词使用说明',
+    guidanceUsage: '用于告诉模型如何使用当前群聊消息的 <dsh_im_source> 来源字段。只填写正文，插件会自动添加 <dsh_im_source_guidance> 成对标签。',
+    guidanceBehavior: '仅在群聊开关开启时使用。清空并保存后不再附加群聊增强提示词；所选来源字段仍按当前场景设置发送。',
+  }),
+  direct: Object.freeze({
+    title: '私聊',
+    enable: '启用',
+    fieldsHelpLabel: '查看私聊来源字段说明',
+    senderNameHelpLabel: '查看私聊发送者昵称字段说明',
+    guidanceLabel: '增强提示词',
+    guidanceHelpLabel: '查看私聊增强提示词使用说明',
+    guidanceUsage: '用于告诉模型如何使用当前私聊消息的 <dsh_im_source> 来源字段。只填写正文，插件会自动添加 <dsh_im_source_guidance> 成对标签。',
+    guidanceBehavior: '仅在私聊开关开启时使用。清空并保存后不再附加私聊增强提示词；所选来源字段仍按当前场景设置发送。',
+  }),
+});
+
 export function contextEnhancementLabel(config) {
-  const { groupEnabled, directEnabled } = normalizeContextEnhancementConfig(config);
-  if (groupEnabled && directEnabled) return '群聊和私聊';
-  if (groupEnabled) return '仅群聊';
-  if (directEnabled) return '仅私聊';
+  const { group, direct } = normalizeContextEnhancementConfig(config);
+  if (group.enabled && direct.enabled) return '群聊和私聊';
+  if (group.enabled) return '仅群聊';
+  if (direct.enabled) return '仅私聊';
   return '未开启';
 }
 
@@ -37,27 +61,132 @@ function ContextIcon({ kind = 'sliders' }) {
   }, h('path', { d: path }));
 }
 
+function ContextEnhancementScopeEditor({
+  kind,
+  scope,
+  example,
+  supported,
+  busy,
+  idPrefix,
+  onChange,
+}) {
+  const copy = SCOPE_COPY[kind];
+  const unavailableId = `${idPrefix}-${kind}-unavailable`;
+  const fieldsHelpId = `${idPrefix}-${kind}-fields-help`;
+  const senderNameHelpId = `${idPrefix}-${kind}-sender-name-help`;
+  const guidanceId = `${idPrefix}-${kind}-guidance`;
+  const guidanceHelpId = `${idPrefix}-${kind}-guidance-help`;
+  const disabled = busy || !supported;
+
+  return h('fieldset', {
+    className: 'dim-contextSection dim-contextScope',
+    'data-context-kind': kind,
+    'aria-label': copy.title,
+    disabled,
+  },
+  h('label', { className: 'dim-contextSwitchRow' },
+    h('span', { className: 'dim-contextSwitchLabel' },
+      h('span', null, copy.enable),
+      !supported ? h('span', {
+        id: unavailableId, className: 'dim-contextUnavailable',
+      }, '（当前渠道不支持群聊）') : null),
+    h('input', {
+      type: 'checkbox', role: 'switch', className: 'dim-contextSwitch',
+      checked: supported && scope.enabled,
+      disabled,
+      'aria-describedby': !supported ? unavailableId : undefined,
+      onChange: (event) => { if (supported) onChange('enabled', event.target.checked); },
+    })),
+  h('div', { className: 'dim-contextScopeBlock' },
+    h('div', { className: 'dim-contextLegend' },
+      h('span', null, '来源字段'),
+      h('span', { className: 'dim-contextHelp dim-contextLegendHelp' },
+        h('button', {
+          type: 'button', className: 'dim-contextHelpButton', disabled,
+          'aria-label': copy.fieldsHelpLabel, 'aria-describedby': fieldsHelpId,
+        }, h('span', { 'aria-hidden': 'true' }, '?')),
+        h('span', { id: fieldsHelpId, className: 'dim-contextTooltip dim-contextLegendTooltip', role: 'tooltip' },
+          '增强提示词中请使用字段名（如 senderId、conversationType）引用这些信息。只发送当前会话中勾选且可用的字段，不会额外查询或补全。'))),
+    h('div', { className: 'dim-contextFields' }, CONTEXT_ENHANCEMENT_FIELDS.map((field) => {
+      const fieldId = `${idPrefix}-${kind}-field-${field}`;
+      return h('div', { key: field, className: 'dim-contextField' },
+        h('input', {
+          id: fieldId, type: 'checkbox', name: `${kind}-${field}`,
+          checked: scope.fields.includes(field), disabled,
+          onChange: (event) => onChange('fields', event.target.checked
+            ? [...scope.fields, field] : scope.fields.filter((value) => value !== field)),
+        }),
+        h('span', { className: 'dim-contextFieldText' },
+          h('label', { className: 'dim-contextFieldName', htmlFor: fieldId }, FIELD_LABELS[field]),
+          field === 'senderName' ? h('span', { className: 'dim-contextHelp dim-contextFieldHelp' },
+            h('button', {
+              type: 'button', className: 'dim-contextHelpButton dim-contextFieldHelpButton', disabled,
+              'aria-label': copy.senderNameHelpLabel, 'aria-describedby': senderNameHelpId,
+            }, h('span', { 'aria-hidden': 'true' }, '?')),
+            h('span', {
+              id: senderNameHelpId,
+              className: 'dim-contextTooltip dim-contextFieldTooltip',
+              role: 'tooltip',
+            }, '该字段不是每个渠道都能提供。当前消息没有发送者昵称时，即使已选择该字段，<dsh_im_source> 中也会省略 senderName。')) : null,
+          h('label', { className: 'dim-contextFieldKey', htmlFor: fieldId }, field)));
+    }))),
+  h('div', { className: 'dim-contextGuidance dim-contextScopeBlock' },
+    h('div', { className: 'dim-contextEditorHeader' },
+      h('span', { className: 'dim-contextEditorTitle' },
+        h('label', { htmlFor: guidanceId }, copy.guidanceLabel),
+        h('span', { className: 'dim-contextHelp' },
+          h('button', {
+            type: 'button', className: 'dim-contextHelpButton', disabled,
+            'aria-label': copy.guidanceHelpLabel, 'aria-describedby': guidanceHelpId,
+          }, h('span', { 'aria-hidden': 'true' }, '?')),
+          h('span', { id: guidanceHelpId, className: 'dim-contextTooltip dim-contextGuidanceTooltip', role: 'tooltip' },
+            h('strong', null, '使用说明'),
+            h('span', null, copy.guidanceUsage),
+            h('strong', null, '生效规则'),
+            h('span', null, copy.guidanceBehavior),
+            h('strong', null, '隐私提示'),
+            h('span', null, '发送者标识可能包含平台用户 ID 或电话号码形式的标识。关闭开关不会删除已经写入会话历史的信息。'),
+            h('strong', null, '使用示例'),
+            h('span', { className: 'dim-contextTooltipExample' }, example)))),
+      h('div', { className: 'dim-contextTextActions' },
+        h('button', { type: 'button', disabled, onClick: () => onChange('guidance', example) }, '填入示例'),
+        h('button', { type: 'button', disabled, onClick: () => onChange('guidance', '') }, '清空'))),
+    h('textarea', {
+      id: guidanceId, value: scope.guidance, placeholder: example, rows: 4, disabled,
+      'data-context-kind': kind,
+      maxLength: CONTEXT_ENHANCEMENT_GUIDANCE_MAX_LENGTH,
+      'aria-describedby': guidanceHelpId,
+      onChange: (event) => onChange('guidance', event.target.value),
+    })));
+}
+
 function ContextEnhancementDialog({ config, groupSupported, disabled, onSave, onClose, returnFocusRef, id }) {
   // A mounted dialog owns its draft; status refreshes must not replace unsaved edits.
-  const [draft, setDraft] = React.useState(() => ({
-    ...normalizeContextEnhancementConfig(config),
-    ...(!groupSupported ? { groupEnabled: false } : {}),
-  }));
+  const [draft, setDraft] = React.useState(() => {
+    const normalized = normalizeContextEnhancementConfig(config);
+    return {
+      ...normalized,
+      ...(!groupSupported ? {
+        group: { ...normalized.group, enabled: false },
+      } : {}),
+    };
+  });
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState(null);
+  const [activeScope, setActiveScope] = React.useState('direct');
   const savingRef = React.useRef(false);
   const dialogRef = React.useRef(null);
   const mountedRef = React.useRef(true);
+  const groupTabRef = React.useRef(null);
+  const directTabRef = React.useRef(null);
   const titleId = React.useId();
   const descriptionId = React.useId();
-  const groupNoticeId = React.useId();
-  const guidanceId = React.useId();
-  const guidanceHelpId = React.useId();
-  const fieldIdPrefix = React.useId();
-  const fieldsHelpId = React.useId();
-  const senderNameHelpId = React.useId();
-  const guidanceExample = localizeText(CONTEXT_GUIDANCE_EXAMPLE);
+  const scopeIdPrefix = React.useId();
+  const groupGuidanceExample = localizeText(CONTEXT_GROUP_GUIDANCE_EXAMPLE);
+  const directGuidanceExample = localizeText(CONTEXT_DIRECT_GUIDANCE_EXAMPLE);
   const busy = disabled || saving;
+  const scopeKinds = ['direct', 'group'];
+  const tabRefs = { group: groupTabRef, direct: directTabRef };
 
   React.useEffect(() => {
     mountedRef.current = true;
@@ -73,14 +202,36 @@ function ContextEnhancementDialog({ config, groupSupported, disabled, onSave, on
     };
   }, [returnFocusRef]);
 
-  const change = (key, value) => {
+  const changeScope = (kind, key, value) => {
     if (busy || savingRef.current) return;
-    setDraft((current) => ({ ...current, [key]: value }));
+    setDraft((current) => ({
+      ...current,
+      [kind]: { ...current[kind], [key]: value },
+    }));
     setError(null);
   };
 
   const cancel = () => {
     if (!savingRef.current) onClose();
+  };
+
+  const activateScope = (kind, focus = false) => {
+    if (busy || !scopeKinds.includes(kind)) return;
+    setActiveScope(kind);
+    if (focus) tabRefs[kind].current?.focus?.();
+  };
+
+  const handleTabKeyDown = (event, kind) => {
+    let next;
+    if (event.key === 'Home') next = scopeKinds[0];
+    else if (event.key === 'End') next = scopeKinds.at(-1);
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      const offset = event.key === 'ArrowRight' ? 1 : -1;
+      next = scopeKinds[(scopeKinds.indexOf(kind) + offset + scopeKinds.length) % scopeKinds.length];
+    }
+    if (!next) return;
+    event.preventDefault();
+    activateScope(next, true);
   };
 
   const save = async () => {
@@ -155,90 +306,42 @@ function ContextEnhancementDialog({ config, groupSupported, disabled, onSave, on
       type: 'button', className: 'dim-contextClose', 'aria-label': '关闭弹窗',
       disabled: saving, onClick: cancel,
     }, h(ContextIcon, { kind: 'close' }))),
-  h('fieldset', { className: 'dim-contextSection', disabled: busy },
-    h('legend', null, '启用范围'),
-    h('div', { className: 'dim-contextSwitches' },
-      h('label', { className: 'dim-contextSwitchRow' },
-        h('span', { className: 'dim-contextSwitchLabel' },
-          h('span', null, '群聊中启用'),
-          !groupSupported ? h('span', {
-            id: groupNoticeId, className: 'dim-contextUnavailable',
-          }, '（当前渠道不支持群聊）') : null),
-        h('input', {
-          type: 'checkbox', role: 'switch', className: 'dim-contextSwitch',
-          checked: groupSupported && draft.groupEnabled,
-          disabled: busy || !groupSupported,
-          'aria-describedby': !groupSupported ? groupNoticeId : undefined,
-          onChange: (event) => { if (groupSupported) change('groupEnabled', event.target.checked); },
-        })),
-      h('label', { className: 'dim-contextSwitchRow' },
-        h('span', null, '私聊中启用'),
-        h('input', {
-          type: 'checkbox', role: 'switch', className: 'dim-contextSwitch',
-          checked: draft.directEnabled, disabled: busy,
-          onChange: (event) => change('directEnabled', event.target.checked),
-        }))),
-  ),
-  h('fieldset', { className: 'dim-contextSection', disabled: busy },
-    h('legend', { className: 'dim-contextLegend' },
-      h('span', null, '来源字段'),
-      h('span', { className: 'dim-contextHelp dim-contextLegendHelp' },
-        h('button', {
-          type: 'button', className: 'dim-contextHelpButton', disabled: busy,
-          'aria-label': '查看来源字段说明', 'aria-describedby': fieldsHelpId,
-        }, h('span', { 'aria-hidden': 'true' }, '?')),
-        h('span', { id: fieldsHelpId, className: 'dim-contextTooltip dim-contextLegendTooltip', role: 'tooltip' },
-          '增强提示词中请使用字段名（如 senderId、conversationType）引用这些信息。只发送勾选且当前消息中可用的字段，不会额外查询或补全。'))),
-    h('div', { className: 'dim-contextFields' }, CONTEXT_ENHANCEMENT_FIELDS.map((field) => {
-      const fieldId = `${fieldIdPrefix}-${field}`;
-      return h('div', { key: field, className: 'dim-contextField' },
-        h('input', {
-          id: fieldId, type: 'checkbox', name: field,
-          checked: draft.fields.includes(field), disabled: busy,
-          onChange: (event) => change('fields', event.target.checked
-            ? [...draft.fields, field] : draft.fields.filter((value) => value !== field)),
-        }),
-        h('span', { className: 'dim-contextFieldText' },
-          h('label', { className: 'dim-contextFieldName', htmlFor: fieldId }, FIELD_LABELS[field]),
-          field === 'senderName' ? h('span', { className: 'dim-contextHelp dim-contextFieldHelp' },
-            h('button', {
-              type: 'button', className: 'dim-contextHelpButton dim-contextFieldHelpButton', disabled: busy,
-              'aria-label': '查看发送者昵称字段说明', 'aria-describedby': senderNameHelpId,
-            }, h('span', { 'aria-hidden': 'true' }, '?')),
-            h('span', {
-              id: senderNameHelpId,
-              className: 'dim-contextTooltip dim-contextFieldTooltip',
-              role: 'tooltip',
-            }, '该字段不是每个渠道都能提供。当前消息没有发送者昵称时，即使已选择该字段，<dsh_im_source> 中也会省略 senderName。')) : null,
-          h('label', { className: 'dim-contextFieldKey', htmlFor: fieldId }, field)));
-    }))),
-  h('div', { className: 'dim-contextGuidance' },
-    h('div', { className: 'dim-contextEditorHeader' },
-      h('span', { className: 'dim-contextEditorTitle' },
-        h('label', { htmlFor: guidanceId }, '增强提示词'),
-        h('span', { className: 'dim-contextHelp' },
-          h('button', {
-            type: 'button', className: 'dim-contextHelpButton', disabled: busy,
-            'aria-label': '查看增强提示词使用说明', 'aria-describedby': guidanceHelpId,
-          }, h('span', { 'aria-hidden': 'true' }, '?')),
-          h('span', { id: guidanceHelpId, className: 'dim-contextTooltip dim-contextGuidanceTooltip', role: 'tooltip' },
-            h('strong', null, '使用说明'),
-            h('span', null, '用于告诉模型如何使用 <dsh_im_source> 中已选择的来源字段。只填写正文，插件会自动添加 <dsh_im_source_guidance> 成对标签。'),
-            h('strong', null, '生效规则'),
-            h('span', null, '只需填写正文，插件自动添加 <dsh_im_source_guidance> 成对标签。清空并保存后，不再附加增强提示词，已选来源字段仍按开关设置发送。'),
-            h('strong', null, '隐私提示'),
-            h('span', null, '发送者标识可能包含平台用户 ID 或电话号码形式的标识。关闭开关不会删除已经写入会话历史的信息。'),
-            h('strong', null, '使用示例'),
-            h('span', { className: 'dim-contextTooltipExample' }, guidanceExample)))),
-      h('div', { className: 'dim-contextTextActions' },
-        h('button', { type: 'button', disabled: busy, onClick: () => change('guidance', guidanceExample) }, '填入示例'),
-        h('button', { type: 'button', disabled: busy, onClick: () => change('guidance', '') }, '清空'))),
-    h('textarea', {
-      id: guidanceId, value: draft.guidance, placeholder: guidanceExample, rows: 4, disabled: busy,
-      maxLength: CONTEXT_ENHANCEMENT_GUIDANCE_MAX_LENGTH,
-      'aria-describedby': guidanceHelpId,
-      onChange: (event) => change('guidance', event.target.value),
+  h('div', { className: 'dim-contextTabs', role: 'tablist', 'aria-label': '上下文增强范围' },
+    scopeKinds.map((kind) => {
+      const selected = activeScope === kind;
+      return h('button', {
+        key: kind,
+        id: `${scopeIdPrefix}-${kind}-tab`,
+        ref: tabRefs[kind],
+        type: 'button',
+        role: 'tab',
+        className: 'dim-contextTab',
+        'data-context-kind': kind,
+        'aria-selected': selected,
+        'aria-controls': `${scopeIdPrefix}-${kind}-panel`,
+        tabIndex: selected ? 0 : -1,
+        disabled: busy,
+        onClick: () => activateScope(kind),
+        onKeyDown: (event) => handleTabKeyDown(event, kind),
+      }, SCOPE_COPY[kind].title);
     })),
+  scopeKinds.map((kind) => h('div', {
+    key: kind,
+    id: `${scopeIdPrefix}-${kind}-panel`,
+    className: 'dim-contextTabPanel',
+    role: 'tabpanel',
+    'data-context-kind': kind,
+    'aria-labelledby': `${scopeIdPrefix}-${kind}-tab`,
+    hidden: activeScope !== kind,
+  }, h(ContextEnhancementScopeEditor, {
+    kind,
+    scope: draft[kind],
+    example: kind === 'group' ? groupGuidanceExample : directGuidanceExample,
+    supported: kind === 'group' ? groupSupported : true,
+    busy,
+    idPrefix: scopeIdPrefix,
+    onChange: (key, value) => changeScope(kind, key, value),
+  }))),
   error ? h('p', { className: 'dim-contextError', role: 'alert' }, error) : null,
   h('footer', { className: 'dim-contextFooter' },
     h('button', { type: 'button', disabled: saving, onClick: cancel }, '取消'),
@@ -256,7 +359,9 @@ export function ContextEnhancementEditor({ config, groupSupported = true, disabl
   const dialogId = React.useId();
   const statusId = React.useId();
   const saved = normalizeContextEnhancementConfig(config);
-  const label = contextEnhancementLabel(groupSupported ? saved : { ...saved, groupEnabled: false });
+  const label = contextEnhancementLabel(groupSupported ? saved : {
+    ...saved, group: { ...saved.group, enabled: false },
+  });
 
   return h(React.Fragment, null,
     h('button', {
