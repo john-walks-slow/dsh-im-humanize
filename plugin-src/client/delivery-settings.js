@@ -18,6 +18,10 @@ export const DELIVERY_ENDPOINTS = Object.freeze({
   test: 'target.test',
 });
 
+export const BOT_SETTINGS_TABS = Object.freeze([
+  Object.freeze({ id: 'delivery', label: '投递设置' }),
+]);
+
 const CHANNEL_DEFINITIONS = Object.freeze({
   weixin: {
     label: '微信',
@@ -654,13 +658,41 @@ export function DeliveryTargetSettingsPage({ channel, account, rpcCall, onBack }
     }
   };
 
+  const deliveryTab = BOT_SETTINGS_TABS[0];
+  const deliveryTabId = `dim-bot-settings-${deliveryTab.id}-tab`;
+  const deliveryPanelId = `dim-bot-settings-${deliveryTab.id}-panel`;
+
   return h('section', {
     className: 'dim-deliveryPage',
     'aria-label': `${account.botName || definition.label}机器人设置`,
   },
   h('header', { className: 'dim-deliveryHeader' },
-    h(DeliveryButton, { className: 'dim-deliveryBack', onClick: onBack }, '← 返回机器人列表'),
-    h('div', { className: 'dim-deliveryHeaderMeta' },
+    h(DeliveryButton, { className: 'dim-deliveryBack', onClick: onBack }, '← 返回机器人列表')),
+  h('div', { className: 'dim-botSettingsTabsBar' },
+    h('nav', {
+      className: 'dim-botSettingsTabs',
+      role: 'tablist',
+      'aria-label': '机器人设置页签',
+    }, BOT_SETTINGS_TABS.map((tab) => h('button', {
+      key: tab.id,
+      id: `dim-bot-settings-${tab.id}-tab`,
+      type: 'button',
+      role: 'tab',
+      className: 'dim-botSettingsTab',
+      'aria-selected': tab.id === deliveryTab.id,
+      'aria-controls': `dim-bot-settings-${tab.id}-panel`,
+      tabIndex: tab.id === deliveryTab.id ? 0 : -1,
+    }, tab.label)))),
+  h('div', {
+    id: deliveryPanelId,
+    className: 'dim-botSettingsTabPanel',
+    role: 'tabpanel',
+    'aria-labelledby': deliveryTabId,
+  },
+  h('section', { className: 'dim-deliveryIdentity', 'aria-labelledby': 'dim-delivery-bot-title' },
+    h('div', { className: 'dim-deliveryIdentityHeading' },
+      h('h2', { id: 'dim-delivery-bot-title', className: 'dim-deliveryBotName' },
+        account.botName || '机器人设置'),
       h('a', {
         className: 'dim-deliveryDocsLink',
         href: isEnglish() ? DELIVERY_DOCS_URL.en : DELIVERY_DOCS_URL.zh,
@@ -669,11 +701,7 @@ export function DeliveryTargetSettingsPage({ channel, account, rpcCall, onBack }
         'aria-label': '打开主动投递使用文档',
       },
       h('span', null, '使用文档'),
-      h('span', { 'aria-hidden': 'true' }, '↗')))),
-  h('section', { className: 'dim-deliveryIdentity', 'aria-labelledby': 'dim-delivery-bot-title' },
-    h('div', null,
-      h('h2', { id: 'dim-delivery-bot-title', className: 'dim-deliveryBotName' },
-        account.botName || '机器人设置')),
+      h('span', { 'aria-hidden': 'true' }, '↗'))),
     h('div', { className: 'dim-deliveryBotId' },
       h('span', null, 'Bot ID'),
       h('code', { title: account.botId }, account.botId),
@@ -745,5 +773,5 @@ export function DeliveryTargetSettingsPage({ channel, account, rpcCall, onBack }
               rpcCall: invoke,
               onChanged: () => loadTargets({ silent: true }),
               onEdit: () => setEditor({ mode: 'edit', target, source: 'edit' }),
-            })))));
+            }))))));
 }

@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import TestRenderer from 'react-test-renderer';
 
 import {
+  BOT_SETTINGS_TABS,
   DELIVERY_CHANNEL_DEFINITIONS,
   DELIVERY_ENDPOINTS,
   DELIVERY_RPC_CHANNEL,
@@ -71,6 +72,7 @@ const connectedAccount = Object.freeze({
 });
 
 test('delivery settings define only the nine supported IM channel routes', () => {
+  assert.deepEqual(BOT_SETTINGS_TABS, [{ id: 'delivery', label: '投递设置' }]);
   assert.equal(DELIVERY_RPC_CHANNEL, '/dsh-im-delivery');
   assert.deepEqual(Object.keys(DELIVERY_CHANNEL_DEFINITIONS), [
     'weixin', 'feishu', 'dingtalk', 'wecom', 'qq',
@@ -184,18 +186,25 @@ test('the card gear opens a bot-scoped page in the current channel panel and ret
   assert.match(textOf(page), /微信通知助手/);
   assert.doesNotMatch(textOf(page), /调用标识/);
   assert.equal(
-    page.findByProps({ className: 'dim-deliveryHeader' }).findAllByType('span').length,
-    2,
-  );
-  assert.equal(
     page.findByProps({ className: 'dim-deliveryHeader' }).findAllByType('h2').length,
     0,
   );
+  const settingsTab = page.findByProps({ role: 'tab' });
+  const settingsPanel = page.findByProps({ role: 'tabpanel' });
+  assert.equal(textOf(settingsTab), '投递设置');
+  assert.equal(settingsTab.props['aria-selected'], true);
+  assert.equal(settingsTab.props.tabIndex, 0);
+  assert.equal(settingsTab.props['aria-controls'], settingsPanel.props.id);
+  assert.equal(settingsPanel.props['aria-labelledby'], settingsTab.props.id);
+  const identity = settingsPanel.findByProps({ className: 'dim-deliveryIdentity' });
+  assert.ok(identity);
+  assert.ok(settingsPanel.findByProps({ className: 'dim-deliveryTargets' }));
+  assert.equal(page.findByProps({ className: 'dim-botSettingsTabsBar' }).findAllByType('a').length, 0);
   assert.equal(
-    textOf(page.findByProps({ className: 'dim-deliveryIdentity' }).findByType('h2')),
+    textOf(identity.findByType('h2')),
     '微信通知助手',
   );
-  const docsLink = page.findByProps({ className: 'dim-deliveryDocsLink' });
+  const docsLink = identity.findByProps({ className: 'dim-deliveryDocsLink' });
   assert.equal(textOf(docsLink), '使用文档↗');
   assert.equal(
     docsLink.props.href,
@@ -471,6 +480,7 @@ test('recent conversation names remain platform data in the English UI', async (
     docsLink.props.href,
     'https://github.com/xmanrui/dsh-im/blob/main/PROACTIVE_DELIVERY.en.md',
   );
+  assert.equal(textOf(renderer.root.findByProps({ role: 'tab' })), 'Delivery settings');
 });
 
 test('target create, edit, copy, and delete use the minimal RPC payloads', async (t) => {
