@@ -1797,6 +1797,7 @@ export class FeishuHarnessBridge {
           const result = await this.#runWatch(key, chatId, sessionId, {
             notify: false,
             validatedTarget,
+            replyTo: messageId,
           });
           if (result.changed) changed += 1;
           else if (!result.ok) failed += 1;
@@ -2872,6 +2873,13 @@ export class FeishuHarnessBridge {
         chatId,
         lastSeq,
         ...(watchStartedAt !== null ? { watchStartedAt } : {}),
+        // Remember where the watch was created so completion pushes can be
+        // delivered as replies inside the same Feishu topic.
+        ...(replyTo
+          ? { replyToMessageId: replyTo }
+          : existingEntry?.replyToMessageId
+            ? { replyToMessageId: existingEntry.replyToMessageId }
+            : {}),
       });
     } catch (error) {
       await reply(t('关注失败：{message}', { message: safeErrorText(error) }));
@@ -2997,7 +3005,7 @@ export class FeishuHarnessBridge {
         await this.#sendCard(
           entry.chatId,
           completionCard(sessionId, entry.title, reason),
-          { key },
+          { key, replyTo: entry.replyToMessageId ?? null },
         );
         const current = this.#state.watchEntry?.(key, sessionId);
         if (!current
