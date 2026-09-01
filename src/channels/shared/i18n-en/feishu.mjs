@@ -337,6 +337,7 @@ export default {
 
   // feishu/feishu-channel.mjs
   '正在生成…': 'Generating…',
+  '⤵️ 最终结果见下方': '⤵️ Final result below',
   '回答完成': 'Answer complete',
   '内容较长，生成完成后将分段发送完整回答。':
     'This response is long. The complete answer will be sent in parts when generation finishes.',

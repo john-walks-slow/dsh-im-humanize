@@ -3352,8 +3352,18 @@ export class FeishuHarnessBridge {
       stream = await this.#channel.stream(chatId, {
         markdown: async (controller) => {
           promptStarted = true;
+          const baseAskOptions = this.#interactionAskOptions(event, key, message.files);
           const askOptions = {
-            ...this.#interactionAskOptions(event, key, message.files),
+            ...baseAskOptions,
+            // issue #86：独立交互消息（提问/审批）会落在占位卡下方，呈现前
+            // 先换卡，让最终答案落在交互消息之后的新流式卡上。
+            onInteraction: async (interaction) => {
+              if ((interaction?.kind === 'question' || interaction?.kind === 'approval')
+                && typeof controller?.rotate === 'function') {
+                await controller.rotate();
+              }
+              await baseAskOptions.onInteraction(interaction);
+            },
             onUpdate: async (update) => {
               await controller.setContent(this.#progressText(update));
               this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
