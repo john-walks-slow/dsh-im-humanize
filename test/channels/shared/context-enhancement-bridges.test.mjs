@@ -177,7 +177,8 @@ function fixture(channel, { contextEnhancement, onAsk } = {}) {
       const from = { id: actor === 'actor' ? 42 : 43, is_bot: false };
       nameValue(from, 'first_name');
       value = normalizeTelegramUpdate({ update_id: id, message: {
-        message_id: id, chat: { id: 100, type: group ? 'supergroup' : 'private' }, from,
+        message_id: id, chat: { id: 100, type: group ? 'supergroup' : 'private',
+          ...(group ? { title: 'Telegram群' } : {}) }, from,
         text: group ? `@testbot ${text}` : text, entities: group ? [{ type: 'mention', offset: 0, length: 8 }] : [],
       } }, { botId: 'bot', username: 'testbot' });
     } else if (channel === 'discord') {
@@ -206,7 +207,8 @@ function fixture(channel, { contextEnhancement, onAsk } = {}) {
         item_list: [{ type: 1, text_item: { text } }] };
     } else if (channel === 'dingtalk') {
       value = { msgId: String(id), msgtype: 'text', text: { content: text }, senderStaffId: actor,
-        conversationType: group ? '2' : '1', conversationId: 'chat', isInAtList: true,
+        conversationType: group ? '2' : '1', conversationId: 'chat',
+        conversationTitle: group ? '钉钉测试群' : undefined, isInAtList: true,
         sessionWebhook: 'https://oapi.dingtalk.com/robot/reply?ticket=test' };
       nameValue(value, 'senderNick');
     } else if (channel === 'qq') {
@@ -299,6 +301,8 @@ for (const channel of CHANNELS) {
         senderId: channel === 'telegram' ? '42' : channel === 'whatsapp' ? 'actor@s.whatsapp.net' : 'actor',
         ...(['dingtalk', 'telegram', 'discord', 'whatsapp'].includes(channel) || (channel === 'qq' && kind === 'group')
           ? { senderName: 'Ada' } : {}),
+        ...(channel === 'dingtalk' && kind === 'group' ? { conversationTitle: '钉钉测试群' } : {}),
+        ...(channel === 'telegram' && kind === 'group' ? { conversationTitle: 'Telegram群' } : {}),
         botId: `${channel}_internal`,
       };
       assert.deepEqual(sourceOf(current.prompts[0]), expected);

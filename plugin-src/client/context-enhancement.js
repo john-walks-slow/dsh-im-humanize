@@ -16,7 +16,19 @@ const FIELD_LABELS = Object.freeze({
   conversationType: '会话类型',
   senderId: '发送者标识',
   senderName: '发送者昵称',
+  conversationTitle: '会话标题',
   botId: '机器人标识',
+});
+
+const FIELD_HELP = Object.freeze({
+  senderName: Object.freeze({
+    labelKey: 'senderNameHelpLabel',
+    text: '该字段不是每个渠道都能提供。当前消息没有发送者昵称时，即使已选择该字段，<dsh_im_source> 中也会省略 senderName。',
+  }),
+  conversationTitle: Object.freeze({
+    labelKey: 'conversationTitleHelpLabel',
+    text: '该字段不是每个渠道都能提供。钉钉群聊会带上群名。当前消息没有会话标题时，即使已选择该字段，<dsh_im_source> 中也会省略 conversationTitle。',
+  }),
 });
 
 const SCOPE_COPY = Object.freeze({
@@ -25,6 +37,7 @@ const SCOPE_COPY = Object.freeze({
     enable: '启用',
     fieldsHelpLabel: '查看群聊来源字段说明',
     senderNameHelpLabel: '查看群聊发送者昵称字段说明',
+    conversationTitleHelpLabel: '查看群聊会话标题字段说明',
     guidanceLabel: '增强提示词',
     guidanceHelpLabel: '查看群聊增强提示词使用说明',
     guidanceUsage: '用于告诉模型如何使用当前群聊消息的 <dsh_im_source> 来源字段。只填写正文，插件会自动添加 <dsh_im_source_guidance> 成对标签。',
@@ -35,6 +48,7 @@ const SCOPE_COPY = Object.freeze({
     enable: '启用',
     fieldsHelpLabel: '查看私聊来源字段说明',
     senderNameHelpLabel: '查看私聊发送者昵称字段说明',
+    conversationTitleHelpLabel: '查看私聊会话标题字段说明',
     guidanceLabel: '增强提示词',
     guidanceHelpLabel: '查看私聊增强提示词使用说明',
     guidanceUsage: '用于告诉模型如何使用当前私聊消息的 <dsh_im_source> 来源字段。只填写正文，插件会自动添加 <dsh_im_source_guidance> 成对标签。',
@@ -73,7 +87,6 @@ function ContextEnhancementScopeEditor({
   const copy = SCOPE_COPY[kind];
   const unavailableId = `${idPrefix}-${kind}-unavailable`;
   const fieldsHelpId = `${idPrefix}-${kind}-fields-help`;
-  const senderNameHelpId = `${idPrefix}-${kind}-sender-name-help`;
   const guidanceId = `${idPrefix}-${kind}-guidance`;
   const guidanceHelpId = `${idPrefix}-${kind}-guidance-help`;
   const disabled = busy || !supported;
@@ -118,16 +131,17 @@ function ContextEnhancementScopeEditor({
         }),
         h('span', { className: 'dim-contextFieldText' },
           h('label', { className: 'dim-contextFieldName', htmlFor: fieldId }, FIELD_LABELS[field]),
-          field === 'senderName' ? h('span', { className: 'dim-contextHelp dim-contextFieldHelp' },
+          FIELD_HELP[field] ? h('span', { className: 'dim-contextHelp dim-contextFieldHelp' },
             h('button', {
               type: 'button', className: 'dim-contextHelpButton dim-contextFieldHelpButton', disabled,
-              'aria-label': copy.senderNameHelpLabel, 'aria-describedby': senderNameHelpId,
+              'aria-label': copy[FIELD_HELP[field].labelKey],
+              'aria-describedby': `${idPrefix}-${kind}-${field}-help`,
             }, h('span', { 'aria-hidden': 'true' }, '?')),
             h('span', {
-              id: senderNameHelpId,
+              id: `${idPrefix}-${kind}-${field}-help`,
               className: 'dim-contextTooltip dim-contextFieldTooltip',
               role: 'tooltip',
-            }, '该字段不是每个渠道都能提供。当前消息没有发送者昵称时，即使已选择该字段，<dsh_im_source> 中也会省略 senderName。')) : null,
+            }, FIELD_HELP[field].text)) : null,
           h('label', { className: 'dim-contextFieldKey', htmlFor: fieldId }, field)));
     }))),
   h('div', { className: 'dim-contextGuidance dim-contextScopeBlock' },
