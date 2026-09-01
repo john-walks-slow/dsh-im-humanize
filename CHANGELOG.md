@@ -6,10 +6,25 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.4.0] - 2026-09-01
+
+### Added / 新增
+
+- 九个 IM 渠道新增统一的机器人级“访问设置”：私聊与群聊可分别选择允许所有用户或仅白名单用户，并独立配置默认命令权限、命令权限例外及白名单用户权限。策略按 `botId` 原子保存，保存后对新入站消息立即生效；原 owner、扫码接入者等既有特权身份继续保留访问与完整命令权限，Telegram 与 WhatsApp 旧访问配置会自动迁移。
+  All nine IM channels now provide unified per-bot Access settings. Direct and group chats can independently allow everyone or only allowlisted users, with separate default command permissions, command-permission overrides, and per-user allowlist permissions. Policies are atomically stored by `botId` and apply to new inbound messages immediately; existing privileged identities such as owners and QR provisioners retain full access and command permissions, while legacy Telegram and WhatsApp access settings migrate automatically.
+
 ### Changed / 变更
 
 - 机器人卡片的设置页改为可扩展的横向 Tab 布局，现有 Bot ID、投递目标管理与专属使用文档统一归入“投递设置”页签。
   Bot-card settings now use an extensible horizontal tab layout, with the existing Bot ID, delivery-target management, and dedicated guide grouped under the Delivery settings tab.
+
+### Fixed / 修复
+
+- 飞书长连接现在会先按常见 `NO_PROXY` / `no_proxy` 语义排除 `open.feishu.cn` 与 `open.larksuite.com`，仅在未命中排除规则时使用代理环境变量，避免本地代理导致长连接持续失败重试。
+  Feishu long connections now honor standard `NO_PROXY` / `no_proxy` matching for `open.feishu.cn` and `open.larksuite.com` before using proxy environment variables, preventing local proxies from forcing the connection into a retry loop.
+
+- 飞书话题群中的卡片操作确认、watch 完成通知、命令及子流程失败提示现在都会回复到对应卡片或触发消息所在话题；没有可用话题锚点的历史数据继续沿用原有投递方式。
+  Feishu card-action confirmations, watch completion notices, and command or sub-flow failures in topic groups now reply inside the topic containing the relevant card or triggering message; legacy entries without an anchor keep their previous delivery behavior.
 
 ## [4.3.0] - 2026-09-01
 
@@ -534,7 +549,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.3.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.4.0...HEAD
+[4.4.0]: https://github.com/xmanrui/dsh-im/compare/v4.3.0...v4.4.0
 [4.3.0]: https://github.com/xmanrui/dsh-im/compare/v4.2.1...v4.3.0
 [4.2.1]: https://github.com/xmanrui/dsh-im/compare/v4.2.0...v4.2.1
 [4.2.0]: https://github.com/xmanrui/dsh-im/compare/v4.1.1...v4.2.0
