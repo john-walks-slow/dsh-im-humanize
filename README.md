@@ -205,8 +205,8 @@ dsh plugin --profile web add -w --save-exact @xmanrui/dsh-im@3.1.0 --registry=ht
 | `/cancel` | 取消批量输入并丢弃已收集的消息。 |
 | `/repair` | 在飞书私聊中增量修复卡片回调，并补全媒体与原生 Slash Command 面板所需的权限。 |
 | `/compact` | 立即压缩当前聊天绑定会话的较早上下文。 |
-| `/workspace <工作区序号或绝对路径>` | 按 `/workspacelist` 序号或绝对路径切换当前机器人的 Harness 工作区。 |
-| `/workspacelist` | 列出当前 Harness Host 上仍然存在的工作区绝对路径。 |
+| `/workspace`、`/ws` `<工作区序号或绝对路径>` | 按 `/workspacelist` 序号或绝对路径切换当前机器人的 Harness 工作区。 |
+| `/workspacelist`、`/workspaces`、`/wsl` | 列出当前 Harness Host 上仍然存在的工作区绝对路径。 |
 | `/sessionlist [工作区序号或绝对路径]`、`/sessions [...]` | 两个等价命令；列出指定工作区登记的所有会话 ID 和标题，省略参数时使用当前工作区。 |
 | `/session <Session ID>` | 将当前聊天绑定到指定的已有 Harness 会话。 |
 | `/history [数量]` | 在私聊中查看当前绑定会话的最近历史消息，默认 3 条，最多 5 条。 |
@@ -239,7 +239,7 @@ Slack 桌面端若未注册同名的原生 Slash Command，会拦截直接以 `/
 - 飞书 `/repair` 仅在私聊中可用，并与其他命令一样只服从当前飞书机器人的渠道访问策略；插件不另行区分管理员和普通用户。它增量补全当前缺少的 `card.action.trigger`、`im:message:readonly`、`im:resource`、`application:app_slash_command:read` 和 `application:app_slash_command:write`，确认页只显示当前应用缺少的项。授权页必须由在飞书开放平台中有权访问目标应用的账号打开。普通 `/repair` 会启动修复；若旧任务仍在等待授权，会先作废旧的一次性链接再生成新链接。发送 `/repair qr` 获取当前链接的二维码，`/repair status` 查询当前任务，`/repair verify` 重新查询验证状态，`/repair cancel` 取消任务；这四个补充命令均不会另起授权。平台已接受更新、正在等待测试按钮回调时，不会并发启动第二次修复。
 - `/compact` 只作用于当前聊天已经绑定的 Harness 会话，不会把命令发送给模型。当前聊天尚未创建会话、会话正在生成回复或没有可压缩历史时，机器人会直接返回对应状态。
 - 只接受已经存在的绝对目录；路径无效时机器人会返回具体提示和正确用法。
-- `/workspacelist` 不需要参数。它合并 Harness 全局登记项与当前机器人的路径；当前路径仍存在且可安全显示时会排在首位并标记为“当前”。`/workspace N` 会在执行时按最新列表顺序切换，也可继续使用绝对路径。
+- `/workspacelist`、`/workspaces` 和 `/wsl` 不需要参数且完全等价。它们合并 Harness 全局登记项与当前机器人的路径；当前路径仍存在且可安全显示时会排在首位并标记为“当前”。`/workspace N` 与 `/ws N` 会在执行时按最新列表顺序切换，也可继续使用绝对路径。
 - `/sessionlist` 和 `/sessions` 完全等价。数字参数按命令执行时与 `/workspacelist` 相同的最新顺序解析；也可使用绝对路径直接指定工作区。结果会回显最终选中的路径。
 - 两个会话列表命令都会列出该工作区登记的所有会话。已归档会话会标记为“已归档”；空白会话和子代理会话在它们归属该工作区时也会列出；没有标题的会话显示为“暂无标题”。结果中的 ID 可直接用于 `/session Session ID`。
 - `/session` 只接受一个由 `/sessionlist` 获得的 Session ID。它不会新建会话或立即向模型发送消息；绑定成功后，当前聊天的后续消息会继续该会话。普通归档会话可以绑定但不会自动取消归档，子代理会话不能绑定。
