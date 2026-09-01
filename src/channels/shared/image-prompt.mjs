@@ -6,6 +6,12 @@ const DEFAULT_MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
 
 export const DEFAULT_IMAGE_PROMPT = '请分析这张图片。';
 
+/**
+ * Model-facing guidance appended when the Host refuses image input for the
+ * current model and the same images are re-delivered as workspace files.
+ */
+export const IMAGE_FILE_FALLBACK_PROMPT = '当前会话模型不支持直接接收图片输入。用户发送的图片已作为文件保存到工作区（见下方文件清单）。请使用可用工具分析这些图片文件后回答，例如 run_code 或 pwsh 读取字节、解析元数据、调用图像处理或 OCR 库；不要假设自己能直接看到图片内容。';
+
 export class ImagePromptError extends Error {
   constructor(code, message, userMessage, options = {}) {
     super(message, options);
@@ -298,4 +304,49 @@ export function imagePromptDiagnostic(error) {
 
 export function imagePromptUserMessage(error) {
   return imagePromptDiagnostic(error)?.userMessage ?? null;
+}
+
+const IMAGE_FILE_EXTENSIONS = new Map([
+  ['image/png', '.png'],
+  ['image/jpeg', '.jpg'],
+  ['image/gif', '.gif'],
+  ['image/webp', '.webp'],
+]);
+
+const IMAGE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp)$/i;
+
+function imageStorageName(name, mediaType, index) {
+  const extension = IMAGE_FILE_EXTENSIONS.get(mediaType) ?? '.img';
+  const cleaned = safeName(name);
+  if (cleaned && IMAGE_EXTENSION_PATTERN.test(cleaned)) return cleaned;
+  return `${cleaned ?? `image-${index + 1}`}${extension}`;
+}
+
+/**
+ * Convert already-admitted image content blocks into inbound file sources so
+ * the same bytes can reach a non-vision model as workspace files — the path
+ * ordinary uploads such as zip archives already take.
+ */
+export function imageFileSourcesFromContent(content) {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((part) => part?.type === 'image')
+    .map((part, index) => ({
+      name: imageStorageName(part.name, part.mediaType, index),
+      ...(typeof part.mediaType === 'string' && part.mediaType.trim()
+        ? { mediaType: part.mediaType.trim() }
+        : {}),
+      data: Buffer.from(typeof part.data === 'string' ? part.data : '', 'base64'),
+    }));
+}
+
+/** Return the same content with every image block removed. */
+export function contentWithoutImages(content) {
+  return Array.isArray(content) ? content.filter((part) => part?.type !== 'image') : content;
+}
+
+/** Whether an error is the Host rejecting image input for a non-vision model. */
+export function isModelImageRejection(error) {
+  return error?.code === 'attachment-error'
+    && error?.details?.reason === 'MODEL_DOES_NOT_SUPPORT_IMAGES';
 }
