@@ -17,7 +17,8 @@ export default {
   '当前 Harness Host 上存在的工作区（{count}）：':
     'Workspaces on the current Harness Host ({count}):',
   '（当前）': '(current)',
-  '切换用法：/workspace 工作区绝对路径': 'To switch: /workspace Workspace absolute path',
+  '切换用法：/workspace 工作区序号或绝对路径':
+    'To switch: /workspace Workspace index or absolute path',
   '查看会话：/sessionlist 工作区序号或绝对路径':
     'To view Sessions: /sessionlist Workspace index or absolute path',
   '机器人正在移除或已重新接入，无法列出原会话的工作区。':
@@ -80,10 +81,12 @@ export default {
   '归档：{archived}': 'Archived: {archived}',
   '是': 'Yes',
   '否': 'No',
-  '用法：/workspace 工作区绝对路径': 'Usage: /workspace Workspace absolute path',
+  '用法：/workspace 工作区序号或绝对路径':
+    'Usage: /workspace Workspace index or absolute path',
   '当前机器人暂不支持切换工作区。': 'This bot does not support switching Workspaces yet.',
   '工作区已切换为：{workspace}': 'Workspace switched to: {workspace}',
-  '{message}\n用法：/workspace 工作区绝对路径': '{message}\nUsage: /workspace Workspace absolute path',
+  '{message}\n用法：/workspace 工作区序号或绝对路径':
+    '{message}\nUsage: /workspace Workspace index or absolute path',
   '机器人正在移除或已重新接入，无法切换原会话的工作区。':
     'The bot is being removed or has been reconnected; cannot switch the Workspace of the original Session.',
 

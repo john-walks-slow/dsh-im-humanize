@@ -940,10 +940,15 @@ test('config-store removal observation retires workspaces after the config commi
   assert.equal(workspaces.has('bot_feishu'), false);
 });
 
-test('/workspace command preserves spaces and returns actionable validation messages', async (t) => {
-  const { alternateWorkspace } = await fixture(t);
+test('/workspace command supports fresh list numbers, preserves paths, and returns actionable errors', async (t) => {
+  const { defaultWorkspace, alternateWorkspace } = await fixture(t);
   const switched = [];
-  const harness = { async switchWorkspace(path) { switched.push(path); return path; } };
+  let listed = [alternateWorkspace];
+  const harness = {
+    currentWorkspace() { return defaultWorkspace; },
+    async listWorkspaces() { return listed; },
+    async switchWorkspace(path) { switched.push(path); return path; },
+  };
 
   assert.equal(await runWorkspaceCommand('hello', harness), null);
   assert.match((await runWorkspaceCommand('/workspace', harness)).message, /用法/);
@@ -951,7 +956,11 @@ test('/workspace command preserves spaces and returns actionable validation mess
     (await runWorkspaceCommand(`/workspace ${alternateWorkspace}`, harness)).message,
     new RegExp(alternateWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
   );
-  assert.deepEqual(switched, [alternateWorkspace]);
+  assert.match((await runWorkspaceCommand('/workspace 2', harness)).message, new RegExp(alternateWorkspace));
+  listed = [];
+  assert.match((await runWorkspaceCommand('/workspace 1', harness)).message, new RegExp(defaultWorkspace));
+  assert.match((await runWorkspaceCommand('/workspace 2', harness)).message, /workspacelist/);
+  assert.deepEqual(switched, [alternateWorkspace, alternateWorkspace, defaultWorkspace]);
 
   const invalidHarness = {
     async switchWorkspace() {
@@ -962,7 +971,7 @@ test('/workspace command preserves spaces and returns actionable validation mess
   };
   const invalid = await runWorkspaceCommand('/workspace /missing/workspace', invalidHarness);
   assert.match(invalid.message, /路径不存在/);
-  assert.match(invalid.message, /用法：\/workspace 工作区绝对路径/);
+  assert.match(invalid.message, /用法：\/workspace 工作区序号或绝对路径/);
 
   const removedHarness = {
     async switchWorkspace() {
@@ -1004,7 +1013,7 @@ test('/workspacelist returns existing absolute paths with the current workspace 
   assert.ok(result.message.indexOf(defaultWorkspace) < result.message.indexOf(alternateWorkspace));
   assert.ok(result.message.indexOf(alternateWorkspace) < result.message.indexOf(thirdWorkspace));
   assert.doesNotMatch(result.message, /missing|relative\/path/);
-  assert.match(result.message, /切换用法：\/workspace 工作区绝对路径/);
+  assert.match(result.message, /切换用法：\/workspace 工作区序号或绝对路径/);
   assert.match(result.message, /查看会话：\/sessionlist 工作区序号或绝对路径/);
   assert.equal(result.messages.join(''), result.message);
   assert.equal(listCalls, 1);

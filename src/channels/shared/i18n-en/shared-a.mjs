@@ -120,7 +120,8 @@ export default {
   '{label}机器人已连接 DeepSeek Harness。': 'The {label} bot is connected to DeepSeek Harness.',
   '/new  开启一个全新会话': '/new  Start a brand-new session',
   '/compact  压缩当前会话的较早上下文': '/compact  Compact the earlier context of the current session',
-  '/workspace 工作区绝对路径  切换工作区': '/workspace <absolute workspace path>  Switch workspace',
+  '/workspace 工作区序号或绝对路径  切换工作区':
+    '/workspace <workspace index or absolute path>  Switch workspace',
   '/workspacelist  列出工作区绝对路径': '/workspacelist  List absolute workspace paths',
   '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题':
     '/sessionlist [workspace index or absolute path]  List session IDs and titles',
