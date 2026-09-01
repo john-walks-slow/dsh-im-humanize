@@ -197,3 +197,31 @@ test('Feishu WebSocket agent sends an upgrade through an HTTPS_PROXY CONNECT tun
 test('Feishu WebSocket agent is absent when no proxy is configured', () => {
   assert.equal(createFeishuWebSocketAgent({}), undefined);
 });
+
+test('Feishu WebSocket agent honors NO_PROXY for the long-connection endpoints', () => {
+  const proxyUrl = 'http://127.0.0.1:8080';
+  assert.equal(createFeishuWebSocketAgent({
+    HTTPS_PROXY: proxyUrl,
+    NO_PROXY: 'localhost,127.0.0.1,::1,*.local,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,.cn',
+  }), undefined, 'a .cn NO_PROXY entry must exclude open.feishu.cn from proxying');
+  assert.equal(createFeishuWebSocketAgent({
+    https_proxy: proxyUrl,
+    no_proxy: 'open.feishu.cn',
+  }), undefined, 'an exact-host NO_PROXY entry must exclude the Feishu endpoint');
+  assert.equal(createFeishuWebSocketAgent({
+    HTTPS_PROXY: proxyUrl,
+    NO_PROXY: 'feishu.cn',
+  }), undefined, 'a bare parent domain in NO_PROXY must exclude subdomains');
+  assert.equal(createFeishuWebSocketAgent({
+    HTTPS_PROXY: proxyUrl,
+    NO_PROXY: '*',
+  }), undefined, 'a wildcard NO_PROXY must disable the WebSocket agent');
+  assert.equal(createFeishuWebSocketAgent({
+    HTTPS_PROXY: proxyUrl,
+    NO_PROXY: 'larksuite.com',
+  }), undefined, 'NO_PROXY must also cover the Lark endpoint');
+  assert.notEqual(createFeishuWebSocketAgent({
+    HTTPS_PROXY: proxyUrl,
+    NO_PROXY: 'example.com,other.org',
+  }), undefined, 'unrelated NO_PROXY entries must keep the WebSocket agent');
+});
