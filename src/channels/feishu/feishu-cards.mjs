@@ -925,7 +925,9 @@ export function questionCard({ interactionId, header, question, detail, options,
       // Include the option description in the button so the user sees the full
       // meaning (mirrors the text form "1. label — description").
       const buttonText = description ? `${label}\n${description}` : label;
-      elements.push(button(buttonText, `answer:${interactionId}:${label}`));
+      // Action carries the question index so a stale card from a previous
+      // question cannot be applied to the current one: answer:<interactionId>:<index>:<label>
+      elements.push(button(buttonText, `answer:${interactionId}:${index}:${label}`));
     }
   }
   return cardWith(t('❓ 请补充信息{progress}', { progress }), elements);

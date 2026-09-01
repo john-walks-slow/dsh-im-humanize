@@ -1721,7 +1721,7 @@ export class FeishuHarnessBridge {
           return;
         }
       }
-      await this.#handleCardAction(resolvedAction, entry);
+      await this.#handleCardAction(resolvedAction, { ...entry, actor: entry.operatorOpenId });
     }, {
       lane: isStop || isRealSteer ? 'control' : 'regular',
       coalesceStop: isStop,
@@ -1878,6 +1878,7 @@ export class FeishuHarnessBridge {
     sessionWorkspace = null,
     sessionPage = 0,
     selections = [],
+    actor = null,
   }) {
     // Confirmations triggered by a card interaction stay anchored to the
     // card's message so they land inside the same Feishu topic.
@@ -1887,22 +1888,32 @@ export class FeishuHarnessBridge {
       const sep = action.indexOf(':');
       const approvalId = action.slice(sep + 1);
       const outcome = action.startsWith('approve:') ? 'allowed-once' : 'rejected';
-      const submitted = await this.#approvals.submitByApprovalId(approvalId, outcome);
+      // Bind the decision to the operator so another allowed group member
+      // cannot decide someone else's approval.
+      const submitted = await this.#approvals.submitByApprovalId(approvalId, outcome, { actor });
       if (!submitted) {
         await reply(t('该审批已处理或不存在，无需重复操作。')).catch(() => undefined);
       }
       return;
     }
-    // Question option buttons: answer:<interactionId>:<optionLabel>
+    // Question option buttons: answer:<interactionId>:<index>:<optionLabel>
     if (action.startsWith('answer:')) {
       const rest = action.slice('answer:'.length);
-      const sep = rest.indexOf(':');
-      if (sep !== -1) {
-        const interactionId = rest.slice(0, sep);
-        const optionLabel = rest.slice(sep + 1);
+      const firstSep = rest.indexOf(':');
+      if (firstSep !== -1) {
+        const interactionId = rest.slice(0, firstSep);
+        const afterId = rest.slice(firstSep + 1);
+        const indexSep = afterId.indexOf(':');
+        const indexText = indexSep === -1 ? afterId : afterId.slice(0, indexSep);
+        const optionLabel = indexSep === -1 ? '' : afterId.slice(indexSep + 1);
         const qKey = this.#interactionKeys.get(interactionId);
         const pending = qKey ? this.#pendingInteractions.get(qKey) : null;
-        if (pending && pending.kind === 'question' && !pending.submitting) {
+        // Only the actor who started the interaction may answer it, and the
+        // card must still target the current question (a stale card from an
+        // earlier question in a multi-question interaction must not submit).
+        if (pending && pending.kind === 'question' && !pending.submitting
+          && pending.actor === actor
+          && Number(indexText) === pending.index) {
           await this.#submitQuestionAnswer(pending, optionLabel, { chatId });
         } else {
           await reply(INTERACTION_RESOLVED_TEXT()).catch(() => undefined);
@@ -3705,9 +3716,12 @@ export class FeishuHarnessBridge {
                   approvalId: pending.approvalId,
                 }),
                 { key, replyTo: replyToMessageId },
-              ).catch(() => {
-                // Fall back to the plain-text approval if the card cannot be sent.
-                return this.#send(chatId, pending.text, { replyTo: replyToMessageId }).catch(() => undefined);
+              ).catch(async () => {
+                // Fall back to the plain-text approval if the card cannot be
+                // sent. If the text send also fails, let the error propagate so
+                // the pending approval is not marked as presented and the
+                // existing retry/reconnect logic can run.
+                await this.#send(chatId, pending.text, { replyTo: replyToMessageId });
               });
             },
           }
@@ -3827,15 +3841,17 @@ export class FeishuHarnessBridge {
           total: pending.questions.length,
         }),
         { key: pending.key, replyTo: pending.replyToMessageId },
-      ).catch(() => {
+      ).catch(async () => {
         // Fall back to the plain-text question if the card cannot be sent.
-        return this.#send(
+        // If the text send also fails, let the error propagate so the pending
+        // question is not marked as presented and the existing retry logic runs.
+        await this.#send(
           pending.chatId,
           harnessQuestionText(question, pending.index, pending.questions.length, {
             requiresMention: pending.requiresMention,
           }),
           { replyTo: pending.replyToMessageId },
-        ).catch(() => undefined);
+        );
       });
     } else {
       // Multi-select or free-text questions keep the plain-text reply flow.

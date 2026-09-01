@@ -1973,13 +1973,13 @@ test('a single-choice question is presented as a card with option buttons by def
 
   const card = cards(sent).at(-1).content;
   const actions = buttonsFromCard(card).map(callbackAction).filter(Boolean);
-  assert.ok(actions.includes('answer:question-card-id:测试环境'),
+  assert.ok(actions.includes('answer:question-card-id:0:测试环境'),
     'first option button action missing');
-  assert.ok(actions.includes('answer:question-card-id:生产环境'),
+  assert.ok(actions.includes('answer:question-card-id:0:生产环境'),
     'second option button action missing');
 
   await bridge.onCardAction(
-    cardActionEvent('om_card_1', 'answer:question-card-id:测试环境', 'ou_user'),
+    cardActionEvent('om_card_1', 'answer:question-card-id:0:测试环境', 'ou_user'),
   );
   await turn;
   assert.deepEqual(await submitted.promise, {
@@ -2067,6 +2067,203 @@ test('an interaction card falls back to plain text when the card send fails', as
       outcome: 'allowed-once',
     },
   }]);
+});
+
+test('a different allowed group member cannot approve or answer an interaction card', async () => {
+  const fixture = stateFixture([['group:oc_group', 'session-group-actor']]);
+  const sent = [];
+  const decisions = [];
+  const decided = deferred();
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async (outgoing) => sent.push(outgoing)),
+    harness: {
+      sessionExists: async () => true,
+      createSession: async () => assert.fail('the existing session should be reused'),
+      ask: async (sessionId, _text, options) => {
+        await options.onInteraction({
+          kind: 'approval',
+          interactionId: 'approval-actor-bound',
+          rpcId: 'rpc-approval-actor-bound',
+          sessionId,
+          payload: {
+            type: 'approval/requested',
+            sessionId,
+            approvalId: 'approval-actor-bound',
+            toolName: 'bash',
+            callId: 'call-actor',
+            reason: '需要确认',
+          },
+          toolCall: { callId: 'call-actor', name: 'bash', arguments: '{}' },
+          respond: async (result) => {
+            decisions.push(result);
+            decided.resolve();
+            return { accepted: true };
+          },
+        });
+        await decided.promise;
+        return '已完成';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner', 'ou_member']),
+  });
+
+  const turn = bridge.accept(event('actor-bound-start', '发起审批', {
+    senderOpenId: 'ou_owner',
+    chat_type: 'group',
+    chat_id: 'oc_group',
+    mentions: [{ key: '@bot', id: { open_id: 'bot' } }],
+  }));
+  await eventually(
+    () => sent.some(({ msgType }) => msgType === 'interactive'),
+    'the approval card was not sent',
+  );
+
+  // A different allowed group member clicks approve: must be ignored.
+  await bridge.onCardAction(
+    cardActionEvent('om_card_1', 'approve:approval-actor-bound', 'ou_member'),
+  );
+  assert.deepEqual(decisions, [], 'another allowed member must not approve');
+
+  // The originating actor's click does go through.
+  await bridge.onCardAction(
+    cardActionEvent('om_card_1', 'approve:approval-actor-bound', 'ou_owner'),
+  );
+  await turn;
+  assert.deepEqual(decisions, [{
+    ok: true,
+    value: {
+      sessionId: 'session-group-actor',
+      approvalId: 'approval-actor-bound',
+      outcome: 'allowed-once',
+    },
+  }]);
+});
+
+test('a stale question card cannot answer the next question in a multi-question interaction', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-stale-card']]);
+  const sent = [];
+  const response = deferred();
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async (outgoing) => sent.push(outgoing)),
+    harness: {
+      sessionExists: async () => true,
+      createSession: async () => assert.fail('the existing session should be reused'),
+      ask: async (sessionId, _text, options) => {
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'stale-question',
+          rpcId: 'stale-question',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [
+              { id: 'first', question: '第一问', options: [{ label: 'A' }, { label: 'B' }] },
+              { id: 'second', question: '第二问', options: [{ label: 'C' }, { label: 'D' }] },
+            ],
+          },
+          respond: async (result) => {
+            response.resolve(result);
+            return { accepted: true };
+          },
+        });
+        await response.promise;
+        return '两问均完成';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  const turn = bridge.accept(event('stale-card-start', '分步提问'));
+  await eventually(
+    () => sent.some(({ msgType }) => msgType === 'interactive'),
+    'the first question card was not sent',
+  );
+  // Answer question 1 via its card (index 0), advancing to question 2.
+  await bridge.onCardAction(cardActionEvent('om_card_1', 'answer:stale-question:0:A', 'ou_user'));
+  await eventually(
+    () => cards(sent).length >= 2,
+    'the second question card was not sent',
+  );
+
+  // A stale click on question 1's old card (index 0) must not answer question 2.
+  await bridge.onCardAction(cardActionEvent('om_card_1', 'answer:stale-question:0:B', 'ou_user'));
+
+  // Answer the current question 2 via its card (index 1).
+  await bridge.onCardAction(cardActionEvent('om_card_2', 'answer:stale-question:1:C', 'ou_user'));
+  await turn;
+  assert.deepEqual(await response.promise, {
+    ok: true,
+    value: {
+      sessionId: 'session-stale-card',
+      answer: {
+        answers: [
+          { id: 'first', selected: ['A'] },
+          { id: 'second', selected: ['C'] },
+        ],
+      },
+    },
+  });
+});
+
+test('failure of both the card and the text fallback does not mark the question as presented', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-present-fail']]);
+  const sent = [];
+  let responds = 0;
+  let respondResult = null;
+  const bridge = new FeishuHarnessBridge({
+    // Both interactive cards and plain text fail to send.
+    client: {
+      im: { v1: { message: {
+        create: async (request) => {
+          sent.push(request.data.msg_type);
+          throw new Error('send disabled');
+        },
+      } } },
+    },
+    harness: {
+      sessionExists: async () => true,
+      createSession: async () => assert.fail('the existing session should be reused'),
+      ask: async (sessionId, _text, options) => {
+        // Presenting the question fails (card and text fallback both throw),
+        // so the interaction is not presented as an answerable question.
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'present-fail',
+          rpcId: 'present-fail',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [{ id: 'only', question: '唯一问题', options: [{ label: 'X' }, { label: 'Y' }] }],
+          },
+          respond: async (result) => {
+            responds += 1;
+            respondResult = result;
+            return { accepted: true };
+          },
+        });
+        return 'done';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  // The question card and its text fallback both fail, so the question is
+  // never presented as an answerable card. Both sends are attempted, and the
+  // interaction is only ever cancelled (never answered with a choice).
+  const turn = bridge.accept(event('present-fail-start', '触发问题'));
+  await eventually(() => sent.length >= 2, 'neither the card nor the text fallback was attempted');
+  await turn.catch(() => undefined);
+  assert.equal(responds, 1, 'the interaction must be resolved by cancellation only');
+  assert.equal(respondResult?.ok, false, 'it must not be answered as a presented question');
+  assert.equal(respondResult?.error?.code, 'cancelled', 'it must be cancelled, not answered');
 });
 
 test('question replays are deduplicated and an unrenderable approval is safely rejected', async () => {
@@ -3706,6 +3903,10 @@ function issue86Fixture({ withProgressBeforeQuestion }) {
   const bridge = new FeishuHarnessBridge({
     client,
     channel: new VerifiedFeishuChannel({ client }),
+    // issue #86 tests assert the streaming-card rotation flow, which drives
+    // the plain-text question reply; the interaction card path is tested
+    // separately, so pin the text presentation here.
+    interactionCards: false,
     harness: {
       sessionExists: async () => true,
       ask: async (sessionId, _text, options) => {
@@ -3870,6 +4071,10 @@ function issue86RotationFixture({
   const bridge = new FeishuHarnessBridge({
     client,
     channel: new VerifiedFeishuChannel({ client }),
+    // issue #86 rotation tests assert the streaming-card flow with the
+    // plain-text question reply; the interaction card path is tested
+    // separately, so pin the text presentation here.
+    interactionCards: false,
     harness: {
       sessionExists: async () => true,
       currentWorkspace: () => null,
