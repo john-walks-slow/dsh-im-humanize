@@ -678,6 +678,7 @@ export class TextHarnessBridge {
           channel: this.#descriptor.key,
           senderId,
           senderName: message.contextSource?.()?.senderName,
+          conversationTitle: message.contextSource?.()?.conversationTitle,
         }));
       }
       const { answer, artifacts = [] } = await askInWorkspaceSession({

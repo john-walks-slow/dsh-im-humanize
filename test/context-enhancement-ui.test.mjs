@@ -217,6 +217,11 @@ test('context settings default to off with sender ID and empty guidance, and exp
   assert.equal(senderNameHelp.parent.props.className, 'dim-contextHelp dim-contextFieldHelp');
   assert.equal(senderNameHelp.parent.parent.props.className, 'dim-contextFieldText');
   assert.match(textOf(senderNameTooltip), /不是每个渠道.*dsh_im_source.*省略 senderName/s);
+  const conversationTitleHelp = renderer.root.findByProps({ 'aria-label': '查看群聊会话标题字段说明' });
+  const conversationTitleTooltip = renderer.root.findByProps({ id: conversationTitleHelp.props['aria-describedby'] });
+  assert.equal(conversationTitleHelp.props.type, 'button');
+  assert.equal(conversationTitleHelp.parent.props.className, 'dim-contextHelp dim-contextFieldHelp');
+  assert.match(textOf(conversationTitleTooltip), /不是每个渠道.*dsh_im_source.*省略 conversationTitle/s);
   assert.deepEqual(saved, []);
 });
 

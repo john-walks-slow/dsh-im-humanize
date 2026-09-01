@@ -1001,6 +1001,7 @@ export class DingtalkHarnessBridge {
           channel: 'dingtalk',
           senderId: sender,
           senderName: message.senderNick,
+          conversationTitle: message.conversationTitle,
         }));
       }
       if (typeof this.#api.createAiCard === 'function'

@@ -185,16 +185,16 @@ test('group and direct messages use only their own fields and guidance', () => {
   assert.doesNotMatch(direct, /GROUP-ONLY-TOKEN|channel/);
 });
 
-test('all 32 source-field subsets are projected in canonical order with no hidden fields', () => {
+test('all 64 source-field subsets are projected in canonical order with no hidden fields', () => {
   const expected = {
     channel: 'telegram', conversationType: 'group',
-    senderId: '123', senderName: '张三', botId: 'bot_one',
+    senderId: '123', senderName: '张三', conversationTitle: '测试群', botId: 'bot_one',
   };
-  for (let mask = 0; mask < 32; mask += 1) {
+  for (let mask = 0; mask < 64; mask += 1) {
     const fields = CONTEXT_ENHANCEMENT_FIELDS.filter((_field, index) => mask & (1 << index));
     const selected = snapshot(config({ fields: [...fields].reverse() }));
     const actual = enhanceContextContent('  original\n', selected, () => ({
-      channel: 'telegram', senderId: 123, senderName: '张三',
+      channel: 'telegram', senderId: 123, senderName: '张三', conversationTitle: '测试群',
       botId: 'platform-secret-not-used', conversationType: 'direct', token: 'never-sent',
     }));
     if (fields.length === 0) {
