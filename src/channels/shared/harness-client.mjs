@@ -428,6 +428,11 @@ export class HarnessReplyTracker {
     return this.#finished;
   }
 
+  /** The highest event seq consumed so far; advances as the turn produces events. */
+  get lastSeq() {
+    return this.#lastSeq;
+  }
+
   get answer() {
     return this.#latestText.trim();
   }
@@ -1387,8 +1392,13 @@ export class HarnessClient {
       promptAccepted = true;
 
       try {
-        const deadline = Date.now() + timeoutMs;
-        while (Date.now() < deadline) {
+        // Renew the wait window whenever the turn is still making progress, so
+        // a long-running task is not falsely reported as MODEL_REPLY_TIMEOUT
+        // while Harness is still working. A genuine stall (no new events and
+        // no active turn for the whole timeoutMs window) still fails fast.
+        let lastProgressAt = Date.now();
+        let lastPollSeq = tracker.lastSeq;
+        while (Date.now() - lastProgressAt < timeoutMs) {
           await sleep(300, signal);
           const history = await this.rpc(
             'session.history',
@@ -1402,6 +1412,26 @@ export class HarnessClient {
             if (!wasActive && ownership.active) ownership.reconnect?.();
           }
           const updates = tracker.consumeAll(history.events ?? []);
+          // Progress = the turn produced new events, or the ownership is still
+          // active. Either refreshes the stall window.
+          const seqAdvanced = tracker.lastSeq > lastPollSeq;
+          lastPollSeq = tracker.lastSeq;
+          if (seqAdvanced) {
+            lastProgressAt = Date.now();
+          } else if (ownership?.active) {
+            lastProgressAt = Date.now();
+          } else if (tracker.tracking) {
+            // Mid-turn but no new events: ask Harness whether the session is
+            // still running before declaring a stall. A failing probe must not
+            // mask a real stall, so it is not treated as progress.
+            try {
+              if (await this.isSessionRunning(sessionId, { signal })) {
+                lastProgressAt = Date.now();
+              }
+            } catch {
+              // ignore probe failure; the deadline still applies
+            }
+          }
           if (onUpdate) {
             const visibleUpdates = progressMode === 'all' ? updates : updates.slice(-1);
             for (const update of visibleUpdates) {

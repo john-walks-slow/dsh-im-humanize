@@ -974,3 +974,87 @@ test('HarnessReplyTracker keeps every frame of a batched turn in order', () => {
   ]);
   assert.equal(tracker.answer, '先创建再观察：');
 });
+
+test('a turn that keeps producing events is not falsely reported as MODEL_REPLY_TIMEOUT', async () => {
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/dsh-feishu-workspace',
+  });
+  client.ensureRunning = async () => undefined;
+  let promptRpcId;
+  let prompted = false;
+  let seq = 0;
+  const startedAt = Date.now();
+  client.rpc = async (method, _payload, _timeoutMs, options) => {
+    if (method === 'session.history') {
+      if (!prompted) return { events: [] };
+      const events = [];
+      if (!promptRpcId) promptRpcId = options?.rpcId;
+      // The turn "works" for ~250ms: each poll appends a fresh chunk so the
+      // seq keeps advancing (the renewal signal). After the window it ends.
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < 250) {
+        events.push(
+          { event: { type: 'turn/start', seq: ++seq, data: { turn: 1 } } },
+          { event: { type: 'user/message', seq: ++seq, data: { turn: 1, source: { rpcId: promptRpcId } } } },
+          { event: { type: 'assistant/chunk', seq: ++seq, data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: `chunk-${seq}` } } } },
+        );
+      } else {
+        events.push(
+          { event: { type: 'turn/start', seq: ++seq, data: { turn: 1 } } },
+          { event: { type: 'user/message', seq: ++seq, data: { turn: 1, source: { rpcId: promptRpcId } } } },
+          { event: { type: 'assistant/message', seq: ++seq, data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: '最终结果' }] } } } },
+          { event: { type: 'turn/end', seq: ++seq, data: { turn: 1, reason: { kind: 'completed' } } } },
+        );
+      }
+      return { events };
+    }
+    if (method === 'session.prompt') {
+      prompted = true;
+      promptRpcId = options.rpcId;
+      return {};
+    }
+    if (method === 'session.list') {
+      return { items: [{ sessionId: 'session-renewal', running: true }] };
+    }
+    throw new Error(`unexpected rpc ${method}`);
+  };
+
+  // timeoutMs is tiny (100ms) but the turn keeps producing events, so the
+  // stall window keeps renewing and the ask must complete instead of timing out.
+  const answer = await client.ask('session-renewal', 'long task', { timeoutMs: 100 });
+  assert.equal(answer, '最终结果');
+});
+
+test('a turn with no activity and no running session still times out', async () => {
+  const client = new HarnessClient({
+    baseUrl: 'http://127.0.0.1:3080',
+    workspace: '/tmp/dsh-feishu-workspace',
+  });
+  client.ensureRunning = async () => undefined;
+  let promptRpcId;
+  let prompted = false;
+  client.rpc = async (method, _payload, _timeoutMs, options) => {
+    if (method === 'session.history') {
+      if (!prompted) return { events: [] };
+      // The turn started but never emits another event, and the session is not
+      // reported as running: a genuine stall.
+      return { events: [] };
+    }
+    if (method === 'session.prompt') {
+      prompted = true;
+      promptRpcId = options.rpcId;
+      return {};
+    }
+    if (method === 'session.list') {
+      return { items: [{ sessionId: 'session-stall', running: false }] };
+    }
+    throw new Error(`unexpected rpc ${method}`);
+  };
+
+  await assert.rejects(
+    client.ask('session-stall', 'never runs', { timeoutMs: 120 }),
+    (error) => error?.code === 'harness-reply-timeout',
+    'a genuinely stalled turn must still fail with MODEL_REPLY_TIMEOUT',
+  );
+});
