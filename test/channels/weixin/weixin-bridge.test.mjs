@@ -16,6 +16,10 @@ import {
   createOutboundArtifactTool,
   releaseOutboundArtifact,
 } from '../../../src/channels/shared/semantic/artifact.mjs';
+import {
+  COMMAND_PERMISSION_DENIED_MESSAGE,
+  directAccessPolicy,
+} from '../access-policy-fixture.mjs';
 
 function deferred() {
   let resolve;
@@ -649,6 +653,68 @@ test('Weixin authorizes the sender before resolving encrypted image references',
 
   assert.equal(imageExtractions, 0);
   assert.equal(asks, 0);
+});
+
+test('Weixin applies the unified access policy before attachments or Harness work', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:member-user', 'session-member');
+  let imageExtractions = 0;
+  const harnessCalls = [];
+  const sent = [];
+  const accessPolicy = directAccessPolicy({
+    users: [{ id: 'member-user', canExecuteCommands: false }],
+    privilegedIds: ['owner-user'],
+  });
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      inboundImages: (value) => {
+        imageExtractions += 1;
+        return value?.item_list?.some((item) => item?.image_item) ? [{ data: PNG_BYTES }] : [];
+      },
+      sendText: async (request) => sent.push(request.text),
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    accessPolicy,
+    harness: {
+      sessionExists: async (sessionId) => {
+        harnessCalls.push(['sessionExists', sessionId]);
+        return true;
+      },
+      ask: async (sessionId, prompt) => {
+        harnessCalls.push(['ask', sessionId, prompt]);
+        return '白名单消息已处理';
+      },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('policy-blocked-image', '', {
+    from_user_id: 'blocked-user',
+    item_list: [{ type: 2, image_item: { media: {} } }],
+  }));
+  assert.equal(imageExtractions, 0);
+  assert.deepEqual(harnessCalls, []);
+  assert.deepEqual(sent, []);
+
+  await bridge.accept(message('policy-member-text', '普通消息', {
+    from_user_id: 'member-user',
+  }));
+  assert.equal(harnessCalls.some(([operation]) => operation === 'ask'), true);
+  assert.deepEqual(sent, ['白名单消息已处理']);
+
+  const callsBeforeDeniedCommand = harnessCalls.length;
+  const repliesBeforeDeniedCommand = sent.length;
+  await bridge.accept(message('policy-member-command', '/help', {
+    from_user_id: 'member-user',
+  }));
+  assert.equal(harnessCalls.length, callsBeforeDeniedCommand);
+  assert.deepEqual(sent.slice(repliesBeforeDeniedCommand), [COMMAND_PERMISSION_DENIED_MESSAGE]);
+
+  accessPolicy.getSettings().direct.allowlist.users = [];
+  await bridge.accept(message('policy-owner-command', '/help'));
+  assert.match(sent.at(-1), /\/help/);
 });
 
 test('Weixin returns a specific retry message when encrypted image loading fails', async () => {

@@ -54,6 +54,10 @@ import {
   messageFailureText,
   setLastMessageFailure,
 } from '../shared/message-failure.mjs';
+import {
+  COMMAND_PERMISSION_DENIED_MESSAGE,
+  evaluateInboundAccess,
+} from '../shared/inbound-access.mjs';
 import { sendMarkdownReply } from './markdown-reply.mjs';
 import { t } from '../shared/i18n.mjs';
 
@@ -110,9 +114,6 @@ function conversationKey(message) {
 }
 
 function senderAllowed(message, ownerUserOpenid) {
-  // QR binding yields a C2C user_openid, while group events identify senders
-  // with a group-scoped member_openid. Treat group membership plus @mention as
-  // the access boundary, and keep the scanner restriction for private chats.
   return message?.kind === 'group'
     || ownerUserOpenid === '*'
     || message?.senderId === ownerUserOpenid;
@@ -376,6 +377,7 @@ export class QqHarnessBridge {
   #harness;
   #state;
   #contextEnhancement;
+  #accessPolicy;
   #status;
   #logger;
   #replyTimeoutMs;
@@ -398,6 +400,7 @@ export class QqHarnessBridge {
     harness,
     state,
     contextEnhancement,
+    accessPolicy,
     status = createQqBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
@@ -417,6 +420,7 @@ export class QqHarnessBridge {
     this.#harness = harness;
     this.#state = state;
     this.#contextEnhancement = contextEnhancement;
+    this.#accessPolicy = accessPolicy;
     this.#status = status;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
@@ -439,6 +443,26 @@ export class QqHarnessBridge {
       || this.#state.hasSeen(messageId)
       || this.#acceptedMessageIds.has(messageId)) return Promise.resolve();
     const key = conversationKey(message);
+    const addressed = message.kind !== 'group'
+      || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE';
+    const commandText = safeText(message);
+    if (addressed) {
+      const access = this.#accessPolicy
+        ? evaluateInboundAccess(this.#accessPolicy, {
+            conversationType: message.kind === 'c2c' ? 'direct' : 'group',
+            senderIds: sender,
+            text: commandText,
+            hasImages: hasQqImageAttachments(message),
+            hasFiles: hasQqFileAttachments(message),
+          })
+        : senderAllowed(message, this.#ownerUserOpenid)
+          ? { allowed: true, reason: 'legacy-owner' }
+          : { allowed: false, reason: 'sender-not-allowed' };
+      if (!access.allowed) {
+        this.#acceptedMessageIds.set(messageId, null);
+        return this.#finishAccessDecision(message, messageId, access);
+      }
+    }
     this.#acceptedMessageIds.set(messageId, captureContextEnhancement(
       this.#contextEnhancement,
       message.kind === 'c2c' ? 'direct' : 'group',
@@ -450,20 +474,16 @@ export class QqHarnessBridge {
       rememberConnectionTestTarget(this.#state, message.replyTarget);
     }
     const pending = this.#pendingInteractions.get(key);
-    const commandText = safeText(message);
-    const allowed = senderAllowed(message, this.#ownerUserOpenid);
-    const addressed = message.kind !== 'group'
-      || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE';
     const batchCommand = isBatchInputCommand(commandText);
     const batchStatus = this.#batchInputs.status(key);
-    if (batchCommand && allowed && addressed && message.kind === 'group') {
+    if (batchCommand && addressed && message.kind === 'group') {
       return this.#finishBatchResult(
         message,
         messageId,
         { message: batchInputGroupUnsupportedMessage() },
       );
     }
-    if (allowed && message.kind === 'c2c'
+    if (message.kind === 'c2c'
       && (batchCommand || batchStatus.phase === 'collecting')) {
       const exactBatchStart = /^\/batch$/iu.test(commandText);
       const result = exactBatchStart
@@ -493,7 +513,7 @@ export class QqHarnessBridge {
       : (isModelCommand(commandText)
           ? runModelCommand
           : (isPresetCommand(commandText) ? runPresetCommand : null));
-    if (commandRunner && allowed && addressed) {
+    if (commandRunner && addressed) {
       let task;
       task = this.#processFastCommand(
         message,
@@ -578,10 +598,9 @@ export class QqHarnessBridge {
     alreadyRecorded = false,
     batchSubmission = null,
   } = {}) {
-    const allowed = senderAllowed(message, this.#ownerUserOpenid);
     const addressed = message.kind !== 'group'
       || message.rawEventType === 'GROUP_AT_MESSAGE_CREATE';
-    const preparedMessage = allowed && addressed
+    const preparedMessage = addressed
       ? prefetchInboundFiles(
           qqInboundMessage(message, { fetchImpl: this.#fetchImpl }),
           { signal: this.#signal },
@@ -668,6 +687,34 @@ export class QqHarnessBridge {
     return task;
   }
 
+  #finishAccessDecision(message, messageId, access) {
+    let task;
+    task = Promise.resolve().then(async () => {
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      if (access.reason === 'command-not-allowed') {
+        this.#status.messagesReceived += 1;
+        this.#status.lastMessageAt = new Date().toISOString();
+        await this.#bot.sendText(message.replyTarget, t(COMMAND_PERMISSION_DENIED_MESSAGE));
+        this.#status.messagesReplied += 1;
+        this.#status.lastReplyAt = new Date().toISOString();
+      } else {
+        this.#status.messagesRejected += 1;
+        this.#status.lastRejectedAt = new Date().toISOString();
+      }
+      this.#status.lastError = null;
+    }).catch((error) => {
+      if (this.#signal?.aborted) return;
+      this.#status.lastError = error?.message ?? String(error);
+      this.#logger.error?.('[dsh-im:qq] failed to apply inbound access policy:', error);
+    }).finally(() => {
+      this.#acceptedMessageIds.delete(messageId);
+      this.#commandTasks.delete(task);
+    });
+    this.#commandTasks.add(task);
+    return task;
+  }
+
   async #deliverArtifacts(target, replyTo, artifacts = [], baseReceipt = null) {
     if (artifacts.length === 0) {
       return { receipt: baseReceipt, failureNoticeVisible: false, artifactSendErrors: 0 };
@@ -730,11 +777,6 @@ export class QqHarnessBridge {
       await this.#state.markSeen(messageId);
       messageRecorded = true;
     };
-    if (!senderAllowed(message, this.#ownerUserOpenid)) {
-      this.#status.messagesRejected += 1;
-      this.#status.lastRejectedAt = new Date().toISOString();
-      return;
-    }
     if (message.kind === 'group' && message.rawEventType !== 'GROUP_AT_MESSAGE_CREATE') return;
 
     const target = message.replyTarget;

@@ -58,6 +58,10 @@ import {
   messageFailureText,
   setLastMessageFailure,
 } from '../shared/message-failure.mjs';
+import {
+  COMMAND_PERMISSION_DENIED_MESSAGE,
+  evaluateInboundAccess,
+} from '../shared/inbound-access.mjs';
 import { t } from '../shared/i18n.mjs';
 
 const CARD_INITIAL_TEXT = '已连接 DeepSeek Harness，正在思考…';
@@ -374,6 +378,7 @@ export class DingtalkHarnessBridge {
   #harness;
   #state;
   #contextEnhancement;
+  #accessPolicy;
   #status;
   #logger;
   #replyTimeoutMs;
@@ -397,6 +402,7 @@ export class DingtalkHarnessBridge {
     harness,
     state,
     contextEnhancement,
+    accessPolicy,
     status = createDingtalkBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
@@ -415,6 +421,7 @@ export class DingtalkHarnessBridge {
     this.#harness = harness;
     this.#state = state;
     this.#contextEnhancement = contextEnhancement;
+    this.#accessPolicy = accessPolicy;
     this.#status = status;
     this.#logger = logger;
     this.#approvals = new HarnessApprovalQueue({ label: 'DingTalk', logger });
@@ -439,17 +446,13 @@ export class DingtalkHarnessBridge {
     const sender = senderStaffId(message);
     if (!messageId || !sender || this.#state.hasSeen(messageId)
       || this.#acceptedMessageIds.has(messageId)) return Promise.resolve();
-    this.#acceptedMessageIds.set(messageId, contextSnapshot === undefined ? captureContextEnhancement(
-      this.#contextEnhancement,
-      message.conversationType === '1' || message.conversationType === 1 ? 'direct'
-        : message.conversationType === '2' || message.conversationType === 2 ? 'group' : null,
-    ) : contextSnapshot);
+    const conversationType = String(message.conversationType) === '2' ? 'group'
+      : String(message.conversationType) === '1' ? 'direct' : null;
 
     let key;
     try {
       key = conversationKey(message, sender);
     } catch {
-      this.#acceptedMessageIds.delete(messageId);
       increment(this.#status, 'messagesRejected');
       this.#status.lastRejectedAt = new Date().toISOString();
       return Promise.resolve();
@@ -461,9 +464,6 @@ export class DingtalkHarnessBridge {
     } catch {
       // An unsafe reply route must never be able to submit an approval.
     }
-    if (sessionWebhook && String(message.conversationType) !== '2') {
-      rememberConnectionTestTarget(this.#state, { sessionWebhook });
-    }
     const pending = this.#pendingInteractions.get(key);
     const promptMessage = dingtalkInboundMessage(message, {
       api: this.#api,
@@ -473,6 +473,26 @@ export class DingtalkHarnessBridge {
     const commandText = nonEmptyString(promptMessage.content) ?? '';
     const addressed = String(message.conversationType) !== '2' || message?.isInAtList === true;
     const direct = String(message.conversationType) !== '2';
+    if (addressed) {
+      const access = evaluateInboundAccess(this.#accessPolicy, {
+        conversationType,
+        senderIds: sender,
+        text: commandText,
+        hasImages: hasInboundImages(promptMessage),
+        hasFiles: hasInboundFiles(promptMessage),
+      });
+      if (!access.allowed) {
+        this.#acceptedMessageIds.set(messageId, null);
+        return this.#finishAccessDecision(message, messageId, sessionWebhook, access);
+      }
+    }
+    this.#acceptedMessageIds.set(messageId, contextSnapshot === undefined ? captureContextEnhancement(
+      this.#contextEnhancement,
+      conversationType,
+    ) : contextSnapshot);
+    if (sessionWebhook && direct) {
+      rememberConnectionTestTarget(this.#state, { sessionWebhook });
+    }
     const statusReaction = sessionWebhook && addressed ? this.#startStatusReaction(message) : null;
     const finish = (task) => Promise.resolve(task).then(
       (value) => {
@@ -847,6 +867,38 @@ export class DingtalkHarnessBridge {
         safeErrorDiagnostic(error),
       );
       await this.#send(sessionWebhook, messageFailureText(failure)).catch(() => undefined);
+    }).finally(() => {
+      this.#acceptedMessageIds.delete(messageId);
+      this.#commandTasks.delete(task);
+    });
+    this.#commandTasks.add(task);
+    return task;
+  }
+
+  #finishAccessDecision(message, messageId, sessionWebhook, access) {
+    let task;
+    task = Promise.resolve().then(async () => {
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      if (access.reason === 'command-not-allowed' && sessionWebhook) {
+        increment(this.#status, 'messagesReceived');
+        this.#status.lastMessageAt = new Date().toISOString();
+        await this.#send(
+          sessionWebhook,
+          t(COMMAND_PERMISSION_DENIED_MESSAGE),
+          this.#atUsersFor(message),
+        );
+        increment(this.#status, 'messagesReplied');
+        this.#status.lastReplyAt = new Date().toISOString();
+      } else {
+        increment(this.#status, 'messagesRejected');
+        this.#status.lastRejectedAt = new Date().toISOString();
+      }
+      this.#status.lastError = null;
+    }).catch((error) => {
+      if (this.#signal?.aborted) return;
+      this.#status.lastError = error?.message ?? String(error);
+      this.#logger.error?.('[dsh-dingtalk] failed to apply inbound access policy', error);
     }).finally(() => {
       this.#acceptedMessageIds.delete(messageId);
       this.#commandTasks.delete(task);

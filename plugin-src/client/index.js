@@ -294,6 +294,7 @@ export function IMSettingsTab({
               channel: active.id,
               account: deliverySettings,
               rpcCall: rpcCalls.deliveryRpcCall,
+              accessRpcCall: rpcCalls[`${active.id}RpcCall`],
               onBack: () => setDeliverySettings(null),
             })
           : active.id === 'weixin'

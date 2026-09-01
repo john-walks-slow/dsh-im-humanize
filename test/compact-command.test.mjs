@@ -286,9 +286,11 @@ test('all nine production channels use channel presets only as bot creation defa
   for (const path of PRODUCTION_FILES) {
     const source = await readFile(new URL(`../${path}`, import.meta.url), 'utf8');
     assert.doesNotMatch(source, /\bagentPreset:\s*config\.agentPreset/, path);
-    const creationDefaults = source.match(
-      /workspaces\.ensure\([^;]*\{\s*defaultAgentPreset:\s*config\.agentPreset,?\s*\}\)/g,
-    ) ?? [];
+    const creationDefaults = (source.match(
+      /workspaces\.ensure\((?:(?!workspaces\.ensure)[\s\S])*?\n\s*\}\)/g,
+    ) ?? []).filter((call) => (
+      /\bdefaultAgentPreset:\s*config\.agentPreset\b/.test(call)
+    ));
     assert.equal(
       creationDefaults.length,
       2,

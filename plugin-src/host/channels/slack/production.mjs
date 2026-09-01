@@ -19,6 +19,10 @@ import { pluginPaths } from '../shared/production.mjs';
 import { createHarnessCommandExecutor } from '../../harness-command-executor.mjs';
 import { harnessConnection } from '../../harness-connection.mjs';
 import { createHarnessSessionExecutors } from '../../harness-session-coordinator.mjs';
+import {
+  accessPolicyProvider,
+  initialAccessPolicyFor,
+} from '../shared/access-policy-production.mjs';
 
 export async function createProductionController(ctx, config = {}, internals = {}) {
   if (!ctx?.credentials) throw new TypeError('dsh-im slack requires ctx.credentials');
@@ -43,6 +47,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   await workspaces.reconcile(configuredBots.map((bot) => bot.botId));
   await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.botId, {
     defaultAgentPreset: config.agentPreset,
+    initialAccessPolicy: initialAccessPolicyFor('slack', bot),
   })));
   const observedConfigStore = typeof configStore.remove === 'function'
     ? observeBotWorkspaceRemovals(configStore, { workspaces })
@@ -80,7 +85,10 @@ export async function createProductionController(ctx, config = {}, internals = {
     ...(internals.inspectCredentials ? { inspectCredentials: internals.inspectCredentials } : {}),
     createRuntime: async ({ botId, config: botConfig, botToken, appToken }) => {
       const state = await stateFor(botId);
-      await workspaces.ensure(botId, { defaultAgentPreset: config.agentPreset });
+      await workspaces.ensure(botId, {
+        defaultAgentPreset: config.agentPreset,
+        initialAccessPolicy: initialAccessPolicyFor('slack', botConfig),
+      });
       const workspaceScope = createBotWorkspaceScope(harness, {
         botId, workspaces, state, agentPresetCatalog,
       });
@@ -91,6 +99,9 @@ export async function createProductionController(ctx, config = {}, internals = {
         harness: workspaceScope.harness,
         state: workspaceScope.state,
         contextEnhancement: { botId, getSettings: () => workspaces.contextEnhancementFor(botId) },
+        accessPolicy: accessPolicyProvider(workspaces, botId, {
+          channel: 'slack', config: botConfig,
+        }),
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
         connectTimeoutMs: config.connectTimeoutMs ?? 20_000,
         logger: {

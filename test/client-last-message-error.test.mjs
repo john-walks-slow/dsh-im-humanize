@@ -32,6 +32,27 @@ const publicFailure = Object.freeze({
   at: Date.UTC(2026, 7, 25, 7, 30),
 });
 
+const publicAccessPolicy = Object.freeze({
+  direct: Object.freeze({
+    mode: 'allowlist',
+    open: Object.freeze({
+      defaultCanExecuteCommands: false,
+      commandPermissionOverrides: Object.freeze([]),
+    }),
+    allowlist: Object.freeze({
+      users: Object.freeze([{ id: 'user_safe', canExecuteCommands: true }]),
+    }),
+  }),
+  group: Object.freeze({
+    mode: 'open',
+    open: Object.freeze({
+      defaultCanExecuteCommands: false,
+      commandPermissionOverrides: Object.freeze([]),
+    }),
+    allowlist: Object.freeze({ users: Object.freeze([]) }),
+  }),
+});
+
 function rawBot() {
   return {
     botId: 'bot_safe',
@@ -40,6 +61,7 @@ function rawBot() {
     state: 'connected',
     workspace: '/workspace/current',
     groupResponseMode: 'mention',
+    accessPolicy: publicAccessPolicy,
     bot: {
       name: 'Harness Bot',
       username: 'harness_bot',
@@ -107,6 +129,7 @@ test('all channel snapshot normalizers retain the same safe message failure', ()
   for (const [channel, normalize] of normalizers) {
     const snapshot = normalize({ bots: [rawBot()] });
     assert.deepEqual(snapshot.bots[0].lastMessageError, publicFailure, channel);
+    assert.deepEqual(snapshot.bots[0].accessPolicy, publicAccessPolicy, channel);
     assert.doesNotMatch(
       JSON.stringify(snapshot.bots[0].lastMessageError),
       /providerDetail|private|token/i,

@@ -1,5 +1,6 @@
 import * as React from 'react';
 
+import { AccessPolicySettingsPage } from './access-policy-settings.js';
 import { h, isEnglish, localizeText } from './i18n.js';
 
 export const DELIVERY_RPC_CHANNEL = '/dsh-im-delivery';
@@ -20,6 +21,7 @@ export const DELIVERY_ENDPOINTS = Object.freeze({
 
 export const BOT_SETTINGS_TABS = Object.freeze([
   Object.freeze({ id: 'delivery', label: '投递设置' }),
+  Object.freeze({ id: 'access', label: '访问设置' }),
 ]);
 
 const CHANNEL_DEFINITIONS = Object.freeze({
@@ -536,8 +538,15 @@ function TargetRow({ definition, target, botId, connected, rpcCall, onChanged, o
       : null);
 }
 
-export function DeliveryTargetSettingsPage({ channel, account, rpcCall, onBack }) {
+export function DeliveryTargetSettingsPage({
+  channel,
+  account,
+  rpcCall,
+  accessRpcCall,
+  onBack,
+}) {
   const definition = CHANNEL_DEFINITIONS[channel];
+  const [activeTabId, setActiveTabId] = React.useState(BOT_SETTINGS_TABS[0].id);
   const [phase, setPhase] = React.useState('loading');
   const [targets, setTargets] = React.useState([]);
   const [suggestionPhase, setSuggestionPhase] = React.useState('idle');
@@ -547,7 +556,12 @@ export function DeliveryTargetSettingsPage({ channel, account, rpcCall, onBack }
   const [editor, setEditor] = React.useState(null);
   const [saving, setSaving] = React.useState(false);
   const [botCopyState, setBotCopyState] = React.useState(null);
+  const [accessPolicy, setAccessPolicy] = React.useState(account.accessPolicy);
   const mounted = React.useRef(true);
+
+  React.useEffect(() => {
+    setAccessPolicy(account.accessPolicy);
+  }, [account.botId, account.accessPolicy]);
 
   const invoke = React.useCallback(async (endpoint, payload = {}, signal) => {
     if (typeof rpcCall !== 'function') throw new Error('投递目标设置暂不可用。');
@@ -658,9 +672,10 @@ export function DeliveryTargetSettingsPage({ channel, account, rpcCall, onBack }
     }
   };
 
-  const deliveryTab = BOT_SETTINGS_TABS[0];
-  const deliveryTabId = `dim-bot-settings-${deliveryTab.id}-tab`;
-  const deliveryPanelId = `dim-bot-settings-${deliveryTab.id}-panel`;
+  const activeTab = BOT_SETTINGS_TABS.find((tab) => tab.id === activeTabId)
+    ?? BOT_SETTINGS_TABS[0];
+  const activeTabDomId = `dim-bot-settings-${activeTab.id}-tab`;
+  const activePanelId = `dim-bot-settings-${activeTab.id}-panel`;
 
   return h('section', {
     className: 'dim-deliveryPage',
@@ -679,16 +694,25 @@ export function DeliveryTargetSettingsPage({ channel, account, rpcCall, onBack }
       type: 'button',
       role: 'tab',
       className: 'dim-botSettingsTab',
-      'aria-selected': tab.id === deliveryTab.id,
+      'aria-selected': tab.id === activeTab.id,
       'aria-controls': `dim-bot-settings-${tab.id}-panel`,
-      tabIndex: tab.id === deliveryTab.id ? 0 : -1,
+      tabIndex: tab.id === activeTab.id ? 0 : -1,
+      onClick: () => setActiveTabId(tab.id),
     }, tab.label)))),
   h('div', {
-    id: deliveryPanelId,
+    id: activePanelId,
     className: 'dim-botSettingsTabPanel',
     role: 'tabpanel',
-    'aria-labelledby': deliveryTabId,
+    'aria-labelledby': activeTabDomId,
   },
+  activeTab.id === 'access'
+    ? h(AccessPolicySettingsPage, {
+        channel,
+        account: { ...account, accessPolicy },
+        rpcCall: accessRpcCall,
+        onSaved: setAccessPolicy,
+      })
+    : h(React.Fragment, null,
   h('section', { className: 'dim-deliveryIdentity', 'aria-labelledby': 'dim-delivery-bot-title' },
     h('div', { className: 'dim-deliveryIdentityHeading' },
       h('h2', { id: 'dim-delivery-bot-title', className: 'dim-deliveryBotName' },
@@ -773,5 +797,5 @@ export function DeliveryTargetSettingsPage({ channel, account, rpcCall, onBack }
               rpcCall: invoke,
               onChanged: () => loadTargets({ silent: true }),
               onEdit: () => setEditor({ mode: 'edit', target, source: 'edit' }),
-            }))))));
+            })))))));
 }

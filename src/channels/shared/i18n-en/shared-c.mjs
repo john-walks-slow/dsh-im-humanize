@@ -185,4 +185,6 @@ export default {
     'Collected {count}/{limit} messages. The batch is full; send /send or /cancel.',
   '批量内容提交失败，已保留 {count} 条消息。\n请再次发送 /send 重试或 /cancel 取消。':
     'Batch submission failed; {count} messages were retained.\nSend /send to retry or /cancel to cancel.',
+  '你可以发送普通消息，但没有执行命令的权限。':
+    'You can send regular messages, but you do not have permission to run commands.',
 };

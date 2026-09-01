@@ -24,6 +24,10 @@ import {
 } from '../../../../src/channels/shared/bot-workspace-store.mjs';
 import { listAgentPresetCatalog } from '../../../../src/channels/shared/agent-preset.mjs';
 import { createDeliveryAdapter } from '../../delivery-adapter.mjs';
+import {
+  accessPolicyProvider,
+  initialAccessPolicyFor,
+} from '../shared/access-policy-production.mjs';
 
 // The WebSocket agent built here is only used for the Feishu long connection,
 // whose endpoint is open.feishu.cn (Feishu) or open.larksuite.com (Lark).
@@ -120,6 +124,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   }
   await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.id, {
     defaultAgentPreset: config.agentPreset,
+    initialAccessPolicy: initialAccessPolicyFor('feishu', bot),
   })));
   const observedConfigStore = typeof configStore.removeBot === 'function'
     ? observeBotWorkspaceRemovals(configStore, {
@@ -181,7 +186,10 @@ export async function createProductionController(ctx, config = {}, internals = {
     createRuntime: async ({ botId, config: botConfig, appSecret, repair }) => {
       const state = await stateFor(botConfig);
       const id = botId ?? botConfig.id ?? botConfig.appId;
-      await workspaces.ensure(id, { defaultAgentPreset: config.agentPreset });
+      await workspaces.ensure(id, {
+        defaultAgentPreset: config.agentPreset,
+        initialAccessPolicy: initialAccessPolicyFor('feishu', botConfig),
+      });
       const workspaceScope = createBotWorkspaceScope(harness, {
         botId: id, workspaces, state, agentPresetCatalog,
       });
@@ -198,6 +206,9 @@ export async function createProductionController(ctx, config = {}, internals = {
         harness: workspaceScope.harness,
         state: workspaceScope.state,
         contextEnhancement: { botId: id, getSettings: () => workspaces.contextEnhancementFor(id) },
+        accessPolicy: accessPolicyProvider(workspaces, id, {
+          channel: 'feishu', config: botConfig,
+        }),
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
         slashCommands: config.slashCommands !== false,
         ...(wsAgent ? { wsAgent } : {}),

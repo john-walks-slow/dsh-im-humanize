@@ -60,6 +60,11 @@ import {
 } from '../shared/message-failure.mjs';
 import { beginStatusReaction } from '../shared/status-reaction.mjs';
 import {
+  COMMAND_PERMISSION_DENIED_MESSAGE,
+  evaluateInboundAccess,
+} from '../shared/inbound-access.mjs';
+import { isSharedLocalCommand } from '../shared/command-permission.mjs';
+import {
   MENU_PAGE_SIZE,
   PRESET_FOLLOW_DEFAULT_SENTINEL,
   STEER_CUSTOM_SENTINEL,
@@ -134,6 +139,17 @@ const REPAIR_URL_HOSTS = new Set([
 const ARCHIVED_COMMAND = /^\/archived(?:\s+(on|off))?$/i;
 /** Matches fast card commands that should not be queued behind a running task. */
 const CARD_COMMAND = /^\/(?:m(?:enu)?|new|help|status|compact|(?:sessionlist|sessions)(?:\s|$)|workspacelist|watchlist|archived(?:\s+(on|off))?)$/i;
+
+function isFeishuLocalCommand(text, { hasImages = false, hasFiles = false } = {}) {
+  if (hasImages || hasFiles || typeof text !== 'string') return false;
+  const command = text.trim();
+  return MENU_COMMAND.test(command)
+    || REPAIR_COMMAND_PREFIX.test(command)
+    || WATCH_COMMAND.test(command)
+    || UNWATCH_COMMAND.test(command)
+    || WATCHLIST_COMMAND.test(command)
+    || ARCHIVED_COMMAND.test(command);
+}
 
 /** Canonical workspace/session help advertised by every bridge family. */
 const WORKSPACE_HELP_LINES = [
@@ -385,6 +401,7 @@ export class FeishuHarnessBridge {
   #harness;
   #state;
   #contextEnhancement;
+  #accessPolicy;
   #queues = new Map();
   #batchInputs = new BatchInputManager();
   #pendingInteractions = new Map();
@@ -451,6 +468,7 @@ export class FeishuHarnessBridge {
     harness,
     state,
     contextEnhancement,
+    accessPolicy,
     status,
     allowedSenderOpenIds = new Set(),
     botId,
@@ -488,6 +506,7 @@ export class FeishuHarnessBridge {
     this.#harness = harness;
     this.#state = state;
     this.#contextEnhancement = contextEnhancement;
+    this.#accessPolicy = accessPolicy;
     this.#status = status;
     this.#allowedSenderOpenIds = allowedSenderOpenIds;
     this.#botId = nonEmptyString(botId);
@@ -526,10 +545,10 @@ export class FeishuHarnessBridge {
     if (this.#signal?.aborted) return Promise.resolve();
     const messageId = nonEmptyString(event?.message?.message_id);
     if (!messageId || isBotSender(event)) return Promise.resolve();
-    if (!isAllowedSender(event, this.#allowedSenderOpenIds)) {
+    if (!this.#accessPolicy && !isAllowedSender(event, this.#allowedSenderOpenIds)) {
       this.#status.messagesRejected += 1;
       this.#status.lastRejectedAt = new Date().toISOString();
-      this.#logger.warn?.('[dsh-feishu] ignored a message from a sender outside the allowlist');
+      this.#logger.warn?.('[dsh-feishu] ignored a message from a sender outside the legacy allowlist');
       return Promise.resolve();
     }
     const addressed = this.#isAddressed(event);
@@ -551,6 +570,28 @@ export class FeishuHarnessBridge {
       return Promise.resolve();
     }
 
+    const commandMessage = extractInboundMessage(event, this.#client);
+    const commandText = nonEmptyString(commandMessage.content) ?? '';
+    const hasImages = hasInboundImages(commandMessage);
+    const hasFiles = hasInboundFiles(commandMessage);
+    const conversationType = event.message.chat_type === 'p2p' ? 'direct'
+      : event.message.chat_type === 'group' ? 'group' : null;
+    const access = evaluateInboundAccess(this.#accessPolicy, {
+      conversationType,
+      senderIds: senderOpenId(event),
+      text: commandText,
+      hasImages,
+      hasFiles,
+      isCommand: isSharedLocalCommand(commandText, {
+        hasImages,
+        hasFiles,
+      }) || isFeishuLocalCommand(commandText, { hasImages, hasFiles })
+        || (!hasImages && !hasFiles && NUMBER_REPLY.test(commandText) && this.#menus.has(key)),
+    });
+    if (!access.allowed) {
+      this.#acceptedMessageIds.set(messageId, null);
+      return this.#finishAccessDecision(event, messageId, access);
+    }
     if (event.message.chat_type === 'p2p') {
       const chatId = nonEmptyString(event.message.chat_id);
       if (chatId) rememberConnectionTestTarget(this.#state, { chatId });
@@ -558,11 +599,9 @@ export class FeishuHarnessBridge {
 
     this.#acceptedMessageIds.set(messageId, captureContextEnhancement(
       this.#contextEnhancement,
-      event.message.chat_type === 'p2p' ? 'direct' : event.message.chat_type === 'group' ? 'group' : null,
+      conversationType,
     ));
     const processingReaction = this.#beginReaction(messageId);
-    const commandMessage = extractInboundMessage(event, this.#client);
-    const commandText = nonEmptyString(commandMessage.content) ?? '';
     const batchText = event.message.message_type === 'text'
       ? nonEmptyString(extractText(event)) ?? ''
       : '';
@@ -788,6 +827,38 @@ export class FeishuHarnessBridge {
         this.#acceptedMessageIds.delete(messageId);
         this.#commandTasks.delete(current);
       });
+    this.#commandTasks.add(current);
+    return current;
+  }
+
+  #finishAccessDecision(event, messageId, access) {
+    let current;
+    current = Promise.resolve().then(async () => {
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      if (access.reason === 'command-not-allowed') {
+        this.#status.lastMessageAt = new Date().toISOString();
+        this.#status.messagesReceived += 1;
+        await this.#send(
+          event.message.chat_id,
+          t(COMMAND_PERMISSION_DENIED_MESSAGE),
+          { replyTo: event.message.message_id },
+        );
+        this.#status.messagesReplied += 1;
+        this.#status.lastReplyAt = new Date().toISOString();
+      } else {
+        this.#status.messagesRejected += 1;
+        this.#status.lastRejectedAt = new Date().toISOString();
+      }
+      this.#status.lastError = null;
+    }).catch((error) => {
+      if (this.#signal?.aborted) return;
+      this.#status.lastError = error?.message ?? String(error);
+      this.#logger.warn?.('[dsh-feishu] failed to apply inbound access policy');
+    }).finally(() => {
+      this.#acceptedMessageIds.delete(messageId);
+      this.#commandTasks.delete(current);
+    });
     this.#commandTasks.add(current);
     return current;
   }
@@ -1490,10 +1561,11 @@ export class FeishuHarnessBridge {
       ?? nonEmptyString(event?.operator?.operator_id?.user_id)
       ?? nonEmptyString(event?.open_id)
       ?? nonEmptyString(event?.user_id);
-    const operatorAllowed = operatorOpenId !== null
-      && (this.#allowedSenderOpenIds.has('*') || this.#allowedSenderOpenIds.has(operatorOpenId));
-    if (!operatorAllowed) {
-      this.#logger.warn?.('[dsh-feishu] ignoring card action from an unallowed sender');
+    if (!operatorOpenId) return Promise.resolve();
+    if (!this.#accessPolicy
+      && !this.#allowedSenderOpenIds.has('*')
+      && !this.#allowedSenderOpenIds.has(operatorOpenId)) {
+      this.#logger.warn?.('[dsh-feishu] ignoring card action from an unallowed legacy sender');
       return Promise.resolve();
     }
     const actionValue = callbackObject(event?.action?.value);
@@ -1532,6 +1604,11 @@ export class FeishuHarnessBridge {
       ?? nonEmptyString(event?.message_id);
     const route = messageId ? this.#cardKeys.get(messageId) : null;
     if (!route) {
+      // A route is also the trusted direct/group scope for the unified policy.
+      // Without it, fail closed instead of producing an unauthorised side effect.
+      if (this.#accessPolicy) return Promise.resolve();
+      // Legacy callers without a unified policy still receive the current
+      // expired-card guidance introduced by the upstream thread-reply fix.
       // The card predates this process (the in-memory mapping resets on
       // restart) or never came from us: nudge instead of staying silent.
       const chatId = nonEmptyString(event?.context?.open_chat_id)
@@ -1540,6 +1617,21 @@ export class FeishuHarnessBridge {
       if (chatId) {
         this.#send(chatId, t('这个菜单已过期，请回复 /m 重新打开。'), { replyTo: messageId }).catch(() => undefined);
       }
+      return Promise.resolve();
+    }
+    const conversationType = route.key.startsWith('p2p:') ? 'direct'
+      : route.key.startsWith('group:') ? 'group' : null;
+    const access = evaluateInboundAccess(this.#accessPolicy, {
+      conversationType,
+      senderIds: operatorOpenId,
+      isCommand: true,
+    });
+    if (!access.allowed) {
+      if (access.reason === 'command-not-allowed') {
+        return this.#send(route.chatId, t(COMMAND_PERMISSION_DENIED_MESSAGE))
+          .catch(() => undefined);
+      }
+      this.#logger.warn?.('[dsh-feishu] ignoring card action blocked by access policy');
       return Promise.resolve();
     }
     // A used card is recent even if it was first created long ago.

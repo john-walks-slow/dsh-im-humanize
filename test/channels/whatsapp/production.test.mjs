@@ -51,7 +51,10 @@ test('WhatsApp production has no per-bot result-file Gate', async (t) => {
   const production = await createProductionController(ctx, { dataDir }, internals);
   await controllerOptions.createRuntime({
     botId: 'whatsapp_enabled',
-    config: { botId: 'whatsapp_enabled' },
+    config: {
+      botId: 'whatsapp_enabled',
+      accountJid: '16505550123@s.whatsapp.net',
+    },
     authDir: '00000000-0000-4000-8000-000000000001',
   });
   await controllerOptions.createRuntime({
@@ -62,6 +65,9 @@ test('WhatsApp production has no per-bot result-file Gate', async (t) => {
 
   assert.equal(Object.hasOwn(runtimes[0], 'outboundArtifactsEnabled'), false);
   assert.equal(Object.hasOwn(runtimes[1], 'outboundArtifactsEnabled'), false);
+  assert.equal(runtimes[0].accessPolicy.isPrivileged(['+16505550123'], 'direct'), true,
+    'production privileged matching uses the same bare-number normalization');
+  assert.equal(runtimes[0].accessPolicy.isPrivileged(['not-a-jid'], 'direct'), false);
   await production.close();
 
   const productionWithDefault = await createProductionController(ctx, { dataDir }, internals);

@@ -17,6 +17,10 @@ import {
   OutboundArtifactRegistry,
   createOutboundArtifactTool,
 } from '../../../src/channels/shared/semantic/artifact.mjs';
+import {
+  COMMAND_PERMISSION_DENIED_MESSAGE,
+  directAccessPolicy,
+} from '../access-policy-fixture.mjs';
 
 function deferred() {
   let resolve;
@@ -473,6 +477,74 @@ test('QQ checks sender and group mention before downloading image attachments', 
 
   assert.equal(downloads, 0);
   assert.equal(asks, 0);
+});
+
+test('QQ applies the unified access policy before attachments or Harness work', async () => {
+  const fixture = stateFixture([['c2c:member-openid', 'session-member']]);
+  let downloads = 0;
+  const harnessCalls = [];
+  const sent = [];
+  const accessPolicy = directAccessPolicy({
+    users: [{ id: 'member-openid', canExecuteCommands: false }],
+    privilegedIds: ['owner-openid'],
+  });
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => {
+        sent.push(text);
+        return { id: `qq-policy-${sent.length}` };
+      },
+    },
+    ownerUserOpenid: 'owner-openid',
+    accessPolicy,
+    harness: {
+      sessionExists: async (sessionId) => {
+        harnessCalls.push(['sessionExists', sessionId]);
+        return true;
+      },
+      ask: async (sessionId, prompt) => {
+        harnessCalls.push(['ask', sessionId, prompt]);
+        return '白名单消息已处理';
+      },
+    },
+    state: fixture.state,
+    fetchImpl: async () => {
+      downloads += 1;
+      return new Response(PNG_BYTES, { headers: { 'content-type': 'image/png' } });
+    },
+  });
+  const directMessage = (messageId, senderId, content, overrides = {}) => message({
+    messageId,
+    senderId,
+    content,
+    replyTarget: { scope: 'c2c', targetId: senderId, msgId: messageId },
+    ...overrides,
+  });
+
+  await bridge.accept(directMessage('policy-blocked-image', 'blocked-openid', '', {
+    attachments: [{
+      content_type: 'image/png',
+      filename: 'blocked.png',
+      url: 'https://multimedia.nt.qq.com.cn/download/blocked',
+    }],
+  }));
+  assert.equal(downloads, 0);
+  assert.deepEqual(harnessCalls, []);
+  assert.deepEqual(sent, []);
+
+  await bridge.accept(directMessage('policy-member-text', 'member-openid', '普通消息'));
+  assert.equal(harnessCalls.some(([operation]) => operation === 'ask'), true);
+  assert.deepEqual(sent, ['白名单消息已处理']);
+
+  const callsBeforeDeniedCommand = harnessCalls.length;
+  const repliesBeforeDeniedCommand = sent.length;
+  await bridge.accept(directMessage('policy-member-command', 'member-openid', '/help'));
+  assert.equal(harnessCalls.length, callsBeforeDeniedCommand);
+  assert.deepEqual(sent.slice(repliesBeforeDeniedCommand), [COMMAND_PERMISSION_DENIED_MESSAGE]);
+
+  accessPolicy.getSettings().direct.allowlist.users = [];
+  await bridge.accept(directMessage('policy-owner-command', 'owner-openid', '/help'));
+  assert.match(sent.at(-1), /\/help/);
 });
 
 test('QQ rejects non-platform image URLs without fetching and returns a retryable image error', async () => {

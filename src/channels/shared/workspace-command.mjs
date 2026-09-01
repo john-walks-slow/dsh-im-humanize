@@ -353,7 +353,7 @@ async function runSessionBindCommand(command, harness, conversationKey) {
 }
 
 export async function runWorkspaceCommand(text, harness, conversationKey) {
-  if (typeof text !== 'string') return null;
+  if (!isWorkspaceCommand(text)) return null;
   const command = text.trim();
   if (SESSION_BIND_PREFIX.test(command)) {
     return runSessionBindCommand(command, harness, conversationKey);
@@ -384,4 +384,13 @@ export async function runWorkspaceCommand(text, harness, conversationKey) {
     }
     throw error;
   }
+}
+
+export function isWorkspaceCommand(text) {
+  if (typeof text !== 'string') return false;
+  const command = text.trim();
+  return SESSION_BIND_PREFIX.test(command)
+    || SESSION_LIST_COMMAND.test(command)
+    || WORKSPACE_LIST_COMMAND.test(command)
+    || WORKSPACE_COMMAND.test(command);
 }

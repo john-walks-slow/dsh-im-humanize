@@ -21,6 +21,7 @@ import {
   resolveDiscordMessageRoute,
 } from '../../../src/channels/discord/discord-runtime.mjs';
 import { setImHostLanguage } from '../../../src/channels/shared/i18n.mjs';
+import { COMMAND_PERMISSION_DENIED_MESSAGE } from '../../../src/channels/shared/inbound-access.mjs';
 import {
   DISCORD_ENDPOINTS,
   createDiscordRpcHandler,
@@ -1442,9 +1443,12 @@ test('Discord captures context settings before asynchronous Thread routing and u
   const routingStarted = deferred();
   const releaseRouting = deferred();
   const seen = new Set();
+  const deliveries = [];
   const prompts = [];
   let socket;
   let reads = 0;
+  let accessReads = 0;
+  let threadStarts = 0;
   let config = {
     group: {
       enabled: true,
@@ -1453,12 +1457,36 @@ test('Discord captures context settings before asynchronous Thread routing and u
     },
     direct: { enabled: false, fields: [], guidance: 'direct must not leak' },
   };
+  const allowedAccessSettings = {
+    direct: {
+      mode: 'open',
+      open: { defaultCanExecuteCommands: true, commandPermissionOverrides: [] },
+      allowlist: { users: [] },
+    },
+    group: {
+      mode: 'allowlist',
+      open: { defaultCanExecuteCommands: false, commandPermissionOverrides: [] },
+      allowlist: {
+        users: [
+          { id: '333333333333333333', canExecuteCommands: true },
+          { id: '333333333333333334', canExecuteCommands: false },
+        ],
+      },
+    },
+  };
+  let accessSettings = allowedAccessSettings;
   const runtime = new DiscordRuntime({
     config: { botId: 'discord_internal', platformId: botId, name: 'Harness Discord' },
     token: TOKEN,
     contextEnhancement: {
       botId: 'discord_internal',
       getSettings: () => { reads += 1; return config; },
+    },
+    accessPolicy: {
+      getSettings: () => {
+        accessReads += 1;
+        return accessSettings;
+      },
     },
     harness: {
       ensureRunning: async () => true,
@@ -1475,12 +1503,16 @@ test('Discord captures context settings before asynchronous Thread routing and u
       getGatewayBot: async () => ({ url: 'wss://gateway.discord.gg' }),
       getChannel: async () => assert.fail('The channel is already in the gateway cache'),
       startThreadFromMessage: async () => {
+        threadStarts += 1;
         routingStarted.resolve();
         await releaseRouting.promise;
         return { id: threadId, type: 11, parent_id: parentId, owner_id: botId };
       },
       sendTyping: async () => {},
-      createMessage: async () => ({ id: '888888888888888890' }),
+      createMessage: async (request) => {
+        deliveries.push(request);
+        return { id: '888888888888888890' };
+      },
       editMessage: async ({ messageId }) => ({ id: messageId }),
     }),
     createWebSocket: () => {
@@ -1499,12 +1531,36 @@ test('Discord captures context settings before asynchronous Thread routing and u
     d: { id: '444444444444444444', channels: [{ id: parentId, type: 0 }], threads: [] },
   }) });
   socket.emit('message', { data: JSON.stringify({ op: 0, t: 'MESSAGE_CREATE', s: 3, d: {
+    id: '111111111111111189', channel_id: parentId, guild_id: '444444444444444444',
+    author: { id: '333333333333333332', bot: false },
+    mentions: [{ id: botId }], content: `<@${botId}> denied before Thread`,
+  } }) });
+  await eventually(() => runtime.status.messagesRejected === 1);
+  assert.equal(threadStarts, 0, 'a denied member must not create a Discord Thread');
+  socket.emit('message', { data: JSON.stringify({ op: 0, t: 'MESSAGE_CREATE', s: 4, d: {
+    id: '111111111111111188', channel_id: parentId, guild_id: '444444444444444444',
+    author: { id: '333333333333333334', bot: false },
+    mentions: [{ id: botId }], content: `<@${botId}> /new`,
+  } }) });
+  await eventually(() => runtime.status.messagesRejected === 2);
+  assert.equal(threadStarts, 0, 'a command-denied member must not create a Discord Thread');
+  assert.equal(deliveries.at(-1)?.channelId, parentId);
+  assert.equal(deliveries.at(-1)?.content, COMMAND_PERMISSION_DENIED_MESSAGE);
+  socket.emit('message', { data: JSON.stringify({ op: 0, t: 'MESSAGE_CREATE', s: 3, d: {
     id: threadId, channel_id: parentId, guild_id: '444444444444444444',
     author: { id: '333333333333333333', bot: false, global_name: 'Global Name', username: 'username' },
     member: { nick: 'Group Nick' }, mentions: [{ id: botId }], content: `<@${botId}> first`,
   } }) });
   await routingStarted.promise;
+  assert.equal(threadStarts, 1);
   config = { ...config, group: { ...config.group, enabled: false } };
+  accessSettings = {
+    ...allowedAccessSettings,
+    group: {
+      ...allowedAccessSettings.group,
+      allowlist: { users: [] },
+    },
+  };
   releaseRouting.resolve();
   await eventually(() => runtime.status.messagesReplied === 1);
   assert.match(prompts[0], /accepted before routing/);
@@ -1513,7 +1569,10 @@ test('Discord captures context settings before asynchronous Thread routing and u
     senderName: 'Group Nick', botId: 'discord_internal',
   });
   assert.equal(reads, 1, 'routing and Bridge share one accepted configuration read');
+  assert.equal(accessReads, 3,
+    'each source event reads access once and the Thread keeps its arrival decision');
 
+  accessSettings = allowedAccessSettings;
   socket.emit('message', { data: JSON.stringify({ op: 0, t: 'MESSAGE_CREATE', s: 4, d: {
     id: '111111111111111191', channel_id: threadId, guild_id: '444444444444444444',
     author: { id: '333333333333333333', bot: false }, content: 'second without enhancement',
@@ -1521,6 +1580,7 @@ test('Discord captures context settings before asynchronous Thread routing and u
   await eventually(() => runtime.status.messagesReplied === 2);
   assert.equal(prompts[1], 'second without enhancement');
   assert.equal(reads, 2);
+  assert.equal(accessReads, 4, 'the next managed-Thread event reads the latest policy once');
 });
 
 test('Discord runtime records one uncertain Thread result and suppresses Gateway replays', async () => {

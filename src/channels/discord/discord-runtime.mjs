@@ -3,6 +3,7 @@ import { fetchFileStream } from '../shared/file-download.mjs';
 import { fetchImageBuffer } from '../shared/image-prompt.mjs';
 import { t } from '../shared/i18n.mjs';
 import { captureContextEnhancement } from '../shared/context-enhancement.mjs';
+import { evaluateInboundAccess } from '../shared/inbound-access.mjs';
 import { DiscordApi } from './discord-api.mjs';
 import { createDiscordBridgeStatus, DiscordHarnessBridge } from './discord-bridge.mjs';
 
@@ -433,6 +434,7 @@ export class DiscordRuntime {
   #harness;
   #state;
   #contextEnhancement;
+  #accessPolicy;
   #logger;
   #replyTimeoutMs;
   #connectTimeoutMs;
@@ -464,6 +466,7 @@ export class DiscordRuntime {
     harness,
     state,
     contextEnhancement,
+    accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
     connectTimeoutMs = 20_000,
@@ -480,6 +483,7 @@ export class DiscordRuntime {
     this.#harness = harness;
     this.#state = state;
     this.#contextEnhancement = contextEnhancement;
+    this.#accessPolicy = accessPolicy;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#connectTimeoutMs = connectTimeoutMs;
@@ -559,6 +563,7 @@ export class DiscordRuntime {
         harness: this.#harness,
         state: this.#state,
         contextEnhancement: this.#contextEnhancement,
+        accessPolicy: this.#accessPolicy,
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
@@ -730,6 +735,24 @@ export class DiscordRuntime {
   async #acceptMessage(message, bridge) {
     const messageId = String(message?.id ?? '');
     if (!messageId || this.#state.hasSeen(messageId)) return;
+    const preflight = normalizeDiscordMessage(message, this.#config.platformId);
+    let accessDecision;
+    if (preflight?.kind === 'group' && preflight.addressed === true
+      && preflight.senderIsBot !== true) {
+      accessDecision = evaluateInboundAccess(this.#accessPolicy, {
+        conversationType: 'group',
+        senderIds: [preflight.senderId],
+        text: preflight.content,
+        hasImages: preflight.images.length > 0,
+        hasFiles: preflight.files.length > 0,
+      });
+      if (!accessDecision.allowed) {
+        // Let the shared bridge apply its normal silent/command-denial behavior,
+        // but do so against the source channel before creating a Thread.
+        await bridge.accept(preflight, { accessDecision });
+        return;
+      }
+    }
     let route = this.#routing.get(messageId);
     if (!route) {
       const contextSnapshot = captureContextEnhancement(
@@ -750,7 +773,12 @@ export class DiscordRuntime {
     }
     try {
       const normalized = await route.pendingRoute;
-      if (normalized) await bridge.accept(normalized, { contextSnapshot: route.contextSnapshot });
+      if (normalized) {
+        await bridge.accept(normalized, {
+          contextSnapshot: route.contextSnapshot,
+          ...(accessDecision ? { accessDecision } : {}),
+        });
+      }
     } catch (error) {
       if (error?.code === 'discord-thread-create-uncertain') {
         await this.#state.markSeen(messageId);

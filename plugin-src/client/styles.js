@@ -435,6 +435,38 @@ const CSS = String.raw`
 .dim-targetField input[readonly] { color: var(--dsw-alias-label-secondary, #646a73); background: var(--dsw-alias-bg-module-platform, #f7f8fa); }
 .dim-targetFormError { margin: 10px 0 0; font-size: 12px; line-height: 18px; }
 .dim-targetFormActions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 12px; }
+.dim-accessPage { min-width: 0; display: grid; gap: 14px; }
+.dim-accessScene { position: relative; min-width: 0; margin: 0; padding: 16px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 12px; background: var(--dsw-alias-bg-layer-3, #fff); }
+.dim-accessScene > legend { padding: 0 6px; color: var(--dsw-alias-label-primary, #1f2329); font-size: 15px; line-height: 22px; font-weight: 650; }
+.dim-accessLegendContent { display: inline-flex; align-items: center; gap: 6px; }
+.dim-panel .dim-accessLegendHelp { position: static; }
+.dim-accessLegendHelp .dim-channelTooltip { top: 20px; right: auto; left: 16px; width: min(320px, calc(100% - 32px)); max-width: none; }
+.dim-accessControls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.dim-accessControls[data-mode="allowlist"] { grid-template-columns: minmax(0, 1fr); }
+.dim-accessField { min-width: 0; display: grid; align-content: start; gap: 5px; color: var(--dsw-alias-label-secondary, #646a73); font-size: 11px; line-height: 16px; }
+.dim-accessField input, .dim-accessField select { width: 100%; min-width: 0; height: 36px; padding: 0 9px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 7px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-layer-1, #fff); font: inherit; font-size: 12px; }
+.dim-accessField input:focus, .dim-accessField select:focus { outline: 2px solid color-mix(in srgb, var(--dsw-alias-state-business-primary, #3370ff) 28%, transparent); border-color: var(--dsw-alias-state-business-primary, #3370ff); }
+.dim-accessUsers { min-width: 0; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l1, #eef0f3); }
+.dim-accessUsersHeading { position: relative; min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.dim-accessUsersHeading > div { min-width: 0; }
+.dim-accessUsersTitle { display: inline-flex; align-items: center; gap: 6px; }
+.dim-accessUsersHeading strong { color: var(--dsw-alias-label-primary, #1f2329); font-size: 13px; line-height: 20px; font-weight: 620; }
+.dim-accessUsersHeading p { margin: 2px 0 0; color: var(--dsw-alias-label-secondary, #646a73); font-size: 11px; line-height: 17px; }
+.dim-panel .dim-accessUsersHelp { position: static; }
+.dim-accessUsersHelp .dim-channelTooltip { top: calc(100% + 7px); right: auto; left: 0; width: min(320px, 100%); max-width: none; }
+.dim-accessAddUser { width: 32px; height: 32px; min-height: 32px; flex: 0 0 32px; padding: 0; font-size: 20px; line-height: 1; }
+.dim-accessUsersEmpty { margin-top: 10px; padding: 15px 12px; border: 1px dashed var(--dsw-alias-border-l2, #dfe1e5); border-radius: 8px; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 12px; line-height: 18px; text-align: center; }
+.dim-accessUserList { display: grid; gap: 9px; margin: 10px 0 0; padding: 0; list-style: none; }
+.dim-accessUserRow { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(145px, 180px) max-content; align-items: end; gap: 10px; padding: 11px; border: 1px solid var(--dsw-alias-border-l1, #eef0f3); border-radius: 9px; background: var(--dsw-alias-bg-module-platform, #f7f8fa); }
+.dim-accessDeleteUser { margin-bottom: 1px; }
+.dim-accessUnsupported { padding: 18px 14px; border: 1px dashed var(--dsw-alias-border-l2, #dfe1e5); border-radius: 9px; color: var(--dsw-alias-label-secondary, #646a73); background: var(--dsw-alias-bg-module-platform, #f7f8fa); text-align: center; }
+.dim-accessUnsupported strong { color: var(--dsw-alias-label-primary, #1f2329); font-size: 13px; line-height: 20px; }
+.dim-accessUnsupported p { margin: 4px 0 0; font-size: 12px; line-height: 18px; }
+.dim-accessState { padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d97706) 24%, var(--dsw-alias-border-l2, #dfe1e5)); border-radius: 9px; color: var(--dsw-alias-state-warn-primary, #d97706); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d97706) 7%, var(--dsw-alias-bg-layer-1, #fff)); font-size: 12px; line-height: 18px; }
+.dim-accessFeedback { margin: 0; padding: 10px 12px; border-radius: 8px; color: var(--dsw-alias-label-secondary, #646a73); background: var(--dsw-alias-bg-module-platform, #f7f8fa); font-size: 12px; line-height: 18px; }
+.dim-accessFeedback[data-tone="success"] { color: var(--dsw-alias-state-success-primary, #20a162); }
+.dim-accessFeedback[data-tone="error"] { color: var(--dsw-alias-state-error-primary, #d54941); }
+.dim-accessActions { display: flex; justify-content: flex-end; }
 .dim-panel .dim-botCard .dim-cardFooter { margin-top: 0; }
 .dim-panel .ddt-headingCopy { display: none; }
 .dim-panel .ddt-qrFrame, .dim-panel .ddt-countdown { width: min(270px, 100%); }
@@ -458,6 +490,9 @@ const CSS = String.raw`
   .dim-targetActions { justify-content: flex-start; }
   .dim-targetFormGrid { grid-template-columns: minmax(0, 1fr); }
   .dim-targetSuggestionHeading { align-items: stretch; flex-direction: column; }
+  .dim-accessControls { grid-template-columns: minmax(0, 1fr); }
+  .dim-accessUserRow { grid-template-columns: minmax(0, 1fr); }
+  .dim-accessDeleteUser { justify-self: start; }
 }
 @media (max-width: 840px) {
   .dim-title { align-items: flex-start; }
@@ -486,6 +521,7 @@ const CSS = String.raw`
   .dim-deliveryBotId { grid-template-columns: minmax(0, 1fr) max-content; }
   .dim-deliveryBotId > span { grid-column: 1 / -1; }
   .dim-targetActions .dim-deliveryButton { flex: 1 1 auto; }
+  .dim-accessActions .dim-deliveryButton { width: 100%; }
   .dim-directoryPickerBackdrop { padding: 10px; }
   .dim-directoryPicker { height: calc(100vh - 20px); min-height: 0; border-radius: 14px; }
   .dim-directoryPickerHeader { padding: 18px 17px 14px; }

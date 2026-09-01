@@ -7,6 +7,7 @@ import manifest from '../../../package.json' with { type: 'json' };
 
 import { DiscordHarnessBridge } from '../../../src/channels/discord/discord-bridge.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
+import { COMMAND_PERMISSION_DENIED_MESSAGE } from '../../../src/channels/shared/inbound-access.mjs';
 import { InboundFileError } from '../../../src/channels/shared/inbound-file.mjs';
 import {
   OUTBOUND_ARTIFACT_TOOL,
@@ -85,6 +86,21 @@ function message(messageId, content, overrides = {}) {
     addressed: true,
     replyTarget: { id: `target-${messageId}` },
     ...overrides,
+  };
+}
+
+function accessPolicy({ canExecuteCommands = false } = {}) {
+  return {
+    direct: {
+      mode: 'allowlist',
+      open: { defaultCanExecuteCommands: false, commandPermissionOverrides: [] },
+      allowlist: { users: [{ id: 'actor-a', canExecuteCommands }] },
+    },
+    group: {
+      mode: 'allowlist',
+      open: { defaultCanExecuteCommands: false, commandPermissionOverrides: [] },
+      allowlist: { users: [] },
+    },
   };
 }
 
@@ -275,6 +291,84 @@ test('shared status reactions replace processing with success without joining th
     ['remove', 'source-success', 'eyes'],
     ['add', 'source-success', 'done'],
   ]);
+});
+
+test('all four shared text channels enforce fail-closed live access before side effects', async () => {
+  for (const [name, Bridge] of [
+    ['slack', SlackHarnessBridge],
+    ['telegram', TelegramHarnessBridge],
+    ['discord', DiscordHarnessBridge],
+    ['whatsapp', WhatsappHarnessBridge],
+  ]) {
+    const fixture = stateFixture();
+    const sent = [];
+    const asks = [];
+    let imageLoads = 0;
+    let sessionClears = 0;
+    let policyReadFails = true;
+    let settings = null;
+    const originalClearSession = fixture.state.clearSession.bind(fixture.state);
+    fixture.state.clearSession = async (...args) => {
+      sessionClears += 1;
+      return originalClearSession(...args);
+    };
+    const bridge = new Bridge({
+      accessPolicy: {
+        getSettings() {
+          if (policyReadFails) throw new Error('private policy read detail');
+          return settings;
+        },
+        isPrivileged: (senderIds) => senderIds.includes('owner-a'),
+      },
+      bot: { sendText: async (_target, text) => sent.push(text) },
+      state: fixture.state,
+      harness: {
+        createSession: async () => `session-access-${name}`,
+        sessionExists: async () => true,
+        ask: async (_sessionId, content) => {
+          asks.push(content);
+          return `${name} allowed reply`;
+        },
+      },
+    });
+
+    await bridge.accept(message(`access-blocked-${name}`, 'blocked attachment', {
+      images: [{
+        mediaType: 'image/png',
+        load: async () => {
+          imageLoads += 1;
+          return Buffer.from('must not load');
+        },
+      }],
+    }));
+    assert.equal(imageLoads, 0, `${name} authorizes before downloading attachments`);
+    assert.deepEqual(asks, [], `${name} fail-closed denial never reaches Harness`);
+    assert.equal(fixture.seen.has(`access-blocked-${name}`), true,
+      `${name} records a denial for replay suppression`);
+
+    await bridge.accept(message(`access-owner-${name}`, '/help', { senderId: 'owner-a' }));
+    assert.match(sent.at(-1), /\/help/, `${name} owner bypasses a failed policy read`);
+    assert.deepEqual(asks, [], `${name} owner command remains local`);
+
+    policyReadFails = false;
+    settings = accessPolicy();
+    await bridge.accept(message(`access-blocked-${name}`, 'replayed after policy update'));
+    assert.deepEqual(asks, [], `${name} a denied replay cannot bypass the new policy`);
+
+    await bridge.accept(message(`access-ordinary-${name}`, 'allowed ordinary message'));
+    assert.equal(asks.length, 1, `${name} applies the live policy to a new event`);
+    assert.equal(sent.at(-1), `${name} allowed reply`, `${name} keeps the normal reply path`);
+
+    await bridge.accept(message(`access-command-denied-${name}`, '/new'));
+    assert.equal(asks.length, 1, `${name} denied command never reaches Harness`);
+    assert.equal(sessionClears, 0, `${name} denied command has no command side effect`);
+    assert.equal(sent.at(-1), COMMAND_PERMISSION_DENIED_MESSAGE, `${name} explains command denial`);
+
+    settings = accessPolicy({ canExecuteCommands: true });
+    await bridge.accept(message(`access-command-allowed-${name}`, '/new'));
+    assert.equal(sessionClears, 1, `${name} policy hot-update applies without rebuilding the bridge`);
+    assert.equal(asks.length, 1, `${name} allowed local command is not a model prompt`);
+  }
 });
 
 test('runtime abort clears a queued interaction reply reaction instead of marking success', async () => {

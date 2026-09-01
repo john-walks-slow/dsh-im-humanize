@@ -1053,6 +1053,78 @@ class FakeSocket {
   }
 }
 
+test('Slack runtime forwards the live access policy provider into its shared bridge', async () => {
+  let socket;
+  let stateWrites = 0;
+  const runtime = new SlackRuntime({
+    config: {
+      botId: 'slack_access',
+      platformId: 'T12345678:U12345678',
+      name: 'DeepSeek Harness',
+    },
+    botToken: BOT_TOKEN,
+    appToken: APP_TOKEN,
+    harness: { ensureRunning: async () => true },
+    state: {
+      hasSeen: () => false,
+      markSeen: async () => { stateWrites += 1; },
+    },
+    accessPolicy: {
+      getSettings: () => ({
+        direct: {
+          mode: 'allowlist',
+          open: { defaultCanExecuteCommands: false, commandPermissionOverrides: [] },
+          allowlist: { users: [] },
+        },
+        group: {
+          mode: 'open',
+          open: { defaultCanExecuteCommands: true, commandPermissionOverrides: [] },
+          allowlist: { users: [] },
+        },
+      }),
+    },
+    createApi: () => ({
+      authTest: async () => ({ team_id: 'T12345678', user_id: 'U12345678' }),
+      openConnection: async () => ({ url: 'wss://wss-primary.slack.com/link/?ticket=test' }),
+    }),
+    createWebSocket: () => {
+      socket = new FakeSocket();
+      queueMicrotask(() => socket.emit('message', {
+        data: JSON.stringify({
+          type: 'hello',
+          connection_info: { app_id: 'A12345678' },
+        }),
+      }));
+      return socket;
+    },
+    logger: { warn() {}, error(...args) { assert.fail(args.join(' ')); } },
+  });
+
+  try {
+    await runtime.start();
+    socket.emit('message', {
+      data: JSON.stringify({
+        envelope_id: 'env-denied',
+        type: 'events_api',
+        payload: {
+          type: 'event_callback',
+          api_app_id: 'A12345678',
+          event_id: 'Ev-denied',
+          event: {
+            type: 'message', channel_type: 'im', channel: 'D12345678',
+            user: 'U00000000', ts: '1700000000.009', text: 'must stay local',
+          },
+        },
+      }),
+    });
+    await eventually(() => runtime.status.messagesRejected === 1);
+    assert.equal(stateWrites, 1, 'the denial is recorded only for replay suppression');
+    assert.deepEqual(socket.sent.at(-1), { envelope_id: 'env-denied' });
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test('Slack runtime opens Socket Mode, acknowledges envelopes, and becomes ready', async () => {
   let socket;
   const abortMark = deferred();

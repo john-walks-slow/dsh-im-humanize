@@ -196,6 +196,7 @@ export function AccountCard({
             botId: account.botId,
             botName: account.bot.name,
             connected: account.connected,
+            accessPolicy: account.accessPolicy,
           }))),
       h(WorkspaceEditor, {
         workspace: account.workspace,

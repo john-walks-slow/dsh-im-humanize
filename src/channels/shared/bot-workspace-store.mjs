@@ -13,6 +13,10 @@ import {
   normalizeAgentPresetCatalog,
   validateAgentPresetId,
 } from './agent-preset.mjs';
+import {
+  normalizeAccessPolicy,
+  validateAccessPolicy,
+} from './access-policy.mjs';
 import { CONNECTION_TEST_STATE_IDENTITY } from './connection-test.mjs';
 import {
   DEFAULT_CONTEXT_ENHANCEMENT_CONFIG,
@@ -131,6 +135,26 @@ function normalizeDeliveryTargets(value) {
   return deliveryTargets;
 }
 
+function normalizeAccessPolicies(value, workspaces) {
+  const accessPolicies = Object.create(null);
+  if (value === undefined) return accessPolicies;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    // Preserve the distinction between a missing policy (eligible for startup
+    // initialization) and damaged persisted data (fail closed).
+    for (const botId of Object.keys(workspaces)) accessPolicies[botId] = null;
+    return accessPolicies;
+  }
+  for (const [botId, policy] of Object.entries(value)) {
+    try {
+      botIdOf(botId);
+      accessPolicies[botId] = normalizeAccessPolicy(policy);
+    } catch {
+      // An invalid key cannot identify a bot, so it is isolated and ignored.
+    }
+  }
+  return accessPolicies;
+}
+
 function normalizeDocument(value) {
   if (!value || ![1, 2].includes(value.version) || !value.workspaces
     || typeof value.workspaces !== 'object' || Array.isArray(value.workspaces)) return null;
@@ -168,13 +192,50 @@ function normalizeDocument(value) {
   if (value.version === 1 && value.deliveryTargets !== undefined) return null;
   const deliveryTargets = normalizeDeliveryTargets(value.deliveryTargets);
   if (!deliveryTargets) return null;
+  const accessPolicies = normalizeAccessPolicies(value.accessPolicies, workspaces);
+  const version = value.accessPolicies === undefined ? value.version : 2;
   return {
-    version: value.version,
+    // A v1 file cannot be emitted with this optional v2 section. If one is
+    // recovered from an interrupted/manual edit, retain it on the next write.
+    version,
     workspaces,
     agentPresets,
     contextEnhancement,
     deliveryTargets,
+    accessPolicies,
   };
+}
+
+function storedDocument({
+  version,
+  workspaces,
+  agentPresets,
+  contextEnhancement,
+  deliveryTargets,
+  accessPolicies,
+}) {
+  const document = { version, workspaces };
+  if (Object.keys(agentPresets).length > 0) document.agentPresets = agentPresets;
+  if (Object.keys(contextEnhancement).length > 0) {
+    document.contextEnhancement = contextEnhancement;
+  }
+  if (version >= 2 && Object.keys(deliveryTargets).length > 0) {
+    document.deliveryTargets = deliveryTargets;
+  }
+  if (version >= 2 && Object.keys(accessPolicies).length > 0) {
+    document.accessPolicies = accessPolicies;
+  }
+  return document;
+}
+
+async function writeStoredDocument(path, document) {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+  await rename(temporary, path);
 }
 
 export async function validateWorkspacePath(value) {
@@ -208,6 +269,7 @@ export class BotWorkspaceStore {
   #agentPresets = {};
   #contextEnhancement = {};
   #deliveryTargets = Object.create(null);
+  #accessPolicies = Object.create(null);
   #generations = new Map();
   #nextGeneration = 1;
   #incarnations = new Map();
@@ -233,6 +295,7 @@ export class BotWorkspaceStore {
       this.#agentPresets = normalized.agentPresets;
       this.#contextEnhancement = normalized.contextEnhancement;
       this.#deliveryTargets = normalized.deliveryTargets;
+      this.#accessPolicies = normalized.accessPolicies;
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
       this.#version = 1;
@@ -240,6 +303,7 @@ export class BotWorkspaceStore {
       this.#agentPresets = {};
       this.#contextEnhancement = {};
       this.#deliveryTargets = Object.create(null);
+      this.#accessPolicies = Object.create(null);
     }
     this.#generations.clear();
     this.#nextGeneration = 1;
@@ -276,6 +340,13 @@ export class BotWorkspaceStore {
     return this.has(id) && Object.hasOwn(this.#contextEnhancement, id)
       ? this.#contextEnhancement[id]
       : DEFAULT_CONTEXT_ENHANCEMENT_CONFIG;
+  }
+
+  accessPolicyFor(botId) {
+    const id = botIdOf(botId);
+    return this.has(id) && Object.hasOwn(this.#accessPolicies, id)
+      ? this.#accessPolicies[id]
+      : null;
   }
 
   listDeliveryTargets(botId) {
@@ -373,28 +444,53 @@ export class BotWorkspaceStore {
     }
   }
 
-  async ensure(botId, { workspace = this.#defaultWorkspace, defaultAgentPreset } = {}) {
+  async ensure(botId, {
+    workspace = this.#defaultWorkspace,
+    defaultAgentPreset,
+    initialAccessPolicy,
+  } = {}) {
     const id = botIdOf(botId);
     const initialWorkspace = resolve(workspace);
     return this.#enqueue(id, async () => {
-      if (!this.#workspaces[id]) {
-        const agentPreset = validateAgentPresetId(defaultAgentPreset);
+      const createsBot = !this.#workspaces[id];
+      const initializesAccessPolicy = initialAccessPolicy !== undefined
+        && !Object.hasOwn(this.#accessPolicies, id);
+      if (createsBot || initializesAccessPolicy) {
+        const accessPolicy = initializesAccessPolicy
+          ? validateAccessPolicy(initialAccessPolicy)
+          : undefined;
+        const agentPreset = createsBot ? validateAgentPresetId(defaultAgentPreset) : null;
         const hadAgentPreset = Object.hasOwn(this.#agentPresets, id);
         const previousAgentPreset = this.#agentPresets[id];
-        this.#workspaces[id] = initialWorkspace;
-        if (agentPreset) this.#agentPresets[id] = agentPreset;
-        this.#generations.set(id, this.#freshGeneration());
-        this.#incarnations.set(id, this.#freshIncarnation());
+        const nextAccessPolicies = initializesAccessPolicy
+          ? { ...this.#accessPolicies, [id]: accessPolicy }
+          : this.#accessPolicies;
+        if (createsBot) {
+          this.#workspaces[id] = initialWorkspace;
+          if (agentPreset) this.#agentPresets[id] = agentPreset;
+          this.#generations.set(id, this.#freshGeneration());
+          this.#incarnations.set(id, this.#freshIncarnation());
+        }
+        const nextVersion = initializesAccessPolicy ? 2 : this.#version;
         try {
-          await this.#persist();
+          await this.#persist(
+            this.#contextEnhancement,
+            this.#deliveryTargets,
+            nextVersion,
+            nextAccessPolicies,
+          );
         } catch (error) {
-          delete this.#workspaces[id];
-          if (hadAgentPreset) this.#agentPresets[id] = previousAgentPreset;
-          else delete this.#agentPresets[id];
-          this.#generations.delete(id);
-          this.#incarnations.delete(id);
+          if (createsBot) {
+            delete this.#workspaces[id];
+            if (hadAgentPreset) this.#agentPresets[id] = previousAgentPreset;
+            else delete this.#agentPresets[id];
+            this.#generations.delete(id);
+            this.#incarnations.delete(id);
+          }
           throw error;
         }
+        this.#accessPolicies = nextAccessPolicies;
+        this.#version = nextVersion;
       } else if (!this.#generations.has(id)) {
         this.#generations.set(id, this.#freshGeneration());
       }
@@ -484,6 +580,30 @@ export class BotWorkspaceStore {
       await this.#persist(next);
       this.#contextEnhancement = next;
       return config;
+    });
+  }
+
+  async setAccessPolicy(botId, value, { incarnation } = {}) {
+    const id = botIdOf(botId);
+    const expectedIncarnation = incarnation === undefined ? this.incarnationFor(id) : incarnation;
+    const policy = validateAccessPolicy(value);
+    return this.#enqueue(id, async () => {
+      if (!this.has(id) || expectedIncarnation !== this.incarnationFor(id)) {
+        const error = new Error('找不到要修改的机器人。');
+        error.code = 'workspace-bot-not-found';
+        throw error;
+      }
+      const next = { ...this.#accessPolicies, [id]: policy };
+      // Inbound messages keep the previous committed snapshot until rename succeeds.
+      await this.#persist(
+        this.#contextEnhancement,
+        this.#deliveryTargets,
+        2,
+        next,
+      );
+      this.#accessPolicies = next;
+      this.#version = 2;
+      return policy;
     });
   }
 
@@ -646,6 +766,7 @@ export class BotWorkspaceStore {
       ...Object.keys(this.#agentPresets),
       ...Object.keys(this.#contextEnhancement),
       ...Object.keys(this.#deliveryTargets),
+      ...Object.keys(this.#accessPolicies),
       ...this.#dirtyRemovals,
     ]);
     for (const botId of candidates) {
@@ -663,6 +784,7 @@ export class BotWorkspaceStore {
           workspace: this.workspaceFor(bot.botId),
           agentPreset: this.agentPresetFor(bot.botId),
           contextEnhancement: this.contextEnhancementFor(bot.botId),
+          accessPolicy: this.accessPolicyFor(bot.botId),
         }
         : bot),
     };
@@ -694,12 +816,14 @@ export class BotWorkspaceStore {
     const hadPreset = Object.hasOwn(this.#agentPresets, id);
     const hadContextEnhancement = Object.hasOwn(this.#contextEnhancement, id);
     const hadDeliveryTargets = Object.hasOwn(this.#deliveryTargets, id);
+    const hadAccessPolicy = Object.hasOwn(this.#accessPolicies, id);
     const needsCleanup = hadWorkspace || hadPreset || hadContextEnhancement
-      || hadDeliveryTargets || this.#dirtyRemovals.has(id);
+      || hadDeliveryTargets || hadAccessPolicy || this.#dirtyRemovals.has(id);
     delete this.#workspaces[id];
     delete this.#agentPresets[id];
     delete this.#contextEnhancement[id];
     delete this.#deliveryTargets[id];
+    delete this.#accessPolicies[id];
     this.#generations.delete(id);
     this.#incarnations.delete(id);
     if (!needsCleanup) return {
@@ -733,24 +857,16 @@ export class BotWorkspaceStore {
     contextEnhancement = this.#contextEnhancement,
     deliveryTargets = this.#deliveryTargets,
     version = this.#version,
+    accessPolicies = this.#accessPolicies,
   ) {
-    const document = { version, workspaces: this.#workspaces };
-    if (Object.keys(this.#agentPresets).length > 0) {
-      document.agentPresets = this.#agentPresets;
-    }
-    if (Object.keys(contextEnhancement).length > 0) {
-      document.contextEnhancement = contextEnhancement;
-    }
-    if (version >= 2 && Object.keys(deliveryTargets).length > 0) {
-      document.deliveryTargets = deliveryTargets;
-    }
-    await mkdir(dirname(this.#path), { recursive: true, mode: 0o700 });
-    const temporary = `${this.#path}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`, {
-      encoding: 'utf8',
-      mode: 0o600,
-    });
-    await rename(temporary, this.#path);
+    await writeStoredDocument(this.#path, storedDocument({
+      version,
+      workspaces: this.#workspaces,
+      agentPresets: this.#agentPresets,
+      contextEnhancement,
+      deliveryTargets,
+      accessPolicies,
+    }));
     this.#dirtyRemovals.clear();
   }
 
@@ -758,7 +874,8 @@ export class BotWorkspaceStore {
     if (Object.keys(this.#workspaces).length > 0
       || Object.keys(this.#agentPresets).length > 0
       || Object.keys(this.#contextEnhancement).length > 0
-      || Object.keys(this.#deliveryTargets).length > 0) {
+      || Object.keys(this.#deliveryTargets).length > 0
+      || Object.keys(this.#accessPolicies).length > 0) {
       await this.#persist();
       return;
     }
@@ -1280,6 +1397,31 @@ export function createWorkspaceAwareController(controller, { workspaces, stateFo
       return result;
     });
   };
+  const updateAccessPolicy = (botId, value, projectStatus) => {
+    const incarnation = workspaces.incarnationFor(botId);
+    const policy = validateAccessPolicy(value);
+    return withBotTransition(botId, async () => {
+      const snapshot = await controller.status();
+      if (!snapshot?.bots?.some((bot) => bot?.botId === botId)) {
+        const error = new Error('找不到要修改的机器人。');
+        error.code = 'workspace-bot-not-found';
+        throw error;
+      }
+      const catalog = await resolveAgentPresetCatalog(agentPresetCatalog);
+      const decorated = workspaces.decorateStatus(snapshot);
+      const updated = {
+        ...decorated,
+        bots: decorated.bots.map((bot) => bot?.botId === botId
+          ? { ...bot, accessPolicy: policy } : bot),
+        ...(catalog ? { agentPresetCatalog: catalog } : {}),
+      };
+      // Prepare the complete channel-specific response before commit. Failed
+      // projections and disk writes must leave the live policy unchanged.
+      const result = projectStatus ? await projectStatus(updated) : updated;
+      await workspaces.setAccessPolicy(botId, policy, { incarnation });
+      return result;
+    });
+  };
   const deleteWithWorkspace = (botId, invokeDelete) => withBotTransition(botId, async () => {
     // Fence the old runtime without changing the durable mapping. A crash
     // before the controller removes its config therefore keeps the bot's
@@ -1320,6 +1462,7 @@ export function createWorkspaceAwareController(controller, { workspaces, stateFo
       if (property === 'updateWorkspace') return updateWorkspace;
       if (property === 'updateAgentPreset') return updateAgentPreset;
       if (property === 'updateContextEnhancement') return updateContextEnhancement;
+      if (property === 'updateAccessPolicy') return updateAccessPolicy;
       const value = Reflect.get(target, property, target);
       if (typeof value !== 'function') return value;
       if (property === 'deleteBot') {

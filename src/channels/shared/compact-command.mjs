@@ -70,9 +70,8 @@ function compactErrorMessage(error) {
  * Unknown input returns null so the caller may continue ordinary message routing.
  */
 export async function runCompactCommand(text, harness, state, conversationKey, options = {}) {
-  if (typeof text !== 'string') return null;
+  if (!isCompactCommand(text)) return null;
   const match = COMPACT_COMMAND.exec(text.trim());
-  if (!match) return null;
   if (match[1].trim()) return commandResult(t(COMPACT_USAGE));
   if (typeof state?.sessionFor !== 'function') {
     return commandResult(t('当前机器人没有可用的会话状态。'));
@@ -93,4 +92,8 @@ export async function runCompactCommand(text, harness, state, conversationKey, o
   } catch (error) {
     return commandResult(compactErrorMessage(error));
   }
+}
+
+export function isCompactCommand(text) {
+  return typeof text === 'string' && COMPACT_COMMAND.test(text.trim());
 }

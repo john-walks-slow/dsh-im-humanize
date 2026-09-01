@@ -5,6 +5,7 @@ import {
   connectionTestTargetUnavailable,
 } from '../shared/connection-test.mjs';
 import { t } from '../shared/i18n.mjs';
+import { evaluateInboundAccess } from '../shared/inbound-access.mjs';
 import { createQqBridgeStatus, QqHarnessBridge } from './qq-bridge.mjs';
 
 function timeoutError() {
@@ -32,6 +33,7 @@ export class QqRuntime {
   #harness;
   #state;
   #contextEnhancement;
+  #accessPolicy;
   #logger;
   #replyTimeoutMs;
   #connectTimeoutMs;
@@ -50,6 +52,7 @@ export class QqRuntime {
     harness,
     state,
     contextEnhancement,
+    accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
     connectTimeoutMs = 20_000,
@@ -64,6 +67,7 @@ export class QqRuntime {
     this.#harness = harness;
     this.#state = state;
     this.#contextEnhancement = contextEnhancement;
+    this.#accessPolicy = accessPolicy;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#connectTimeoutMs = connectTimeoutMs;
@@ -166,6 +170,7 @@ export class QqRuntime {
       harness: this.#harness,
       state: this.#state,
       contextEnhancement: this.#contextEnhancement,
+      accessPolicy: this.#accessPolicy,
       status: this.#status,
       logger: this.#logger,
       replyTimeoutMs: this.#replyTimeoutMs,
@@ -177,8 +182,21 @@ export class QqRuntime {
     bot.use(contentSanitizer({ parseFaceTags: true }));
     bot.use?.(this.#typingMiddleware({
       keepAlive: true,
-      predicate: (ctx) => this.#config.ownerUserOpenid === '*'
-        || ctx?.message?.senderId === this.#config.ownerUserOpenid,
+      predicate: (ctx) => {
+        const message = ctx?.message;
+        if (!message || (message.kind === 'group'
+          && message.rawEventType !== 'GROUP_AT_MESSAGE_CREATE')) return false;
+        if (!this.#accessPolicy) {
+          return message.kind === 'group'
+            || this.#config.ownerUserOpenid === '*'
+            || message.senderId === this.#config.ownerUserOpenid;
+        }
+        return evaluateInboundAccess(this.#accessPolicy, {
+          conversationType: message.kind === 'c2c' ? 'direct' : 'group',
+          senderIds: message.senderId,
+          text: typeof message.content === 'string' ? message.content.trim() : '',
+        }).allowed;
+      },
     }));
 
     let readyResolve;

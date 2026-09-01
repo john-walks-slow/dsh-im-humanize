@@ -21,6 +21,10 @@ import {
   createOutboundArtifactTool,
   releaseOutboundArtifact,
 } from '../../../src/channels/shared/semantic/artifact.mjs';
+import {
+  COMMAND_PERMISSION_DENIED_MESSAGE,
+  directAccessPolicy,
+} from '../access-policy-fixture.mjs';
 
 function deferred() {
   let resolve;
@@ -679,6 +683,75 @@ test('DingTalk checks the group mention before downloading a picture', async () 
 
   assert.equal(downloads, 0);
   assert.equal(asks, 0);
+});
+
+test('DingTalk applies the unified access policy before attachments or Harness work', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:staff-member', 'session-member');
+  let downloads = 0;
+  const harnessCalls = [];
+  const sent = [];
+  const accessPolicy = directAccessPolicy({
+    users: [{ id: 'staff-member', canExecuteCommands: false }],
+    privilegedIds: ['staff-owner'],
+  });
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      downloadImage: async () => {
+        downloads += 1;
+        return PNG_BYTES;
+      },
+      sendText: async ({ text }) => {
+        sent.push(text);
+        return { messageId: `dingtalk-policy-${sent.length}` };
+      },
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    accessPolicy,
+    harness: {
+      sessionExists: async (sessionId) => {
+        harnessCalls.push(['sessionExists', sessionId]);
+        return true;
+      },
+      ask: async (sessionId, prompt) => {
+        harnessCalls.push(['ask', sessionId, prompt]);
+        return '白名单消息已处理';
+      },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message('policy-blocked-picture', '', {
+    senderStaffId: 'staff-blocked',
+    msgtype: 'picture',
+    text: undefined,
+    content: { downloadCode: 'blocked-picture' },
+    robotCode: 'robot-code',
+  }));
+  assert.equal(downloads, 0);
+  assert.deepEqual(harnessCalls, []);
+  assert.deepEqual(sent, []);
+
+  await bridge.accept(message('policy-member-text', '普通消息', {
+    senderStaffId: 'staff-member',
+  }));
+  assert.equal(harnessCalls.some(([operation]) => operation === 'ask'), true);
+  assert.deepEqual(sent, ['白名单消息已处理']);
+
+  const callsBeforeDeniedCommand = harnessCalls.length;
+  const repliesBeforeDeniedCommand = sent.length;
+  await bridge.accept(message('policy-member-command', '/help', {
+    senderStaffId: 'staff-member',
+  }));
+  assert.equal(harnessCalls.length, callsBeforeDeniedCommand);
+  assert.deepEqual(sent.slice(repliesBeforeDeniedCommand), [COMMAND_PERMISSION_DENIED_MESSAGE]);
+
+  accessPolicy.getSettings().direct.allowlist.users = [];
+  await bridge.accept(message('policy-owner-command', '/help', {
+    senderStaffId: 'staff-owner',
+  }));
+  assert.match(sent.at(-1), /\/help/);
 });
 
 test('DingTalk returns a specific retry message when picture download fails', async () => {

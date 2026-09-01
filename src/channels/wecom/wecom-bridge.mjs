@@ -51,6 +51,10 @@ import {
   messageFailureText,
   setLastMessageFailure,
 } from '../shared/message-failure.mjs';
+import {
+  COMMAND_PERMISSION_DENIED_MESSAGE,
+  evaluateInboundAccess,
+} from '../shared/inbound-access.mjs';
 import { t } from '../shared/i18n.mjs';
 
 const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
@@ -490,6 +494,7 @@ export class WecomHarnessBridge {
   #harness;
   #state;
   #contextEnhancement;
+  #accessPolicy;
   #status;
   #logger;
   #replyTimeoutMs;
@@ -512,6 +517,7 @@ export class WecomHarnessBridge {
     harness,
     state,
     contextEnhancement,
+    accessPolicy,
     status = createWecomBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
@@ -530,6 +536,7 @@ export class WecomHarnessBridge {
     this.#harness = harness;
     this.#state = state;
     this.#contextEnhancement = contextEnhancement;
+    this.#accessPolicy = accessPolicy;
     this.#status = status;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
@@ -557,16 +564,28 @@ export class WecomHarnessBridge {
       || this.#acceptedMessageIds.has(messageId)) return Promise.resolve();
 
     const key = conversationKey(frame);
+    const pending = this.#pendingInteractions.get(key);
+    const commandMessage = wecomInboundMessage(frame, this.#client);
+    const commandText = nonEmptyString(commandMessage.content) ?? '';
+    const conversationType = body.chattype === 'single' ? 'direct' : 'group';
+    const access = evaluateInboundAccess(this.#accessPolicy, {
+      conversationType,
+      senderIds: senderId,
+      text: commandText,
+      hasImages: hasInboundImages(commandMessage),
+      hasFiles: hasInboundFiles(commandMessage),
+    });
+    if (!access.allowed) {
+      this.#acceptedMessageIds.set(messageId, null);
+      return this.#finishAccessDecision(frame, messageId, chatId, access);
+    }
     this.#acceptedMessageIds.set(messageId, captureContextEnhancement(
       this.#contextEnhancement,
-      body.chattype === 'single' ? 'direct' : 'group',
+      conversationType,
     ));
     if (body.chattype === 'single') {
       rememberConnectionTestTarget(this.#state, { chatId });
     }
-    const pending = this.#pendingInteractions.get(key);
-    const commandMessage = wecomInboundMessage(frame, this.#client);
-    const commandText = nonEmptyString(commandMessage.content) ?? '';
     const batchCommand = isBatchInputCommand(commandText);
     const batchStatus = this.#batchInputs.status(key);
     if (batchCommand && body.chattype === 'group') {
@@ -752,6 +771,34 @@ export class WecomHarnessBridge {
       );
       await this.#sendImmediate(frame, chatId, messageFailureText(failure))
         .catch(() => undefined);
+    }).finally(() => {
+      this.#acceptedMessageIds.delete(messageId);
+      this.#commandTasks.delete(task);
+    });
+    this.#commandTasks.add(task);
+    return task;
+  }
+
+  #finishAccessDecision(frame, messageId, chatId, access) {
+    let task;
+    task = Promise.resolve().then(async () => {
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      if (access.reason === 'command-not-allowed') {
+        this.#status.messagesReceived += 1;
+        this.#status.lastMessageAt = new Date().toISOString();
+        await this.#sendImmediate(frame, chatId, t(COMMAND_PERMISSION_DENIED_MESSAGE));
+        this.#status.messagesReplied += 1;
+        this.#status.lastReplyAt = new Date().toISOString();
+      } else {
+        this.#status.messagesRejected += 1;
+        this.#status.lastRejectedAt = new Date().toISOString();
+      }
+      this.#status.lastError = null;
+    }).catch((error) => {
+      if (this.#signal?.aborted) return;
+      this.#status.lastError = error?.message ?? String(error);
+      this.#logger.error?.('[dsh-im:wecom] failed to apply inbound access policy', error);
     }).finally(() => {
       this.#acceptedMessageIds.delete(messageId);
       this.#commandTasks.delete(task);

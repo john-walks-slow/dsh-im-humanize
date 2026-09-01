@@ -130,6 +130,7 @@ export class DingtalkRuntime {
   #harness;
   #state;
   #contextEnhancement;
+  #accessPolicy;
   #logger;
   #replyTimeoutMs;
   #maxMessageChars;
@@ -152,6 +153,7 @@ export class DingtalkRuntime {
     harness,
     state,
     contextEnhancement,
+    accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
     maxMessageChars = 4_000,
@@ -170,6 +172,7 @@ export class DingtalkRuntime {
     this.#harness = harness;
     this.#state = state;
     this.#contextEnhancement = contextEnhancement;
+    this.#accessPolicy = accessPolicy;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#maxMessageChars = maxMessageChars;
@@ -238,6 +241,7 @@ export class DingtalkRuntime {
         harness: this.#harness,
         state: this.#state,
         contextEnhancement: this.#contextEnhancement,
+        accessPolicy: this.#accessPolicy,
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,

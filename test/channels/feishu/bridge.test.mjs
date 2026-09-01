@@ -15,6 +15,10 @@ import {
   OutboundArtifactRegistry,
   createOutboundArtifactTool,
 } from '../../../src/channels/shared/semantic/artifact.mjs';
+import {
+  COMMAND_PERMISSION_DENIED_MESSAGE,
+  directAccessPolicy,
+} from '../access-policy-fixture.mjs';
 
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
@@ -892,6 +896,79 @@ test('bridge downloads an inbound Feishu image once and submits structured Harne
     ],
   }]);
   assert.deepEqual(sent, ['看到了一张图片']);
+});
+
+test('Feishu applies the unified access policy before attachments or Harness work', async () => {
+  const fixture = stateFixture([['p2p:ou_member', 'session-member']]);
+  let downloads = 0;
+  const harnessCalls = [];
+  const sent = [];
+  const accessPolicy = directAccessPolicy({
+    users: [{ id: 'ou_member', canExecuteCommands: false }],
+    privilegedIds: ['ou_owner'],
+  });
+  const client = {
+    im: { v1: {
+      messageResource: { get: async () => {
+        downloads += 1;
+        return { getReadableStream: () => Readable.from([PNG_1X1]) };
+      } },
+      message: { create: async (request) => {
+        sent.push(JSON.parse(request.data.content).text);
+        return { code: 0, data: { message_id: `om_policy_${sent.length}` } };
+      } },
+    } },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: {},
+    accessPolicy,
+    harness: {
+      sessionExists: async (sessionId) => {
+        harnessCalls.push(['sessionExists', sessionId]);
+        return true;
+      },
+      ask: async (sessionId, prompt) => {
+        harnessCalls.push(['ask', sessionId, prompt]);
+        return '白名单消息已处理';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+  });
+
+  await bridge.accept(event('policy-blocked-image', '', {
+    senderOpenId: 'ou_blocked',
+    message_type: 'image',
+    content: JSON.stringify({ image_key: 'img_blocked' }),
+  }));
+  await bridge.waitForIdle();
+  assert.equal(downloads, 0);
+  assert.deepEqual(harnessCalls, []);
+  assert.deepEqual(sent, []);
+
+  await bridge.accept(event('policy-member-text', '普通消息', {
+    senderOpenId: 'ou_member',
+  }));
+  await bridge.waitForIdle();
+  assert.equal(harnessCalls.some(([operation]) => operation === 'ask'), true);
+  assert.deepEqual(sent, ['白名单消息已处理']);
+
+  const callsBeforeDeniedCommand = harnessCalls.length;
+  const repliesBeforeDeniedCommand = sent.length;
+  await bridge.accept(event('policy-member-command', '/help', {
+    senderOpenId: 'ou_member',
+  }));
+  await bridge.waitForIdle();
+  assert.equal(harnessCalls.length, callsBeforeDeniedCommand);
+  assert.deepEqual(sent.slice(repliesBeforeDeniedCommand), [COMMAND_PERMISSION_DENIED_MESSAGE]);
+
+  accessPolicy.getSettings().direct.allowlist.users = [];
+  await bridge.accept(event('policy-owner-command', '/help', {
+    senderOpenId: 'ou_owner',
+  }));
+  await bridge.waitForIdle();
+  assert.match(sent.at(-1), /\/status/);
 });
 
 test('bridge hands a native Feishu file source to the current Harness turn', async () => {
@@ -3531,6 +3608,32 @@ test('card buttons from an unallowed sender are ignored', async () => {
   });
   await bridge.waitForIdle();
   assert.equal(sent.length, 1, 'a card action without an operator must fail closed');
+});
+
+test('a card callback without a trusted route stays silent before access evaluation', async () => {
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(async (outgoing) => sent.push(outgoing)),
+    channel: {},
+    accessPolicy: directAccessPolicy({
+      users: [{ id: 'ou_member', canExecuteCommands: true }],
+      privilegedIds: ['ou_owner'],
+    }),
+    harness: sessionsHarness(1),
+    state: stateFixture().state,
+    status: bridgeStatus(),
+  });
+
+  await bridge.onCardAction({
+    ...cardActionEvent('om_stale_after_restart', 'new', 'ou_member'),
+    context: {
+      open_message_id: 'om_stale_after_restart',
+      open_chat_id: 'oc_untrusted_scope',
+    },
+  });
+  await bridge.waitForIdle();
+
+  assert.deepEqual(sent, [], 'missing direct/group scope must fail closed without a reply');
 });
 
 test('card buttons from an allowed sender work', async () => {

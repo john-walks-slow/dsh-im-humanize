@@ -57,6 +57,10 @@ import {
   messageFailureText,
   setLastMessageFailure,
 } from '../shared/message-failure.mjs';
+import {
+  COMMAND_PERMISSION_DENIED_MESSAGE,
+  evaluateInboundAccess,
+} from '../shared/inbound-access.mjs';
 import { t } from '../shared/i18n.mjs';
 
 const INTERACTION_RESOLVED_TEXT = () => t('这个问题已在其他客户端处理，无需再次回答。');
@@ -260,6 +264,7 @@ export class WeixinHarnessBridge {
   #harness;
   #state;
   #contextEnhancement;
+  #accessPolicy;
   #status;
   #logger;
   #replyTimeoutMs;
@@ -292,6 +297,7 @@ export class WeixinHarnessBridge {
     harness,
     state,
     contextEnhancement,
+    accessPolicy,
     status = createWeixinBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
@@ -312,6 +318,7 @@ export class WeixinHarnessBridge {
     this.#harness = harness;
     this.#state = state;
     this.#contextEnhancement = contextEnhancement;
+    this.#accessPolicy = accessPolicy;
     this.#status = status;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
@@ -332,6 +339,22 @@ export class WeixinHarnessBridge {
     const sender = nonEmptyString(message?.from_user_id);
     if (!messageId || !sender || this.#state.hasSeen(messageId)
       || this.#acceptedMessageIds.has(messageId)) return Promise.resolve();
+    const commandText = nonEmptyString(extractWeixinText(message)) ?? '';
+    const access = this.#accessPolicy
+      ? evaluateInboundAccess(this.#accessPolicy, {
+          conversationType: 'direct',
+          senderIds: sender,
+          text: commandText,
+          hasImages: hasWeixinImageItems(message),
+          hasFiles: hasWeixinFileItems(message),
+        })
+      : sender === this.#ownerUserId
+        ? { allowed: true, reason: 'legacy-owner' }
+        : { allowed: false, reason: 'sender-not-allowed' };
+    if (!access.allowed) {
+      this.#acceptedMessageIds.set(messageId, null);
+      return this.#finishAccessDecision(messageId, sender, message, access);
+    }
     this.#acceptedMessageIds.set(messageId, captureContextEnhancement(
       this.#contextEnhancement,
       'direct',
@@ -343,11 +366,9 @@ export class WeixinHarnessBridge {
     const contextToken = nonEmptyString(message?.context_token) ?? undefined;
     const runId = nonEmptyString(message?.run_id) ?? undefined;
     const pending = this.#pendingInteractions.get(key);
-    const commandText = nonEmptyString(extractWeixinText(message)) ?? '';
     const batchCommand = isBatchInputCommand(commandText);
     const batchStatus = this.#batchInputs.status(key);
-    if (sender === this.#ownerUserId
-      && (batchCommand || batchStatus.phase === 'collecting')) {
+    if (batchCommand || batchStatus.phase === 'collecting') {
       const exactBatchStart = /^\/batch$/iu.test(commandText);
       const result = exactBatchStart
         && batchStatus.phase === 'idle'
@@ -380,7 +401,7 @@ export class WeixinHarnessBridge {
       : (isModelCommand(commandText)
           ? runModelCommand
           : (isPresetCommand(commandText) ? runPresetCommand : null));
-    if (commandRunner && sender === this.#ownerUserId) {
+    if (commandRunner) {
       let task;
       task = this.#processFastCommand(
         message,
@@ -467,12 +488,10 @@ export class WeixinHarnessBridge {
     alreadyRecorded = false,
     batchSubmission = null,
   } = {}) {
-    const preparedMessage = message.from_user_id === this.#ownerUserId
-      ? prefetchInboundFiles(
-          weixinInboundMessage(message, this.#api),
-          { signal: this.#signal },
-        )
-      : undefined;
+    const preparedMessage = prefetchInboundFiles(
+      weixinInboundMessage(message, this.#api),
+      { signal: this.#signal },
+    );
     const previous = this.#queues.get(key) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
@@ -510,6 +529,36 @@ export class WeixinHarnessBridge {
       );
       await this.#sendOutOfBand(key, sender, messageFailureText(failure), contextToken, runId)
         .catch(() => undefined);
+    }).finally(() => {
+      this.#acceptedMessageIds.delete(messageId);
+      this.#commandTasks.delete(task);
+    });
+    this.#commandTasks.add(task);
+    return task;
+  }
+
+  #finishAccessDecision(messageId, sender, message, access) {
+    const contextToken = nonEmptyString(message?.context_token) ?? undefined;
+    const runId = nonEmptyString(message?.run_id) ?? undefined;
+    let task;
+    task = Promise.resolve().then(async () => {
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      if (access.reason === 'command-not-allowed') {
+        this.#status.messagesReceived += 1;
+        this.#status.lastMessageAt = new Date().toISOString();
+        await this.#send(sender, t(COMMAND_PERMISSION_DENIED_MESSAGE), contextToken, runId);
+        this.#status.messagesReplied += 1;
+        this.#status.lastReplyAt = new Date().toISOString();
+      } else {
+        this.#status.messagesRejected += 1;
+        this.#status.lastRejectedAt = new Date().toISOString();
+      }
+      this.#status.lastError = null;
+    }).catch((error) => {
+      if (this.#signal?.aborted) return;
+      this.#status.lastError = error?.message ?? String(error);
+      this.#logger.error?.('[dsh-weixin] failed to apply inbound access policy:', error);
     }).finally(() => {
       this.#acceptedMessageIds.delete(messageId);
       this.#commandTasks.delete(task);
@@ -590,12 +639,6 @@ export class WeixinHarnessBridge {
       this.#status.messagesReceived += 1;
       this.#status.lastMessageAt = new Date().toISOString();
     }
-    if (sender !== this.#ownerUserId) {
-      this.#status.messagesRejected += 1;
-      this.#status.lastRejectedAt = new Date().toISOString();
-      return;
-    }
-
     const contextToken = typeof message.context_token === 'string' ? message.context_token : undefined;
     const runId = typeof message.run_id === 'string' ? message.run_id : undefined;
     let batchSettled = batchSubmission === null;

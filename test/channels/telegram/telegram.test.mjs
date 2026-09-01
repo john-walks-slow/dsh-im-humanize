@@ -902,7 +902,7 @@ test('Telegram queued policy update cannot persist after controller close begins
   assert.equal(configStore.get(botId).allowedUsers, undefined);
 });
 
-test('Telegram RPC accepts only token binding and strips credential internals', async () => {
+test('Telegram RPC accepts the unified access policy and strips credential internals', async () => {
   const calls = [];
   const connectionTests = [];
   const controller = {
@@ -925,7 +925,7 @@ test('Telegram RPC accepts only token binding and strips credential internals', 
     }),
     sendConnectionTest: async (botId) => { connectionTests.push(botId); },
     deleteBot: async () => ({ bots: [], totals: { configured: 0, connected: 0 } }),
-    setAccessPolicy: async (botId, policy) => {
+    updateAccessPolicy: async (botId, policy) => {
       calls.push({ botId, policy });
       return {
         bots: [{ botId, accessPolicy: policy }],
@@ -973,28 +973,35 @@ test('Telegram RPC accepts only token binding and strips credential internals', 
     code: 'test-target-unavailable',
   });
 
+  const unifiedPolicy = {
+    direct: {
+      mode: 'allowlist',
+      open: { defaultCanExecuteCommands: false, commandPermissionOverrides: [] },
+      allowlist: { users: [{ id: '6087707998', canExecuteCommands: true }] },
+    },
+    group: {
+      mode: 'open',
+      open: { defaultCanExecuteCommands: true, commandPermissionOverrides: [] },
+      allowlist: { users: [] },
+    },
+  };
   const access = await handler(TELEGRAM_ENDPOINTS.setAccessPolicy, {
     botId: 'telegram_123',
-    accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
-    allowedUsers: ['6087707998', '6087707998'],
+    policy: unifiedPolicy,
   });
   assert.equal(access.ok, true);
   assert.deepEqual(calls.at(-1), {
     botId: 'telegram_123',
-    policy: {
-      accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
-      allowedUsers: ['6087707998'],
-    },
+    policy: unifiedPolicy,
   });
   assert.equal((await handler(TELEGRAM_ENDPOINTS.setAccessPolicy, {
     botId: 'telegram_123',
     accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
-    allowedUsers: ['@username'],
+    allowedUsers: ['6087707998'],
   })).error.code, 'bad-request');
   assert.equal((await handler(TELEGRAM_ENDPOINTS.setAccessPolicy, {
     botId: 'telegram_123',
-    accessMode: TELEGRAM_ACCESS_MODES.compatible,
-    allowedUsers: [],
+    policy: unifiedPolicy,
     extra: true,
   })).error.code, 'bad-request');
 });
@@ -1009,7 +1016,7 @@ test('shared token RPC never sends a connection test after reconnect is cancelle
     reconnectBot: async () => reconnect,
     sendConnectionTest: async () => { sendCalls += 1; },
     deleteBot: async () => ({ bots: [] }),
-    setAccessPolicy: async () => ({ bots: [] }),
+    updateAccessPolicy: async () => ({ bots: [] }),
   };
   const abort = new AbortController();
   const result = createTelegramRpcHandler(controller)(TELEGRAM_ENDPOINTS.reconnectBot, {
@@ -1446,7 +1453,7 @@ test('Telegram runtime still starts when the command menu setup fails', async ()
   }
 });
 
-test('Telegram runtime enforces the selected bot private allowlist', async () => {
+test('Telegram runtime enforces the unified direct and group access policy', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-im-telegram-allowlist-runtime-'));
   const state = await new TelegramStateStore(join(directory, 'state.json')).load();
   const asked = [];
@@ -1508,8 +1515,10 @@ test('Telegram runtime enforces the selected bot private allowlist', async () =>
       botId: 'telegram_allowlist',
       platformId: '123456789',
       username: 'HarnessBot',
+      // Kept deliberately contradictory: legacy fields are migration input,
+      // not a second active Runtime gate after unified policy injection.
       accessMode: TELEGRAM_ACCESS_MODES.privateAllowlist,
-      allowedUsers: ['7'],
+      allowedUsers: ['999'],
     },
     token: TOKEN,
     harness: {
@@ -1521,6 +1530,20 @@ test('Telegram runtime enforces the selected bot private allowlist', async () =>
       },
     },
     state,
+    accessPolicy: {
+      getSettings: () => ({
+        direct: {
+          mode: 'allowlist',
+          open: { defaultCanExecuteCommands: false, commandPermissionOverrides: [] },
+          allowlist: { users: [{ id: '7', canExecuteCommands: true }] },
+        },
+        group: {
+          mode: 'allowlist',
+          open: { defaultCanExecuteCommands: false, commandPermissionOverrides: [] },
+          allowlist: { users: [] },
+        },
+      }),
+    },
     createApi: () => fakeApi,
   });
 

@@ -1,5 +1,6 @@
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
 import { normalizeLastMessageError } from '../../last-message-error.js';
+import { normalizeAccessPolicy } from '../../../../src/channels/shared/access-policy.mjs';
 import { normalizeContextEnhancementConfig } from '../../../../src/channels/shared/context-enhancement.mjs';
 
 export const DINGTALK_RPC_CHANNEL = '/dingtalk';
@@ -15,6 +16,7 @@ export const DINGTALK_ENDPOINTS = Object.freeze({
   setWorkspace: 'bot.workspace.set',
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
   setContextEnhancement: 'bot.context-enhancement.set',
+  setAccessPolicy: 'bot.access-policy.set',
 });
 
 const ACCOUNT_STATES = new Set(['connected', 'connecting', 'offline', 'error']);
@@ -165,6 +167,9 @@ function normalizeBot(value) {
     workspace: optionalString(value.workspace, 4_096) ?? '',
     agentPreset: normalizeAgentPresetId(value.agentPreset),
     contextEnhancement: normalizeContextEnhancementConfig(value.contextEnhancement),
+    ...(Object.hasOwn(value, 'accessPolicy')
+      ? { accessPolicy: normalizeAccessPolicy(value.accessPolicy) }
+      : {}),
     bot: {
       name: optionalString(bot.name, 100) ?? '钉钉机器人',
       clientIdMasked: optionalString(bot.clientIdMasked, 140) ?? '已安全保存',

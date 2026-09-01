@@ -17,6 +17,10 @@ import {
   OutboundArtifactRegistry,
   createOutboundArtifactTool,
 } from '../../../src/channels/shared/semantic/artifact.mjs';
+import {
+  COMMAND_PERMISSION_DENIED_MESSAGE,
+  directAccessPolicy,
+} from '../access-policy-fixture.mjs';
 
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
@@ -705,6 +709,78 @@ test('Enterprise WeChat exposes native file callbacks through the SDK downloader
     url: 'https://wecom.example/encrypted-file',
     aeskey: 'file-specific-key',
   }]);
+});
+
+test('Enterprise WeChat applies the unified access policy before attachments or Harness work', async () => {
+  const transport = testClient();
+  let downloads = 0;
+  const harnessCalls = [];
+  const accessPolicy = directAccessPolicy({
+    users: [{ id: 'member-1', canExecuteCommands: false }],
+    privilegedIds: ['owner-1'],
+  });
+  transport.client.downloadFile = async () => {
+    downloads += 1;
+    return { buffer: PNG_1X1, filename: 'blocked.png' };
+  };
+  const bridge = new WecomHarnessBridge({
+    client: transport.client,
+    generateStreamId: (() => {
+      let sequence = 0;
+      return () => `policy-stream-${++sequence}`;
+    })(),
+    accessPolicy,
+    harness: {
+      sessionExists: async (sessionId) => {
+        harnessCalls.push(['sessionExists', sessionId]);
+        return true;
+      },
+      ask: async (sessionId, prompt) => {
+        harnessCalls.push(['ask', sessionId, prompt]);
+        return '白名单消息已处理';
+      },
+    },
+    state: state(),
+  });
+
+  await bridge.accept(frame({
+    msgid: 'policy-blocked-image',
+    from: { userid: 'blocked-1' },
+    msgtype: 'image',
+    text: undefined,
+    image: { url: 'https://wecom.example/blocked', aeskey: 'blocked-key' },
+  }));
+  assert.equal(downloads, 0);
+  assert.deepEqual(harnessCalls, []);
+  assert.deepEqual(transport.streamed, []);
+  assert.deepEqual(transport.active, []);
+
+  await bridge.accept(frame({
+    msgid: 'policy-member-text',
+    text: { content: '普通消息' },
+  }));
+  assert.equal(harnessCalls.some(([operation]) => operation === 'ask'), true);
+  assert.equal(transport.streamed.at(-1).content, streamedAnswer('白名单消息已处理'));
+
+  const callsBeforeDeniedCommand = harnessCalls.length;
+  const repliesBeforeDeniedCommand = transport.streamed.length;
+  await bridge.accept(frame({
+    msgid: 'policy-member-command',
+    text: { content: '/help' },
+  }));
+  assert.equal(harnessCalls.length, callsBeforeDeniedCommand);
+  assert.deepEqual(transport.streamed.slice(repliesBeforeDeniedCommand).map(({ content, finish }) => ({
+    content,
+    finish,
+  })), [{ content: COMMAND_PERMISSION_DENIED_MESSAGE, finish: true }]);
+
+  accessPolicy.getSettings().direct.allowlist.users = [];
+  await bridge.accept(frame({
+    msgid: 'policy-owner-command',
+    from: { userid: 'owner-1' },
+    text: { content: '/help' },
+  }));
+  assert.match(transport.streamed.at(-1).content, /\/help/);
 });
 
 test('Enterprise WeChat bridge hands its prefetched native file to the current Harness turn', async () => {

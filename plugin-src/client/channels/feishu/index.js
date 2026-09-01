@@ -609,6 +609,7 @@ export function BotCard({
             botId: connection.botId,
             botName: bot.name,
             connected,
+            accessPolicy: connection.accessPolicy,
           })),
       ),
       h(WorkspaceEditor, {

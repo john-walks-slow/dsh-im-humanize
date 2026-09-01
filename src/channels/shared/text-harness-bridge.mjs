@@ -1,4 +1,8 @@
 import { t } from './i18n.mjs';
+import {
+  COMMAND_PERMISSION_DENIED_MESSAGE,
+  evaluateInboundAccess,
+} from './inbound-access.mjs';
 import { captureContextEnhancement, enhanceContextContent } from './context-enhancement.mjs';
 import { runWorkspaceCommand } from './workspace-command.mjs';
 import { runCompactCommand } from './compact-command.mjs';
@@ -129,6 +133,7 @@ export class TextHarnessBridge {
   #harness;
   #state;
   #contextEnhancement;
+  #accessPolicy;
   #status;
   #logger;
   #replyTimeoutMs;
@@ -149,6 +154,7 @@ export class TextHarnessBridge {
     harness,
     state,
     contextEnhancement,
+    accessPolicy,
     status = createTextBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
@@ -162,6 +168,7 @@ export class TextHarnessBridge {
     this.#harness = harness;
     this.#state = state;
     this.#contextEnhancement = contextEnhancement;
+    this.#accessPolicy = accessPolicy;
     this.#status = status;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
@@ -176,7 +183,7 @@ export class TextHarnessBridge {
     return structuredClone(this.#status);
   }
 
-  accept(message, { contextSnapshot } = {}) {
+  accept(message, { contextSnapshot, accessDecision } = {}) {
     if (this.#signal?.aborted) return Promise.resolve();
     const conversationId = cleanText(message?.conversationId);
     const kind = message?.kind === 'group' ? 'group' : 'direct';
@@ -186,6 +193,40 @@ export class TextHarnessBridge {
     if (!messageId || !senderId || !conversationId || normalized.senderIsBot === true
       || this.#state.hasSeen(messageId) || this.#acceptedMessageIds.has(messageId)) {
       return Promise.resolve();
+    }
+    // Preserve the channel trigger boundary. Access policy never turns an
+    // unaddressed group message into a denial reply.
+    if (kind === 'group' && normalized.addressed !== true) {
+      this.#status.messagesRejected += 1;
+      this.#status.lastRejectedAt = new Date().toISOString();
+      this.#acceptedMessageIds.set(messageId, null);
+      return this.#finishLocalMessage(normalized, messageId, null);
+    }
+    if (this.#accessPolicy || accessDecision) {
+      const hasImages = hasInboundImages(normalized);
+      const hasFiles = hasInboundFiles(normalized);
+      const decision = accessDecision ?? evaluateInboundAccess(this.#accessPolicy, {
+        conversationType: kind,
+        senderIds: [senderId, cleanText(normalized.senderAlternateId)].filter(Boolean),
+        text: normalized.content,
+        hasImages,
+        hasFiles,
+      });
+      if (!decision.allowed) {
+        this.#status.messagesRejected += 1;
+        this.#status.lastRejectedAt = new Date().toISOString();
+        // Mark policy denials so a webhook replay cannot repeat local work or
+        // a command-permission notice.
+        this.#acceptedMessageIds.set(messageId, null);
+        return this.#finishLocalMessage(
+          normalized,
+          messageId,
+          decision.reason === 'command-not-allowed'
+            ? t(COMMAND_PERMISSION_DENIED_MESSAGE)
+            : null,
+          { recordReceived: decision.reason === 'command-not-allowed' },
+        );
+      }
     }
     this.#acceptedMessageIds.set(messageId, contextSnapshot === undefined
       ? captureContextEnhancement(this.#contextEnhancement, message?.kind)
@@ -350,13 +391,15 @@ export class TextHarnessBridge {
     return this.#enqueueMessage(normalized, messageId, senderId, key);
   }
 
-  #finishLocalMessage(message, messageId, reply) {
+  #finishLocalMessage(message, messageId, reply, { recordReceived = true } = {}) {
     let task;
     task = (async () => {
       if (this.#state.hasSeen(messageId)) return;
       await this.#state.markSeen(messageId);
-      this.#status.messagesReceived += 1;
-      this.#status.lastMessageAt = new Date().toISOString();
+      if (recordReceived) {
+        this.#status.messagesReceived += 1;
+        this.#status.lastMessageAt = new Date().toISOString();
+      }
       if (reply) await this.#bot.sendText(message.replyTarget, reply);
       this.#status.lastError = null;
     })().catch(async (error) => {

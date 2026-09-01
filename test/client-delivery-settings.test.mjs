@@ -6,6 +6,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import TestRenderer from 'react-test-renderer';
 
 import {
+  ACCESS_CHANNEL_DEFINITIONS,
+  ACCESS_POLICY_ENDPOINT,
+} from '../plugin-src/client/access-policy-settings.js';
+import {
   BOT_SETTINGS_TABS,
   DELIVERY_CHANNEL_DEFINITIONS,
   DELIVERY_ENDPOINTS,
@@ -40,6 +44,11 @@ function button(root, label) {
   return root.findAllByType('button').find((entry) => textOf(entry) === label);
 }
 
+function accessHelpButtons(root) {
+  return root.findAll((entry) => entry.type === 'button'
+    && String(entry.props['aria-label'] ?? '').endsWith('查看访问权限说明'));
+}
+
 function deferred() {
   let resolve;
   let reject;
@@ -69,10 +78,31 @@ const connectedAccount = Object.freeze({
   botId: 'bot_feishu_01',
   botName: '通知机器人',
   connected: true,
+  accessPolicy: Object.freeze({
+    direct: Object.freeze({
+      mode: 'open',
+      open: Object.freeze({
+        defaultCanExecuteCommands: true,
+        commandPermissionOverrides: Object.freeze([]),
+      }),
+      allowlist: Object.freeze({ users: Object.freeze([]) }),
+    }),
+    group: Object.freeze({
+      mode: 'open',
+      open: Object.freeze({
+        defaultCanExecuteCommands: false,
+        commandPermissionOverrides: Object.freeze([]),
+      }),
+      allowlist: Object.freeze({ users: Object.freeze([]) }),
+    }),
+  }),
 });
 
 test('delivery settings define only the nine supported IM channel routes', () => {
-  assert.deepEqual(BOT_SETTINGS_TABS, [{ id: 'delivery', label: '投递设置' }]);
+  assert.deepEqual(BOT_SETTINGS_TABS, [
+    { id: 'delivery', label: '投递设置' },
+    { id: 'access', label: '访问设置' },
+  ]);
   assert.equal(DELIVERY_RPC_CHANNEL, '/dsh-im-delivery');
   assert.deepEqual(Object.keys(DELIVERY_CHANNEL_DEFINITIONS), [
     'weixin', 'feishu', 'dingtalk', 'wecom', 'qq',
@@ -91,6 +121,8 @@ test('delivery settings define only the nine supported IM channel routes', () =>
     ['chatId', 'messageThreadId'],
   );
   assert.equal('office' in DELIVERY_CHANNEL_DEFINITIONS, false);
+  assert.deepEqual(Object.keys(ACCESS_CHANNEL_DEFINITIONS), Object.keys(DELIVERY_CHANNEL_DEFINITIONS));
+  assert.equal(ACCESS_CHANNEL_DEFINITIONS.weixin.groupSupported, false);
 });
 
 test('all nine robot cards add one accessible settings gear beside existing content', () => {
@@ -147,6 +179,7 @@ test('the card gear opens a bot-scoped page in the current channel panel and ret
     state: 'connected',
     bot: { name: '微信通知助手', accountIdMasked: 'wx••01' },
     health: { status: 'healthy', summary: '微信连接正常', lastCheckedAt: Date.now() },
+    accessPolicy: connectedAccount.accessPolicy,
   };
   const deliveryCalls = [];
   const renderer = await (async () => {
@@ -189,7 +222,9 @@ test('the card gear opens a bot-scoped page in the current channel panel and ret
     page.findByProps({ className: 'dim-deliveryHeader' }).findAllByType('h2').length,
     0,
   );
-  const settingsTab = page.findByProps({ role: 'tab' });
+  const settingsTabs = page.findAllByProps({ role: 'tab' });
+  assert.deepEqual(settingsTabs.map(textOf), ['投递设置', '访问设置']);
+  const settingsTab = settingsTabs[0];
   const settingsPanel = page.findByProps({ role: 'tabpanel' });
   assert.equal(textOf(settingsTab), '投递设置');
   assert.equal(settingsTab.props['aria-selected'], true);
@@ -224,6 +259,266 @@ test('the card gear opens a bot-scoped page in the current channel panel and ret
   });
   assert.ok(renderer.root.findByProps({ 'data-bot-id': 'wx_stable_bot' }));
   assert.equal(renderer.root.findByProps({ id: 'dim-tab-weixin' }).props['aria-selected'], true);
+});
+
+test('access settings preserve independent mode drafts and save direct and group atomically', async (t) => {
+  const calls = [];
+  const renderer = await mount(t, {
+    channel: 'feishu',
+    account: connectedAccount,
+    rpcCall: async (endpoint) => {
+      assert.equal(endpoint, DELIVERY_ENDPOINTS.list);
+      return { ok: true, value: { targets: [] } };
+    },
+    accessRpcCall: async (endpoint, payload) => {
+      calls.push({ endpoint, payload });
+      return {
+        ok: true,
+        value: { bots: [{ botId: connectedAccount.botId, accessPolicy: payload.policy }] },
+      };
+    },
+    onBack() {},
+  });
+
+  assert.equal(accessHelpButtons(renderer.root).length, 0);
+  await act(async () => {
+    button(renderer.root, '访问设置').props.onClick();
+    await flush();
+  });
+
+  assert.equal(renderer.root.findAllByProps({ role: 'tab' }).length, 2);
+  assert.equal(renderer.root.findAllByProps({ className: 'dim-accessScene' }).length, 2);
+  assert.equal(renderer.root.findAllByProps({ className: 'dim-accessOwnerNotice' }).length, 0);
+  assert.equal(accessHelpButtons(renderer.root).length, 2);
+  for (const [scene, title] of [['direct', '私聊'], ['group', '群聊']]) {
+    const sceneEditor = renderer.root.findByProps({ 'data-scene': scene });
+    assert.equal(sceneEditor.props['aria-label'], title);
+    const accessHelpButton = sceneEditor.findByProps({
+      'aria-label': `${title} 查看访问权限说明`,
+    });
+    const accessHelpTooltip = sceneEditor.findByProps({
+      className: 'dim-channelTooltip dim-accessHelpTooltip',
+    });
+    assert.equal(accessHelpTooltip.props.role, 'tooltip');
+    assert.equal(accessHelpButton.props['aria-describedby'], accessHelpTooltip.props.id);
+    assert.match(textOf(accessHelpTooltip), /原所有者或扫码接入者始终可以访问并执行命令/);
+  }
+  assert.equal(accessHelpButtons(renderer.root.findByProps({ className: 'dim-accessActions' })).length, 0);
+  assert.equal(accessHelpButtons(renderer.root.findByProps({ role: 'tablist' })).length, 0);
+  assert.match(
+    textOf(renderer.root.findByProps({ 'data-scene': 'direct' })),
+    /命令权限例外/,
+  );
+  await act(async () => {
+    const direct = renderer.root.findByProps({ 'data-scene': 'direct' });
+    const addUser = direct.findByProps({ 'aria-label': '私聊 新增用户' });
+    assert.equal(addUser.props.title, '新增用户');
+    assert.match(addUser.props.className, /dim-accessAddUser/);
+    assert.equal(textOf(addUser), '+');
+    addUser.props.onClick();
+    await flush();
+  });
+  await act(async () => {
+    renderer.root.findByProps({ 'aria-label': '私聊 飞书 Open ID 1' }).props.onChange({
+      target: { value: '  ou_override  ' },
+    });
+    renderer.root.findByProps({ 'aria-label': '群聊 默认命令权限' }).props.onChange({
+      target: { value: 'allow' },
+    });
+    await flush();
+  });
+
+  await act(async () => {
+    renderer.root.findByProps({ 'aria-label': '私聊 访问模式' }).props.onChange({
+      target: { value: 'allowlist' },
+    });
+    await flush();
+  });
+  const directAllowlistHelp = renderer.root.findByProps({
+    'aria-label': '私聊 查看白名单说明',
+  });
+  const directAllowlistTooltip = renderer.root.findByProps({
+    className: 'dim-channelTooltip dim-accessEmptyAllowlistTooltip',
+  });
+  assert.equal(directAllowlistTooltip.props.role, 'tooltip');
+  assert.equal(directAllowlistHelp.props['aria-describedby'], directAllowlistTooltip.props.id);
+  assert.equal(
+    textOf(directAllowlistTooltip),
+    '当前没有白名单用户，保存后普通用户将无法使用机器人。',
+  );
+  assert.equal(renderer.root.findAllByProps({ className: 'dim-accessWarning' }).length, 0);
+  assert.match(
+    textOf(renderer.root.findByProps({ 'data-scene': 'direct' })),
+    /白名单用户/,
+  );
+  assert.equal(
+    renderer.root.findAllByProps({ 'aria-label': '私聊 默认命令权限' }).length,
+    0,
+  );
+
+  await act(async () => {
+    const direct = renderer.root.findByProps({ 'data-scene': 'direct' });
+    direct.findByProps({ 'aria-label': '私聊 新增用户' }).props.onClick();
+    await flush();
+  });
+  assert.equal(
+    renderer.root.findAllByProps({ 'aria-label': '私聊 查看白名单说明' }).length,
+    0,
+  );
+  await act(async () => {
+    renderer.root.findByProps({ 'aria-label': '群聊 访问模式' }).props.onChange({
+      target: { value: 'allowlist' },
+    });
+    await flush();
+  });
+  assert.ok(renderer.root.findByProps({ 'aria-label': '群聊 查看白名单说明' }));
+  await act(async () => {
+    renderer.root.findByProps({ 'aria-label': '群聊 访问模式' }).props.onChange({
+      target: { value: 'open' },
+    });
+    await flush();
+  });
+  await act(async () => {
+    renderer.root.findByProps({ 'aria-label': '私聊 飞书 Open ID 1' }).props.onChange({
+      target: { value: '  ou_allowed  ' },
+    });
+    await flush();
+  });
+  await act(async () => {
+    renderer.root.findByProps({ 'aria-label': '私聊 用户 1 命令权限' }).props.onChange({
+      target: { value: 'allow' },
+    });
+    await flush();
+  });
+
+  await act(async () => {
+    renderer.root.findByProps({ 'aria-label': '私聊 访问模式' }).props.onChange({
+      target: { value: 'open' },
+    });
+    await flush();
+  });
+  assert.equal(
+    renderer.root.findByProps({ 'aria-label': '私聊 飞书 Open ID 1' }).props.value,
+    '  ou_override  ',
+  );
+  assert.equal(
+    renderer.root.findByProps({ 'aria-label': '私聊 用户 1 命令权限' }).props.value,
+    'deny',
+  );
+  assert.equal(
+    renderer.root.findByProps({ 'aria-label': '私聊 默认命令权限' }).props.value,
+    'allow',
+  );
+
+  await act(async () => {
+    renderer.root.findByProps({ 'aria-label': '私聊 访问模式' }).props.onChange({
+      target: { value: 'allowlist' },
+    });
+    await flush();
+  });
+  assert.equal(
+    renderer.root.findByProps({ 'aria-label': '私聊 飞书 Open ID 1' }).props.value,
+    '  ou_allowed  ',
+  );
+  assert.equal(
+    renderer.root.findByProps({ 'aria-label': '私聊 用户 1 命令权限' }).props.value,
+    'allow',
+  );
+
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-accessPage' }).props.onSubmit({
+      preventDefault() {},
+    });
+    await flush();
+  });
+
+  assert.deepEqual(calls, [{
+    endpoint: ACCESS_POLICY_ENDPOINT,
+    payload: {
+      botId: connectedAccount.botId,
+      policy: {
+        direct: {
+          mode: 'allowlist',
+          open: {
+            defaultCanExecuteCommands: true,
+            commandPermissionOverrides: [{ id: 'ou_override', canExecuteCommands: false }],
+          },
+          allowlist: {
+            users: [{ id: 'ou_allowed', canExecuteCommands: true }],
+          },
+        },
+        group: {
+          mode: 'open',
+          open: {
+            defaultCanExecuteCommands: true,
+            commandPermissionOverrides: [],
+          },
+          allowlist: { users: [] },
+        },
+      },
+    },
+  }]);
+  const feedback = renderer.root.findByProps({ className: 'dim-accessFeedback' });
+  assert.match(textOf(feedback), /访问设置已保存/);
+  assert.equal(feedback.props['data-tone'], 'success');
+  assert.equal(feedback.props.role, 'status');
+
+  await act(async () => {
+    button(renderer.root, '投递设置').props.onClick();
+    await flush();
+  });
+  assert.equal(accessHelpButtons(renderer.root).length, 0);
+});
+
+test('access settings keep a failed atomic save visible as an error', async (t) => {
+  const renderer = await mount(t, {
+    channel: 'feishu',
+    account: connectedAccount,
+    rpcCall: async () => ({ ok: true, value: { targets: [] } }),
+    accessRpcCall: async () => ({
+      ok: false,
+      error: { code: 'access-policy-invalid', message: '访问策略未保存。' },
+    }),
+    onBack() {},
+  });
+
+  await act(async () => {
+    button(renderer.root, '访问设置').props.onClick();
+    await flush();
+  });
+  await act(async () => {
+    renderer.root.findByProps({ className: 'dim-accessPage' }).props.onSubmit({
+      preventDefault() {},
+    });
+    await flush();
+  });
+
+  const feedback = renderer.root.findByProps({ className: 'dim-accessFeedback' });
+  assert.equal(textOf(feedback), '访问策略未保存。');
+  assert.equal(feedback.props['data-tone'], 'error');
+  assert.equal(feedback.props.role, 'alert');
+});
+
+test('WeChat keeps the shared access page but disables its unsupported group section', async (t) => {
+  const renderer = await mount(t, {
+    channel: 'weixin',
+    account: { ...connectedAccount, botId: 'wx_access_01' },
+    rpcCall: async () => ({ ok: true, value: { targets: [] } }),
+    accessRpcCall: async () => {
+      throw new Error('save should not run in this rendering test');
+    },
+    onBack() {},
+  });
+  await act(async () => {
+    button(renderer.root, '访问设置').props.onClick();
+    await flush();
+  });
+
+  const group = renderer.root.findByProps({ 'data-scene': 'group' });
+  assert.equal(group.props.disabled, true);
+  assert.match(textOf(group), /当前渠道不支持群聊/);
+  assert.equal(group.findAllByType('select').length, 0);
+  assert.ok(renderer.root.findByProps({ 'data-scene': 'direct' }));
 });
 
 test('new target waits for saved targets before generating aliases or checking duplicates', async (t) => {
@@ -480,7 +775,10 @@ test('recent conversation names remain platform data in the English UI', async (
     docsLink.props.href,
     'https://github.com/xmanrui/dsh-im/blob/main/PROACTIVE_DELIVERY.en.md',
   );
-  assert.equal(textOf(renderer.root.findByProps({ role: 'tab' })), 'Delivery settings');
+  assert.deepEqual(
+    renderer.root.findAllByProps({ role: 'tab' }).map(textOf),
+    ['Delivery settings', 'Access settings'],
+  );
 });
 
 test('target create, edit, copy, and delete use the minimal RPC payloads', async (t) => {

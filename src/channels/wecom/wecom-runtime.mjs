@@ -29,6 +29,7 @@ export class WecomRuntime {
   #harness;
   #state;
   #contextEnhancement;
+  #accessPolicy;
   #logger;
   #replyTimeoutMs;
   #connectTimeoutMs;
@@ -47,6 +48,7 @@ export class WecomRuntime {
     harness,
     state,
     contextEnhancement,
+    accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
     connectTimeoutMs = 20_000,
@@ -61,6 +63,7 @@ export class WecomRuntime {
     this.#harness = harness;
     this.#state = state;
     this.#contextEnhancement = contextEnhancement;
+    this.#accessPolicy = accessPolicy;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#connectTimeoutMs = connectTimeoutMs;
@@ -111,6 +114,7 @@ export class WecomRuntime {
       harness: this.#harness,
       state: this.#state,
       contextEnhancement: this.#contextEnhancement,
+      accessPolicy: this.#accessPolicy,
       status: this.#status,
       logger: this.#logger,
       replyTimeoutMs: this.#replyTimeoutMs,

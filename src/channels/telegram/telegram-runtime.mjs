@@ -14,7 +14,6 @@ import {
 } from './telegram-rich-message.mjs';
 import {
   TELEGRAM_ACCESS_MODES,
-  normalizeTelegramAccessPolicy,
 } from './config-store.mjs';
 
 export const TELEGRAM_COMMAND_MENU = Object.freeze([
@@ -669,12 +668,11 @@ export class TelegramRuntime {
   #harness;
   #state;
   #contextEnhancement;
+  #accessPolicy;
   #logger;
   #replyTimeoutMs;
   #createApi;
   #createHttpTransport;
-  #accessMode;
-  #allowedPrivateUserIds;
   #status = createTelegramRuntimeStatus();
   #httpTransport = null;
   #api = null;
@@ -689,6 +687,7 @@ export class TelegramRuntime {
     harness,
     state,
     contextEnhancement,
+    accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
     createApi = (options) => new TelegramApi(options),
@@ -702,13 +701,11 @@ export class TelegramRuntime {
     this.#harness = harness;
     this.#state = state;
     this.#contextEnhancement = contextEnhancement;
+    this.#accessPolicy = accessPolicy;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#createApi = createApi;
     this.#createHttpTransport = createHttpTransport;
-    const accessPolicy = normalizeTelegramAccessPolicy(config);
-    this.#accessMode = accessPolicy.accessMode;
-    this.#allowedPrivateUserIds = new Set(accessPolicy.allowedUsers);
   }
 
   get status() {
@@ -805,6 +802,7 @@ export class TelegramRuntime {
         harness: this.#harness,
         state: this.#state,
         contextEnhancement: this.#contextEnhancement,
+        accessPolicy: this.#accessPolicy,
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
@@ -865,10 +863,7 @@ export class TelegramRuntime {
           loadFile: (fileId, options) => this.#api.downloadFile({ fileId, ...options }),
           loadFileStream: (fileId, options) => this.#api.downloadFileStream({ fileId, ...options }),
         });
-        if (message && telegramInboundAllowed(message, {
-          accessMode: this.#accessMode,
-          allowedPrivateUserIds: this.#allowedPrivateUserIds,
-        })) {
+        if (message) {
           void this.#bridge.accept(message, { contextSnapshot }).catch((error) => {
             if (signal.aborted) return;
             this.#logger.error?.(
@@ -876,9 +871,6 @@ export class TelegramRuntime {
               error,
             );
           });
-        } else if (message) {
-          this.#status.messagesRejected += 1;
-          this.#status.lastRejectedAt = new Date().toISOString();
         }
         cursor = update.update_id + 1;
         await this.#state.setCursor(cursor);

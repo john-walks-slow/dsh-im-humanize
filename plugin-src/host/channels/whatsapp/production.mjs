@@ -6,7 +6,10 @@ import { WhatsappConfigStore } from '../../../../src/channels/whatsapp/config-st
 import { WhatsappHarnessClient } from '../../../../src/channels/whatsapp/harness-client.mjs';
 import { WhatsappStateStore } from '../../../../src/channels/whatsapp/state-store.mjs';
 import { WhatsappController } from '../../../../src/channels/whatsapp/whatsapp-controller.mjs';
-import { WhatsappRuntime } from '../../../../src/channels/whatsapp/whatsapp-runtime.mjs';
+import {
+  WhatsappRuntime,
+  whatsappAccessPolicyIdsEqual,
+} from '../../../../src/channels/whatsapp/whatsapp-runtime.mjs';
 import { createWhatsappWebSession } from '../../../../src/channels/whatsapp/whatsapp-web-session.mjs';
 import {
   BotWorkspaceStore,
@@ -20,6 +23,10 @@ import { createTokenConnectionSupervisor } from '../shared/connection-supervisor
 import { createHarnessCommandExecutor } from '../../harness-command-executor.mjs';
 import { harnessConnection } from '../../harness-connection.mjs';
 import { createHarnessSessionExecutors } from '../../harness-session-coordinator.mjs';
+import {
+  accessPolicyProvider,
+  initialAccessPolicyFor,
+} from '../shared/access-policy-production.mjs';
 
 const AUTH_DIRECTORY_PATTERN = /^[a-f0-9-]{36}$/;
 
@@ -61,6 +68,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   await workspaces.reconcile(configuredBots.map((bot) => bot.botId));
   await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.botId, {
     defaultAgentPreset: config.agentPreset,
+    initialAccessPolicy: initialAccessPolicyFor('whatsapp', bot),
   })));
   const observedConfigStore = typeof configStore.remove === 'function'
     ? observeBotWorkspaceRemovals(configStore, { workspaces })
@@ -98,7 +106,10 @@ export async function createProductionController(ctx, config = {}, internals = {
     logger,
     createRuntime: async ({ botId, config: botConfig, authDir }) => {
       const state = await stateFor(botId);
-      await workspaces.ensure(botId, { defaultAgentPreset: config.agentPreset });
+      await workspaces.ensure(botId, {
+        defaultAgentPreset: config.agentPreset,
+        initialAccessPolicy: initialAccessPolicyFor('whatsapp', botConfig),
+      });
       const workspaceScope = createBotWorkspaceScope(harness, {
         botId, workspaces, state, agentPresetCatalog,
       });
@@ -108,6 +119,9 @@ export async function createProductionController(ctx, config = {}, internals = {
         harness: workspaceScope.harness,
         state: workspaceScope.state,
         contextEnhancement: { botId, getSettings: () => workspaces.contextEnhancementFor(botId) },
+        accessPolicy: accessPolicyProvider(workspaces, botId, {
+          channel: 'whatsapp', config: botConfig, equals: whatsappAccessPolicyIdsEqual,
+        }),
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
         connectTimeoutMs: config.connectTimeoutMs ?? 30_000,
         createSession,
