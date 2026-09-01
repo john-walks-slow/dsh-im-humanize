@@ -81,6 +81,8 @@ export default {
   // image-prompt.mjs
   '当前模型不支持图片，请用 /models 查看可用模型，再用 /model <序号> 切换后重发。':
     'The current model does not support images. Use /models to list available models, switch with /model <number>, then resend.',
+  '当前会话模型不支持直接接收图片输入。用户发送的图片已作为文件保存到工作区（见下方文件清单）。请使用可用工具分析这些图片文件后回答，例如 run_code 或 pwsh 读取字节、解析元数据、调用图像处理或 OCR 库；不要假设自己能直接看到图片内容。':
+    'The current session model does not accept direct image input. The images sent by the user were saved into the workspace as files (see the file manifest below). Answer by analyzing those image files with the available tools — for example run_code or pwsh to read bytes, parse metadata, or call image-processing or OCR libraries — and do not assume you can see the images directly.',
   '图片超过宿主允许的大小，请压缩后重试。':
     'The image exceeds the size allowed by the host; compress it and try again.',
   '图片分辨率过高，请压缩后重试。':
