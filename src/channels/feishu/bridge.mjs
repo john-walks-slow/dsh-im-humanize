@@ -47,7 +47,12 @@ import {
   isPresetCommand,
   runPresetCommand,
 } from '../shared/preset-command.mjs';
-import { runWorkspaceCommand, resolveSessionListWorkspace, workspacePathSnapshot } from '../shared/workspace-command.mjs';
+import {
+  parseSessionListArgument,
+  resolveSessionListWorkspace,
+  runWorkspaceCommand,
+  workspacePathSnapshot,
+} from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 import { captureContextEnhancement, enhanceContextContent } from '../shared/context-enhancement.mjs';
 import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
@@ -160,6 +165,7 @@ const WORKSPACE_HELP_LINES = [
   '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
   '/workspacelist  列出工作区绝对路径',
   '/sessionlist 或 /sessions [工作区序号或绝对路径]  列出会话 ID 和标题',
+  '/sessionlist --limit N  仅列出当前工作区前 N 个会话',
 ];
 
 /** Safe user-facing text for bind/workspace failures (no raw messages). */
@@ -1085,8 +1091,18 @@ export class FeishuHarnessBridge {
       return;
     }
     if (SESSION_LIST_PREFIX.test(commandText)) {
-      const selector = commandText.replace(/^\/(?:sessionlist|sessions)/i, '').trim() || null;
-      await this.#showSessions({ chatId: event.message.chat_id, key, replyTo: event.message.message_id }, selector, 0);
+      const argument = commandText.replace(/^\/(?:sessionlist|sessions)/i, '').trim();
+      const request = parseSessionListArgument(argument);
+      if (request.error) {
+        await this.#send(event.message.chat_id, request.error, { replyTo: event.message.message_id });
+        return;
+      }
+      await this.#showSessions(
+        { chatId: event.message.chat_id, key, replyTo: event.message.message_id },
+        request.selector || null,
+        0,
+        { limit: request.limit },
+      );
       return;
     }
     if (WORKSPACE_LIST_COMMAND.test(commandText)) {
@@ -1850,6 +1866,7 @@ export class FeishuHarnessBridge {
     messageId = null,
     sessionWorkspace = null,
     sessionPage = 0,
+    sessionLimit = null,
     selections = [],
   }) {
     // Confirmations triggered by a card interaction stay anchored to the
@@ -1861,7 +1878,7 @@ export class FeishuHarnessBridge {
         { chatId, key, replyTo: messageId },
         sessionWorkspace,
         page,
-        { updateMessageId: messageId },
+        { updateMessageId: messageId, limit: sessionLimit },
       );
       return;
     }
@@ -2040,7 +2057,7 @@ export class FeishuHarnessBridge {
           { chatId, key, replyTo: messageId },
           sessionWorkspace,
           sessionPage,
-          { updateMessageId: messageId },
+          { updateMessageId: messageId, limit: sessionLimit },
         );
       }
       return;
@@ -2056,7 +2073,7 @@ export class FeishuHarnessBridge {
           { chatId, key, replyTo: messageId },
           sessionWorkspace,
           sessionPage,
-          { updateMessageId: messageId },
+          { updateMessageId: messageId, limit: sessionLimit },
         );
       }
     }
@@ -2141,7 +2158,7 @@ export class FeishuHarnessBridge {
     { chatId, key, replyTo = null },
     selector,
     page = 0,
-    { updateMessageId = null } = {},
+    { updateMessageId = null, limit = null } = {},
   ) {
     try {
       const signal = this.#cardDataSignal();
@@ -2151,7 +2168,11 @@ export class FeishuHarnessBridge {
         return;
       }
       const listed = await this.#harness.listWorkspaceSessions(resolved.workspace, { signal });
-      const sessions = this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : []);
+      const visibleSessions = this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : []);
+      const sessionLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : null;
+      const sessions = sessionLimit === null
+        ? visibleSessions
+        : visibleSessions.slice(0, sessionLimit);
       const workspace = listed?.workspace ?? resolved.workspace;
       if (sessions.length === 0) {
         await this.#send(chatId, t('工作区：{workspace}\n该工作区暂无会话。', { workspace }), { replyTo });
@@ -2178,6 +2199,7 @@ export class FeishuHarnessBridge {
           // list response's workspace is display data and is not authoritative.
           sessionWorkspace: resolved.workspace,
           sessionPage: safePage,
+          sessionLimit,
         },
       );
     } catch (error) {
@@ -2246,6 +2268,9 @@ export class FeishuHarnessBridge {
       sessionPage: Number.isSafeInteger(options.sessionPage) && options.sessionPage >= 0
         ? options.sessionPage
         : 0,
+      sessionLimit: Number.isSafeInteger(options.sessionLimit) && options.sessionLimit > 0
+        ? options.sessionLimit
+        : null,
     });
     if (this.#cardKeys.size > 200) {
       const oldest = this.#cardKeys.keys().next().value;

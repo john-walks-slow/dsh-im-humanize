@@ -4739,6 +4739,50 @@ test('/sessions alias uses the interactive session list and paginates across 25 
   assert.equal(useActionsFromCard(page1)[0], 'session-11');
 });
 
+test('Feishu session limit caps card pages and survives paging and watch refresh', async () => {
+  const { state } = await watchStoreFixture();
+  const work = realpathSync(tmpdir());
+  const sessions = Array.from({ length: 25 }, (_, index) => ({
+    sessionId: `limited-card-${String(index + 1).padStart(2, '0')}`,
+    title: `Limited Card ${index + 1}`,
+    lastSeq: index,
+  }));
+  const harness = watchHarness({ current: work, sessionsByWorkspace: { [work]: sessions } });
+  const sent = [];
+  const patches = [];
+  const bridge = new FeishuHarnessBridge({
+    client: cardClient(
+      async (outgoing) => sent.push(outgoing),
+      async (request) => patches.push(request),
+    ),
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+  });
+
+  await bridge.accept(event('limited-card-open', '/sessionlist --limit 12', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  const page0 = cards(sent).at(-1).content;
+  assert.equal(useActionsFromCard(page0).length, 10);
+  assert.match(page0.body.elements[0].text.content, /共 \*\*12\*\* 个会话/);
+
+  await bridge.onCardAction(cardActionEvent('om_card_1', 'sessions:1', 'ou_owner'));
+  await bridge.waitForIdle();
+  const page1 = JSON.parse(patches.at(-1).data.content);
+  assert.deepEqual(useActionsFromCard(page1), ['limited-card-11', 'limited-card-12']);
+
+  await bridge.onCardAction(cardActionEvent('om_card_1', 'watch:limited-card-11', 'ou_owner'));
+  await bridge.waitForIdle();
+  const refreshed = JSON.parse(patches.at(-1).data.content);
+  assert.deepEqual(useActionsFromCard(refreshed), ['limited-card-11', 'limited-card-12']);
+  assert.equal(
+    buttonsFromCard(refreshed).some((button) => callbackAction(button) === 'unwatch:limited-card-11'),
+    true,
+  );
+});
+
 test('number replies on a later session page use page-local labels', async () => {
   const fixture = stateFixture();
   const sent = [];
