@@ -120,6 +120,31 @@ test('Discord API retries one rate-limited message request', async () => {
   assert.equal(attempts, 2);
 });
 
+test('Discord API reads a referenced message from the current channel', async () => {
+  let request;
+  const api = new DiscordApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return jsonResponse({
+        id: '987654321012345678',
+        channel_id: '123456789012345678',
+        content: 'quoted',
+      });
+    },
+  });
+  const message = await api.getMessage({
+    channelId: '123456789012345678',
+    messageId: '987654321012345678',
+  });
+  assert.equal(message.content, 'quoted');
+  assert.equal(
+    request.url.pathname,
+    '/api/v10/channels/123456789012345678/messages/987654321012345678',
+  );
+  assert.equal(request.options.method, 'GET');
+});
+
 test('Discord API gets a channel and starts one thread from a source message', async () => {
   const requests = [];
   const api = new DiscordApi({
@@ -531,6 +556,127 @@ test('Discord normalizes DMs and only addressed server messages', () => {
     author: { id: '333333333333333334', bot: false },
     content: '',
   }, '1234567890123456789'), null);
+});
+
+test('Discord uses reply snapshots, respects deleted markers, and loads absent snapshots lazily', async () => {
+  const botId = '1234567890123456789';
+  let loads = 0;
+  const snapshot = normalizeDiscordMessage({
+    id: '111111111111111170',
+    channel_id: '222222222222222270',
+    author: { id: '333333333333333370', bot: false },
+    content: '解释原文',
+    message_reference: { message_id: '111111111111111169' },
+    referenced_message: {
+      id: '111111111111111169',
+      channel_id: '222222222222222270',
+      author: { id: '333333333333333369', username: 'alice' },
+      content: '第一层原文',
+      attachments: [
+        { filename: 'screen.png', content_type: 'image/png' },
+        { filename: 'voice.ogg', content_type: 'audio/ogg' },
+        { filename: 'clip.mp4', content_type: 'video/mp4' },
+        { filename: 'brief.pdf', content_type: 'application/pdf' },
+      ],
+      referenced_message: { content: '不应递归进入 Prompt' },
+    },
+  }, botId, { loadReply: async () => { loads += 1; } });
+  assert.equal(loads, 0);
+  assert.deepEqual(snapshot.replyTo, {
+    messageId: '111111111111111169',
+    authorId: '333333333333333369',
+    authorName: 'alice',
+    content: '第一层原文',
+    attachments: [
+      { kind: 'image', name: 'screen.png' },
+      { kind: 'audio', name: 'voice.ogg' },
+      { kind: 'video', name: 'clip.mp4' },
+      { kind: 'file', name: 'brief.pdf' },
+    ],
+  });
+  assert.doesNotMatch(JSON.stringify(snapshot.replyTo), /不应递归/);
+
+  const deleted = normalizeDiscordMessage({
+    id: '111111111111111171',
+    channel_id: '222222222222222270',
+    author: { id: '333333333333333370', bot: false },
+    content: '原文呢？',
+    message_reference: { message_id: '111111111111111168' },
+    referenced_message: null,
+  }, botId, { loadReply: async () => { loads += 1; } });
+  assert.deepEqual(deleted.replyTo, {
+    messageId: '111111111111111168',
+    unavailableReason: 'deleted',
+  });
+  assert.equal(loads, 0);
+
+  const controller = new AbortController();
+  const fallback = normalizeDiscordMessage({
+    id: '111111111111111172',
+    channel_id: '222222222222222270',
+    author: { id: '333333333333333370', bot: false },
+    content: '加载原文',
+    message_reference: { message_id: '111111111111111167' },
+  }, botId, {
+    loadReply: async (options) => {
+      loads += 1;
+      assert.deepEqual(options, {
+        channelId: '222222222222222270',
+        messageId: '111111111111111167',
+        signal: controller.signal,
+      });
+      return {
+        id: '111111111111111167',
+        channel_id: '222222222222222270',
+        author: { id: '333333333333333367', global_name: 'Bob' },
+        content: 'API 原文',
+      };
+    },
+  });
+  assert.equal(loads, 0);
+  assert.deepEqual(await fallback.replyTo.load({ signal: controller.signal }), {
+    messageId: '111111111111111167',
+    authorId: '333333333333333367',
+    authorName: 'Bob',
+    content: 'API 原文',
+    attachments: [],
+  });
+  assert.equal(loads, 1);
+
+  for (const [label, reference, referencedMessage] of [
+    ['reference channel', {
+      message_id: '111111111111111166', channel_id: '222222222222222999',
+    }, {
+      id: '111111111111111166', channel_id: '222222222222222270',
+      author: { id: '333333333333333366' }, content: 'wrong reference channel',
+    }],
+    ['snapshot channel', {
+      message_id: '111111111111111165', channel_id: '222222222222222270',
+    }, {
+      id: '111111111111111165', channel_id: '222222222222222999',
+      author: { id: '333333333333333365' }, content: 'wrong snapshot channel',
+    }],
+    ['snapshot id', {
+      message_id: '111111111111111164', channel_id: '222222222222222270',
+    }, {
+      id: '111111111111111999', channel_id: '222222222222222270',
+      author: { id: '333333333333333364' }, content: 'wrong snapshot id',
+    }],
+  ]) {
+    const invalid = normalizeDiscordMessage({
+      id: `11111111111111118${label.length}`,
+      channel_id: '222222222222222270',
+      author: { id: '333333333333333370', bot: false },
+      content: 'do not trust mismatched quote',
+      message_reference: reference,
+      referenced_message: referencedMessage,
+    }, botId, { loadReply: async () => { loads += 1; } });
+    assert.deepEqual(invalid.replyTo, {
+      messageId: reference.message_id,
+      unavailableReason: 'not-found',
+    }, label);
+  }
+  assert.equal(loads, 1, 'invalid Gateway snapshots never trigger a fallback fetch');
 });
 
 test('Discord preserves existing channel and thread addressing before native routing', () => {

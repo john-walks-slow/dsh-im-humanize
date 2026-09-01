@@ -8,7 +8,11 @@ import {
   deriveWeixinBotIdentity,
   WeixinConfigStore,
 } from '../../../src/channels/weixin/config-store.mjs';
-import { WeixinStateStore } from '../../../src/channels/weixin/state-store.mjs';
+import {
+  WEIXIN_RECENT_OUTBOUND_LIMIT,
+  WEIXIN_RECENT_OUTBOUND_TTL_MS,
+  WeixinStateStore,
+} from '../../../src/channels/weixin/state-store.mjs';
 
 test('config store persists non-secret account facts atomically with restrictive permissions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-weixin-config-'));
@@ -59,4 +63,115 @@ test('state store retains sessions, deduplication, and the getUpdates cursor', a
   assert.equal(restored.hasSeen('message-1'), true);
   assert.equal(restored.getUpdatesBuf(), 'cursor-2');
   assert.equal((await stat(path)).mode & 0o777, 0o600);
+});
+
+test('state store resolves recent Weixin bot replies by exact id or one unambiguous timestamp', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-weixin-outbound-state-'));
+  const path = join(root, 'account', 'state.json');
+  const state = await new WeixinStateStore(path).load();
+  const now = Date.now();
+  await state.rememberOutboundMessage({
+    toUserId: 'owner-user',
+    text: '第一条机器人回复',
+    sentAt: now - 40_000,
+    completedAt: now - 39_900,
+    providerMessageIds: ['client-first'],
+  });
+  await state.rememberOutboundMessage({
+    toUserId: 'owner-user',
+    text: '第二条机器人回复',
+    sentAt: now - 10_000,
+    completedAt: now - 9_900,
+    providerMessageIds: ['client-second'],
+  });
+
+  const restored = await new WeixinStateStore(path).load();
+  assert.equal(restored.recentOutboundTextFor({
+    toUserId: 'owner-user',
+    messageId: 'client-first',
+    now,
+  }), '第一条机器人回复');
+  assert.equal(restored.recentOutboundTextFor({
+    toUserId: 'owner-user',
+    createTimeMs: now - 10_000,
+    now,
+  }), '第二条机器人回复');
+  assert.equal(restored.recentOutboundTextFor({
+    toUserId: 'another-user',
+    messageId: 'client-first',
+    now,
+  }), null);
+});
+
+test('state store refuses to guess when a Weixin quote timestamp matches multiple bot replies', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-weixin-outbound-ambiguous-'));
+  const state = await new WeixinStateStore(join(root, 'state.json')).load();
+  const now = Date.now();
+  await state.rememberOutboundMessage({
+    toUserId: 'owner-user', text: '候选一', sentAt: now - 1_000, completedAt: now - 900,
+  });
+  await state.rememberOutboundMessage({
+    toUserId: 'owner-user', text: '候选二', sentAt: now - 800, completedAt: now - 700,
+  });
+  assert.equal(state.recentOutboundTextFor({
+    toUserId: 'owner-user', createTimeMs: now - 850, now,
+  }), null);
+});
+
+test('state store bounds the Weixin outbound index by count and age on load', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-weixin-outbound-bounds-'));
+  const path = join(root, 'state.json');
+  const now = Date.now();
+  const recentOutboundMessages = Array.from({
+    length: WEIXIN_RECENT_OUTBOUND_LIMIT + 1,
+  }, (_, index) => ({
+    toUserId: 'owner-user',
+    text: `最近回复 ${index}`,
+    sentAt: now - 1_000,
+    completedAt: now - 900,
+    providerMessageIds: [`recent-${index}`],
+  }));
+  recentOutboundMessages.unshift({
+    toUserId: 'owner-user',
+    text: '已过期回复',
+    sentAt: now - WEIXIN_RECENT_OUTBOUND_TTL_MS - 2_000,
+    completedAt: now - WEIXIN_RECENT_OUTBOUND_TTL_MS - 1_000,
+    providerMessageIds: ['expired'],
+  });
+  await writeFile(path, JSON.stringify({
+    version: 1,
+    sessions: {},
+    seenMessageIds: [],
+    getUpdatesBuf: '',
+    recentOutboundMessages,
+  }));
+
+  const state = await new WeixinStateStore(path).load();
+  assert.equal(state.snapshot().recentOutboundMessages.length, WEIXIN_RECENT_OUTBOUND_LIMIT);
+  assert.equal(state.recentOutboundTextFor({
+    toUserId: 'owner-user', messageId: 'expired', now,
+  }), null);
+  assert.equal(state.recentOutboundTextFor({
+    toUserId: 'owner-user', messageId: 'recent-0', now,
+  }), null);
+  assert.equal(state.recentOutboundTextFor({
+    toUserId: 'owner-user', messageId: `recent-${WEIXIN_RECENT_OUTBOUND_LIMIT}`, now,
+  }), `最近回复 ${WEIXIN_RECENT_OUTBOUND_LIMIT}`);
+});
+
+test('state store matches a recent bot reply from the timestamp encoded in msg_id', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-weixin-outbound-msg-id-'));
+  const state = await new WeixinStateStore(join(root, 'state.json')).load();
+  const now = Date.now();
+  const providerTimestamp = now - 1_000;
+  const messageId = ((BigInt(providerTimestamp) << 22n) | 123n).toString();
+  await state.rememberOutboundMessage({
+    toUserId: 'owner-user',
+    text: '由真实微信消息 ID 恢复',
+    sentAt: providerTimestamp - 7_500,
+    completedAt: providerTimestamp - 7_400,
+  });
+  assert.equal(state.recentOutboundTextFor({
+    toUserId: 'owner-user', messageId, now,
+  }), '由真实微信消息 ID 恢复');
 });

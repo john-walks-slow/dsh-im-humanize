@@ -11,8 +11,11 @@ import {
   hasInboundImages,
   imagePromptDiagnostic,
   imagePromptUserMessage,
-  promptContentForMessage,
 } from '../shared/image-prompt.mjs';
+import {
+  hasReplyReference,
+  promptContentForInboundMessage,
+} from '../shared/semantic/reply-reference.mjs';
 import {
   hasInboundFiles,
   inboundFileUserMessage,
@@ -626,7 +629,9 @@ export class FeishuHarnessBridge {
         && (this.#queues.has(key) || pending || this.#approvals.hasPending(key))
         ? { handled: true, kind: 'busy', message: batchInputBusyMessage() }
         : this.#batchInputs.handle(key, batchText, {
-            plainText: event.message.message_type === 'text' && Boolean(batchText),
+            plainText: event.message.message_type === 'text'
+              && Boolean(batchText)
+              && !hasReplyReference(commandMessage),
           });
       if (result.handled) {
         if (result.kind === 'submit') {
@@ -1032,11 +1037,12 @@ export class FeishuHarnessBridge {
     const text = message.content;
     const hasImages = hasInboundImages(message);
     const hasFiles = hasInboundFiles(message);
+    const hasReply = hasReplyReference(message);
     // 命令识别对 text 与纯文本 post 一视同仁：post 富文本若仅含单个
     // 文本段落（如复制粘贴的 /new），同样按命令处理；带图片/文件不认。
     // accept() 侧已用 nonEmptyString(content) 判定，两侧保持一致。
     const commandText = !hasImages && !hasFiles && text ? text.trim() : null;
-    if (!text && !hasImages && !hasFiles) {
+    if (!text && !hasImages && !hasFiles && !hasReply) {
       await this.#send(event.message.chat_id, t('目前支持文字、图片和文件消息。'), { replyTo: event.message.message_id });
       return;
     }
@@ -3289,8 +3295,8 @@ export class FeishuHarnessBridge {
       askCompleted = true;
       onAskComplete?.();
     };
-    let content = hasInboundImages(message)
-      ? await promptContentForMessage(message, { signal: this.#signal })
+    let content = hasInboundImages(message) || hasReplyReference(message)
+      ? await promptContentForInboundMessage(message, { signal: this.#signal })
       : undefined;
     const snapshot = this.#acceptedMessageIds.get(messageId);
     let contextEnhanced = false;

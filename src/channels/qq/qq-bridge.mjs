@@ -33,7 +33,6 @@ import {
   hasInboundImages,
   imagePromptDiagnostic,
   imagePromptUserMessage,
-  promptContentForMessage,
 } from '../shared/image-prompt.mjs';
 import {
   hasInboundFiles,
@@ -44,6 +43,10 @@ import {
   trackOutboundArtifactProviderPromise,
 } from '../shared/semantic/artifact.mjs';
 import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
+import {
+  hasReplyReference,
+  promptContentForInboundMessage,
+} from '../shared/semantic/reply-reference.mjs';
 import {
   createDeliveryReceipt,
   providerMessageIdsFor,
@@ -145,6 +148,37 @@ function hasQqFileAttachments(message) {
     && message.attachments.some((attachment) => !isQqImageAttachment(attachment));
 }
 
+function qqAttachmentKind(attachment) {
+  const mediaType = attachmentMediaType(attachment);
+  if (mediaType?.startsWith('image/')) return 'image';
+  if (mediaType?.startsWith('audio/')) return 'audio';
+  if (mediaType?.startsWith('video/')) return 'video';
+  return 'file';
+}
+
+function qqReplyReference(message) {
+  const refMsgIdx = nonEmptyString(message?.refMsgIdx);
+  if (!refMsgIdx) return null;
+  const element = Array.isArray(message?.msgElements) ? message.msgElements[0] : null;
+  const sourceAttachments = Array.isArray(element?.attachments) ? element.attachments : [];
+  const attachments = sourceAttachments.map((attachment) => {
+    const name = nonEmptyString(attachment?.filename);
+    return { kind: qqAttachmentKind(attachment), ...(name ? { name } : {}) };
+  });
+  const asrText = sourceAttachments
+    .filter((attachment) => qqAttachmentKind(attachment) === 'audio')
+    .map((attachment) => nonEmptyString(attachment?.asr_refer_text))
+    .filter(Boolean)
+    .join('\n');
+  const content = asrText || nonEmptyString(element?.content);
+  return {
+    messageId: refMsgIdx,
+    ...(content ? { content } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
+    ...(!content && attachments.length === 0 ? { unavailableReason: 'not-delivered' } : {}),
+  };
+}
+
 async function fetchQqFileBuffer(url, { fetchImpl, signal }) {
   const normalizedUrl = url.startsWith('//') ? `https:${url}` : url;
   const response = await fetchImpl(new URL(normalizedUrl), {
@@ -196,7 +230,13 @@ export function qqInboundMessage(message, { fetchImpl = fetch } = {}) {
       },
     });
   }
-  return { content: safeText(message), images, files };
+  const replyTo = qqReplyReference(message);
+  return {
+    content: safeText(message),
+    images,
+    files,
+    ...(replyTo ? { replyTo } : {}),
+  };
 }
 
 function nonEmptyString(value) {
@@ -493,7 +533,8 @@ export class QqHarnessBridge {
         : this.#batchInputs.handle(key, commandText, {
             plainText: Boolean(commandText)
               && !hasQqImageAttachments(message)
-              && !hasQqFileAttachments(message),
+              && !hasQqFileAttachments(message)
+              && !qqReplyReference(message),
           });
       if (result.handled) {
         if (result.kind === 'submit') {
@@ -785,10 +826,11 @@ export class QqHarnessBridge {
     const text = promptMessage.content;
     const hasImages = hasInboundImages(promptMessage);
     const hasFiles = hasInboundFiles(promptMessage);
+    const hasReply = hasReplyReference(promptMessage);
     let stream = null;
     let batchSettled = batchSubmission === null;
     try {
-      if (!text && !hasImages && !hasFiles) {
+      if (!text && !hasImages && !hasFiles && !hasReply) {
         await this.#bot.sendText(target, t('目前支持文字、图片和文件消息。'));
         await markMessageSeen();
         return;
@@ -836,8 +878,8 @@ export class QqHarnessBridge {
         return;
       }
 
-      let content = hasImages
-        ? await promptContentForMessage(promptMessage, { signal: this.#signal })
+      let content = hasImages || hasReply
+        ? await promptContentForInboundMessage(promptMessage, { signal: this.#signal })
         : undefined;
       const snapshot = this.#acceptedMessageIds.get(messageId);
       let contextEnhanced = false;

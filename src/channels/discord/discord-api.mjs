@@ -134,6 +134,13 @@ export class DiscordApi {
     });
   }
 
+  getMessage({ channelId, messageId, signal } = {}) {
+    return this.#request(
+      `channels/${snowflake(channelId, 'channel id')}/messages/${snowflake(messageId, 'message id')}`,
+      { method: 'GET', signal },
+    );
+  }
+
   startThreadFromMessage({ channelId, messageId, name, signal } = {}) {
     const threadName = cleanString(name);
     if (!threadName || [...threadName].length > 100) {

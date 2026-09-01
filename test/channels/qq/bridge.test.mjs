@@ -70,6 +70,62 @@ function message(overrides = {}) {
   };
 }
 
+test('QQ maps msgElements quote snapshots and prefers voice ASR text', () => {
+  const inbound = qqInboundMessage(message({
+    refMsgIdx: 'quoted-index-7',
+    msgElements: [{
+      content: '语音占位文字',
+      attachments: [
+        {
+          content_type: 'audio/silk',
+          filename: 'voice.silk',
+          asr_refer_text: '引用语音的识别文字',
+        },
+        { content_type: 'application/pdf', filename: '说明.pdf' },
+      ],
+    }],
+  }));
+
+  assert.equal(inbound.content, '请回答');
+  assert.deepEqual(inbound.replyTo, {
+    messageId: 'quoted-index-7',
+    content: '引用语音的识别文字',
+    attachments: [
+      { kind: 'audio', name: 'voice.silk' },
+      { kind: 'file', name: '说明.pdf' },
+    ],
+  });
+});
+
+test('QQ sends quote context to Harness but does not execute quoted commands', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-quote']]);
+  let clears = 0;
+  let prompt;
+  fixture.state.clearSession = async () => { clears += 1; };
+  const bridge = new QqHarnessBridge({
+    bot: { sendText: async () => ({ id: 'qq-quote-answer' }) },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, content) => { prompt = content; return '已处理'; },
+    },
+    state: fixture.state,
+  });
+
+  await bridge.accept(message({
+    messageId: 'qq-quote-prompt',
+    content: '这条指令是什么意思？',
+    refMsgIdx: 'quoted-command',
+    msgElements: [{ content: '/new' }],
+  }));
+
+  assert.equal(clears, 0);
+  assert.equal(Array.isArray(prompt), true);
+  assert.match(prompt[0].text, /<dsh_im_reply_to>/);
+  assert.match(prompt[0].text, /"content":"\/new"/);
+  assert.deepEqual(prompt.at(-1), { type: 'text', text: '这条指令是什么意思？' });
+});
+
 async function committedArtifact(t, fileName, content, suffix) {
   const workspace = await mkdtemp(join(tmpdir(), `dsh-im-qq-artifact-${suffix}-`));
   t.after(() => rm(workspace, { recursive: true, force: true }));
@@ -2447,15 +2503,21 @@ test('QQ private batch input submits once, cancels cleanly, and restores normal 
   });
 
   await bridge.accept(inbound('qq-batch-start', '/batch'));
+  await bridge.accept(inbound('qq-batch-quote', 'QQ 引用不能收录', {
+    refMsgIdx: 'qq-batch-ref',
+    msgElements: [{ content: '被引用内容' }],
+  }));
   await bridge.accept(inbound('qq-batch-one', '第一条'));
   await bridge.accept(inbound('qq-batch-two', '第二条'));
   assert.deepEqual(asked, []);
-  assert.equal(sent.length, 1);
+  assert.equal(sent.length, 2);
+  assert.match(sent[1], /引用消息.*未收录/s);
 
   await bridge.accept(inbound('qq-batch-send', '/send'));
   assert.equal(asked.length, 1);
   assert.match(asked[0], /\[消息 1\]\n第一条/);
   assert.match(asked[0], /\[消息 2\]\n第二条/);
+  assert.doesNotMatch(asked[0], /QQ 引用不能收录/);
   assert.equal(sent.at(-1), '批量完成');
 
   await bridge.accept(inbound('qq-cancel-start', '/batch'));

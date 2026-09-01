@@ -66,6 +66,12 @@ function sourceOf(content) {
   return JSON.parse(match[1]);
 }
 
+function textOf(content) {
+  return Array.isArray(content)
+    ? content.filter((item) => item?.type === 'text').map((item) => item.text).join('\n\n')
+    : content;
+}
+
 function withoutPrompt(calls) {
   return calls.map(([operation, ...args]) => operation === 'ask'
     ? [operation, args[0], '(prompt)', args[2]] : [operation, ...args]);
@@ -311,8 +317,8 @@ for (const channel of CHANNELS) {
         botId: `${channel}_internal`,
       };
       assert.deepEqual(sourceOf(current.prompts[0]), expected);
-      assert.ok(current.prompts[0].endsWith('\n\nhello'));
-      assert.doesNotMatch(current.prompts[0], /source_guidance|private-token|private-secret/);
+      assert.ok(textOf(current.prompts[0]).endsWith('\n\nhello'));
+      assert.doesNotMatch(textOf(current.prompts[0]), /source_guidance|private-token|private-secret/);
       assert.deepEqual(
         current.calls.filter(([operation]) => operation === 'renameSession'),
         [['renameSession', 'session-existing', 'hello']],
@@ -340,11 +346,11 @@ for (const channel of CHANNELS) {
       await current.bridge.accept(current.event(1, 'direct message', { kind: 'direct' }));
       await current.bridge.accept(current.event(2, 'group message', { kind: 'group' }));
       assert.deepEqual(sourceOf(current.prompts[0]), { botId: `${channel}_internal` });
-      assert.match(current.prompts[0], /DIRECT-ONLY-TOKEN/);
-      assert.doesNotMatch(current.prompts[0], /GROUP-ONLY-TOKEN|"channel"/);
+      assert.match(textOf(current.prompts[0]), /DIRECT-ONLY-TOKEN/);
+      assert.doesNotMatch(textOf(current.prompts[0]), /GROUP-ONLY-TOKEN|"channel"/);
       assert.deepEqual(sourceOf(current.prompts[1]), { channel });
-      assert.match(current.prompts[1], /GROUP-ONLY-TOKEN/);
-      assert.doesNotMatch(current.prompts[1], /DIRECT-ONLY-TOKEN|"botId"/);
+      assert.match(textOf(current.prompts[1]), /GROUP-ONLY-TOKEN/);
+      assert.doesNotMatch(textOf(current.prompts[1]), /DIRECT-ONLY-TOKEN|"botId"/);
     });
   }
 

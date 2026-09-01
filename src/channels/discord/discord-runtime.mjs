@@ -206,12 +206,101 @@ function discordFileSource(attachment, fetchImpl) {
   };
 }
 
-export function normalizeDiscordMessage(message, botId, { fetchImpl = fetch } = {}) {
+function discordReplyAttachment(attachment) {
+  if (!attachment || typeof attachment !== 'object') return null;
+  const mediaType = typeof attachment.content_type === 'string'
+    ? attachment.content_type.split(';', 1)[0].trim().toLowerCase() : '';
+  const kind = mediaType.startsWith('image/') ? 'image'
+    : mediaType.startsWith('audio/') ? 'audio'
+      : mediaType.startsWith('video/') ? 'video' : 'file';
+  const name = typeof attachment.filename === 'string' && attachment.filename
+    ? attachment.filename : undefined;
+  return { kind, ...(name ? { name } : {}) };
+}
+
+function discordReplySnapshot(message, fallbackMessageId) {
+  if (!message || typeof message !== 'object') return null;
+  const messageId = typeof message.id === 'string' && message.id
+    ? message.id : fallbackMessageId;
+  const authorId = typeof message.author?.id === 'string' && message.author.id
+    ? message.author.id : undefined;
+  const authorName = [message.member?.nick, message.author?.global_name, message.author?.username]
+    .find((value) => typeof value === 'string' && value.trim());
+  const attachments = Array.isArray(message.attachments)
+    ? message.attachments.map(discordReplyAttachment).filter(Boolean)
+    : [];
+  if (Array.isArray(message.sticker_items)) {
+    attachments.push(...message.sticker_items.map((sticker) => ({
+      kind: 'image',
+      ...(typeof sticker?.name === 'string' && sticker.name ? { name: sticker.name } : {}),
+    })));
+  }
+  return {
+    ...(messageId ? { messageId: String(messageId) } : {}),
+    ...(authorId ? { authorId } : {}),
+    ...(authorName ? { authorName } : {}),
+    content: typeof message.content === 'string' ? message.content : '',
+    attachments,
+  };
+}
+
+function discordReplyReference(message, loadReply) {
+  const channelId = String(message?.channel_id ?? '');
+  const referenceId = typeof message?.message_reference?.message_id === 'string'
+    && message.message_reference.message_id
+    ? message.message_reference.message_id : undefined;
+  const referenceChannelId = message?.message_reference?.channel_id;
+  if (referenceChannelId !== undefined && String(referenceChannelId) !== channelId) {
+    return {
+      ...(referenceId ? { messageId: referenceId } : {}),
+      unavailableReason: 'not-found',
+    };
+  }
+  if (Object.hasOwn(message ?? {}, 'referenced_message')) {
+    if (message.referenced_message === null) {
+      return {
+        ...(referenceId ? { messageId: referenceId } : {}),
+        unavailableReason: 'deleted',
+      };
+    }
+    if (message.referenced_message && typeof message.referenced_message === 'object') {
+      const snapshotId = typeof message.referenced_message.id === 'string'
+        && message.referenced_message.id ? message.referenced_message.id : undefined;
+      if (String(message.referenced_message.channel_id ?? '') !== channelId
+        || !snapshotId || (referenceId && snapshotId !== referenceId)) {
+        return {
+          ...(referenceId ? { messageId: referenceId } : {}),
+          unavailableReason: 'not-found',
+        };
+      }
+      return discordReplySnapshot(message.referenced_message, referenceId) ?? undefined;
+    }
+  }
+  if (!referenceId) return undefined;
+  if (typeof loadReply !== 'function') {
+    return { messageId: referenceId, unavailableReason: 'not-delivered' };
+  }
+  return {
+    messageId: referenceId,
+    load: async ({ signal } = {}) => {
+      const referenced = await loadReply({ channelId, messageId: referenceId, signal });
+      if (!referenced || String(referenced.id ?? '') !== referenceId
+        || String(referenced.channel_id ?? '') !== channelId) return null;
+      return discordReplySnapshot(referenced, referenceId);
+    },
+  };
+}
+
+export function normalizeDiscordMessage(message, botId, {
+  fetchImpl = fetch,
+  loadReply,
+} = {}) {
   if (!message?.id || !message?.channel_id || !message?.author?.id
     || Number(message.type) === 21) return null;
   const direct = !message.guild_id;
   const addressed = direct
     || message.mentions?.some((mention) => String(mention?.id) === String(botId));
+  const replyTo = discordReplyReference(message, loadReply);
   return {
     messageId: String(message.id),
     senderId: String(message.author.id),
@@ -232,6 +321,7 @@ export function normalizeDiscordMessage(message, botId, { fetchImpl = fetch } = 
     files: Array.isArray(message.attachments)
       ? message.attachments.map((attachment) => discordFileSource(attachment, fetchImpl)).filter(Boolean)
       : [],
+    ...(replyTo ? { replyTo } : {}),
     addressed,
     replyTarget: {
       channelId: String(message.channel_id),
@@ -252,7 +342,12 @@ export async function resolveDiscordMessageRoute(message, botId, {
   signal,
   onChannel,
 } = {}) {
-  const normalized = normalizeDiscordMessage(message, botId, { fetchImpl });
+  const normalized = normalizeDiscordMessage(message, botId, {
+    fetchImpl,
+    loadReply: typeof api?.getMessage === 'function'
+      ? (options) => api.getMessage(options)
+      : undefined,
+  });
   if (!normalized || normalized.senderIsBot) return normalized;
   signal?.throwIfAborted();
   if (normalized.kind === 'direct') {

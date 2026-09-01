@@ -33,7 +33,6 @@ import {
   ImagePromptError,
   imagePromptDiagnostic,
   imagePromptUserMessage,
-  promptContentForMessage,
 } from '../shared/image-prompt.mjs';
 import {
   hasInboundFiles,
@@ -42,6 +41,10 @@ import {
 import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
 import { trackOutboundArtifactProviderPromise } from '../shared/semantic/artifact.mjs';
 import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
+import {
+  hasReplyReference,
+  promptContentForInboundMessage,
+} from '../shared/semantic/reply-reference.mjs';
 import {
   createDeliveryReceipt,
 } from '../shared/semantic/delivery.mjs';
@@ -108,8 +111,7 @@ function conversationKey(frame) {
   return body.chattype === 'group' ? `group:${body.chatid}` : `direct:${body.from?.userid}`;
 }
 
-function messageText(frame) {
-  const body = bodyOf(frame);
+function messageContentText(body) {
   let text = '';
   if (body.msgtype === 'text') {
     text = typeof body.text?.content === 'string' ? body.text.content.trim() : '';
@@ -122,6 +124,12 @@ function messageText(frame) {
       .join('\n')
       .trim();
   }
+  return text;
+}
+
+function messageText(frame) {
+  const body = bodyOf(frame);
+  const text = messageContentText(body);
   // Group callbacks retain the leading @bot mention that caused delivery.
   // It is routing metadata rather than part of the user's prompt or answer.
   return body.chattype === 'group'
@@ -143,6 +151,36 @@ function fileContents(frame) {
   return body.msgtype === 'file' && body.file && typeof body.file === 'object'
     ? [body.file]
     : [];
+}
+
+function quoteAttachments(quote) {
+  if (quote?.msgtype === 'image') return [{ kind: 'image' }];
+  if (quote?.msgtype === 'voice') return [{ kind: 'audio' }];
+  if (quote?.msgtype === 'file') {
+    const name = nonEmptyString(
+      quote.file?.filename ?? quote.file?.file_name ?? quote.file?.name,
+    );
+    return [{ kind: 'file', ...(name ? { name } : {}) }];
+  }
+  if (quote?.msgtype !== 'mixed' || !Array.isArray(quote.mixed?.msg_item)) return [];
+  return quote.mixed.msg_item
+    .filter((item) => item?.msgtype === 'image')
+    .map(() => ({ kind: 'image' }));
+}
+
+function replyReferenceForBody(body) {
+  const quote = body?.quote;
+  if (!quote || typeof quote !== 'object') return null;
+  const content = messageContentText(quote);
+  const attachments = quoteAttachments(quote);
+  const supported = ['text', 'image', 'mixed', 'voice', 'file'].includes(quote.msgtype);
+  return {
+    ...(content ? { content } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
+    ...(!content && attachments.length === 0
+      ? { unavailableReason: supported ? 'not-delivered' : 'unsupported' }
+      : {}),
+  };
 }
 
 function imageSource(client, image) {
@@ -200,10 +238,13 @@ function fileSource(client, file) {
 }
 
 export function wecomInboundMessage(frame, client) {
+  const body = bodyOf(frame);
+  const replyTo = replyReferenceForBody(body);
   return {
     content: messageText(frame),
     images: imageContents(frame).map((image) => imageSource(client, image)).filter(Boolean),
     files: fileContents(frame).map((file) => fileSource(client, file)).filter(Boolean),
+    ...(replyTo ? { replyTo } : {}),
   };
 }
 
@@ -604,7 +645,7 @@ export class WecomHarnessBridge {
         && (this.#queues.has(key) || pending || this.#approvals.hasPending(key))
         ? { handled: true, kind: 'busy', message: batchInputBusyMessage() }
         : this.#batchInputs.handle(key, commandText, {
-            plainText: isNativeWecomText(frame),
+            plainText: isNativeWecomText(frame) && !hasReplyReference(commandMessage),
           });
       if (result.handled) {
         if (result.kind === 'submit') {
@@ -934,6 +975,7 @@ export class WecomHarnessBridge {
     const text = message.content;
     const hasImages = hasInboundImages(message);
     const hasFiles = hasInboundFiles(message);
+    const hasReply = hasReplyReference(message);
     const key = conversationKey(frame);
     let streamId = null;
     let streamStarted = false;
@@ -942,7 +984,7 @@ export class WecomHarnessBridge {
     let batchSettled = batchSubmission === null;
     let promptRecorded = false;
     try {
-      if (!text && !hasImages && !hasFiles) {
+      if (!text && !hasImages && !hasFiles && !hasReply) {
         await this.#sendImmediate(frame, chatId, t('目前支持文字、图片、文件和语音转写消息。'));
         await this.#state.markSeen(messageId);
         return;
@@ -1003,8 +1045,8 @@ export class WecomHarnessBridge {
         this.#logger.warn?.('[dsh-im:wecom] unable to start a stream; using an active reply:', error);
       }
 
-      let content = hasImages
-        ? await promptContentForMessage(message, { signal: this.#signal })
+      let content = hasImages || hasReply
+        ? await promptContentForInboundMessage(message, { signal: this.#signal })
         : undefined;
       const snapshot = this.#acceptedMessageIds.get(messageId);
       let contextEnhanced = false;
