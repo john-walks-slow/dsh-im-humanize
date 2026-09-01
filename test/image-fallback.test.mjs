@@ -235,6 +235,29 @@ test('a failed restage keeps the original model-rejection error for the user', a
   assert.equal(promptCalls.length, 1);
 });
 
+test('caller cancellation wins while rejected images are being restaged', async (t) => {
+  const root = await workspace(t);
+  const controller = new AbortController();
+  const cancellation = new Error('caller cancelled image fallback');
+  const { client, promptCalls } = scriptedClient({
+    workspaceRoot: root,
+    fileIngressExecutor: async () => {
+      controller.abort(cancellation);
+      throw cancellation;
+    },
+    onPrompt: (attempt) => (attempt === 1 ? Promise.reject(modelImageRejection()) : Promise.resolve({})),
+  });
+
+  await assert.rejects(
+    client.ask('session-fallback', imageContent(), {
+      timeoutMs: 3_000,
+      signal: controller.signal,
+    }),
+    (error) => error === cancellation,
+  );
+  assert.equal(promptCalls.length, 1);
+});
+
 test('the fallback retry itself is never retried again', async (t) => {
   const root = await workspace(t);
   const { client, promptCalls } = scriptedClient({

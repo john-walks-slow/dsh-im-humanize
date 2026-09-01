@@ -1415,7 +1415,7 @@ export class HarnessClient {
         try {
           stagedImages = await this.#stageWorkspaceFiles(sessionId, imageSources, signal);
         } catch (stagingError) {
-          if (signal?.aborted) throw error;
+          if (signal?.aborted) throw signal.reason ?? stagingError;
           console.warn(
             `[${this.#logPrefix}] unable to restage rejected images as workspace files:`,
             stagingError?.message ?? String(stagingError),
