@@ -1677,10 +1677,15 @@ export class FeishuHarnessBridge {
     }
     const conversationType = route.key.startsWith('p2p:') ? 'direct'
       : route.key.startsWith('group:') ? 'group' : null;
+    const isInteractionResponse = resolvedAction.startsWith('approve:')
+      || resolvedAction.startsWith('reject:')
+      || resolvedAction.startsWith('answer:');
     const access = evaluateInboundAccess(this.#accessPolicy, {
       conversationType,
       senderIds: operatorOpenId,
-      isCommand: true,
+      // These buttons are the card equivalent of an ordinary approval or
+      // question reply. Every other card action remains command-gated.
+      isCommand: !isInteractionResponse,
     });
     if (!access.allowed) {
       if (access.reason === 'command-not-allowed') {
@@ -3878,7 +3883,7 @@ export class FeishuHarnessBridge {
         // Fall back to the plain-text question if the card cannot be sent.
         // If the text send also fails, let the error propagate so the pending
         // question is not marked as presented and the existing retry logic runs.
-        await this.#send(
+        return this.#send(
           pending.chatId,
           harnessQuestionText(question, pending.index, pending.questions.length, {
             requiresMention: pending.requiresMention,
