@@ -142,11 +142,10 @@ function telegramFileSource(message, loadFile) {
   };
 }
 
-function telegramReplyAttachment(kind, file, fallbackName) {
+function telegramReplyAttachment(kind, file) {
   if (!file || typeof file !== 'object') return null;
   const name = typeof file.file_name === 'string' && file.file_name
-    ? file.file_name : typeof fallbackName === 'string' && fallbackName
-      ? fallbackName : undefined;
+    ? file.file_name : undefined;
   return { kind, ...(name ? { name } : {}) };
 }
 
@@ -156,11 +155,7 @@ function telegramReplyAttachments(message) {
     const largest = message.photo.reduce((best, candidate) => (
       photoScore(candidate) > photoScore(best) ? candidate : best
     ));
-    attachments.push(telegramReplyAttachment(
-      'image',
-      largest,
-      `${largest.file_unique_id ?? largest.file_id ?? 'telegram-photo'}.jpg`,
-    ));
+    attachments.push(telegramReplyAttachment('image', largest));
   } else if (message?.document) {
     attachments.push(telegramReplyAttachment(
       imageTypeForDocument(message.document) ? 'image' : 'file',
@@ -180,7 +175,6 @@ function telegramReplyAttachments(message) {
     attachments.push(telegramReplyAttachment(
       message.sticker.is_video === true ? 'video' : 'image',
       message.sticker,
-      message.sticker.file_unique_id ?? message.sticker.file_id,
     ));
   }
   return attachments.filter(Boolean);
