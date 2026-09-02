@@ -1,12 +1,66 @@
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+import { weixinMessageTimestampMs } from './weixin-api.mjs';
+
 const EMPTY_STATE = Object.freeze({
   version: 1,
   sessions: {},
   seenMessageIds: [],
   getUpdatesBuf: '',
+  recentOutboundMessages: [],
 });
+
+export const WEIXIN_RECENT_OUTBOUND_LIMIT = 200;
+export const WEIXIN_RECENT_OUTBOUND_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+export const WEIXIN_RECENT_OUTBOUND_TEXT_LIMIT = 8_000;
+export const WEIXIN_RECENT_OUTBOUND_MATCH_TOLERANCE_MS = 15_000;
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function timestamp(value) {
+  const number = typeof value === 'string' && value.trim() ? Number(value) : value;
+  return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : null;
+}
+
+function providerMessageIds(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .map((id) => (id === undefined || id === null ? null : nonEmptyString(String(id))))
+    .filter(Boolean))];
+}
+
+function truncateText(value) {
+  const text = nonEmptyString(value);
+  return text ? [...text].slice(0, WEIXIN_RECENT_OUTBOUND_TEXT_LIMIT).join('') : null;
+}
+
+function normalizeRecentOutboundMessage(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const toUserId = nonEmptyString(value.toUserId);
+  const text = truncateText(value.text);
+  const sentAt = timestamp(value.sentAt);
+  const completedAt = timestamp(value.completedAt) ?? sentAt;
+  if (!toUserId || !text || sentAt === null || completedAt === null) return null;
+  return {
+    toUserId,
+    text,
+    sentAt,
+    completedAt: Math.max(sentAt, completedAt),
+    providerMessageIds: providerMessageIds(value.providerMessageIds),
+  };
+}
+
+function recentOutboundMessages(value, now = Date.now()) {
+  if (!Array.isArray(value)) return [];
+  const cutoff = now - WEIXIN_RECENT_OUTBOUND_TTL_MS;
+  return value
+    .map(normalizeRecentOutboundMessage)
+    .filter((entry) => entry && entry.completedAt >= cutoff)
+    .slice(-WEIXIN_RECENT_OUTBOUND_LIMIT);
+}
 
 function normalizeState(value) {
   if (!value || typeof value !== 'object') return structuredClone(EMPTY_STATE);
@@ -25,6 +79,7 @@ function normalizeState(value) {
       ? value.seenMessageIds.filter((id) => typeof id === 'string').slice(-1_000)
       : [],
     getUpdatesBuf: typeof value.getUpdatesBuf === 'string' ? value.getUpdatesBuf : '',
+    recentOutboundMessages: recentOutboundMessages(value.recentOutboundMessages),
   };
 }
 
@@ -88,6 +143,61 @@ export class WeixinStateStore {
     if (typeof value !== 'string' || value === this.#state.getUpdatesBuf) return;
     this.#state.getUpdatesBuf = value;
     await this.#persist();
+  }
+
+  async rememberOutboundMessage({
+    toUserId,
+    text,
+    sentAt = Date.now(),
+    completedAt = Date.now(),
+    providerMessageIds: messageIds = [],
+  } = {}) {
+    const entry = normalizeRecentOutboundMessage({
+      toUserId,
+      text,
+      sentAt,
+      completedAt,
+      providerMessageIds: messageIds,
+    });
+    if (!entry) throw new TypeError('Invalid Weixin outbound message');
+    this.#state.recentOutboundMessages = recentOutboundMessages([
+      ...this.#state.recentOutboundMessages,
+      entry,
+    ]);
+    await this.#persist();
+  }
+
+  recentOutboundTextFor({
+    toUserId,
+    messageId,
+    createTimeMs,
+    updateTimeMs,
+    now = Date.now(),
+  } = {}) {
+    const recipient = nonEmptyString(toUserId);
+    if (!recipient) return null;
+    const active = recentOutboundMessages(this.#state.recentOutboundMessages, now)
+      .filter((entry) => entry.toUserId === recipient);
+    const quotedMessageId = messageId === undefined || messageId === null
+      ? null
+      : nonEmptyString(String(messageId));
+    if (quotedMessageId) {
+      const exact = active.filter((entry) => entry.providerMessageIds.includes(quotedMessageId));
+      if (exact.length === 1) return exact[0].text;
+      if (exact.length > 1) return null;
+    }
+    const quotedTimes = [
+      timestamp(createTimeMs),
+      timestamp(updateTimeMs),
+      weixinMessageTimestampMs(quotedMessageId, { now }),
+    ]
+      .filter((value) => value !== null);
+    if (quotedTimes.length === 0) return null;
+    const candidates = active.filter((entry) => quotedTimes.some((quotedAt) => (
+      quotedAt >= entry.sentAt - WEIXIN_RECENT_OUTBOUND_MATCH_TOLERANCE_MS
+        && quotedAt <= entry.completedAt + WEIXIN_RECENT_OUTBOUND_MATCH_TOLERANCE_MS
+    )));
+    return candidates.length === 1 ? candidates[0].text : null;
   }
 
   snapshot() {

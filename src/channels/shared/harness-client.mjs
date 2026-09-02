@@ -7,6 +7,12 @@ import {
   appendInboundFilesToPrompt,
   InboundFileError,
 } from './inbound-file.mjs';
+import {
+  IMAGE_FILE_FALLBACK_PROMPT,
+  contentWithoutImages,
+  imageFileSourcesFromContent,
+  isModelImageRejection,
+} from './image-prompt.mjs';
 import { outboundArtifactRegistry } from './semantic/artifact.mjs';
 import { t } from './i18n.mjs';
 import { watchHarnessMux } from './harness-mux.mjs';
@@ -911,6 +917,12 @@ export class HarnessClient {
     return created.sessionId;
   }
 
+  async renameSession(sessionId, title, options = {}) {
+    if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('sessionId is required');
+    if (typeof title !== 'string' || !title.trim()) throw new TypeError('session title is required');
+    return this.rpc('session.rename', { sessionId, title }, 30_000, options);
+  }
+
   async executeCommand(sessionId, line, options = {}) {
     if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('sessionId is required');
     if (typeof line !== 'string' || !line) throw new TypeError('command line is required');
@@ -1236,6 +1248,31 @@ export class HarnessClient {
     return ownership ? { ownership, recovered: true } : null;
   }
 
+  /** Stage inbound file sources into the Session workspace via the Host executor. */
+  async #stageWorkspaceFiles(sessionId, files, signal) {
+    if (!this.#fileIngressExecutor) {
+      throw new InboundFileError(
+        'inbound-file-ingress-unavailable',
+        'Harness file ingress is unavailable in this Host process.',
+      );
+    }
+    const sessionList = await this.rpc(
+      'session.list',
+      {},
+      30_000,
+      { signal },
+    );
+    const sessionWorkspace = sessionList?.items?.find(
+      (item) => item?.sessionId === sessionId,
+    )?.cwd;
+    return this.#fileIngressExecutor({
+      sessionId,
+      workspace: sessionWorkspace,
+      files,
+      signal,
+    });
+  }
+
   async ask(sessionId, prompt, options = {}) {
     if (typeof options === 'number') options = { timeoutMs: options };
     const timeoutMs = options.timeoutMs ?? 600_000;
@@ -1292,7 +1329,7 @@ export class HarnessClient {
     let interactionTask = null;
     let artifactsDelivered = false;
     let deliveredArtifactCount = 0;
-    let stagedInboundFiles = null;
+    const stagedBatches = [];
     let promptAccepted = false;
     let turnFinished = false;
 
@@ -1323,29 +1360,11 @@ export class HarnessClient {
     const closeArtifactConsumer = outboundArtifactRegistry.openConsumer(sessionId, promptRpcId);
 
     try {
+      const basePrompt = prompt;
       if (inboundFiles.length > 0) {
-        if (!this.#fileIngressExecutor) {
-          throw new InboundFileError(
-            'inbound-file-ingress-unavailable',
-            'Harness file ingress is unavailable in this Host process.',
-          );
-        }
-        const sessionList = await this.rpc(
-          'session.list',
-          {},
-          30_000,
-          { signal },
-        );
-        const sessionWorkspace = sessionList?.items?.find(
-          (item) => item?.sessionId === sessionId,
-        )?.cwd;
-        stagedInboundFiles = await this.#fileIngressExecutor({
-          sessionId,
-          workspace: sessionWorkspace,
-          files: inboundFiles,
-          signal,
-        });
-        prompt = appendInboundFilesToPrompt(prompt, stagedInboundFiles);
+        const staged = await this.#stageWorkspaceFiles(sessionId, inboundFiles, signal);
+        stagedBatches.push(staged);
+        prompt = appendInboundFilesToPrompt(prompt, staged);
       }
       if (interactionSignal) {
         let markOpen;
@@ -1372,12 +1391,47 @@ export class HarnessClient {
       if (!Array.isArray(content) || content.length === 0) {
         throw new TypeError('Harness prompt content is required');
       }
-      await this.rpc('session.prompt', {
+      const clientTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const sendPrompt = (promptContent) => this.rpc('session.prompt', {
         sessionId,
         mode: 'queue',
-        content,
-        clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        content: promptContent,
+        clientTimeZone,
       }, 30_000, { rpcId: promptRpcId, signal });
+      try {
+        await sendPrompt(content);
+      } catch (error) {
+        // The Host refuses image blocks for a non-vision model before any
+        // durable user message exists. Re-deliver the same bytes the way
+        // ordinary uploads (zip, documents) already travel — staged into the
+        // Session workspace and named in a text manifest — then retry once
+        // with a text-only prompt. The retry reuses promptRpcId so reply
+        // tracking, control and interaction ownership stay bound to this ask.
+        const imageSources = isModelImageRejection(error)
+          ? imageFileSourcesFromContent(content)
+          : [];
+        if (imageSources.length === 0) throw error;
+        let stagedImages;
+        try {
+          stagedImages = await this.#stageWorkspaceFiles(sessionId, imageSources, signal);
+        } catch (stagingError) {
+          if (signal?.aborted) throw signal.reason ?? stagingError;
+          console.warn(
+            `[${this.#logPrefix}] unable to restage rejected images as workspace files:`,
+            stagingError?.message ?? String(stagingError),
+          );
+          throw error;
+        }
+        stagedBatches.push(stagedImages);
+        const baseContent = typeof basePrompt === 'string'
+          ? [{ type: 'text', text: basePrompt }]
+          : basePrompt;
+        const fallbackPrompt = appendInboundFilesToPrompt([
+          ...contentWithoutImages(baseContent),
+          { type: 'text', text: t(IMAGE_FILE_FALLBACK_PROMPT) },
+        ], { files: stagedBatches.flatMap((batch) => batch?.files ?? []) });
+        await sendPrompt(fallbackPrompt);
+      }
       promptAccepted = true;
 
       try {
@@ -1435,10 +1489,14 @@ export class HarnessClient {
         throw turnStoppedError();
       }
     } finally {
-      if (stagedInboundFiles && (!promptAccepted || turnFinished)) {
-        await stagedInboundFiles.cleanup().catch((error) => {
-          console.warn(`[${this.#logPrefix}] unable to clean inbound files:`, error.message);
-        });
+      if (!promptAccepted || turnFinished) {
+        for (const staged of stagedBatches) {
+          try {
+            await staged?.cleanup?.();
+          } catch (error) {
+            console.warn(`[${this.#logPrefix}] unable to clean inbound files:`, error.message);
+          }
+        }
       }
       closeArtifactConsumer();
       if (ownership) {

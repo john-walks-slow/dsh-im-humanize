@@ -33,7 +33,6 @@ import {
   hasInboundImages,
   imagePromptDiagnostic,
   imagePromptUserMessage,
-  promptContentForMessage,
 } from '../shared/image-prompt.mjs';
 import {
   hasInboundFiles,
@@ -44,6 +43,10 @@ import {
   trackOutboundArtifactProviderPromise,
 } from '../shared/semantic/artifact.mjs';
 import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
+import {
+  hasReplyReference,
+  promptContentForInboundMessage,
+} from '../shared/semantic/reply-reference.mjs';
 import {
   createDeliveryReceipt,
   providerMessageIdsFor,
@@ -89,6 +92,7 @@ function helpText() {
     t('/workspacelist  列出工作区绝对路径'),
     t('/ws、/wsl、/workspaces  工作区命令别名'),
     t('/sessionlist 或 /sessions [工作区序号或绝对路径]  列出会话 ID 和标题'),
+    t('/sessionlist --limit N  仅列出当前工作区前 N 个会话'),
     t('/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话'),
     t('/models  按序号列出所有可用模型'),
     t('/reasoninglist 或 /reasonings  按序号列出当前模型可用推理等级'),
@@ -146,6 +150,37 @@ function hasQqFileAttachments(message) {
     && message.attachments.some((attachment) => !isQqImageAttachment(attachment));
 }
 
+function qqAttachmentKind(attachment) {
+  const mediaType = attachmentMediaType(attachment);
+  if (mediaType?.startsWith('image/')) return 'image';
+  if (mediaType?.startsWith('audio/')) return 'audio';
+  if (mediaType?.startsWith('video/')) return 'video';
+  return 'file';
+}
+
+function qqReplyReference(message) {
+  const refMsgIdx = nonEmptyString(message?.refMsgIdx);
+  if (!refMsgIdx) return null;
+  const element = Array.isArray(message?.msgElements) ? message.msgElements[0] : null;
+  const sourceAttachments = Array.isArray(element?.attachments) ? element.attachments : [];
+  const attachments = sourceAttachments.map((attachment) => {
+    const name = nonEmptyString(attachment?.filename);
+    return { kind: qqAttachmentKind(attachment), ...(name ? { name } : {}) };
+  });
+  const asrText = sourceAttachments
+    .filter((attachment) => qqAttachmentKind(attachment) === 'audio')
+    .map((attachment) => nonEmptyString(attachment?.asr_refer_text))
+    .filter(Boolean)
+    .join('\n');
+  const content = asrText || nonEmptyString(element?.content);
+  return {
+    messageId: refMsgIdx,
+    ...(content ? { content } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
+    ...(!content && attachments.length === 0 ? { unavailableReason: 'not-delivered' } : {}),
+  };
+}
+
 async function fetchQqFileBuffer(url, { fetchImpl, signal }) {
   const normalizedUrl = url.startsWith('//') ? `https:${url}` : url;
   const response = await fetchImpl(new URL(normalizedUrl), {
@@ -197,7 +232,13 @@ export function qqInboundMessage(message, { fetchImpl = fetch } = {}) {
       },
     });
   }
-  return { content: safeText(message), images, files };
+  const replyTo = qqReplyReference(message);
+  return {
+    content: safeText(message),
+    images,
+    files,
+    ...(replyTo ? { replyTo } : {}),
+  };
 }
 
 function nonEmptyString(value) {
@@ -494,7 +535,8 @@ export class QqHarnessBridge {
         : this.#batchInputs.handle(key, commandText, {
             plainText: Boolean(commandText)
               && !hasQqImageAttachments(message)
-              && !hasQqFileAttachments(message),
+              && !hasQqFileAttachments(message)
+              && !qqReplyReference(message),
           });
       if (result.handled) {
         if (result.kind === 'submit') {
@@ -786,10 +828,11 @@ export class QqHarnessBridge {
     const text = promptMessage.content;
     const hasImages = hasInboundImages(promptMessage);
     const hasFiles = hasInboundFiles(promptMessage);
+    const hasReply = hasReplyReference(promptMessage);
     let stream = null;
     let batchSettled = batchSubmission === null;
     try {
-      if (!text && !hasImages && !hasFiles) {
+      if (!text && !hasImages && !hasFiles && !hasReply) {
         await this.#bot.sendText(target, t('目前支持文字、图片和文件消息。'));
         await markMessageSeen();
         return;
@@ -837,16 +880,20 @@ export class QqHarnessBridge {
         return;
       }
 
-      let content = hasImages
-        ? await promptContentForMessage(promptMessage, { signal: this.#signal })
+      let content = hasImages || hasReply
+        ? await promptContentForInboundMessage(promptMessage, { signal: this.#signal })
         : undefined;
       const snapshot = this.#acceptedMessageIds.get(messageId);
+      let contextEnhanced = false;
       if (snapshot) {
-        content = enhanceContextContent(content ?? text, snapshot, () => ({
+        const originalContent = content ?? text;
+        content = enhanceContextContent(originalContent, snapshot, () => ({
           channel: 'qq',
           senderId: sender,
           senderName: message.kind === 'group' ? message.senderName : undefined,
+          chatId: message.kind === 'group' ? message.groupOpenid : message.senderId,
         }));
+        contextEnhanced = content !== originalContent;
       }
       // QQ stream_messages can acknowledge a final frame without rendering it in
       // some C2C clients. Standard Markdown delivery is the reliable reply path.
@@ -861,7 +908,9 @@ export class QqHarnessBridge {
           harness: this.#harness,
           state: this.#state,
           key,
-          ...(content !== undefined ? { content } : { text }),
+          text,
+          content,
+          contextEnhanced,
           createOptions: { signal: this.#signal },
           existsOptions: { signal: this.#signal },
           askOptions: {

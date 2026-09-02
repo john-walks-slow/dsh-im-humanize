@@ -32,7 +32,7 @@ function requiredCredential(value, name) {
  * @param {number} [options.updateIntervalMs=500] Minimum delay between updates.
  * @param {()=>number} [options.clock] Monotonic millisecond clock.
  * @param {{setTimeout: Function, clearTimeout: Function}} [options.timer] Timer implementation.
- * @returns {{start(initialText: string): Promise<boolean>, push(progressText: string): void, finish(finalText: string): Promise<boolean>}}
+ * @returns {{start(initialText: string): Promise<boolean>, push(progressText: string): void, finish(finalText: string): Promise<boolean>, readonly providerMessageIds: string[]}}
  * Card stream controller.
  */
 export function createDingTalkCardStream({
@@ -231,5 +231,12 @@ export function createDingTalkCardStream({
     return finishPromise;
   };
 
-  return Object.freeze({ start, push, finish });
+  return Object.freeze({
+    start,
+    push,
+    finish,
+    get providerMessageIds() {
+      return cardRequest?.cardInstanceId ? [cardRequest.cardInstanceId] : [];
+    },
+  });
 }

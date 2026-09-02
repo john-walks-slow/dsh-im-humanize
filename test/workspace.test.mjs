@@ -1158,6 +1158,51 @@ test('/sessionlist supports the current workspace, list numbers, and absolute pa
   assert.equal(workspaceListCalls, 1, 'only numeric selection needs the workspace registry order');
 });
 
+test('/sessionlist and /sessions accept a one-off --limit for the current workspace', async (t) => {
+  const { defaultWorkspace } = await fixture(t);
+  const sessions = Array.from({ length: 4 }, (_, index) => ({
+    sessionId: `limited-session-${index + 1}`,
+    title: `Limited Session ${index + 1}`,
+    archived: false,
+    summaryAvailable: true,
+  }));
+  let listCalls = 0;
+  const harness = {
+    currentWorkspace() { return defaultWorkspace; },
+    async listWorkspaceSessions(workspace) {
+      listCalls += 1;
+      return { workspace, sessions };
+    },
+  };
+
+  const limited = await runWorkspaceCommand('/sessionlist --limit 2', harness);
+  assert.match(limited.message, /会话（2）：/);
+  assert.match(limited.message, /limited-session-1/);
+  assert.match(limited.message, /limited-session-2/);
+  assert.doesNotMatch(limited.message, /limited-session-3|limited-session-4/);
+
+  const alias = await runWorkspaceCommand('/SESSIONS --LIMIT 1', harness);
+  assert.match(alias.message, /会话（1）：/);
+  assert.match(alias.message, /limited-session-1/);
+  assert.doesNotMatch(alias.message, /limited-session-2/);
+
+  const oversized = await runWorkspaceCommand('/sessionlist --limit 99', harness);
+  assert.match(oversized.message, /会话（4）：/);
+  assert.equal(listCalls, 3);
+
+  for (const command of [
+    '/sessionlist --limit',
+    '/sessionlist --limit 0',
+    '/sessionlist --limit -1',
+    '/sessionlist --limit many',
+    '/sessionlist --limit 2 1',
+  ]) {
+    const result = await runWorkspaceCommand(command, harness);
+    assert.match(result.message, /\/sessionlist --limit N/);
+  }
+  assert.equal(listCalls, 3, 'invalid limits must not query Harness');
+});
+
 test('/sessions reuses /sessionlist parsing for current, numbered, and absolute workspaces', async (t) => {
   const { defaultWorkspace, alternateWorkspace } = await fixture(t);
   const calls = [];
@@ -1341,6 +1386,7 @@ test('all nine channel bridge families advertise and fan out workspace command r
     const source = await readFile(new URL(file, import.meta.url), 'utf8');
     assert.match(source, /\/workspacelist  列出工作区绝对路径/);
     assert.match(source, /\/sessionlist 或 \/sessions \[工作区序号或绝对路径\]  列出会话 ID 和标题/);
+    assert.match(source, /\/sessionlist --limit N  仅列出当前工作区前 N 个会话/);
     assert.match(source, /workspaceCommand\.messages \?\? \[workspaceCommand\.message\]/);
   }
 });

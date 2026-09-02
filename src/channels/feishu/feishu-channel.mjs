@@ -205,15 +205,45 @@ export class VerifiedFeishuChannel {
     }
 
     const cards = [];
+    let activeCard = null;
+    let rotating = false;
     try {
-      const firstCard = await this.#createStreamCard(chatId, options.replyTo);
-      cards.push(firstCard);
+      activeCard = await this.#createStreamCard(chatId, options.replyTo);
+      cards.push(activeCard);
       let lastContent = this.#initialText;
+      // issue #86：独立交互消息（提问/审批）落在占位卡下方后，最终答案不得
+      // 回写旧卡。rotate() 把旧卡定格为「过程记录 + 指引行」并标记换卡态；
+      // 下一次 setContent（过程更新或最终答案）才创建新卡——新卡必然创建于
+      // 交互消息之后。旧卡纳入 cards，参与 recall 与 providerMessageIds。
+      const ensureActiveCard = async () => {
+        if (!rotating) return activeCard;
+        activeCard = await this.#createStreamCard(chatId, options.replyTo);
+        cards.push(activeCard);
+        rotating = false;
+        return activeCard;
+      };
       const controller = {
-        messageId: firstCard.messageId,
+        get messageId() {
+          return activeCard.messageId;
+        },
+        rotate: async () => {
+          if (rotating) return;
+          rotating = true;
+          try {
+            await this.#updateStreamCard(
+              activeCard,
+              `${streamPreview(lastContent)}\n\n${t('⤵️ 最终结果见下方')}`,
+            );
+            await this.#finishStreamCard(activeCard);
+          } catch (error) {
+            // 明确降级：定格失败不阻塞交互呈现，旧卡保留原内容。
+            console.warn('[dsh-feishu] unable to finalize the superseded stream card:', error.message);
+          }
+        },
         setContent: async (content) => {
           const next = String(content ?? '') || '…';
-          await this.#updateStreamCard(firstCard, streamPreview(next));
+          const card = await ensureActiveCard();
+          await this.#updateStreamCard(card, streamPreview(next));
           // Updates are replaceable snapshots, including progress/tool text.
           // Retain the full latest snapshot even when its preview is unchanged.
           lastContent = next;
@@ -224,14 +254,14 @@ export class VerifiedFeishuChannel {
       const chunks = splitStreamContent(lastContent);
       for (const [index, chunk] of chunks.entries()) {
         const card = index === 0
-          ? firstCard
+          ? await ensureActiveCard()
           : await this.#createStreamCard(chatId, options.replyTo);
         if (index > 0) cards.push(card);
         await this.#updateStreamCard(card, chunk);
         await this.#finishStreamCard(card);
       }
       return {
-        messageId: firstCard.messageId,
+        messageId: cards[0].messageId,
         providerMessageIds: cards.map((card) => card.messageId),
       };
     } catch (error) {

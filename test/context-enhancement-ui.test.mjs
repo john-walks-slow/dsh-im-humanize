@@ -217,6 +217,11 @@ test('context settings default to off with sender ID and empty guidance, and exp
   assert.equal(senderNameHelp.parent.props.className, 'dim-contextHelp dim-contextFieldHelp');
   assert.equal(senderNameHelp.parent.parent.props.className, 'dim-contextFieldText');
   assert.match(textOf(senderNameTooltip), /不是每个渠道.*dsh_im_source.*省略 senderName/s);
+  const conversationTitleHelp = renderer.root.findByProps({ 'aria-label': '查看群聊会话标题字段说明' });
+  const conversationTitleTooltip = renderer.root.findByProps({ id: conversationTitleHelp.props['aria-describedby'] });
+  assert.equal(conversationTitleHelp.props.type, 'button');
+  assert.equal(conversationTitleHelp.parent.props.className, 'dim-contextHelp dim-contextFieldHelp');
+  assert.match(textOf(conversationTitleTooltip), /不是每个渠道.*dsh_im_source.*省略 conversationTitle/s);
   assert.deepEqual(saved, []);
 });
 
@@ -640,7 +645,10 @@ test('the approved neutral entry and theme-aware modal keep responsive labels an
   assert.match(styles, /\.dim-contextGuidance textarea::placeholder \{[^}]*--dsw-alias-label-tertiary[^}]*opacity: 1;/);
   assert.match(styles, /\.dim-contextFieldKey \{[^}]*ui-monospace/);
   assert.match(styles, /\.dim-contextFieldText \{[^}]*grid-template-columns: max-content max-content;[^}]*column-gap: 5px;/);
+  assert.match(styles, /\.dim-contextField \{[^}]*position: relative;/);
+  assert.match(styles, /\.dim-contextFieldHelp \{[^}]*position: static;/);
   assert.match(styles, /\.dim-contextTooltip\.dim-contextFieldTooltip \{[^}]*right: 0;[^}]*left: auto;/);
+  assert.match(styles, /\.dim-contextField:nth-child\(odd\) \.dim-contextFieldTooltip \{[^}]*right: auto;[^}]*left: 0;/);
   assert.match(styles, /@media \(pointer: coarse\) \{\s*\.dim-contextEntry[^}]*min-height: 44px;/);
   assert.match(styles, /\.dim-contextLabel \{[^}]*overflow-wrap: anywhere;/);
   assert.match(styles, /\.dim-contextTooltip \{[^}]*opacity: 0;[^}]*visibility: hidden;/);

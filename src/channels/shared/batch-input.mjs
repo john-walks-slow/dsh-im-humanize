@@ -74,7 +74,7 @@ export class BatchInputManager {
     if (!batch) {
       if (!name) return { handled: false };
       if (!plainText) {
-        return result('unsupported-content', t('批量输入命令仅支持纯文字，请移除图片或文件后重试。'));
+        return result('unsupported-content', t('批量输入命令仅支持纯文字，请移除图片、文件或引用消息后重试。'));
       }
       if (name === 'send') {
         return result('no-batch', t('当前没有待提交的批量内容，请先发送 /batch。'));
@@ -91,7 +91,7 @@ export class BatchInputManager {
     }
 
     if (!plainText && (batch.phase === 'collecting' || name)) {
-      return result('unsupported-content', t(`批量输入模式目前仅支持文字，这条消息未收录。
+      return result('unsupported-content', t(`批量输入模式目前仅支持文字，不支持图片、文件或引用消息，这条消息未收录。
 请继续发送文字，或使用 /send、/cancel。`), {
         count: batch.messages.length,
         limit: BATCH_INPUT_LIMIT,
@@ -146,7 +146,7 @@ export class BatchInputManager {
     }
 
     if (typeof text !== 'string') {
-      return result('unsupported-content', t(`批量输入模式目前仅支持文字，这条消息未收录。
+      return result('unsupported-content', t(`批量输入模式目前仅支持文字，不支持图片、文件或引用消息，这条消息未收录。
 请继续发送文字，或使用 /send、/cancel。`), {
         count: batch.messages.length,
         limit: BATCH_INPUT_LIMIT,

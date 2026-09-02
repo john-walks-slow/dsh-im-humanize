@@ -18,6 +18,14 @@ test('state store persists sessions, dedupe IDs, and host-only pending sender re
 
   await store.setSession('p2p:staff-one', 'session-one');
   await store.markSeen('message-one');
+  const outboundAt = Date.now() - 1_000;
+  await store.rememberOutboundMessage({
+    conversationKey: 'p2p:staff-one',
+    text: '可恢复的 AI Card 正文',
+    sentAt: outboundAt,
+    completedAt: outboundAt + 500,
+    providerMessageIds: ['dsh-card-one'],
+  });
   const first = await store.recordPendingSender({
     staffId: 'staff-one',
     displayName: '小明',
@@ -40,6 +48,18 @@ test('state store persists sessions, dedupe IDs, and host-only pending sender re
 
   const reloaded = await new DingtalkStateStore(path).load();
   assert.deepEqual(reloaded.pendingSenders(), [updated]);
+  assert.equal(reloaded.recentOutboundTextFor({
+    conversationKey: 'p2p:staff-one',
+    processQueryKey: 'dsh-card-one',
+  }), '可恢复的 AI Card 正文');
+  assert.equal(reloaded.recentOutboundTextFor({
+    conversationKey: 'p2p:staff-one',
+    createdAt: outboundAt,
+  }), '可恢复的 AI Card 正文');
+  assert.equal(reloaded.recentOutboundTextFor({
+    conversationKey: 'p2p:other',
+    processQueryKey: 'dsh-card-one',
+  }), null);
   assert.equal(await reloaded.removePendingSenderByStaffId('staff-one'), true);
   assert.deepEqual(reloaded.pendingSenders(), []);
 });
@@ -79,5 +99,6 @@ test('state store keeps only normalized fields from an existing pending-sender d
         lastSeenAt: '2026-08-15T01:02:00.000Z',
       },
     },
+    recentOutboundMessages: [],
   });
 });

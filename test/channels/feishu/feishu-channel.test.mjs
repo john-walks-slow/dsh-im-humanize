@@ -713,3 +713,63 @@ test('VerifiedFeishuChannel recognizes the SDK array-shaped permission error', a
       && !error.message.includes('provider permission URL'),
   );
 });
+
+test('rotate() finalizes the old card and carries the final answer into a new card', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+  const result = await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent('第一步进行中');
+      await controller.rotate();
+      // 此间隙 bridge 发出独立交互消息（此处不需要模拟）
+      await controller.setContent('最终回答');
+    },
+  });
+  assert.deepEqual(result.providerMessageIds, ['om-stream', 'om-stream-2']);
+  const card1 = calls.updates.filter((u) => u.path.card_id === 'card-test');
+  assert.ok(card1.at(-1).data.content.includes('最终结果见下方'), 'old card must carry the pointer notice');
+  const card2 = calls.updates.filter((u) => u.path.card_id === 'card-test-2');
+  assert.ok(card2.at(-1).data.content.includes('最终回答'), 'new card must carry the final answer');
+  assert.equal(calls.settings.length, 2, 'both cards must be finished');
+});
+
+test('rotate() degrades gracefully when finalizing the old card fails', async () => {
+  let cardTestUpdates = 0;
+  const { client, calls } = fakeClient({
+    updateContent: async (request) => {
+      if (request.path.card_id === 'card-test') {
+        cardTestUpdates += 1;
+        if (cardTestUpdates === 2) throw new Error('transient finalize failure');
+      }
+      calls.updates.push(request);
+      return { code: 0 };
+    },
+  });
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+  const result = await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent('第一步进行中');
+      await controller.rotate();
+      await controller.setContent('最终回答');
+    },
+  });
+  assert.deepEqual(result.providerMessageIds, ['om-stream', 'om-stream-2']);
+  const card2 = calls.updates.filter((u) => u.path.card_id === 'card-test-2');
+  assert.ok(card2.at(-1).data.content.includes('最终回答'));
+});
+
+test('rotate() keeps oversized chunked delivery on the rotated card chain', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+  const huge = `${'A'.repeat(27990)}\nB`.repeat(2);
+  const result = await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent('过程');
+      await controller.rotate();
+      await controller.setContent(huge);
+    },
+  });
+  assert.equal(result.providerMessageIds.length >= 3, true);
+  const settingsByCard = calls.settings.map((s) => s.path.card_id);
+  assert.deepEqual([...new Set(settingsByCard)].length, settingsByCard.length, 'each card finishes exactly once');
+});

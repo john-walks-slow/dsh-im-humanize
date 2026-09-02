@@ -2,8 +2,14 @@ import { ImagePromptError } from '../shared/image-prompt.mjs';
 import { t } from '../shared/i18n.mjs';
 
 const FEISHU_MISSING_MESSAGE_SCOPE_CODE = 99991672;
+const FEISHU_CARD_MESSAGE_CONTENT_TYPE = 'raw_card_content';
 const FEISHU_ERROR_BODY_LIMIT = 64 * 1024;
 const FEISHU_ERROR_BODY_TIMEOUT_MS = 1_000;
+const FEISHU_CARD_TEXT_MAX_DEPTH = 12;
+const FEISHU_CARD_TEXT_MAX_NODES = 1_000;
+const FEISHU_CARD_UNAVAILABLE_TEXTS = new Set([
+  '请升级至最新版本客户端，以查看内容',
+]);
 const FEISHU_IMAGE_PERMISSION_MESSAGE =
   '飞书机器人缺少图片读取权限 im:message:readonly（飞书显示为“获取单聊、群组消息”）。请私聊机器人执行 /repair 命令，或者在「IM机器人」设置页点击“补全权限”按钮并扫码。按飞书提示发布新版本、完成必要审批后，再重新发送图片。';
 
@@ -54,6 +60,124 @@ export function extractText(event) {
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function objectRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function jsonRecord(value) {
+  if (objectRecord(value)) return value;
+  if (typeof value !== 'string') return null;
+  try {
+    return objectRecord(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+function interactiveCardRoot(parsed) {
+  const root = objectRecord(parsed);
+  if (!root) return null;
+  // raw_card_content wraps CardKit entities in json_card. Keep direct Card
+  // 1.0/2.0 payloads readable as well for historical messages and fixtures.
+  return jsonRecord(root.json_card) ?? jsonRecord(root.card) ?? root;
+}
+
+function cardProperty(value) {
+  const record = objectRecord(value);
+  return objectRecord(record?.property) ?? record;
+}
+
+function cardTextContent(property) {
+  const i18n = objectRecord(property?.i18nContent);
+  const content = nonEmptyString(i18n?.zh_cn)
+    ?? nonEmptyString(i18n?.en_us)
+    ?? nonEmptyString(i18n?.ja_jp)
+    ?? nonEmptyString(property?.content)
+    ?? nonEmptyString(property?.text);
+  return content && !FEISHU_CARD_UNAVAILABLE_TEXTS.has(content) ? content : null;
+}
+
+function cardElementText(
+  element,
+  { depth = 0, inline = false, budget = { remaining: FEISHU_CARD_TEXT_MAX_NODES } } = {},
+) {
+  if (depth > FEISHU_CARD_TEXT_MAX_DEPTH || budget.remaining <= 0) return '';
+  budget.remaining -= 1;
+  if (Array.isArray(element)) {
+    return element
+      .map((part) => cardElementText(part, {
+        depth: depth + 1,
+        inline: Array.isArray(part),
+        budget,
+      }))
+      .filter(Boolean)
+      .join(inline ? ' ' : '\n');
+  }
+  const value = objectRecord(element);
+  if (!value) return '';
+  const property = cardProperty(value);
+  if (!property) return '';
+  const tag = String(value.tag ?? '').toLowerCase();
+
+  if (
+    tag === 'markdown'
+    || tag === 'markdown_v1'
+    || tag === 'lark_md'
+    || tag === 'plain_text'
+    || tag === 'text'
+  ) {
+    const content = cardTextContent(property);
+    if (content) return content;
+    const nested = cardElementText(property.elements, {
+      depth: depth + 1,
+      inline: true,
+      budget,
+    });
+    if (nested || tag !== 'markdown_v1') return nested;
+    return cardElementText(value.fallback ?? property.fallback, {
+      depth: depth + 1,
+      inline: true,
+      budget,
+    });
+  }
+  if (tag === 'a' || tag === 'link' || tag === 'button') {
+    if (typeof property.text === 'string') return nonEmptyString(property.text) ?? '';
+    return cardElementText(property.text, { depth: depth + 1, inline: true, budget });
+  }
+  if (tag === 'div') {
+    return [
+      cardElementText(property.text, { depth: depth + 1, budget }),
+      cardElementText(property.fields, { depth: depth + 1, budget }),
+    ].filter(Boolean).join('\n');
+  }
+
+  // Traverse visible layout containers only. Deliberately ignore callback
+  // values, form state, URLs, ids, template variables and other hidden data.
+  return ['elements', 'columns', 'fields', 'children', 'actions']
+    .map((key) => cardElementText(property[key], { depth: depth + 1, budget }))
+    .filter(Boolean)
+    .join('\n');
+}
+
+function interactiveCardText(parsed) {
+  const card = interactiveCardRoot(parsed);
+  if (!card) return '';
+  const budget = { remaining: FEISHU_CARD_TEXT_MAX_NODES };
+  const header = cardProperty(card.header);
+  const title = [
+    cardElementText(header?.title, { inline: true, budget }),
+    cardElementText(header?.subtitle, { inline: true, budget }),
+  ].filter(Boolean).join('\n') || nonEmptyString(card.title) || '';
+  const body = cardProperty(card.body);
+  const elements = Array.isArray(body?.elements)
+    ? body.elements
+    : Array.isArray(card.elements)
+      ? card.elements
+      : null;
+  const content = cardElementText(elements, { budget });
+  return [title, content].filter(Boolean).join('\n');
 }
 
 function postContent(event, parsed = parsedMessageContent(event)) {
@@ -283,6 +407,109 @@ function feishuFileSource(event, client, file) {
   };
 }
 
+function feishuReplyTargetId(event) {
+  const parentId = nonEmptyString(event?.message?.parent_id);
+  if (parentId) return parentId;
+  const rootId = nonEmptyString(event?.message?.root_id);
+  const messageId = nonEmptyString(event?.message?.message_id);
+  return rootId && rootId !== messageId ? rootId : null;
+}
+
+function feishuReplyAttachments(messageType, parsed, post) {
+  if (messageType === 'post') {
+    return (post?.imageKeys ?? []).map(() => ({ kind: 'image' }));
+  }
+  if (messageType === 'image') return [{ kind: 'image' }];
+  if (messageType === 'file') {
+    return [{
+      kind: 'file',
+      ...(nonEmptyString(parsed?.file_name) ? { name: nonEmptyString(parsed.file_name) } : {}),
+    }];
+  }
+  if (messageType === 'audio') return [{ kind: 'audio' }];
+  if (messageType === 'media') {
+    return [{
+      kind: 'video',
+      ...(nonEmptyString(parsed?.file_name) ? { name: nonEmptyString(parsed.file_name) } : {}),
+    }];
+  }
+  if (messageType === 'sticker') return [{ kind: 'other' }];
+  return [];
+}
+
+function feishuReplyReference(event, client) {
+  const messageId = feishuReplyTargetId(event);
+  if (!messageId) return null;
+  const chatId = nonEmptyString(event?.message?.chat_id);
+  return {
+    messageId,
+    async load({ signal } = {}) {
+      signal?.throwIfAborted();
+      let response;
+      try {
+        response = await client?.im?.v1?.message?.get?.({
+          path: { message_id: messageId },
+          params: {
+            with_sender_name: true,
+            card_msg_content_type: FEISHU_CARD_MESSAGE_CONTENT_TYPE,
+          },
+        });
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (await feishuProviderCode(error, signal) === FEISHU_MISSING_MESSAGE_SCOPE_CODE) {
+          return { messageId, unavailableReason: 'permission-denied' };
+        }
+        throw error;
+      }
+      signal?.throwIfAborted();
+      if (providerCode(response) === FEISHU_MISSING_MESSAGE_SCOPE_CODE) {
+        return { messageId, unavailableReason: 'permission-denied' };
+      }
+      if (providerCode(response) !== null && providerCode(response) !== 0) {
+        return { messageId, unavailableReason: 'not-delivered' };
+      }
+      const item = response?.data?.items?.find?.(
+        (candidate) => nonEmptyString(candidate?.message_id) === messageId,
+      );
+      if (!item) return { messageId, unavailableReason: 'not-found' };
+      if (item.deleted) return { messageId, unavailableReason: 'deleted' };
+      const itemChatId = nonEmptyString(item.chat_id);
+      if (!chatId || !itemChatId || itemChatId !== chatId) {
+        return { messageId, unavailableReason: 'not-found' };
+      }
+
+      const messageType = nonEmptyString(item.msg_type) ?? '';
+      const quotedEvent = {
+        message: {
+          message_id: messageId,
+          message_type: messageType,
+          content: item.body?.content,
+          mentions: item.mentions ?? [],
+        },
+      };
+      const parsed = parsedMessageContent(quotedEvent);
+      const post = postContent(quotedEvent, parsed);
+      const quoted = extractInboundMessage(quotedEvent, client);
+      const content = messageType === 'interactive'
+        ? interactiveCardText(parsed)
+        : quoted.content;
+      const attachments = feishuReplyAttachments(messageType, parsed, post);
+      return {
+        messageId,
+        ...(nonEmptyString(item.sender?.id) ? { authorId: nonEmptyString(item.sender.id) } : {}),
+        ...(nonEmptyString(item.sender?.sender_name)
+          ? { authorName: nonEmptyString(item.sender.sender_name) }
+          : {}),
+        ...(content ? { content } : {}),
+        attachments,
+        ...(messageType === 'interactive' && !content && attachments.length === 0
+          ? { unavailableReason: 'unsupported' }
+          : {}),
+      };
+    },
+  };
+}
+
 export function extractInboundMessage(event, client) {
   const messageType = event?.message?.message_type;
   const parsed = parsedMessageContent(event);
@@ -292,10 +519,12 @@ export function extractInboundMessage(event, client) {
     : null;
   const imageKeys = standaloneImageKey ? [standaloneImageKey] : post?.imageKeys ?? [];
   const file = messageType === 'file' ? feishuFileSource(event, client, parsed) : null;
+  const replyTo = feishuReplyReference(event, client);
   return {
     content: messageType === 'text' ? extractText(event) ?? '' : post?.text ?? '',
     images: imageKeys.map((key) => feishuImageSource(event, client, key)),
     files: file ? [file] : [],
+    ...(replyTo ? { replyTo } : {}),
   };
 }
 

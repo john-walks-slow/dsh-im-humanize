@@ -3,8 +3,8 @@ export default {
   // workspace-command.mjs
   '用法：/session Session ID 或当前工作区序号（/session N）':
     'Usage: /session Session ID or the session index in the current Workspace (/session N)',
-  '用法：\n/sessionlist  列出当前工作区会话\n/sessionlist 工作区序号  按 /workspacelist 序号列出会话\n/sessionlist 工作区绝对路径  列出指定工作区会话':
-    'Usage:\n/sessionlist  List Sessions in the current Workspace\n/sessionlist Workspace index  List Sessions by /workspacelist index\n/sessionlist Workspace absolute path  List Sessions in the given Workspace',
+  '用法：\n/sessionlist  列出当前工作区会话\n/sessionlist --limit N  列出当前工作区前 N 个会话（N 为正整数）\n/sessionlist 工作区序号  按 /workspacelist 序号列出会话\n/sessionlist 工作区绝对路径  列出指定工作区会话':
+    'Usage:\n/sessionlist  List Sessions in the current Workspace\n/sessionlist --limit N  List the first N Sessions in the current Workspace (N must be a positive integer)\n/sessionlist Workspace index  List Sessions by /workspacelist index\n/sessionlist Workspace absolute path  List Sessions in the given Workspace',
   '工作区必须是绝对路径。\n{usage}': 'The Workspace must be an absolute path.\n{usage}',
   '工作区路径包含不支持的字符或长度超过限制。\n{usage}':
     'The Workspace path contains unsupported characters or exceeds the length limit.\n{usage}',

@@ -371,6 +371,62 @@ test('all four shared text channels enforce fail-closed live access before side 
   }
 });
 
+test('all four shared text channels resolve replies only after trigger and command gates', async () => {
+  for (const [name, Bridge] of [
+    ['slack', SlackHarnessBridge],
+    ['telegram', TelegramHarnessBridge],
+    ['discord', DiscordHarnessBridge],
+    ['whatsapp', WhatsappHarnessBridge],
+  ]) {
+    const fixture = stateFixture();
+    const sent = [];
+    const asks = [];
+    let replyLoads = 0;
+    const replyTo = () => ({
+      messageId: `quoted-${name}`,
+      load: async () => {
+        replyLoads += 1;
+        return {
+          messageId: `quoted-${name}`,
+          authorName: 'Original author',
+          content: '/new 只是被引用的原文',
+          attachments: [{ kind: 'file', name: 'brief.pdf' }],
+        };
+      },
+    });
+    const bridge = new Bridge({
+      bot: { sendText: async (_target, text) => sent.push(text) },
+      state: fixture.state,
+      harness: {
+        createSession: async () => `session-reply-${name}`,
+        sessionExists: async () => true,
+        ask: async (_sessionId, content) => {
+          asks.push(content);
+          return `${name} reply`;
+        },
+      },
+    });
+
+    await bridge.accept(message(`reply-unaddressed-${name}`, 'ignored', {
+      kind: 'group',
+      conversationId: `group-${name}`,
+      addressed: false,
+      replyTo: replyTo(),
+    }));
+    await bridge.accept(message(`reply-help-${name}`, '/help', { replyTo: replyTo() }));
+    assert.equal(replyLoads, 0, `${name} does not fetch before trigger and command gates`);
+    assert.equal(asks.length, 0, name);
+
+    await bridge.accept(message(`reply-question-${name}`, '当前问题', { replyTo: replyTo() }));
+    assert.equal(replyLoads, 1, `${name} resolves once at the model prompt stage`);
+    assert.equal(asks.length, 1, name);
+    assert.equal(Array.isArray(asks[0]), true, name);
+    assert.match(asks[0][0].text, /^<dsh_im_reply_to>/, name);
+    assert.match(asks[0][0].text, /\/new 只是被引用的原文/, name);
+    assert.deepEqual(asks[0][1], { type: 'text', text: '当前问题' }, name);
+  }
+});
+
 test('runtime abort clears a queued interaction reply reaction instead of marking success', async () => {
   const fixture = stateFixture();
   const controller = new AbortController();
@@ -714,6 +770,13 @@ test('private batch input enforces text-only collection, command blocking, the l
   await bridge.accept(message('limited-file', 'file caption', {
     files: [{ name: 'data.txt', data: Buffer.from('data') }],
   }));
+  let replyLoads = 0;
+  await bridge.accept(message('limited-reply', 'quoted caption', {
+    replyTo: {
+      content: 'quoted text',
+      load: async () => { replyLoads += 1; return { content: 'must not load' }; },
+    },
+  }));
   await bridge.accept(message('limited-unsupported-media', 'video caption', {
     plainText: false,
   }));
@@ -728,7 +791,8 @@ test('private batch input enforces text-only collection, command blocking, the l
   await bridge.accept(message('limited-cancel', '/cancel'));
 
   assert.equal(asks, 0, 'collection and cancellation never call Harness');
-  assert.equal(sent.filter((text) => text.includes('目前仅支持文字')).length, 3);
+  assert.equal(replyLoads, 0, 'batch collection never resolves quoted content');
+  assert.equal(sent.filter((text) => text.includes('目前仅支持文字')).length, 4);
   assert.equal(sent.some((text) => text.includes('先发送 /send 提交或 /cancel 取消')), true);
   assert.equal(sent.some((text) => /10\/10.*已满/.test(text)), true);
   assert.equal(sent.some((text) => text.includes('这条消息未收录')), true);

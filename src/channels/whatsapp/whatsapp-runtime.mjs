@@ -96,6 +96,60 @@ function messageText(content) {
     ?? '';
 }
 
+function whatsappReplyAttachment(kind, media, fallbackName) {
+  if (!media || typeof media !== 'object') return null;
+  const name = typeof media.fileName === 'string' && media.fileName
+    ? media.fileName : typeof fallbackName === 'string' && fallbackName
+      ? fallbackName : undefined;
+  return { kind, ...(name ? { name } : {}) };
+}
+
+function whatsappReplyAttachments(content) {
+  const attachments = [];
+  if (content?.imageMessage) {
+    attachments.push(whatsappReplyAttachment('image', content.imageMessage));
+  }
+  if (content?.documentMessage) {
+    const mediaType = typeof content.documentMessage.mimetype === 'string'
+      ? content.documentMessage.mimetype.toLowerCase() : '';
+    attachments.push(whatsappReplyAttachment(
+      mediaType.startsWith('image/') ? 'image' : 'file',
+      content.documentMessage,
+    ));
+  }
+  if (content?.audioMessage) {
+    attachments.push(whatsappReplyAttachment('audio', content.audioMessage));
+  }
+  if (content?.videoMessage) {
+    attachments.push(whatsappReplyAttachment('video', content.videoMessage));
+  }
+  if (content?.stickerMessage) {
+    const mediaType = typeof content.stickerMessage.mimetype === 'string'
+      ? content.stickerMessage.mimetype.toLowerCase() : '';
+    attachments.push(whatsappReplyAttachment(
+      mediaType.startsWith('video/') || content.stickerMessage.isAnimated === true
+        ? 'video' : 'image',
+      content.stickerMessage,
+    ));
+  }
+  return attachments.filter(Boolean);
+}
+
+function whatsappReplyReference(context) {
+  if (!context?.quotedMessage || typeof context.quotedMessage !== 'object') return undefined;
+  const content = normalizeMessageContent(context.quotedMessage);
+  const messageId = typeof context.stanzaId === 'string' && context.stanzaId
+    ? context.stanzaId : undefined;
+  const authorId = typeof context.participant === 'string' && context.participant
+    ? context.participant : undefined;
+  return {
+    ...(messageId ? { messageId } : {}),
+    ...(authorId ? { authorId } : {}),
+    content: messageText(content),
+    attachments: whatsappReplyAttachments(content),
+  };
+}
+
 function mediaSize(value) {
   if (Number.isSafeInteger(value) && value >= 0) return value;
   let converted;
@@ -260,6 +314,7 @@ export function normalizeWhatsappMessage(message, accountJid, {
     && areJidsSameUser(context.participant, accountJid);
   const image = whatsappImageSource(message, content, download, { viewOnce });
   const file = whatsappFileSource(message, content, download);
+  const replyTo = whatsappReplyReference(context);
   return {
     messageId: `${remoteJid}:${messageId}`,
     providerMessageId: messageId,
@@ -274,6 +329,7 @@ export function normalizeWhatsappMessage(message, accountJid, {
       || typeof content?.extendedTextMessage?.text === 'string',
     images: image ? [image] : [],
     files: file ? [file] : [],
+    ...(replyTo ? { replyTo } : {}),
     addressed: !group || fromMe || mentioned || replyToSelf,
     selfChat,
     replyTarget: { jid: remoteJid, quoted: message, selfChat },

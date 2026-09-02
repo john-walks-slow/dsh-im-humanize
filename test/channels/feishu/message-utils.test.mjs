@@ -110,6 +110,415 @@ test('extractInboundMessage preserves visible Feishu post text and every embedde
   ]);
 });
 
+test('extractInboundMessage exposes a lazy Feishu reply reference and loads the direct parent', async () => {
+  const calls = [];
+  const event = {
+    message: {
+      message_id: 'om_current',
+      parent_id: 'om_parent',
+      root_id: 'om_root',
+      chat_id: 'oc_same',
+      message_type: 'text',
+      content: JSON.stringify({ text: '继续解释' }),
+    },
+  };
+  const client = { im: { v1: { message: { get: async (request) => {
+    calls.push(request);
+    return {
+      code: 0,
+      data: {
+        items: [{
+          message_id: 'om_parent',
+          chat_id: 'oc_same',
+          msg_type: 'text',
+          sender: { id: 'ou_author', sender_name: '引用作者' },
+          body: { content: JSON.stringify({ text: '被引用的内容' }) },
+        }],
+      },
+    };
+  } } } } };
+
+  const message = extractInboundMessage(event, client);
+  assert.equal(message.content, '继续解释');
+  assert.equal(message.replyTo.messageId, 'om_parent');
+  assert.equal(calls.length, 0, 'quoted message lookup stays lazy');
+  assert.deepEqual(await message.replyTo.load(), {
+    messageId: 'om_parent',
+    authorId: 'ou_author',
+    authorName: '引用作者',
+    content: '被引用的内容',
+    attachments: [],
+  });
+  assert.deepEqual(calls, [{
+    path: { message_id: 'om_parent' },
+    params: {
+      with_sender_name: true,
+      card_msg_content_type: 'raw_card_content',
+    },
+  }]);
+});
+
+test('Feishu reply reference reads raw CardKit 2.0 markdown without hidden card data', async () => {
+  const calls = [];
+  const client = { im: { v1: { message: { get: async (request) => {
+    calls.push(request);
+    return {
+      code: 0,
+      data: { items: [{
+        message_id: 'om_card_2',
+        chat_id: 'oc_same',
+        msg_type: 'interactive',
+        sender: { id: 'ou_bot', sender_name: '回答机器人' },
+        body: { content: JSON.stringify({
+          card_schema: 2,
+          json_attachment: JSON.stringify({ secret: 'hidden-attachment' }),
+          json_card: JSON.stringify({
+            schema: '2.0',
+            config: { streaming_mode: false, secret: 'hidden-config' },
+            body: {
+              id: '_2',
+              property: {
+                elements: [{
+                  id: 'stream_md',
+                  tag: 'markdown',
+                  property: {
+                    elements: [{
+                      id: 'stream_md_0',
+                      tag: 'plain_text',
+                      property: {
+                        content: '这是机器人最终回答\n\n模型是 **doubao-seed**。',
+                      },
+                    }],
+                    value: { token: 'hidden-callback-value' },
+                  },
+                }],
+              },
+            },
+          }),
+        }) },
+      }] },
+    };
+  } } } } };
+
+  const reply = await extractInboundMessage({
+    message: {
+      message_id: 'om_current',
+      parent_id: 'om_card_2',
+      chat_id: 'oc_same',
+      message_type: 'text',
+      content: JSON.stringify({ text: '这说的是什么模型？' }),
+    },
+  }, client).replyTo.load();
+
+  assert.deepEqual(reply, {
+    messageId: 'om_card_2',
+    authorId: 'ou_bot',
+    authorName: '回答机器人',
+    content: '这是机器人最终回答\n\n模型是 **doubao-seed**。',
+    attachments: [],
+  });
+  assert.doesNotMatch(
+    reply.content,
+    /hidden-config|hidden-attachment|hidden-callback-value|stream_md|streaming_mode/u,
+  );
+  assert.deepEqual(calls, [{
+    path: { message_id: 'om_card_2' },
+    params: {
+      with_sender_name: true,
+      card_msg_content_type: 'raw_card_content',
+    },
+  }]);
+});
+
+test('Feishu reply reference reads a historical Card 1.0 and exposes visible labels only', async () => {
+  const client = { im: { v1: { message: { get: async () => ({
+    code: 0,
+    data: { items: [{
+      message_id: 'om_card_1',
+      chat_id: 'oc_same',
+      msg_type: 'interactive',
+      body: { content: JSON.stringify({
+        header: { title: { tag: 'plain_text', content: '历史回答' } },
+        elements: [
+          { tag: 'div', text: { tag: 'lark_md', content: '这是很久以前的机器人正文。' } },
+          {
+            tag: 'action',
+            actions: [{
+              tag: 'button',
+              text: { tag: 'plain_text', content: '查看详情' },
+              value: { token: 'hidden-callback-value' },
+              url: 'https://secret.example.invalid',
+            }],
+          },
+        ],
+      }) },
+    }] },
+  }) } } } };
+
+  const reply = await extractInboundMessage({
+    message: {
+      message_id: 'om_current',
+      parent_id: 'om_card_1',
+      chat_id: 'oc_same',
+      message_type: 'text',
+      content: JSON.stringify({ text: '概括一下' }),
+    },
+  }, client).replyTo.load();
+
+  assert.equal(reply.content, '历史回答\n这是很久以前的机器人正文。\n查看详情');
+  assert.doesNotMatch(reply.content, /hidden-callback-value|secret\.example/u);
+});
+
+test('Feishu reply reference reads visible i18n and markdown_v1 fallback card text', async (t) => {
+  for (const [name, element, expected] of [
+    ['localized text', {
+      tag: 'plain_text',
+      property: {
+        i18nContent: { zh_cn: '旧卡片中文正文', en_us: 'old card text' },
+        value: 'hidden-localized-value',
+      },
+    }, '旧卡片中文正文'],
+    ['markdown_v1 fallback', {
+      tag: 'markdown_v1',
+      property: { value: 'hidden-markdown-value' },
+      fallback: {
+        tag: 'plain_text',
+        property: { content: '旧卡片可见降级正文' },
+      },
+    }, '旧卡片可见降级正文'],
+  ]) {
+    await t.test(name, async () => {
+      const client = { im: { v1: { message: { get: async () => ({
+        code: 0,
+        data: { items: [{
+          message_id: 'om_old_card',
+          chat_id: 'oc_same',
+          msg_type: 'interactive',
+          body: { content: JSON.stringify({
+            card_schema: 2,
+            json_card: JSON.stringify({
+              schema: '2.0',
+              body: { property: { elements: [element] } },
+            }),
+          }) },
+        }] },
+      }) } } } };
+      const reply = await extractInboundMessage({
+        message: {
+          message_id: 'om_current',
+          parent_id: 'om_old_card',
+          chat_id: 'oc_same',
+          message_type: 'text',
+          content: JSON.stringify({ text: '继续' }),
+        },
+      }, client).replyTo.load();
+      assert.equal(reply.content, expected);
+      assert.doesNotMatch(reply.content, /hidden-/u);
+    });
+  }
+});
+
+test('Feishu reply reference reads ordinary two-dimensional fallback card text', async () => {
+  const client = { im: { v1: { message: { get: async () => ({
+    code: 0,
+    data: { items: [{
+      message_id: 'om_fallback_card',
+      chat_id: 'oc_same',
+      msg_type: 'interactive',
+      body: { content: JSON.stringify({
+        title: '降级卡片',
+        elements: [[
+          { tag: 'text', text: '第一段' },
+          { tag: 'text', text: '第二段' },
+        ]],
+      }) },
+    }] },
+  }) } } } };
+  const reply = await extractInboundMessage({
+    message: {
+      message_id: 'om_current',
+      parent_id: 'om_fallback_card',
+      chat_id: 'oc_same',
+      message_type: 'text',
+      content: JSON.stringify({ text: '继续' }),
+    },
+  }, client).replyTo.load();
+  assert.equal(reply.content, '降级卡片\n第一段 第二段');
+});
+
+test('Feishu reply reference marks unreadable interactive cards as unsupported', async (t) => {
+  for (const [name, content] of [
+    ['CardKit id pointer', JSON.stringify({ type: 'card', data: { card_id: 'card_secret' } })],
+    ['empty Card 2.0', JSON.stringify({ schema: '2.0', body: { elements: [{ tag: 'hr' }] } })],
+    ['upgrade placeholder', JSON.stringify({
+      title: null,
+      elements: [[{ tag: 'text', text: '请升级至最新版本客户端，以查看内容' }]],
+    })],
+    ['malformed card JSON', '{not-json'],
+  ]) {
+    await t.test(name, async () => {
+      const client = { im: { v1: { message: { get: async () => ({
+        code: 0,
+        data: { items: [{
+          message_id: 'om_card',
+          chat_id: 'oc_same',
+          msg_type: 'interactive',
+          sender: { sender_name: '回答机器人' },
+          body: { content },
+        }] },
+      }) } } } };
+      const reply = await extractInboundMessage({
+        message: {
+          message_id: 'om_current',
+          parent_id: 'om_card',
+          chat_id: 'oc_same',
+          message_type: 'text',
+          content: JSON.stringify({ text: '继续' }),
+        },
+      }, client).replyTo.load();
+      assert.deepEqual(reply, {
+        messageId: 'om_card',
+        authorName: '回答机器人',
+        attachments: [],
+        unavailableReason: 'unsupported',
+      });
+    });
+  }
+});
+
+test('Feishu reply reference falls back to root_id and keeps quoted media as metadata only', async () => {
+  let resourceDownloads = 0;
+  const event = {
+    message: {
+      message_id: 'om_current',
+      root_id: 'om_root',
+      chat_id: 'oc_same',
+      message_type: 'text',
+      content: JSON.stringify({ text: '这两张图说明什么？' }),
+    },
+  };
+  const client = { im: { v1: {
+    message: { get: async () => ({
+      data: {
+        items: [{
+          message_id: 'om_root',
+          chat_id: 'oc_same',
+          msg_type: 'post',
+          body: { content: JSON.stringify({
+            title: '原消息',
+            content: [
+              [{ tag: 'text', text: '请比较截图' }],
+              [{ tag: 'img', image_key: 'img_one' }, { tag: 'img', image_key: 'img_two' }],
+            ],
+          }) },
+        }],
+      },
+    }) },
+    messageResource: { get: async () => {
+      resourceDownloads += 1;
+      throw new Error('quoted media must not be downloaded');
+    } },
+  } } };
+
+  const reply = await extractInboundMessage(event, client).replyTo.load();
+  assert.equal(reply.messageId, 'om_root');
+  assert.equal(reply.content, '原消息\n请比较截图');
+  assert.deepEqual(reply.attachments, [{ kind: 'image' }, { kind: 'image' }]);
+  assert.equal(resourceDownloads, 0);
+});
+
+test('Feishu reply lookup degrades deleted, foreign, and permission failures', async (t) => {
+  const event = {
+    message: {
+      message_id: 'om_current',
+      parent_id: 'om_parent',
+      chat_id: 'oc_same',
+      message_type: 'text',
+      content: JSON.stringify({ text: '继续' }),
+    },
+  };
+  for (const [name, response, unavailableReason] of [
+    ['deleted message', {
+      data: { items: [{ message_id: 'om_parent', chat_id: 'oc_same', deleted: true }] },
+    }, 'deleted'],
+    ['foreign chat', {
+      data: { items: [{ message_id: 'om_parent', chat_id: 'oc_other', msg_type: 'text' }] },
+    }, 'not-found'],
+    ['missing chat identity', {
+      data: { items: [{ message_id: 'om_parent', msg_type: 'text' }] },
+    }, 'not-found'],
+    ['missing permission', { code: 99991672 }, 'permission-denied'],
+  ]) {
+    await t.test(name, async () => {
+      const client = { im: { v1: { message: { get: async () => response } } } };
+      assert.deepEqual(await extractInboundMessage(event, client).replyTo.load(), {
+        messageId: 'om_parent',
+        unavailableReason,
+      });
+    });
+  }
+});
+
+test('Feishu reply lookup maps a thrown missing-scope response without failing the current turn', async () => {
+  const providerError = new Error('Request failed with status code 400');
+  providerError.response = {
+    status: 400,
+    data: Readable.from([Buffer.from(JSON.stringify({ code: 99991672 }))]),
+  };
+  const client = { im: { v1: { message: { get: async () => { throw providerError; } } } } };
+  const message = extractInboundMessage({
+    message: {
+      message_id: 'om_current',
+      parent_id: 'om_parent',
+      chat_id: 'oc_same',
+      message_type: 'text',
+      content: JSON.stringify({ text: '继续' }),
+    },
+  }, client);
+
+  assert.deepEqual(await message.replyTo.load(), {
+    messageId: 'om_parent',
+    unavailableReason: 'permission-denied',
+  });
+});
+
+test('Feishu reply lookup fails closed when the current event has no chat identity', async () => {
+  const client = { im: { v1: { message: { get: async () => ({
+    code: 0,
+    data: { items: [{
+      message_id: 'om_parent',
+      chat_id: 'oc_secret',
+      msg_type: 'text',
+      body: { content: JSON.stringify({ text: '不能泄露的跨聊天内容' }) },
+    }] },
+  }) } } } };
+  const message = extractInboundMessage({
+    message: {
+      message_id: 'om_current',
+      parent_id: 'om_parent',
+      message_type: 'text',
+      content: JSON.stringify({ text: '继续' }),
+    },
+  }, client);
+
+  assert.deepEqual(await message.replyTo.load(), {
+    messageId: 'om_parent',
+    unavailableReason: 'not-found',
+  });
+});
+
+test('Feishu does not treat the current thread root as its own reply reference', () => {
+  const message = extractInboundMessage({
+    message: {
+      message_id: 'om_root',
+      root_id: 'om_root',
+      message_type: 'text',
+      content: JSON.stringify({ text: '主题首条' }),
+    },
+  }, {});
+  assert.equal('replyTo' in message, false);
+});
+
 test('extractInboundMessage exposes a native Feishu file as a lazy unbounded resource download', async () => {
   const calls = [];
   const bytes = Buffer.from('ordinary-file-payload');

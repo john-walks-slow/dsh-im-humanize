@@ -21,6 +21,9 @@ const ILINK_CLIENT_VERSION = (2 << 16) | (4 << 8) | 6;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const WEIXIN_CDN_UPLOAD_RETRIES = 3;
+const WEIXIN_MESSAGE_ID_TIMESTAMP_SHIFT = 22n;
+const WEIXIN_MESSAGE_ID_MIN_TIMESTAMP_MS = Date.UTC(2020, 0, 1);
+const WEIXIN_MESSAGE_ID_MAX_FUTURE_MS = 24 * 60 * 60 * 1_000;
 const LOGIN_STATUSES = new Set([
   'wait',
   'scaned',
@@ -689,6 +692,7 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
       const recipient = nonEmptyString(toUserId);
       const content = nonEmptyString(text);
       if (!recipient || !content) throw new TypeError('toUserId and text are required');
+      const clientId = `dsh-weixin-${randomUUID()}`;
       const response = await requestJson(fetchImpl, {
         method: 'POST',
         baseUrl,
@@ -699,7 +703,7 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
           msg: {
             from_user_id: '',
             to_user_id: recipient,
-            client_id: `dsh-weixin-${randomUUID()}`,
+            client_id: clientId,
             message_type: 2,
             message_state: 2,
             item_list: [{ type: 1, text_item: { text: content } }],
@@ -717,7 +721,10 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
           { providerCode: sendRejection },
         );
       }
-      return true;
+      return {
+        ...(response && typeof response === 'object' ? response : {}),
+        providerMessageIds: [clientId],
+      };
     },
 
     async sendFile(request) {
@@ -789,6 +796,83 @@ export function extractWeixinText(message) {
     }
   }
   return null;
+}
+
+function weixinReplyAttachment(item) {
+  if (item?.type === 2 || (item?.image_item && typeof item.image_item === 'object')) {
+    return { kind: 'image' };
+  }
+  if (item?.type === 3 || (item?.voice_item && typeof item.voice_item === 'object')) {
+    return { kind: 'audio' };
+  }
+  if (item?.type === 4 || (item?.file_item && typeof item.file_item === 'object')) {
+    const name = nonEmptyString(item?.file_item?.file_name);
+    return { kind: 'file', ...(name ? { name } : {}) };
+  }
+  if (item?.type === 5 || (item?.video_item && typeof item.video_item === 'object')) {
+    return { kind: 'video' };
+  }
+  return null;
+}
+
+function weixinQuotedText(item) {
+  const text = nonEmptyString(item?.text_item?.text);
+  if (text) return text;
+  return nonEmptyString(item?.voice_item?.text);
+}
+
+/** Extract the one-level reply snapshot embedded in an inbound iLink message item. */
+export function extractWeixinReplyReference(message, { resolveContent, loadContent } = {}) {
+  const container = (message?.item_list ?? []).find((item) => (
+    item?.ref_msg && typeof item.ref_msg === 'object'
+  ));
+  if (!container) return null;
+  const ref = container.ref_msg;
+  const quotedItem = ref.message_item && typeof ref.message_item === 'object'
+    ? ref.message_item
+    : null;
+  const quotedText = weixinQuotedText(quotedItem);
+  let content = quotedText ?? nonEmptyString(ref.title);
+  const attachment = weixinReplyAttachment(quotedItem);
+  const messageId = quotedItem?.msg_id === undefined || quotedItem?.msg_id === null
+    ? null
+    : nonEmptyString(String(quotedItem.msg_id));
+  const referenceDetails = {
+    messageId,
+    createTimeMs: quotedItem?.create_time_ms ?? ref.create_time_ms,
+    updateTimeMs: quotedItem?.update_time_ms ?? ref.update_time_ms,
+  };
+  if (!content && !attachment && typeof resolveContent === 'function') {
+    content = nonEmptyString(resolveContent(referenceDetails));
+  }
+  const load = !content && !attachment && typeof loadContent === 'function'
+    ? (options) => loadContent(referenceDetails, options)
+    : null;
+  const knownType = quotedItem && [1, 2, 3, 4, 5, 8].includes(quotedItem.type);
+  return {
+    ...(messageId ? { messageId } : {}),
+    ...(content ? { content } : {}),
+    ...(attachment ? { attachments: [attachment] } : {}),
+    ...(load ? { load } : {}),
+    ...(!content && !attachment && !load
+      ? { unavailableReason: quotedItem && !knownType ? 'unsupported' : 'not-delivered' }
+      : {}),
+  };
+}
+
+/** Decode the millisecond timestamp carried by current 64-bit iLink message IDs. */
+export function weixinMessageTimestampMs(messageId, { now = Date.now() } = {}) {
+  const value = messageId === undefined || messageId === null ? '' : String(messageId).trim();
+  if (!/^\d{16,20}$/u.test(value)) return null;
+  try {
+    const timestampMs = Number(BigInt(value) >> WEIXIN_MESSAGE_ID_TIMESTAMP_SHIFT);
+    if (!Number.isSafeInteger(timestampMs)
+      || timestampMs < WEIXIN_MESSAGE_ID_MIN_TIMESTAMP_MS
+      || timestampMs > now + WEIXIN_MESSAGE_ID_MAX_FUTURE_MS) return null;
+    return timestampMs;
+  } catch {
+    return null;
+  }
 }
 
 export function weixinMessageId(message) {

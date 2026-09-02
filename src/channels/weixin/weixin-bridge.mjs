@@ -2,9 +2,11 @@ import {
   DEFAULT_WEIXIN_MAX_MESSAGE_CHARS,
   extractWeixinFiles,
   extractWeixinImages,
+  extractWeixinReplyReference,
   extractWeixinText,
   splitWeixinText,
   weixinMessageId,
+  weixinMessageTimestampMs,
 } from './weixin-api.mjs';
 import {
   harnessAnswerForQuestion,
@@ -38,7 +40,6 @@ import {
   hasInboundImages,
   imagePromptDiagnostic,
   imagePromptUserMessage,
-  promptContentForMessage,
 } from '../shared/image-prompt.mjs';
 import {
   hasInboundFiles,
@@ -48,9 +49,14 @@ import {
 import { rememberConnectionTestTarget } from '../shared/connection-test.mjs';
 import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
 import {
+  hasReplyReference,
+  promptContentForInboundMessage,
+} from '../shared/semantic/reply-reference.mjs';
+import {
   createDeliveryReceipt,
   providerMessageIdsFor,
 } from '../shared/semantic/delivery.mjs';
+import { recoverAssistantTextByTimestamp } from '../shared/session-reply-recovery.mjs';
 import {
   channelDeliveryFailure,
   clearLastMessageFailure,
@@ -67,6 +73,10 @@ const INTERACTION_RESOLVED_TEXT = () => t('这个问题已在其他客户端处�
 const DEFAULT_TYPING_KEEPALIVE_MS = 5_000;
 const TYPING_RETRY_DELAY_MS = 60_000;
 const WEIXIN_SEND_DIAGNOSTIC = Symbol('weixin-send-diagnostic');
+const WEIXIN_REPLY_HISTORY_PAGE_SIZE = 100;
+const WEIXIN_REPLY_HISTORY_MAX_PAGES = 3;
+const WEIXIN_REPLY_HISTORY_TIMEOUT_MS = 5_000;
+const WEIXIN_REPLY_HISTORY_MATCH_TOLERANCE_MS = 15_000;
 
 const HELP_TEXT = () => [
   t('微信已连接 DeepSeek Harness。'),
@@ -79,6 +89,7 @@ const HELP_TEXT = () => [
   t('/workspacelist  列出工作区绝对路径'),
   t('/ws、/wsl、/workspaces  工作区命令别名'),
   t('/sessionlist 或 /sessions [工作区序号或绝对路径]  列出会话 ID 和标题'),
+  t('/sessionlist --limit N  仅列出当前工作区前 N 个会话'),
   t('/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话'),
   t('/models  按序号列出所有可用模型'),
   t('/reasoninglist 或 /reasonings  按序号列出当前模型可用推理等级'),
@@ -183,7 +194,20 @@ function weixinSendFailureOptions(error) {
   return undefined;
 }
 
-export function weixinInboundMessage(message, api) {
+export function weixinInboundMessage(message, api, state, { loadReplyContent } = {}) {
+  const toUserId = nonEmptyString(message?.from_user_id);
+  const replyTo = extractWeixinReplyReference(message, {
+    resolveContent: (reference) => state?.recentOutboundTextFor?.({
+      toUserId,
+      ...reference,
+    }),
+    ...(typeof loadReplyContent === 'function' ? {
+      loadContent: (reference, options) => loadReplyContent({
+        toUserId,
+        ...reference,
+      }, options),
+    } : {}),
+  });
   return {
     content: extractWeixinText(message) ?? '',
     images: typeof api?.inboundImages === 'function'
@@ -192,6 +216,7 @@ export function weixinInboundMessage(message, api) {
     files: typeof api?.inboundFiles === 'function'
       ? api.inboundFiles(message)
       : extractWeixinFiles(message),
+    ...(replyTo ? { replyTo } : {}),
   };
 }
 
@@ -376,7 +401,8 @@ export class WeixinHarnessBridge {
         && (this.#queues.has(key) || pending || this.#approvals.hasPending(key))
         ? { handled: true, kind: 'busy', message: batchInputBusyMessage() }
         : this.#batchInputs.handle(key, commandText, {
-            plainText: isNativeWeixinText(message),
+            plainText: isNativeWeixinText(message)
+              && !extractWeixinReplyReference(message),
           });
       if (result.handled) {
         if (result.kind === 'submit') {
@@ -490,7 +516,7 @@ export class WeixinHarnessBridge {
     batchSubmission = null,
   } = {}) {
     const preparedMessage = prefetchInboundFiles(
-      weixinInboundMessage(message, this.#api),
+      this.#inboundMessage(message),
       { signal: this.#signal },
     );
     const previous = this.#queues.get(key) ?? Promise.resolve();
@@ -507,6 +533,54 @@ export class WeixinHarnessBridge {
       });
     this.#queues.set(key, current);
     return current;
+  }
+
+  #inboundMessage(message) {
+    return weixinInboundMessage(message, this.#api, this.#state, {
+      loadReplyContent: (reference, options) => this.#loadReplyContent(reference, options),
+    });
+  }
+
+  async #loadReplyContent(reference, { signal: callerSignal } = {}) {
+    const indexed = this.#state.recentOutboundTextFor?.(reference);
+    if (indexed) return { content: indexed };
+    const quotedAt = [
+      weixinMessageTimestampMs(reference?.messageId),
+      Number(reference?.createTimeMs),
+      Number(reference?.updateTimeMs),
+    ].find(Number.isSafeInteger);
+    if (quotedAt === undefined) return { unavailableReason: 'not-delivered' };
+    const sender = nonEmptyString(reference?.toUserId);
+    const sessionId = sender ? this.#state.sessionFor(conversationKey(sender)) : null;
+    const session = typeof sessionId === 'string' && sessionId
+      ? this.#harness.workspaceSession?.(sessionId)
+      : null;
+    if (typeof session?.readHistory !== 'function') {
+      return { unavailableReason: 'not-delivered' };
+    }
+    const text = await recoverAssistantTextByTimestamp({
+      session,
+      quotedAt,
+      signal: callerSignal,
+      pageSize: WEIXIN_REPLY_HISTORY_PAGE_SIZE,
+      maxPages: WEIXIN_REPLY_HISTORY_MAX_PAGES,
+      timeoutMs: WEIXIN_REPLY_HISTORY_TIMEOUT_MS,
+      toleranceMs: WEIXIN_REPLY_HISTORY_MATCH_TOLERANCE_MS,
+    });
+    if (!text) return { unavailableReason: 'not-delivered' };
+    const messageId = nonEmptyString(reference?.messageId);
+    try {
+      await this.#state.rememberOutboundMessage?.({
+        toUserId: sender,
+        text,
+        sentAt: quotedAt,
+        completedAt: quotedAt,
+        providerMessageIds: messageId ? [messageId] : [],
+      });
+    } catch (error) {
+      this.#logger.warn?.('[dsh-weixin] failed to remember a recovered quote:', error);
+    }
+    return { content: text };
   }
 
   #finishBatchResult(message, messageId, key, sender, contextToken, runId, result) {
@@ -645,11 +719,12 @@ export class WeixinHarnessBridge {
     let batchSettled = batchSubmission === null;
     let promptRecorded = false;
     try {
-      const promptMessage = preparedMessage ?? weixinInboundMessage(message, this.#api);
+      const promptMessage = preparedMessage ?? this.#inboundMessage(message);
       const text = promptMessage.content;
       const hasImages = hasInboundImages(promptMessage);
       const hasFiles = hasInboundFiles(promptMessage);
-      if (!text && !hasImages && !hasFiles) {
+      const hasReply = hasReplyReference(promptMessage);
+      if (!text && !hasImages && !hasFiles && !hasReply) {
         await this.#send(sender, t('目前支持文字、图片、文件，以及微信已转成文字的语音消息。'), contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
@@ -702,15 +777,19 @@ export class WeixinHarnessBridge {
       let artifacts = [];
       await this.#startTyping(sender, contextToken);
       try {
-        let content = hasImages
-          ? await promptContentForMessage(promptMessage, { signal: this.#signal })
+        let content = hasImages || hasReply
+          ? await promptContentForInboundMessage(promptMessage, { signal: this.#signal })
           : undefined;
         const snapshot = this.#acceptedMessageIds.get(messageId);
+        let contextEnhanced = false;
         if (snapshot) {
-          content = enhanceContextContent(content ?? text, snapshot, () => ({
+          const originalContent = content ?? text;
+          content = enhanceContextContent(originalContent, snapshot, () => ({
             channel: 'weixin',
             senderId: sender,
+            chatId: sender,
           }));
+          contextEnhanced = content !== originalContent;
         }
         await this.#state.markSeen(messageId);
         promptRecorded = true;
@@ -718,7 +797,9 @@ export class WeixinHarnessBridge {
           harness: this.#harness,
           state: this.#state,
           key,
-          ...(content !== undefined ? { content } : { text }),
+          text,
+          content,
+          contextEnhanced,
           createOptions: { signal: this.#signal },
           existsOptions: { signal: this.#signal },
           askOptions: {
@@ -1150,6 +1231,7 @@ export class WeixinHarnessBridge {
     const chunks = splitWeixinText(text, this.#maxMessageChars);
     for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
       const chunk = chunks[chunkIndex];
+      const sentAt = Date.now();
       try {
         const result = await this.#api.sendText({
           baseUrl: this.#baseUrl,
@@ -1160,7 +1242,19 @@ export class WeixinHarnessBridge {
           runId,
           signal: this.#signal,
         });
-        providerMessageIds.push(...providerMessageIdsFor(result));
+        const chunkMessageIds = providerMessageIdsFor(result);
+        providerMessageIds.push(...chunkMessageIds);
+        try {
+          await this.#state.rememberOutboundMessage?.({
+            toUserId,
+            text: chunk,
+            sentAt,
+            completedAt: Date.now(),
+            providerMessageIds: chunkMessageIds,
+          });
+        } catch (error) {
+          this.#logger.warn?.('[dsh-weixin] failed to remember an outbound message:', error);
+        }
       } catch (error) {
         throw weixinSendError(error, {
           baseUrl: this.#baseUrl,

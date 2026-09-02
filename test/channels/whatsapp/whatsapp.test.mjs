@@ -424,6 +424,65 @@ test('WhatsApp normalizes direct, linked-account, and explicitly mentioned group
   }, ACCOUNT_JID), null);
 });
 
+test('WhatsApp maps contextInfo.quotedMessage snapshots without downloading or recursing', () => {
+  const replied = normalizeWhatsappMessage({
+    key: {
+      remoteJid: '120363000000000000@g.us',
+      participant: '16505550999@s.whatsapp.net',
+      id: 'reply-1',
+      fromMe: false,
+    },
+    message: {
+      extendedTextMessage: {
+        text: '解释这张图',
+        contextInfo: {
+          stanzaId: 'quoted-1',
+          participant: ACCOUNT_JID,
+          quotedMessage: {
+            imageMessage: {
+              mimetype: 'image/jpeg',
+              caption: '第一层原文',
+              contextInfo: {
+                quotedMessage: { conversation: '不应递归进入 Prompt' },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, ACCOUNT_JID, {
+    download: async () => { throw new Error('quoted media must not be downloaded'); },
+  });
+  assert.equal(replied.addressed, true);
+  assert.deepEqual(replied.replyTo, {
+    messageId: 'quoted-1',
+    authorId: ACCOUNT_JID,
+    content: '第一层原文',
+    attachments: [{ kind: 'image' }],
+  });
+  assert.doesNotMatch(JSON.stringify(replied.replyTo), /不应递归/);
+
+  const documentReply = normalizeWhatsappMessage({
+    key: { remoteJid: '16505550999@s.whatsapp.net', id: 'reply-2', fromMe: false },
+    message: {
+      extendedTextMessage: {
+        text: '总结附件',
+        contextInfo: {
+          stanzaId: 'quoted-2',
+          participant: '16505550000@s.whatsapp.net',
+          quotedMessage: {
+            documentMessage: {
+              mimetype: 'application/pdf',
+              fileName: 'brief.pdf',
+            },
+          },
+        },
+      },
+    },
+  }, ACCOUNT_JID);
+  assert.deepEqual(documentReply.replyTo.attachments, [{ kind: 'file', name: 'brief.pdf' }]);
+});
+
 test('WhatsApp access modes allow self-chat, selected contacts, or the existing open behavior', () => {
   const direct = normalizeWhatsappMessage({
     key: {

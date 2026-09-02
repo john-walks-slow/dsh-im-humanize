@@ -17,9 +17,12 @@ oauth_config:
     bot:
       - app_mentions:read
       - chat:write
+      - channels:history
       - files:read
       - files:write
+      - groups:history
       - im:history
+      - mpim:history
       - reactions:write
 settings:
   event_subscriptions:

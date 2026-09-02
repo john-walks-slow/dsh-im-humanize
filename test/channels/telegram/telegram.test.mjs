@@ -1096,6 +1096,108 @@ test('Telegram normalizes private messages and requires an explicit group addres
   assert.deepEqual(topicTwo.reactionTarget, { chatId: -1001, messageId: 7 });
 });
 
+test('Telegram maps one reply_to_message snapshot without expanding nested replies', () => {
+  const replied = normalizeTelegramUpdate({
+    update_id: 14,
+    message: {
+      message_id: 8,
+      chat: { id: -1001, type: 'supergroup' },
+      from: { id: 43, is_bot: false },
+      text: '这张图说明什么？',
+      reply_to_message: {
+        message_id: 7,
+        chat: { id: -1001, type: 'supergroup' },
+        from: { id: 123456789, is_bot: true, first_name: 'Harness', last_name: 'Bot' },
+        caption: '第一层原文',
+        photo: [{ file_id: 'photo-large', file_unique_id: 'quoted-photo', file_size: 2_000 }],
+        reply_to_message: { message_id: 6, text: '不应递归进入 Prompt' },
+      },
+    },
+  }, { botId: '123456789', username: 'HarnessBot' });
+  assert.equal(replied.addressed, true);
+  assert.deepEqual(replied.replyTo, {
+    messageId: '7',
+    authorId: '123456789',
+    authorName: 'Harness Bot',
+    content: '第一层原文',
+    attachments: [{ kind: 'image', name: 'quoted-photo.jpg' }],
+  });
+  assert.doesNotMatch(JSON.stringify(replied.replyTo), /不应递归/);
+
+  const documentReply = normalizeTelegramUpdate({
+    update_id: 15,
+    message: {
+      message_id: 9,
+      chat: { id: 88, type: 'private' },
+      from: { id: 42, is_bot: false },
+      text: '总结附件',
+      reply_to_message: {
+        message_id: 5,
+        from: { id: 41, username: 'alice' },
+        document: { file_id: 'quoted-pdf', file_name: 'brief.pdf', mime_type: 'application/pdf' },
+      },
+    },
+  }, { botId: '123456789', username: 'HarnessBot' });
+  assert.deepEqual(documentReply.replyTo.attachments, [{ kind: 'file', name: 'brief.pdf' }]);
+  assert.equal(documentReply.replyTo.authorName, 'alice');
+});
+
+test('Telegram uses TextQuote and bounded history loading when reply_to_message omits text', async () => {
+  let loads = 0;
+  const quoted = normalizeTelegramUpdate({
+    update_id: 16,
+    message: {
+      message_id: 10,
+      chat: { id: 88, type: 'private' },
+      from: { id: 42, is_bot: false },
+      text: '说的是什么内容？',
+      quote: { text: '明白了——是记录/标记用途。' },
+      reply_to_message: {
+        message_id: 323,
+        date: 1_788_118_330,
+        from: { id: 123456789, is_bot: true, first_name: '今天是梁子' },
+      },
+    },
+  }, {
+    botId: '123456789',
+    username: 'HarnessBot',
+    loadReplyContent: async () => { loads += 1; return { content: '不应读取历史' }; },
+  });
+  assert.equal(quoted.replyTo.content, '明白了——是记录/标记用途。');
+  assert.equal(Object.hasOwn(quoted.replyTo, 'load'), false);
+  assert.equal(loads, 0);
+
+  let loadedReference;
+  const historyBacked = normalizeTelegramUpdate({
+    update_id: 17,
+    message: {
+      message_id: 11,
+      chat: { id: 88, type: 'private' },
+      from: { id: 42, is_bot: false },
+      text: '老消息说了什么？',
+      reply_to_message: {
+        message_id: 322,
+        date: 1_788_118_320,
+        from: { id: 123456789, is_bot: true, first_name: '今天是梁子' },
+      },
+    },
+  }, {
+    botId: '123456789',
+    username: 'HarnessBot',
+    loadReplyContent: async (reference) => {
+      loadedReference = reference;
+      return { content: '从当前会话历史恢复的正文' };
+    },
+  });
+  assert.equal(typeof historyBacked.replyTo.load, 'function');
+  assert.deepEqual(await historyBacked.replyTo.load({}), { content: '从当前会话历史恢复的正文' });
+  assert.deepEqual(loadedReference, {
+    conversationKey: 'direct:88',
+    messageId: '322',
+    createdAt: 1_788_118_320_000,
+  });
+});
+
 test('Telegram compatible mode preserves old routing and private allowlist mode restricts inbound messages', () => {
   const allowed = new Set(['6087707998', '1202499116']);
   assert.equal(telegramInboundAllowed({ kind: 'group', senderId: '6087707998' }), true);
@@ -1403,6 +1505,101 @@ test('Telegram runtime validates webhook state and starts a cancellable long pol
   assert.deepEqual(calls[1], { method: 'setChatMenuButton', menuButton: COMMANDS_MENU_BUTTON });
   assert.deepEqual(calls[2], { method: 'getUpdates', offset: -1, timeout: 0 });
   await rm(directory, { recursive: true, force: true });
+});
+
+test('Telegram runtime recovers an old bot reply from its bound Session history', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-im-telegram-reply-history-'));
+  const state = await new TelegramStateStore(join(directory, 'state.json')).load();
+  await state.setSession('direct:88', 'session-reply-history');
+  const quotedAt = Math.floor((Date.now() - 5_000) / 1_000) * 1_000;
+  let delivered = false;
+  let prompt;
+  const runtime = new TelegramRuntime({
+    config: {
+      botId: 'telegram_reply_history',
+      platformId: '123456789',
+      username: 'HarnessBot',
+    },
+    token: TOKEN,
+    harness: {
+      ensureRunning: async () => true,
+      workspaceSession: () => ({
+        sessionExists: async () => true,
+        readHistory: async () => ({
+          events: [
+            { event: { type: 'turn/start', seq: 1, time: quotedAt - 1_000, data: { turn: 3 } } },
+            { event: {
+              type: 'assistant/message',
+              seq: 2,
+              time: quotedAt,
+              data: {
+                turn: 3,
+                message: { content: [{ type: 'text', text: 'Telegram 老消息正文' }] },
+              },
+            } },
+            { event: {
+              type: 'turn/end',
+              seq: 3,
+              time: quotedAt + 1,
+              data: { turn: 3, reason: { kind: 'completed' } },
+            } },
+          ],
+          hasMore: false,
+        }),
+        ask: async (content) => { prompt = content; return '已识别 Telegram 引用'; },
+      }),
+    },
+    state,
+    createApi: () => ({
+      getMe: async () => ({ id: 123456789, is_bot: true }),
+      getWebhookInfo: async () => ({ url: '' }),
+      setMyCommands: async () => true,
+      setChatMenuButton: async () => true,
+      getUpdates: async ({ timeout, signal }) => {
+        if (timeout === 0) return [];
+        if (!delivered) {
+          delivered = true;
+          return [{
+            update_id: 0,
+            message: {
+              message_id: 400,
+              chat: { id: 88, type: 'private' },
+              from: { id: 42, is_bot: false },
+              text: '这条老消息说了什么？',
+              reply_to_message: {
+                message_id: 323,
+                date: quotedAt / 1_000,
+                from: { id: 123456789, is_bot: true, first_name: '今天是梁子' },
+              },
+            },
+          }];
+        }
+        return new Promise((_, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+      setMessageReaction: async () => true,
+      sendChatAction: async () => true,
+      sendRichMessageDraft: async () => true,
+      sendRichMessage: async () => ({ message_id: 401 }),
+      sendMessage: async () => ({ message_id: 401 }),
+      editMessageText: async () => true,
+    }),
+  });
+
+  try {
+    await runtime.start();
+    await bounded((async () => {
+      while (state.cursor() !== 1 || prompt === undefined) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    })(), 'Telegram reply history was not processed');
+    assert.match(prompt[0].text, /"content":"Telegram 老消息正文"/);
+    assert.doesNotMatch(prompt[0].text, /unavailableReason/);
+  } finally {
+    await runtime.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('Telegram runtime still starts when the command menu setup fails', async () => {
