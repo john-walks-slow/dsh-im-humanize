@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Fixed / 修复
+
+- Harness 回复等待改为按活动续期：持续产生事件或 Harness 明确报告 Session 仍在运行的长任务不再被固定 10 分钟上限误报超时；已开始但停止推进且不再运行的任务仍会按停滞窗口超时。
+  Harness reply waits now renew from activity: long-running turns that keep producing events or are still reported as running no longer hit a fixed ten-minute timeout, while started turns that stop progressing and are no longer running still time out after the stall window.
+
 ## [4.8.0] - 2026-09-02
 
 ### Added / 新增
