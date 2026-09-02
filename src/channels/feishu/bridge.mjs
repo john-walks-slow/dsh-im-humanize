@@ -11,8 +11,11 @@ import {
   hasInboundImages,
   imagePromptDiagnostic,
   imagePromptUserMessage,
-  promptContentForMessage,
 } from '../shared/image-prompt.mjs';
+import {
+  hasReplyReference,
+  promptContentForInboundMessage,
+} from '../shared/semantic/reply-reference.mjs';
 import {
   hasInboundFiles,
   inboundFileUserMessage,
@@ -44,7 +47,12 @@ import {
   isPresetCommand,
   runPresetCommand,
 } from '../shared/preset-command.mjs';
-import { runWorkspaceCommand, resolveSessionListWorkspace, workspacePathSnapshot } from '../shared/workspace-command.mjs';
+import {
+  parseSessionListArgument,
+  resolveSessionListWorkspace,
+  runWorkspaceCommand,
+  workspacePathSnapshot,
+} from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 import { captureContextEnhancement, enhanceContextContent } from '../shared/context-enhancement.mjs';
 import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
@@ -101,7 +109,7 @@ const WATCH_COMMAND = /^\/watch(?:\s+([^\s]+))?$/i;
 const UNWATCH_COMMAND = /^\/unwatch(?:\s+([^\s]+))?$/i;
 const WATCHLIST_COMMAND = /^\/watchlist$/i;
 const SESSION_LIST_PREFIX = /^\/(?:sessionlist|sessions)(?:\s|$)/i;
-const WORKSPACE_LIST_COMMAND = /^\/workspacelist$/i;
+const WORKSPACE_LIST_COMMAND = /^\/(?:workspacelist|workspaces|wsl)$/i;
 const NUMBER_REPLY = /^\d{1,2}$/;
 /** A displayed menu stays number-tappable for this long. */
 const MENU_TTL_MS = 10 * 60_000;
@@ -140,7 +148,7 @@ const REPAIR_URL_HOSTS = new Set([
 
 const ARCHIVED_COMMAND = /^\/archived(?:\s+(on|off))?$/i;
 /** Matches fast card commands that should not be queued behind a running task. */
-const CARD_COMMAND = /^\/(?:m(?:enu)?|new|help|status|compact|(?:sessionlist|sessions)(?:\s|$)|workspacelist|watchlist|archived(?:\s+(on|off))?)$/i;
+const CARD_COMMAND = /^\/(?:m(?:enu)?|new|help|status|compact|(?:sessionlist|sessions)(?:\s|$)|workspacelist|workspaces|wsl|watchlist|archived(?:\s+(on|off))?)$/i;
 
 /** Pretty-print a tool call's arguments for an approval card. */
 function operationArguments(toolCall) {
@@ -186,6 +194,7 @@ const WORKSPACE_HELP_LINES = [
   '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
   '/workspacelist  列出工作区绝对路径',
   '/sessionlist 或 /sessions [工作区序号或绝对路径]  列出会话 ID 和标题',
+  '/sessionlist --limit N  仅列出当前工作区前 N 个会话',
 ];
 
 /** Safe user-facing text for bind/workspace failures (no raw messages). */
@@ -659,7 +668,9 @@ export class FeishuHarnessBridge {
         && (this.#queues.has(key) || pending || this.#approvals.hasPending(key))
         ? { handled: true, kind: 'busy', message: batchInputBusyMessage() }
         : this.#batchInputs.handle(key, batchText, {
-            plainText: event.message.message_type === 'text' && Boolean(batchText),
+            plainText: event.message.message_type === 'text'
+              && Boolean(batchText)
+              && !hasReplyReference(commandMessage),
           });
       if (result.handled) {
         if (result.kind === 'submit') {
@@ -1065,11 +1076,12 @@ export class FeishuHarnessBridge {
     const text = message.content;
     const hasImages = hasInboundImages(message);
     const hasFiles = hasInboundFiles(message);
+    const hasReply = hasReplyReference(message);
     // 命令识别对 text 与纯文本 post 一视同仁：post 富文本若仅含单个
     // 文本段落（如复制粘贴的 /new），同样按命令处理；带图片/文件不认。
     // accept() 侧已用 nonEmptyString(content) 判定，两侧保持一致。
     const commandText = !hasImages && !hasFiles && text ? text.trim() : null;
-    if (!text && !hasImages && !hasFiles) {
+    if (!text && !hasImages && !hasFiles && !hasReply) {
       await this.#send(event.message.chat_id, t('目前支持文字、图片和文件消息。'), { replyTo: event.message.message_id });
       return;
     }
@@ -1112,8 +1124,18 @@ export class FeishuHarnessBridge {
       return;
     }
     if (SESSION_LIST_PREFIX.test(commandText)) {
-      const selector = commandText.replace(/^\/(?:sessionlist|sessions)/i, '').trim() || null;
-      await this.#showSessions({ chatId: event.message.chat_id, key, replyTo: event.message.message_id }, selector, 0);
+      const argument = commandText.replace(/^\/(?:sessionlist|sessions)/i, '').trim();
+      const request = parseSessionListArgument(argument);
+      if (request.error) {
+        await this.#send(event.message.chat_id, request.error, { replyTo: event.message.message_id });
+        return;
+      }
+      await this.#showSessions(
+        { chatId: event.message.chat_id, key, replyTo: event.message.message_id },
+        request.selector || null,
+        0,
+        { limit: request.limit },
+      );
       return;
     }
     if (WORKSPACE_LIST_COMMAND.test(commandText)) {
@@ -1877,6 +1899,7 @@ export class FeishuHarnessBridge {
     messageId = null,
     sessionWorkspace = null,
     sessionPage = 0,
+    sessionLimit = null,
     selections = [],
     actor = null,
   }) {
@@ -1927,7 +1950,7 @@ export class FeishuHarnessBridge {
         { chatId, key, replyTo: messageId },
         sessionWorkspace,
         page,
-        { updateMessageId: messageId },
+        { updateMessageId: messageId, limit: sessionLimit },
       );
       return;
     }
@@ -2106,7 +2129,7 @@ export class FeishuHarnessBridge {
           { chatId, key, replyTo: messageId },
           sessionWorkspace,
           sessionPage,
-          { updateMessageId: messageId },
+          { updateMessageId: messageId, limit: sessionLimit },
         );
       }
       return;
@@ -2122,7 +2145,7 @@ export class FeishuHarnessBridge {
           { chatId, key, replyTo: messageId },
           sessionWorkspace,
           sessionPage,
-          { updateMessageId: messageId },
+          { updateMessageId: messageId, limit: sessionLimit },
         );
       }
     }
@@ -2207,7 +2230,7 @@ export class FeishuHarnessBridge {
     { chatId, key, replyTo = null },
     selector,
     page = 0,
-    { updateMessageId = null } = {},
+    { updateMessageId = null, limit = null } = {},
   ) {
     try {
       const signal = this.#cardDataSignal();
@@ -2217,7 +2240,11 @@ export class FeishuHarnessBridge {
         return;
       }
       const listed = await this.#harness.listWorkspaceSessions(resolved.workspace, { signal });
-      const sessions = this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : []);
+      const visibleSessions = this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : []);
+      const sessionLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : null;
+      const sessions = sessionLimit === null
+        ? visibleSessions
+        : visibleSessions.slice(0, sessionLimit);
       const workspace = listed?.workspace ?? resolved.workspace;
       if (sessions.length === 0) {
         await this.#send(chatId, t('工作区：{workspace}\n该工作区暂无会话。', { workspace }), { replyTo });
@@ -2244,6 +2271,7 @@ export class FeishuHarnessBridge {
           // list response's workspace is display data and is not authoritative.
           sessionWorkspace: resolved.workspace,
           sessionPage: safePage,
+          sessionLimit,
         },
       );
     } catch (error) {
@@ -2312,6 +2340,9 @@ export class FeishuHarnessBridge {
       sessionPage: Number.isSafeInteger(options.sessionPage) && options.sessionPage >= 0
         ? options.sessionPage
         : 0,
+      sessionLimit: Number.isSafeInteger(options.sessionLimit) && options.sessionLimit > 0
+        ? options.sessionLimit
+        : null,
     });
     if (this.#cardKeys.size > 200) {
       const oldest = this.#cardKeys.keys().next().value;
@@ -3361,8 +3392,8 @@ export class FeishuHarnessBridge {
       askCompleted = true;
       onAskComplete?.();
     };
-    let content = hasInboundImages(message)
-      ? await promptContentForMessage(message, { signal: this.#signal })
+    let content = hasInboundImages(message) || hasReplyReference(message)
+      ? await promptContentForInboundMessage(message, { signal: this.#signal })
       : undefined;
     const snapshot = this.#acceptedMessageIds.get(messageId);
     let contextEnhanced = false;
@@ -3371,6 +3402,8 @@ export class FeishuHarnessBridge {
       content = enhanceContextContent(originalContent, snapshot, () => ({
         channel: 'feishu',
         senderId: senderOpenId(event),
+        chatId: event.message.chat_id,
+        threadId: event.message.thread_id,
       }));
       contextEnhanced = content !== originalContent;
     }

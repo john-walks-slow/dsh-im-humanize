@@ -35,7 +35,6 @@ import {
   hasInboundImages,
   imagePromptDiagnostic,
   imagePromptUserMessage,
-  promptContentForMessage,
 } from './image-prompt.mjs';
 import {
   hasInboundFiles,
@@ -47,6 +46,10 @@ import {
   validHarnessQuestion,
 } from './harness-question.mjs';
 import { deliverOutboundArtifacts } from './semantic/artifact-delivery.mjs';
+import {
+  hasReplyReference,
+  promptContentForInboundMessage,
+} from './semantic/reply-reference.mjs';
 import {
   createDeliveryReceipt,
   createTextDeliveryBlock,
@@ -283,7 +286,8 @@ export class TextHarnessBridge {
         plainText: Boolean(text)
           && normalized.plainText !== false
           && !hasInboundImages(normalized)
-          && !hasInboundFiles(normalized),
+          && !hasInboundFiles(normalized)
+          && !hasReplyReference(normalized),
       });
       if (batch.handled) {
         if (batch.kind === 'submit') {
@@ -301,7 +305,8 @@ export class TextHarnessBridge {
         plainText: Boolean(text)
           && normalized.plainText !== false
           && !hasInboundImages(normalized)
-          && !hasInboundFiles(normalized),
+          && !hasInboundFiles(normalized)
+          && !hasReplyReference(normalized),
       });
       if (batch.handled) {
         return this.#finishLocalMessage(normalized, messageId, batch.message);
@@ -575,7 +580,8 @@ export class TextHarnessBridge {
       }
       const hasImages = hasInboundImages(message);
       const hasFiles = hasInboundFiles(message);
-      if (!text && !hasImages && !hasFiles) {
+      const hasReply = hasReplyReference(message);
+      if (!text && !hasImages && !hasFiles && !hasReply) {
         await this.#bot.sendText(target, t('目前支持文字、图片和文件消息。'));
         return;
       }
@@ -590,7 +596,9 @@ export class TextHarnessBridge {
           t('/history [数量]  查看最近历史消息（默认 3 条，最多 5 条）'),
           t('/workspace 工作区序号或绝对路径  切换工作区'),
           t('/workspacelist  列出工作区绝对路径'),
+          t('/ws、/wsl、/workspaces  工作区命令别名'),
           t('/sessionlist 或 /sessions [工作区序号或绝对路径]  列出会话 ID 和标题'),
+          t('/sessionlist --limit N  仅列出当前工作区前 N 个会话'),
           t('/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话'),
           t('/models  按序号列出所有可用模型'),
           t('/reasoninglist 或 /reasonings  按序号列出当前模型可用推理等级'),
@@ -669,18 +677,21 @@ export class TextHarnessBridge {
           );
         }
       }
-      let content = hasImages
-        ? await promptContentForMessage(message, { signal: this.#signal })
+      let content = hasImages || hasReply
+        ? await promptContentForInboundMessage(message, { signal: this.#signal })
         : undefined;
       const snapshot = this.#acceptedMessageIds.get(messageId);
       let contextEnhanced = false;
       if (snapshot) {
         const originalContent = content ?? text;
+        const contextSource = message.contextSource?.();
         content = enhanceContextContent(originalContent, snapshot, () => ({
           channel: this.#descriptor.key,
           senderId,
-          senderName: message.contextSource?.()?.senderName,
-          conversationTitle: message.contextSource?.()?.conversationTitle,
+          senderName: contextSource?.senderName,
+          conversationTitle: contextSource?.conversationTitle,
+          chatId: contextSource?.chatId ?? message.conversationId,
+          threadId: contextSource?.threadId,
         }));
         contextEnhanced = content !== originalContent;
       }

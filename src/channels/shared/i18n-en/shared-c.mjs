@@ -81,6 +81,8 @@ export default {
   // image-prompt.mjs
   '当前模型不支持图片，请用 /models 查看可用模型，再用 /model <序号> 切换后重发。':
     'The current model does not support images. Use /models to list available models, switch with /model <number>, then resend.',
+  '当前会话模型不支持直接接收图片输入。用户发送的图片已作为文件保存到工作区（见下方文件清单）。请使用可用工具分析这些图片文件后回答，例如 run_code 或 pwsh 读取字节、解析元数据、调用图像处理或 OCR 库；不要假设自己能直接看到图片内容。':
+    'The current session model does not accept direct image input. The images sent by the user were saved into the workspace as files (see the file manifest below). Answer by analyzing those image files with the available tools — for example run_code or pwsh to read bytes, parse metadata, or call image-processing or OCR libraries — and do not assume you can see the images directly.',
   '图片超过宿主允许的大小，请压缩后重试。':
     'The image exceeds the size allowed by the host; compress it and try again.',
   '图片分辨率过高，请压缩后重试。':
@@ -157,15 +159,15 @@ export default {
   '当前聊天有正在运行的任务、待回答问题或待审批请求。\n请先完成当前交互或发送 /stop，再使用 /batch。':
     'This chat has a running task, unanswered question, or pending approval.\nFinish the current interaction or send /stop before using /batch.',
   '用法：/{command}（不带参数）': 'Usage: /{command} (without arguments)',
-  '批量输入命令仅支持纯文字，请移除图片或文件后重试。':
-    'Batch input commands support text only. Remove the image or file and try again.',
+  '批量输入命令仅支持纯文字，请移除图片、文件或引用消息后重试。':
+    'Batch input commands support text only. Remove the image, file, or quoted message and try again.',
   '当前没有待提交的批量内容，请先发送 /batch。':
     'There is no batch to submit. Send /batch first.',
   '当前没有正在进行的批量输入。': 'There is no active batch input.',
   '已进入批量输入模式，最多可发送 {limit} 条文字。\n完成后发送 /send，取消请发送 /cancel。':
     'Batch input started. You can send up to {limit} text messages.\nSend /send when finished or /cancel to cancel.',
-  '批量输入模式目前仅支持文字，这条消息未收录。\n请继续发送文字，或使用 /send、/cancel。':
-    'Batch input currently supports text only, so this message was not collected.\nContinue with text, or use /send or /cancel.',
+  '批量输入模式目前仅支持文字，不支持图片、文件或引用消息，这条消息未收录。\n请继续发送文字，或使用 /send、/cancel。':
+    'Batch input currently supports text only, not images, files, or quoted messages, so this message was not collected.\nContinue with text, or use /send or /cancel.',
   '当前批次正在提交，请勿重复发送 /send。':
     'The current batch is being submitted. Do not send /send again.',
   '批量内容已经提交，无法取消。\n如需停止当前任务，请发送 /stop。':

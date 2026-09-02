@@ -89,6 +89,7 @@ test('collecting rejects non-text and other commands without counting them', () 
   const media = batches.handle('direct:one', 'photo caption', { plainText: false });
   assert.equal(media.kind, 'unsupported-content');
   assert.match(media.message, /未收录/);
+  assert.match(media.message, /图片、文件或引用消息/);
 
   const mediaCommand = batches.handle('direct:one', '/cancel', { plainText: false });
   assert.equal(mediaCommand.kind, 'unsupported-content');

@@ -5,7 +5,7 @@ const CSI_SEQUENCE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/gu;
 const ESC_SEQUENCE = /\u001b[@-_]/gu;
 const CONTROL_CHARACTER = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu;
 const DIRECTIONAL_CONTROL = /[\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]/gu;
-const INJECTED_CONTEXT_PREFIX = /^(?:<dsh_im_source>[\s\S]*?<\/dsh_im_source>\s*)?(?:<dsh_im_source_guidance>[\s\S]*?<\/dsh_im_source_guidance>\s*)?/u;
+const INJECTED_CONTEXT_PREFIX = /^(?:<dsh_im_source>[\s\S]*?<\/dsh_im_source>\s*)?(?:<dsh_im_source_guidance>[\s\S]*?<\/dsh_im_source_guidance>\s*)?(?:<dsh_im_reply_to>[\s\S]*?<\/dsh_im_reply_to>\s*)?/u;
 const SEGMENTER = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
 function cleanTitleText(input) {

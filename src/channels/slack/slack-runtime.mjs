@@ -49,6 +49,58 @@ function slackFileUrl(file) {
     ? file.url_private_download : file?.url_private;
 }
 
+function slackReplyAttachment(file) {
+  if (!file || typeof file !== 'object') return null;
+  const mediaType = typeof file.mimetype === 'string' ? file.mimetype.toLowerCase() : '';
+  const kind = mediaType.startsWith('image/') ? 'image'
+    : mediaType.startsWith('audio/') ? 'audio'
+      : mediaType.startsWith('video/') ? 'video' : 'file';
+  const name = typeof file.name === 'string' && file.name
+    ? file.name : typeof file.title === 'string' && file.title ? file.title : undefined;
+  return { kind, ...(name ? { name } : {}) };
+}
+
+function slackReplySnapshot(message, messageTs) {
+  if (!message || String(message.ts ?? '') !== messageTs) return null;
+  const authorId = typeof message.user === 'string' && message.user
+    ? message.user : typeof message.bot_id === 'string' && message.bot_id
+      ? message.bot_id : undefined;
+  const authorName = typeof message.username === 'string' && message.username
+    ? message.username : undefined;
+  return {
+    messageId: messageTs,
+    ...(authorId ? { authorId } : {}),
+    ...(authorName ? { authorName } : {}),
+    content: decodeSlackText(message.text ?? ''),
+    attachments: Array.isArray(message.files)
+      ? message.files.map(slackReplyAttachment).filter(Boolean)
+      : [],
+  };
+}
+
+function slackThreadReplyReference(event, loadReply) {
+  const messageTs = typeof event?.thread_ts === 'string' ? event.thread_ts : '';
+  if (!messageTs || messageTs === String(event?.ts ?? '')) return undefined;
+  return {
+    messageId: messageTs,
+    load: async ({ signal } = {}) => {
+      try {
+        const message = await loadReply({
+          channelId: String(event.channel),
+          messageTs,
+          signal,
+        });
+        return slackReplySnapshot(message, messageTs);
+      } catch (error) {
+        if (error?.code === 'slack-missing-scope') {
+          return { messageId: messageTs, unavailableReason: 'permission-denied' };
+        }
+        throw error;
+      }
+    },
+  };
+}
+
 function slackImageSource(file, loadFile) {
   const mediaType = typeof file?.mimetype === 'string' ? file.mimetype.toLowerCase() : '';
   const url = slackFileUrl(file);
@@ -104,6 +156,7 @@ export function normalizeSlackEvent(payload, botUserId, {
   loadFile = async () => { throw new Error('Slack file downloader is unavailable'); },
   loadFileStream = loadFile,
   loadFileInfo = async () => { throw new Error('Slack file metadata loader is unavailable'); },
+  loadReply = async () => { throw new Error('Slack reply loader is unavailable'); },
 } = {}) {
   const event = payload?.event;
   if (!event || !payload?.event_id || !event.channel || !event.user || !event.ts) return null;
@@ -112,12 +165,17 @@ export function normalizeSlackEvent(payload, botUserId, {
   if (!direct && !mentioned) return null;
   if ((event.subtype && event.subtype !== 'file_share') || event.bot_id || event.app_id) return null;
   const threadTs = String(event.thread_ts ?? event.ts);
+  const replyTo = slackThreadReplyReference(event, loadReply);
   return {
     messageId: String(payload.event_id),
     senderId: String(event.user),
     senderIsBot: String(event.user) === String(botUserId),
     kind: direct ? 'direct' : 'group',
     conversationId: direct ? String(event.channel) : `${event.channel}:${threadTs}`,
+    contextSource: () => ({
+      chatId: String(event.channel),
+      threadId: event.thread_ts ? String(event.thread_ts) : undefined,
+    }),
     content: stripBotMention(event.text ?? '', botUserId),
     plainText: !Array.isArray(event.files) || event.files.length === 0,
     images: Array.isArray(event.files)
@@ -126,6 +184,7 @@ export function normalizeSlackEvent(payload, botUserId, {
     files: Array.isArray(event.files)
       ? event.files.map((file) => slackFileSource(file, loadFileStream, loadFileInfo)).filter(Boolean)
       : [],
+    ...(replyTo ? { replyTo } : {}),
     addressed: direct || mentioned,
     reactionTarget: {
       channelId: String(event.channel),
@@ -555,6 +614,7 @@ export class SlackRuntime {
           loadFile: (url, options) => this.#api.downloadFile({ url, ...options }),
           loadFileStream: (url, options) => this.#api.downloadFileStream({ url, ...options }),
           loadFileInfo: (fileId, options) => this.#api.fileInfo({ fileId, ...options }),
+          loadReply: (options) => this.#api.getMessage(options),
         });
         const bridge = this.#bridge;
         if (message && bridge) {

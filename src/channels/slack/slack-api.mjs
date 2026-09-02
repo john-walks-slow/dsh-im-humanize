@@ -246,6 +246,24 @@ export class SlackApi {
     return value.file;
   }
 
+  async getMessage({ channelId, messageTs, signal } = {}) {
+    const timestamp = requiredString(messageTs, 'message timestamp');
+    const value = await this.#request('conversations.history', {
+      tokenKind: 'bot',
+      signal,
+      body: {
+        channel: slackId(channelId, 'channel id'),
+        oldest: timestamp,
+        latest: timestamp,
+        inclusive: true,
+        limit: 1,
+      },
+    });
+    return Array.isArray(value?.messages)
+      ? value.messages.find((message) => String(message?.ts ?? '') === timestamp) ?? null
+      : null;
+  }
+
   postMessage({ channelId, text, threadTs, signal }) {
     return this.#request('chat.postMessage', {
       tokenKind: 'bot',

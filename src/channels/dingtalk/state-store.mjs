@@ -9,7 +9,13 @@ const EMPTY_STATE = Object.freeze({
   sessions: {},
   seenMessageIds: [],
   pendingSenders: {},
+  recentOutboundMessages: [],
 });
+
+export const DINGTALK_RECENT_OUTBOUND_LIMIT = 200;
+export const DINGTALK_RECENT_OUTBOUND_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+export const DINGTALK_RECENT_OUTBOUND_TEXT_LIMIT = 8_000;
+export const DINGTALK_RECENT_OUTBOUND_MATCH_TOLERANCE_MS = 15_000;
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -17,6 +23,49 @@ function nonEmptyString(value) {
 
 function displayName(value) {
   return (nonEmptyString(value) ?? t('钉钉用户')).slice(0, 100);
+}
+
+function timestampMs(value) {
+  const number = typeof value === 'string' && value.trim() ? Number(value) : value;
+  if (!Number.isFinite(number) || number < 0) return null;
+  return Math.trunc(number < 10_000_000_000 ? number * 1_000 : number);
+}
+
+function providerMessageIds(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .map((id) => (id === undefined || id === null ? null : nonEmptyString(String(id))))
+    .filter(Boolean))];
+}
+
+function truncateText(value) {
+  const text = nonEmptyString(value);
+  return text ? [...text].slice(0, DINGTALK_RECENT_OUTBOUND_TEXT_LIMIT).join('') : null;
+}
+
+function normalizeRecentOutboundMessage(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const conversationKey = nonEmptyString(value.conversationKey);
+  const text = truncateText(value.text);
+  const sentAt = timestampMs(value.sentAt);
+  const completedAt = timestampMs(value.completedAt) ?? sentAt;
+  if (!conversationKey || !text || sentAt === null || completedAt === null) return null;
+  return {
+    conversationKey,
+    text,
+    sentAt,
+    completedAt: Math.max(sentAt, completedAt),
+    providerMessageIds: providerMessageIds(value.providerMessageIds),
+  };
+}
+
+function recentOutboundMessages(value, now = Date.now()) {
+  if (!Array.isArray(value)) return [];
+  const cutoff = now - DINGTALK_RECENT_OUTBOUND_TTL_MS;
+  return value
+    .map(normalizeRecentOutboundMessage)
+    .filter((entry) => entry && entry.completedAt >= cutoff)
+    .slice(-DINGTALK_RECENT_OUTBOUND_LIMIT);
 }
 
 function normalizePendingSender(value, fallbackRequestId) {
@@ -69,6 +118,7 @@ function normalizeState(value) {
       ? [...new Set(value.seenMessageIds.map(nonEmptyString).filter(Boolean))].slice(-1_000)
       : [],
     pendingSenders,
+    recentOutboundMessages: recentOutboundMessages(value.recentOutboundMessages),
   };
 }
 
@@ -138,6 +188,54 @@ export class DingtalkStateStore {
       this.#state.seenMessageIds.splice(0, this.#state.seenMessageIds.length - 1_000);
     }
     await this.#persist();
+  }
+
+  async rememberOutboundMessage({
+    conversationKey,
+    text,
+    sentAt = Date.now(),
+    completedAt = Date.now(),
+    providerMessageIds: messageIds = [],
+  } = {}) {
+    const entry = normalizeRecentOutboundMessage({
+      conversationKey,
+      text,
+      sentAt,
+      completedAt,
+      providerMessageIds: messageIds,
+    });
+    if (!entry) throw new TypeError('Invalid DingTalk outbound message');
+    this.#state.recentOutboundMessages = recentOutboundMessages([
+      ...this.#state.recentOutboundMessages,
+      entry,
+    ]);
+    await this.#persist();
+  }
+
+  recentOutboundTextFor({
+    conversationKey,
+    processQueryKey,
+    messageId,
+    createdAt,
+    now = Date.now(),
+  } = {}) {
+    const key = nonEmptyString(conversationKey);
+    if (!key) return null;
+    const active = recentOutboundMessages(this.#state.recentOutboundMessages, now)
+      .filter((entry) => entry.conversationKey === key);
+    const quotedIds = providerMessageIds([processQueryKey, messageId]);
+    for (const quotedId of quotedIds) {
+      const exact = active.filter((entry) => entry.providerMessageIds.includes(quotedId));
+      if (exact.length === 1) return exact[0].text;
+      if (exact.length > 1) return null;
+    }
+    const quotedAt = timestampMs(createdAt);
+    if (quotedAt === null) return null;
+    const candidates = active.filter((entry) => (
+      quotedAt >= entry.sentAt - DINGTALK_RECENT_OUTBOUND_MATCH_TOLERANCE_MS
+        && quotedAt <= entry.completedAt + DINGTALK_RECENT_OUTBOUND_MATCH_TOLERANCE_MS
+    ));
+    return candidates.length === 1 ? candidates[0].text : null;
   }
 
   pendingSenders() {

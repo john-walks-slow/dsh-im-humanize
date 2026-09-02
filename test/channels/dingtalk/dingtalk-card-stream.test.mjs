@@ -88,7 +88,9 @@ test('finish waits for an in-flight update and discards stale pending progress',
   });
   const stream = createStream(fixtureValue.api, { logger: { error() {} } });
 
+  assert.deepEqual(stream.providerMessageIds, []);
   assert.equal(await stream.start('正在处理'), true);
+  assert.deepEqual(stream.providerMessageIds, ['card-one']);
   stream.push('第一段');
   stream.push('应丢弃的旧进度');
   const finishing = stream.finish('最终答案');

@@ -151,6 +151,33 @@ test('Slack API uses native streaming methods and suppresses generated mass ment
   assert.equal(calls[3].body.text, '请通知 @channel 和 @U99999999');
 });
 
+test('Slack API reads one exact thread root from the current channel', async () => {
+  let request;
+  const api = new SlackApi({
+    botToken: BOT_TOKEN,
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return jsonResponse({
+        ok: true,
+        messages: [{ ts: '1700000000.001', user: 'U87654321', text: 'root' }],
+      });
+    },
+  });
+  const message = await api.getMessage({
+    channelId: 'C12345678',
+    messageTs: '1700000000.001',
+  });
+  assert.equal(message.text, 'root');
+  assert.equal(request.url.pathname.endsWith('/conversations.history'), true);
+  assert.deepEqual(JSON.parse(request.options.body), {
+    channel: 'C12345678',
+    oldest: '1700000000.001',
+    latest: '1700000000.001',
+    inclusive: true,
+    limit: 1,
+  });
+});
+
 test('Slack API and bot client add and remove reactions on the source message', async () => {
   const calls = [];
   const requestAbort = new AbortController();
@@ -902,6 +929,87 @@ test('Slack normalizes direct messages and addressed channel events', () => {
     },
   }, 'U12345678');
   assert.equal(botMessage, null);
+});
+
+test('Slack keeps thread roots as lazy reply references without loading non-thread messages', async () => {
+  const loads = [];
+  const threaded = normalizeSlackEvent({
+    event_id: 'Ev-reply-1',
+    event: {
+      type: 'app_mention',
+      channel: 'C12345678',
+      user: 'U87654321',
+      ts: '1700000000.002',
+      thread_ts: '1700000000.001',
+      text: '<@U12345678> summarize this',
+    },
+  }, 'U12345678', {
+    loadReply: async (options) => {
+      loads.push(options);
+      return {
+        ts: '1700000000.001',
+        user: 'U11111111',
+        username: 'Original author',
+        text: 'quoted &amp; original',
+        files: [
+          { name: 'screen.png', mimetype: 'image/png' },
+          { name: 'voice.ogg', mimetype: 'audio/ogg' },
+          { name: 'clip.mp4', mimetype: 'video/mp4' },
+          { name: 'report.pdf', mimetype: 'application/pdf' },
+        ],
+      };
+    },
+  });
+  assert.equal(loads.length, 0);
+  assert.equal(threaded.replyTo.messageId, '1700000000.001');
+  const controller = new AbortController();
+  assert.deepEqual(await threaded.replyTo.load({ signal: controller.signal }), {
+    messageId: '1700000000.001',
+    authorId: 'U11111111',
+    authorName: 'Original author',
+    content: 'quoted & original',
+    attachments: [
+      { kind: 'image', name: 'screen.png' },
+      { kind: 'audio', name: 'voice.ogg' },
+      { kind: 'video', name: 'clip.mp4' },
+      { kind: 'file', name: 'report.pdf' },
+    ],
+  });
+  assert.deepEqual(loads, [{
+    channelId: 'C12345678',
+    messageTs: '1700000000.001',
+    signal: controller.signal,
+  }]);
+
+  const missingScope = normalizeSlackEvent({
+    event_id: 'Ev-reply-scope',
+    event: {
+      type: 'app_mention', channel: 'C12345678', user: 'U87654321',
+      ts: '1700000000.004', thread_ts: '1700000000.001', text: '<@U12345678> retry',
+    },
+  }, 'U12345678', {
+    loadReply: async () => {
+      const error = new Error('missing scope');
+      error.code = 'slack-missing-scope';
+      throw error;
+    },
+  });
+  assert.deepEqual(await missingScope.replyTo.load(), {
+    messageId: '1700000000.001',
+    unavailableReason: 'permission-denied',
+  });
+
+  const root = normalizeSlackEvent({
+    event_id: 'Ev-root-1',
+    event: {
+      type: 'message', channel_type: 'im', channel: 'D12345678', user: 'U87654321',
+      ts: '1700000000.003', text: 'ordinary root',
+    },
+  }, 'U12345678', { loadReply: async () => { throw new Error('must not load'); } });
+  assert.equal(Object.hasOwn(root, 'replyTo'), false);
+  assert.match(SLACK_APP_MANIFEST_YAML, /\n\s+- channels:history\n/);
+  assert.match(SLACK_APP_MANIFEST_YAML, /\n\s+- groups:history\n/);
+  assert.match(SLACK_APP_MANIFEST_YAML, /\n\s+- mpim:history\n/);
 });
 
 test('Slack keeps image shares in image prompts and exposes ordinary files lazily', async () => {

@@ -6,11 +6,13 @@ import {
   createWeixinApi,
   decryptWeixinImage,
   extractWeixinFiles,
+  extractWeixinReplyReference,
   extractWeixinText,
   normalizeWeixinApiBaseUrl,
   parseWeixinImageAesKey,
   splitWeixinText,
   weixinImageDownloadUrl,
+  weixinMessageTimestampMs,
   WeixinApiError,
 } from '../../../src/channels/weixin/weixin-api.mjs';
 
@@ -189,7 +191,7 @@ test('sendText emits the iLink message envelope without reflecting the token in 
       return jsonResponse({ ret: 0 });
     },
   });
-  await api.sendText({
+  const result = await api.sendText({
     baseUrl: 'https://ilinkai.weixin.qq.com',
     token: 'host-only-token',
     toUserId: 'wx-user',
@@ -203,6 +205,7 @@ test('sendText emits the iLink message envelope without reflecting the token in 
   assert.equal(body.msg.to_user_id, 'wx-user');
   assert.equal(body.msg.context_token, 'message-context');
   assert.equal(body.msg.item_list[0].text_item.text, 'Harness reply');
+  assert.deepEqual(result.providerMessageIds, [body.msg.client_id]);
   assert.equal(body.base_info.channel_version, '2.4.6');
   assert.equal(body.base_info.bot_agent, 'DeepSeekHarness/1.1.0');
   assert.doesNotMatch(calls[0].init.body, /host-only-token/);
@@ -687,4 +690,82 @@ test('Weixin URL, inbound text, and reply chunk helpers enforce their narrow for
   assert.equal(extractWeixinText({ item_list: [{ type: 1, text_item: { text: ' 你好 ' } }] }), '你好');
   assert.equal(extractWeixinText({ item_list: [{ type: 3, voice_item: { text: '语音转写' } }] }), '语音转写');
   assert.deepEqual(splitWeixinText('abcdefgh', 5), ['abcde', 'fgh']);
+});
+
+test('Weixin extracts one-level ref_msg snapshots and attachment metadata', () => {
+  assert.deepEqual(extractWeixinReplyReference({
+    item_list: [{
+      type: 1,
+      text_item: { text: '继续分析' },
+      ref_msg: {
+        title: '文件摘要',
+        message_item: {
+          type: 4,
+          msg_id: 'quoted-weixin-file',
+          file_item: { file_name: '微信说明.docx' },
+          ref_msg: {
+            title: '不应递归展开',
+            message_item: { type: 1, text_item: { text: '二级引用' } },
+          },
+        },
+      },
+    }],
+  }), {
+    messageId: 'quoted-weixin-file',
+    content: '文件摘要',
+    attachments: [{ kind: 'file', name: '微信说明.docx' }],
+  });
+});
+
+test('Weixin reads quoted text by payload shape even when iLink labels it as type 8', () => {
+  assert.deepEqual(extractWeixinReplyReference({
+    item_list: [{
+      ref_msg: {
+        message_item: {
+          type: 8,
+          create_time_ms: 1_725_000_000_000,
+          text_item: { text: '机器人原回复' },
+        },
+      },
+    }],
+  }), { content: '机器人原回复' });
+});
+
+test('Weixin resolves a type 8 metadata-only quote and otherwise marks it not delivered', () => {
+  const callback = {
+    item_list: [{
+      ref_msg: {
+        message_item: {
+          type: 8,
+          create_time_ms: '1725000000000',
+          update_time_ms: '1725000000100',
+        },
+      },
+    }],
+  };
+  let reference;
+  assert.deepEqual(extractWeixinReplyReference(callback, {
+    resolveContent: (value) => {
+      reference = value;
+      return '从最近出站索引恢复的原回复';
+    },
+  }), { content: '从最近出站索引恢复的原回复' });
+  assert.deepEqual(reference, {
+    messageId: null,
+    createTimeMs: '1725000000000',
+    updateTimeMs: '1725000000100',
+  });
+  assert.deepEqual(extractWeixinReplyReference(callback), {
+    unavailableReason: 'not-delivered',
+  });
+});
+
+test('Weixin decodes the timestamp carried by a real 64-bit iLink message id', () => {
+  assert.equal(weixinMessageTimestampMs('7500581098742245128', {
+    now: 1_788_278_900_000,
+  }), 1_788_277_887_998);
+  assert.equal(weixinMessageTimestampMs('quoted-command'), null);
+  assert.equal(weixinMessageTimestampMs('99999999999999999999', {
+    now: 1_788_278_900_000,
+  }), null);
 });
