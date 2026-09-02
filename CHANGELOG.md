@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Fixed / 修复
+
+- 机器人工作区目录选择器现在同时识别新版 DSH 的 `directory-picker/*` 错误码与旧版连字符错误码；native 后端会正确回退到系统目录选择器，已失效的保存路径也会回退到 Host 主目录。
+  The bot workspace directory picker now recognizes both current DSH `directory-picker/*` error codes and legacy hyphenated codes, restoring the native system-picker fallback and the Host-home fallback for stale saved paths.
+
 ## [4.7.0] - 2026-09-02
 
 ### Added / 新增
