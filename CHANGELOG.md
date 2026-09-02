@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Added / 新增
+
+- 上下文增强新增两个来源字段：`chatId`（会话标识，用于区分群组或私聊）与 `threadId`（话题标识，飞书话题群会带上 `thread_id`，用于区分同一群组内的不同话题）。九个渠道均可勾选；飞书群聊直接提供群 ID，Slack/Telegram 话题、Discord 频道等渠道也按各自事件补齐。仍只发送当前消息中已有的值，不查询平台 API。
+  Context enhancement adds two source fields: `chatId` (the chat ID that distinguishes groups or direct chats) and `threadId` (the topic ID; Feishu topic chats carry `thread_id`, telling different topics inside the same group apart). All nine channels can select them; Feishu group chats provide the group ID directly, and Slack/Telegram topics, Discord channels, and other channels are wired per their own events. Only values already present in the current message are sent; no platform APIs are queried.
+
 ### Fixed / 修复
 
 - 机器人工作区目录选择器现在同时识别新版 DSH 的 `directory-picker/*` 错误码与旧版连字符错误码；native 后端会正确回退到系统目录选择器，已失效的保存路径也会回退到 Host 主目录。
