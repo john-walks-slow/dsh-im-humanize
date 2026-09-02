@@ -1966,7 +1966,9 @@ test('an approval is presented as an interactive card with approve and reject bu
     },
     state: fixture.state,
     status: bridgeStatus(),
-    allowedSenderOpenIds: new Set(['ou_user']),
+    accessPolicy: directAccessPolicy({
+      users: [{ id: 'ou_user', canExecuteCommands: false }],
+    }),
   });
 
   const turn = bridge.accept(event('approval-card-start', '执行危险命令'));
@@ -1987,6 +1989,10 @@ test('an approval is presented as an interactive card with approve and reject bu
   assert.equal(decisions.length, 0);
 
   await bridge.onCardAction(cardActionEvent('om_card_1', 'approve:approval-card-id', 'ou_user'));
+  await eventually(
+    () => decisions.length === 1,
+    'an allowed ordinary-message user could not approve their own interaction',
+  );
   await turn;
   assert.deepEqual(decisions, [{
     ok: true,
@@ -2039,7 +2045,9 @@ test('approval card reject button submits a rejected outcome', async () => {
     },
     state: fixture.state,
     status: bridgeStatus(),
-    allowedSenderOpenIds: new Set(['ou_user']),
+    accessPolicy: directAccessPolicy({
+      users: [{ id: 'ou_user', canExecuteCommands: false }],
+    }),
   });
 
   const turn = bridge.accept(event('approval-reject-start', '覆盖文件'));
@@ -2049,6 +2057,10 @@ test('approval card reject button submits a rejected outcome', async () => {
   );
 
   await bridge.onCardAction(cardActionEvent('om_card_1', 'reject:approval-reject-id', 'ou_user'));
+  await eventually(
+    () => decisions.length === 1,
+    'an allowed ordinary-message user could not reject their own interaction',
+  );
   await turn;
   assert.deepEqual(decisions, [{
     ok: true,
@@ -2064,6 +2076,7 @@ test('a single-choice question is presented as a card with option buttons by def
   const fixture = stateFixture([['p2p:ou_user', 'session-question-card']]);
   const sent = [];
   const submitted = deferred();
+  let submittedResult;
   const bridge = new FeishuHarnessBridge({
     client: cardClient(async (outgoing) => sent.push(outgoing)),
     harness: {
@@ -2086,6 +2099,7 @@ test('a single-choice question is presented as a card with option buttons by def
             }],
           },
           respond: async (result) => {
+            submittedResult = result;
             submitted.resolve(result);
             return { accepted: true };
           },
@@ -2096,7 +2110,9 @@ test('a single-choice question is presented as a card with option buttons by def
     },
     state: fixture.state,
     status: bridgeStatus(),
-    allowedSenderOpenIds: new Set(['ou_user']),
+    accessPolicy: directAccessPolicy({
+      users: [{ id: 'ou_user', canExecuteCommands: false }],
+    }),
   });
 
   const turn = bridge.accept(event('question-card-start', '请先调用 ask_user_question'));
@@ -2114,6 +2130,10 @@ test('a single-choice question is presented as a card with option buttons by def
 
   await bridge.onCardAction(
     cardActionEvent('om_card_1', 'answer:question-card-id:0:测试环境', 'ou_user'),
+  );
+  await eventually(
+    () => submittedResult !== undefined,
+    'an allowed ordinary-message user could not answer their own interaction',
   );
   await turn;
   assert.deepEqual(await submitted.promise, {
@@ -2201,6 +2221,86 @@ test('an interaction card falls back to plain text when the card send fails', as
       outcome: 'allowed-once',
     },
   }]);
+});
+
+test('a resolved question remembers the text fallback message after its card send fails', async () => {
+  const fixture = stateFixture([['p2p:ou_user', 'session-question-fallback-thread']]);
+  const sent = [];
+  const asked = [];
+  const resolved = deferred();
+  let resolveInteraction;
+  const client = {
+    im: { v1: { message: {
+      create: async (request) => {
+        if (request.data.msg_type === 'interactive') throw new Error('card disabled');
+        const messageId = `om_question_fallback_${sent.length + 1}`;
+        sent.push({
+          messageId,
+          text: JSON.parse(request.data.content).text,
+        });
+        return { code: 0, data: { message_id: messageId } };
+      },
+    } } },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    harness: {
+      sessionExists: async () => true,
+      createSession: async () => assert.fail('the existing session should be reused'),
+      ask: async (sessionId, text, options) => {
+        asked.push(text);
+        if (asked.length > 1) return 'late fallback reply was handled as a new prompt';
+        await options.onInteraction({
+          kind: 'question',
+          interactionId: 'question-fallback-thread',
+          rpcId: 'question-fallback-thread',
+          sessionId,
+          payload: {
+            type: 'question/requested',
+            sessionId,
+            questions: [{
+              id: 'environment',
+              question: '请选择环境',
+              options: [{ label: '测试环境' }, { label: '生产环境' }],
+            }],
+          },
+          respond: async () => ({ accepted: true }),
+        });
+        resolveInteraction = async () => {
+          await options.onInteractionResolved({
+            kind: 'question',
+            interactionId: 'question-fallback-thread',
+            sessionId,
+            outcome: 'answered',
+          });
+          resolved.resolve();
+        };
+        await resolved.promise;
+        return '已由其他客户端完成';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+  });
+
+  const first = bridge.accept(event('question-fallback-start', '启动卡片降级问题'));
+  await eventually(() => (
+    typeof resolveInteraction === 'function'
+      && sent.some(({ text }) => text.includes('请选择环境'))
+  ));
+  const questionMessageId = sent.find(({ text }) => text.includes('请选择环境')).messageId;
+  await resolveInteraction();
+  await first;
+
+  await bridge.accept(event('question-fallback-late', '1', {
+    root_id: 'question-fallback-start',
+    parent_id: questionMessageId,
+    thread_id: 'omt_question_fallback',
+  }));
+
+  assert.deepEqual(asked, ['启动卡片降级问题']);
+  assert.equal(sent.some(({ text }) => text.includes('已在其他客户端处理')), true);
 });
 
 test('a different allowed group member cannot approve or answer an interaction card', async () => {
