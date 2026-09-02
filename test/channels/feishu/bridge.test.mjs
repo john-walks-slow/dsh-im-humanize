@@ -4602,7 +4602,7 @@ test('compact card action contains session lookup failures', async () => {
 });
 
 test('Feishu list and status command failures share one safe classified format', async () => {
-  for (const command of ['/sessionlist', '/workspacelist', '/status']) {
+  for (const command of ['/sessionlist', '/workspacelist', '/workspaces', '/wsl', '/status']) {
     const fixture = stateFixture();
     const sent = [];
     const status = bridgeStatus();
@@ -4619,7 +4619,7 @@ test('Feishu list and status command failures share one safe classified format',
       ensureRunning: async () => true,
     };
     if (command === '/sessionlist') harness.listWorkspaceSessions = async () => { throw providerFailure(); };
-    if (command === '/workspacelist') harness.listWorkspaces = async () => { throw providerFailure(); };
+    if (['/workspacelist', '/workspaces', '/wsl'].includes(command)) harness.listWorkspaces = async () => { throw providerFailure(); };
     if (command === '/status') harness.ensureRunning = async () => { throw providerFailure(); };
     const bridge = new FeishuHarnessBridge({
       client: textClient(async ({ text }) => sent.push(text)),

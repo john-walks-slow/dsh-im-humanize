@@ -492,6 +492,7 @@ export function menuHelpText() {
     '/session ID  绑定已有会话',
     '/workspacelist  列出工作区',
     '/workspace 工作区序号或绝对路径  切换工作区',
+    '/ws、/wsl、/workspaces  工作区命令别名',
     '/new  开启全新会话',
     '',
     '📊 状态 / 压缩',
@@ -595,6 +596,7 @@ export function helpCard(extraTextLines = []) {
     { tag: 'hr' },
     { tag: 'div', text: markdown([
       t(HELP_TEXT_COMMANDS),
+      t('/ws、/wsl、/workspaces  工作区命令别名'),
       t('`/version` — 查看插件版本'),
       t('/history [数量]  查看最近历史消息（默认 3 条，最多 5 条）'),
     ].join('\n') + extraText) },
