@@ -42,7 +42,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 ![IM bot settings page](docs/images/imbot_en.png)
 
-![Context enhancement page](docs/images/Context_enhancement_en.png)
+<img src="docs/images/Context_enhancement_en.png" alt="Context enhancement page" width="49%"> <img src="docs/images/access_mode_en.png" alt="Access modes page" width="49%">
 
 ## Built-in channels
 
