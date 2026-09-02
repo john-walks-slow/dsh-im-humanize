@@ -6,6 +6,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.8.0] - 2026-09-02
+
 ### Added / 新增
 
 - 上下文增强新增两个来源字段：`chatId`（会话标识，用于区分群组或私聊）与 `threadId`（话题标识，飞书话题群会带上 `thread_id`，用于区分同一群组内的不同话题）。九个渠道均可勾选；飞书群聊直接提供群 ID，Slack/Telegram 话题、Discord 频道等渠道也按各自事件补齐。仍只发送当前消息中已有的值，不查询平台 API。
@@ -599,7 +601,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.7.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.8.0...HEAD
+[4.8.0]: https://github.com/xmanrui/dsh-im/compare/v4.7.0...v4.8.0
 [4.7.0]: https://github.com/xmanrui/dsh-im/compare/v4.6.0...v4.7.0
 [4.6.0]: https://github.com/xmanrui/dsh-im/compare/v4.5.0...v4.6.0
 [4.5.0]: https://github.com/xmanrui/dsh-im/compare/v4.4.0...v4.5.0
