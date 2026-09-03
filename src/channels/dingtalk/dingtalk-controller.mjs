@@ -12,6 +12,11 @@ import {
 } from '../shared/connection-test.mjs';
 import { t } from '../shared/i18n.mjs';
 import { publicMessageFailure } from '../shared/message-failure.mjs';
+import {
+  describeDingtalkConnectionFailure,
+  dingtalkPublicConnectionError,
+  dingtalkRuntimeStartError,
+} from './connection-error.mjs';
 
 const ACTIVE_ATTEMPT_STATES = new Set(['starting', 'pending', 'connecting']);
 const TERMINAL_ATTEMPT_STATES = new Set(['connected', 'expired', 'failed', 'cancelled']);
@@ -216,12 +221,14 @@ export class DingtalkController {
         try {
           await this.#startRuntime(latest, clientSecret);
           this.#errors.delete(latest.botId);
-        } catch {
-          this.#errors.set(
-            latest.botId,
-            safeError('connection-failed', t('钉钉连接未就绪，请稍后重试。')),
-          );
-          this.#logger.warn?.(`[dsh-dingtalk] bot ${latest.botId} failed to initialize`);
+        } catch (error) {
+          this.#rememberConnectionFailure({
+            config: latest,
+            clientSecret,
+            error,
+            fallbackMessage: '钉钉连接未就绪，请稍后重试。',
+            context: `bot ${latest.botId} failed to initialize`,
+          });
         }
         this.#touch();
       });
@@ -318,12 +325,14 @@ export class DingtalkController {
       try {
         await this.#startRuntime(config, normalizedSecret);
         this.#errors.delete(identity.botId);
-      } catch {
-        this.#errors.set(
-          identity.botId,
-          safeError('connection-failed', t('钉钉已接入，但消息连接暂未就绪，请稍后重试。')),
-        );
-        this.#logger.warn?.('[dsh-dingtalk] credential-bound bot saved but its connection is not ready');
+      } catch (error) {
+        this.#rememberConnectionFailure({
+          config,
+          clientSecret: normalizedSecret,
+          error,
+          fallbackMessage: '钉钉已接入，但消息连接暂未就绪，请稍后重试。',
+          context: `credential-bound bot ${identity.botId} is not ready`,
+        });
       }
       this.#touch();
     });
@@ -380,11 +389,14 @@ export class DingtalkController {
         await this.#startRuntime(config, clientSecret);
         this.#errors.delete(botId);
       } catch (error) {
-        this.#errors.set(
-          botId,
-          safeError('connection-failed', t('钉钉连接仍未就绪，请稍后重试。')),
-        );
-        throw error;
+        const publicError = this.#rememberConnectionFailure({
+          config,
+          clientSecret,
+          error,
+          fallbackMessage: '钉钉连接仍未就绪，请稍后重试。',
+          context: `bot ${botId} failed to reconnect`,
+        });
+        throw dingtalkPublicConnectionError(publicError, error);
       } finally {
         this.#touch();
       }
@@ -675,11 +687,13 @@ export class DingtalkController {
           await rollback();
           throw abortError();
         }
-        this.#errors.set(
-          identity.botId,
-          safeError('connection-failed', t('钉钉已接入，但消息连接暂未就绪，请稍后重试。')),
-        );
-        this.#logger.warn?.('[dsh-dingtalk] authorized bot saved but its connection is not ready');
+        this.#rememberConnectionFailure({
+          config,
+          clientSecret,
+          error,
+          fallbackMessage: '钉钉已接入，但消息连接暂未就绪，请稍后重试。',
+          context: `authorized bot ${identity.botId} is not ready`,
+        });
       }
       return { botId: identity.botId, alreadyConnected: Boolean(previousConfig) };
     });
@@ -696,11 +710,14 @@ export class DingtalkController {
       } catch (error) {
         await this.#configStore.save(previousConfig).catch(() => undefined);
         await this.#startRuntime(previousConfig, clientSecret).catch(() => undefined);
-        this.#errors.set(
-          previousConfig.botId,
-          safeError('connection-failed', t('钉钉连接未就绪，请稍后重试。')),
-        );
-        throw error;
+        const publicError = this.#rememberConnectionFailure({
+          config: previousConfig,
+          clientSecret,
+          error,
+          fallbackMessage: '钉钉连接未就绪，请稍后重试。',
+          context: `bot ${previousConfig.botId} failed to apply updated settings`,
+        });
+        throw dingtalkPublicConnectionError(publicError, error);
       } finally {
         this.#touch();
       }
@@ -711,13 +728,21 @@ export class DingtalkController {
     if (this.#closed) throw abortError();
     await this.#stopRuntime(config.botId);
     if (this.#closed) throw abortError();
-    const runtime = await this.#createRuntime({
-      botId: config.botId,
-      config: structuredClone(config),
-      clientSecret,
-    });
+    let runtime;
+    try {
+      runtime = await this.#createRuntime({
+        botId: config.botId,
+        config: structuredClone(config),
+        clientSecret,
+      });
+    } catch (error) {
+      throw dingtalkRuntimeStartError('dingtalk-runtime-prepare-failed', error);
+    }
     if (!runtime || typeof runtime.start !== 'function' || typeof runtime.stop !== 'function') {
-      throw new TypeError('createRuntime returned an invalid DingTalk runtime');
+      throw dingtalkRuntimeStartError(
+        'dingtalk-runtime-prepare-failed',
+        new TypeError('createRuntime returned an invalid DingTalk runtime'),
+      );
     }
     if (this.#closed) {
       await runtime.stop().catch(() => undefined);
@@ -733,8 +758,28 @@ export class DingtalkController {
     } catch (error) {
       if (this.#runtimes.get(config.botId) === runtime) this.#runtimes.delete(config.botId);
       await runtime.stop().catch(() => undefined);
-      throw error;
+      throw dingtalkRuntimeStartError('dingtalk-stream-connect-failed', error);
     }
+  }
+
+  #rememberConnectionFailure({
+    config,
+    clientSecret,
+    error,
+    fallbackMessage,
+    context,
+  }) {
+    const failure = describeDingtalkConnectionFailure(error, {
+      fallbackMessage,
+      clientId: config.clientId,
+      clientSecret,
+    });
+    this.#errors.set(config.botId, failure.publicError);
+    this.#logger.error?.(
+      `[dsh-dingtalk] ${context} [${failure.publicError.referenceId}]`,
+      failure.diagnostic,
+    );
+    return failure.publicError;
   }
 
   async #stopRuntime(botId) {

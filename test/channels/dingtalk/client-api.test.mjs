@@ -40,6 +40,20 @@ test('RPC envelopes are required and sensitive error details are replaced', () =
     () => unwrapRpcResult({
       ok: false,
       error: {
+        code: 'stream-connect-failed',
+        message: '钉钉 Stream 消息连接建立失败。',
+        hint: '请按参考号查看 dsh web 日志。',
+        referenceId: 'DT-CONN-DEADBEEF',
+      },
+    }),
+    (error) => error.code === 'stream-connect-failed'
+      && error.hint === '请按参考号查看 dsh web 日志。'
+      && error.referenceId === 'DT-CONN-DEADBEEF',
+  );
+  assert.throws(
+    () => unwrapRpcResult({
+      ok: false,
+      error: {
         code: 'clientSecret=should-not-escape',
         message: 'clientSecret=super-secret-value',
       },
@@ -142,6 +156,29 @@ test('presentation helpers redact sensitive messages and format countdowns', () 
   assert.deepEqual(
     presentError({ code: 'UPSTREAM_FAILED', message: 'accessToken: visible-value' }),
     { code: 'UPSTREAM_FAILED', message: '钉钉操作失败，请稍后重试' },
+  );
+  assert.deepEqual(
+    presentError({
+      code: 'stream-connect-failed',
+      message: '钉钉 Stream 消息连接建立失败。',
+      hint: '请按参考号查看 dsh web 日志。',
+      referenceId: 'DT-CONN-DEADBEEF',
+    }),
+    {
+      code: 'stream-connect-failed',
+      message: '钉钉 Stream 消息连接建立失败。',
+      hint: '请按参考号查看 dsh web 日志。',
+      referenceId: 'DT-CONN-DEADBEEF',
+    },
+  );
+  assert.deepEqual(
+    presentError({
+      code: 'stream-connect-failed',
+      message: '连接失败',
+      hint: 'clientSecret=must-not-leak',
+      referenceId: 'unsafe-reference',
+    }),
+    { code: 'stream-connect-failed', message: '连接失败' },
   );
   assert.equal(formatRemaining(61_000), '01:01');
   assert.equal(formatRemaining(-1), '00:00');

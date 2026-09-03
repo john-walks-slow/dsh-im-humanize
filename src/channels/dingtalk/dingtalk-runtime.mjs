@@ -6,6 +6,7 @@ import {
 import { sendRememberedConnectionTest } from '../shared/connection-test.mjs';
 import { t } from '../shared/i18n.mjs';
 import { captureContextEnhancement } from '../shared/context-enhancement.mjs';
+import { dingtalkRuntimeStartError } from './connection-error.mjs';
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -223,10 +224,12 @@ export class DingtalkRuntime {
     this.#status.startedAt = new Date().toISOString();
     this.#status.dingtalkStreamState = 'connecting';
     this.#status.lastError = null;
+    let startStage = 'dingtalk-harness-connect-failed';
 
     try {
       await this.#harness.ensureRunning({ signal });
       this.#status.harnessReachable = true;
+      startStage = 'dingtalk-runtime-prepare-failed';
       if (typeof this.#state.removePendingSenderByStaffId === 'function') {
         for (const staffId of approvedSenderIds(this.#config)) {
           await this.#state.removePendingSenderByStaffId(staffId);
@@ -249,6 +252,7 @@ export class DingtalkRuntime {
         signal,
       });
 
+      startStage = 'dingtalk-stream-client-load-failed';
       const created = await this.#streamFactory({
         clientId: this.#config.clientId,
         clientSecret: this.#clientSecret,
@@ -266,6 +270,7 @@ export class DingtalkRuntime {
 
       const client = this.#client;
       const bridge = this.#bridge;
+      startStage = 'dingtalk-stream-listener-failed';
       client.registerCallbackListener(this.#topic, (response) => {
         if (this.#client !== client || this.#bridge !== bridge) return;
         const callbackMessageId = nonEmptyString(response?.headers?.messageId);
@@ -314,6 +319,7 @@ export class DingtalkRuntime {
         this.#callbackTasks.add(task);
       });
 
+      startStage = 'dingtalk-stream-connect-failed';
       await connectStream(
         client,
         this.#connectTimeoutMs,
@@ -336,11 +342,12 @@ export class DingtalkRuntime {
       return this.status;
     } catch (error) {
       const aborted = signal.aborted;
+      const failure = aborted ? error : dingtalkRuntimeStartError(startStage, error);
       this.#status.ready = false;
       this.#status.dingtalkStreamState = aborted ? 'idle' : 'failed';
-      this.#status.lastError = aborted ? null : (error?.message ?? String(error));
+      this.#status.lastError = aborted ? null : (failure?.message ?? String(failure));
       await this.stop({ preserveError: !aborted });
-      throw error;
+      throw failure;
     }
   }
 

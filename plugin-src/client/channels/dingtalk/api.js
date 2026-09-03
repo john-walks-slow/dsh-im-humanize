@@ -85,11 +85,20 @@ function sanitizeMessage(value, fallback) {
   return message.replace(/([=:]\s*)[^\s,;，。]+/g, '$1••••••').slice(0, 240);
 }
 
+function safeReferenceId(value) {
+  const referenceId = optionalString(value, 40);
+  return referenceId && /^DT-CONN-[A-F0-9]{8}$/.test(referenceId) ? referenceId : undefined;
+}
+
 function normalizeError(value, fallbackCode, fallbackMessage) {
   if (!isRecord(value)) return undefined;
+  const hint = sanitizeMessage(value.hint, '');
+  const referenceId = safeReferenceId(value.referenceId);
   return {
     code: safeErrorCode(value.code, fallbackCode),
     message: sanitizeMessage(value.message, fallbackMessage),
+    ...(hint ? { hint } : {}),
+    ...(referenceId ? { referenceId } : {}),
   };
 }
 
@@ -108,8 +117,15 @@ export function unwrapRpcResult(result) {
     throw new Error('钉钉服务返回了无法识别的响应');
   }
   if (!result.ok) {
-    const error = new Error(sanitizeMessage(result.error?.message, '钉钉操作失败'));
-    error.code = safeErrorCode(result.error?.code, 'DINGTALK_RPC_ERROR');
+    const visible = normalizeError(
+      result.error,
+      'DINGTALK_RPC_ERROR',
+      '钉钉操作失败',
+    ) ?? { code: 'DINGTALK_RPC_ERROR', message: '钉钉操作失败' };
+    const error = new Error(visible.message);
+    error.code = visible.code;
+    if (visible.hint) error.hint = visible.hint;
+    if (visible.referenceId) error.referenceId = visible.referenceId;
     throw error;
   }
   return result.value;
@@ -227,10 +243,11 @@ export function connectionTestFeedback(result) {
 }
 
 export function presentError(error) {
-  return {
-    code: safeErrorCode(error?.code, 'DINGTALK_ERROR'),
-    message: sanitizeMessage(error?.message, '钉钉操作失败，请稍后重试'),
-  };
+  return normalizeError(
+    error,
+    'DINGTALK_ERROR',
+    '钉钉操作失败，请稍后重试',
+  ) ?? { code: 'DINGTALK_ERROR', message: '钉钉操作失败，请稍后重试' };
 }
 
 export function formatRemaining(milliseconds) {

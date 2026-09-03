@@ -528,6 +528,34 @@ test('DingTalk bot cards omit the redundant received and replied metric', () => 
   assert.doesNotMatch(markup, /收到 \/ 回复/);
 });
 
+test('DingTalk connection failures show actionable guidance and a log reference', () => {
+  const markup = renderToStaticMarkup(React.createElement(DingtalkAccountCard, {
+    account: {
+      botId: 'bot-dingtalk-failed',
+      state: 'error',
+      connected: false,
+      bot: { name: '钉钉机器人', clientIdMasked: 'ding••••fail' },
+      health: { summary: '连接失败', lastCheckedAt: null },
+      error: {
+        code: 'stream-proxy-dependency-incompatible',
+        message: '钉钉 Stream 连接失败：检测到代理依赖 agent-base 6.0.0。',
+        hint: '请将 agent-base@6 固定为 6.0.2 后重新安装依赖。',
+        referenceId: 'DT-CONN-DEADBEEF',
+      },
+    },
+    onReconnect() {},
+    onRequestRemove() {},
+    onConfirmRemove() {},
+    onCancelRemove() {},
+  }));
+
+  assert.match(markup, /agent-base 6\.0\.0/);
+  assert.match(markup, /agent-base@6 固定为 6\.0\.2/);
+  assert.match(markup, /stream-proxy-dependency-incompatible/);
+  assert.match(markup, /DT-CONN-DEADBEEF/);
+  assert.match(markup, /class="ddt-errorDiagnostic"/);
+});
+
 test('all IM channel cards keep localized actions visible above full-width feedback', async () => {
   const [imStyles, feishuStyles, weixinStyles, dingtalkStyles] = await Promise.all([
     readFile(STYLES_URL, 'utf8'),

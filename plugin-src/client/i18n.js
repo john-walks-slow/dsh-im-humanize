@@ -351,6 +351,8 @@ const EN = Object.freeze({
   '检查连接': 'Check connection',
   '检查中…': 'Checking…',
   '连接检查失败，请稍后重试。': 'Connection check failed. Try again later.',
+  '机器人已保存，但连接未就绪': 'The bot was saved, but the connection is not ready',
+  '查看已保存的机器人': 'View saved bot',
   '测试消息已发送，请到对应机器人会话中确认。': 'Test message sent. Check the matching bot conversation.',
   '连接检查完成。机器人尚未收到可用于测试的私聊消息。': 'Connection check completed. The bot has not received a direct message it can use for testing.',
   '连接检查完成，但测试消息发送失败。': 'Connection check completed, but the test message could not be sent.',
@@ -921,6 +923,8 @@ function translateDynamic(text) {
   if (match) return `Automatic status refresh failed: ${match[1]}`;
   match = /^操作失败：(.+)$/.exec(text);
   if (match) return `Operation failed: ${match[1]}`;
+  match = /^连接检查失败：(.+)（参考号：(.+)）$/.exec(text);
+  if (match) return `Connection check failed: ${localizeText(match[1])} (reference: ${match[2]})`;
   match = /^连接检查失败：(.+)$/.exec(text);
   if (match) return `Connection check failed: ${match[1]}`;
   match = /^移除失败：(.+)$/.exec(text);

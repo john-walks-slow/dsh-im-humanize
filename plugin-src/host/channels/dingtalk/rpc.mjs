@@ -140,6 +140,27 @@ function internalFailure() {
   };
 }
 
+function publicConnectionFailure(error) {
+  if (error?.name !== 'DingtalkPublicConnectionError' || !isRecord(error.publicError)) return null;
+  const source = error.publicError;
+  const code = typeof source.code === 'string' && /^[a-z][a-z\d-]{1,79}$/.test(source.code)
+    ? source.code
+    : null;
+  const message = typeof source.message === 'string' && source.message.trim()
+    ? source.message.trim().slice(0, 240)
+    : null;
+  const hint = typeof source.hint === 'string' && source.hint.trim()
+    ? source.hint.trim().slice(0, 480)
+    : null;
+  const referenceId = typeof source.referenceId === 'string'
+    && /^DT-CONN-[A-F0-9]{8}$/.test(source.referenceId)
+      ? source.referenceId
+      : null;
+  return code && message && hint && referenceId
+    ? { code, message, hint, referenceId }
+    : null;
+}
+
 function sanitizePublic(value) {
   if (Array.isArray(value)) return value.map(sanitizePublic);
   if (!isRecord(value)) return value;
@@ -293,8 +314,11 @@ export function createDingtalkRpcHandler(controller, { encodeQr = qrDataUrl } = 
       return signal?.aborted ? cancelled() : { ok: true, value };
     } catch (error) {
       const workspaceError = publicWorkspaceError(error);
+      const connectionError = publicConnectionFailure(error);
       return signal?.aborted ? cancelled() : workspaceError
         ? { ok: false, error: workspaceError }
+        : connectionError
+          ? { ok: false, error: connectionError }
         : internalFailure();
     }
   };

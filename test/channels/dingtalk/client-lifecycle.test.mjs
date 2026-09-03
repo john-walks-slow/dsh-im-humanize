@@ -256,6 +256,65 @@ test('connection-check failure stays on the matching card with locale-safe wordi
   act(() => renderer.unmount());
 });
 
+test('QR setup surfaces a saved bot connection diagnostic instead of polling forever', async (t) => {
+  const clock = createBrowserClock();
+  t.after(() => clock.restore());
+  let statusCalls = 0;
+  const failedBot = {
+    botId: 'dt_failed',
+    connected: false,
+    state: 'error',
+    bot: { name: '钉钉机器人', clientIdMasked: 'ding••••fail' },
+    health: { status: 'offline', summary: '钉钉 Stream 连接失败', lastCheckedAt: Date.now() },
+    error: {
+      code: 'stream-proxy-dependency-incompatible',
+      message: '钉钉 Stream 连接失败：检测到代理依赖 agent-base 6.0.0。',
+      hint: '请将 agent-base@6 固定为 6.0.2 后重新安装依赖。',
+      referenceId: 'DT-CONN-DEADBEEF',
+    },
+  };
+  const rpcCall = async (endpoint) => {
+    if (endpoint === DINGTALK_ENDPOINTS.status) {
+      statusCalls += 1;
+      return ok(statusCalls === 1
+        ? snapshot()
+        : snapshot({ state: 'offline', bots: [failedBot] }));
+    }
+    if (endpoint === DINGTALK_ENDPOINTS.beginProvisioning) {
+      return ok(provisioning('attempt-failed'));
+    }
+    if (endpoint === DINGTALK_ENDPOINTS.pollProvisioning) {
+      return ok(provisioning('attempt-failed', {
+        status: 'connected',
+        botId: 'dt_failed',
+      }));
+    }
+    throw new Error(`unexpected endpoint: ${endpoint}`);
+  };
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(DingtalkSettingsTab, { rpcCall }));
+    await flushMicrotasks();
+  });
+  await act(async () => {
+    findButton(renderer, '生成钉钉二维码').props.onClick();
+    await flushMicrotasks();
+  });
+  await act(async () => {
+    clock.runTimeout(1_000);
+    await flushMicrotasks();
+  });
+
+  const text = nodeText(renderer.root);
+  assert.match(text, /机器人已保存，但连接未就绪/);
+  assert.match(text, /agent-base 6\.0\.0/);
+  assert.match(text, /DT-CONN-DEADBEEF/);
+  findButton(renderer, '查看已保存的机器人');
+  assert.equal(clock.timeouts.size, 0, 'a diagnosed connection failure stops QR polling');
+  act(() => renderer.unmount());
+});
+
 test('a later disconnect removes stale success feedback and exposes the account error', async (t) => {
   const clock = createBrowserClock();
   t.after(() => clock.restore());

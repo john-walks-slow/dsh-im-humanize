@@ -77,6 +77,8 @@ const CSS = String.raw`
 .ddt-inlineError h3 { font-size: 17px; }
 .ddt-inlineError p { line-height: 1.55; }
 .ddt-errorCode { font: 11px ui-monospace, SFMono-Regular, monospace; opacity: .8; }
+.ddt-errorDiagnostic { display: grid; gap: 5px; color: var(--ddt-error); }
+.ddt-errorHint { margin: 0; color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; line-height: 1.55; }
 .ddt-listHeading { display: flex; align-items: center; justify-content: space-between; margin: 2px 0 9px; }
 .ddt-listHeading h3 { margin: 0; font-size: 14px; }
 .ddt-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
