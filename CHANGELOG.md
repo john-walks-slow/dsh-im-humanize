@@ -6,10 +6,15 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.9.1] - 2026-09-04
+
 ### Fixed / 修复
 
 - 九个 IM 渠道的 Harness 结构化问题与审批现在兼容新 DSH Session 的 `snapshotEvents()` 接口，同时保留旧 `session.events` 与旧 Host `apiProxy` 路径；交互不再只停留在 DSH Web，IM 用户回答或审批后原 Turn 可继续完成。
   Harness structured questions and approvals across all nine IM channels now support the new DSH Session `snapshotEvents()` API while retaining the legacy `session.events` and Host `apiProxy` paths. Interactions no longer remain visible only in DSH Web, and the originating turn can continue after the IM user answers or decides.
+
+- 钉钉机器人连接失败时现在会按 Harness、凭据、超时、DNS、TLS、代理、SDK 与依赖兼容性等原因提供脱敏且可操作的诊断，并用参考号关联设置页提示与 Host 日志；已保存但尚未连通的机器人也会保留在设置页供排查。
+  DingTalk connection failures now provide redacted, actionable diagnostics for Harness, credential, timeout, DNS, TLS, proxy, SDK, and dependency-compatibility causes, with a reference ID linking settings feedback to Host logs. Saved bots that are not yet connected also remain available in settings for troubleshooting.
 
 ## [4.9.0] - 2026-09-03
 
@@ -635,7 +640,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.9.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.9.1...HEAD
+[4.9.1]: https://github.com/xmanrui/dsh-im/compare/v4.9.0...v4.9.1
 [4.9.0]: https://github.com/xmanrui/dsh-im/compare/v4.8.0...v4.9.0
 [4.8.0]: https://github.com/xmanrui/dsh-im/compare/v4.7.0...v4.8.0
 [4.7.0]: https://github.com/xmanrui/dsh-im/compare/v4.6.0...v4.7.0
