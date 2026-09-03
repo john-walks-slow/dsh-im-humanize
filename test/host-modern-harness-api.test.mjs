@@ -41,6 +41,40 @@ function fakeContext(gateway) {
   };
 }
 
+function sessionFixture(api, id = 'session') {
+  const events = [];
+  if (api === 'snapshotEvents') {
+    return {
+      events,
+      session: {
+        id,
+        snapshotEvents: () => Object.freeze([...events]),
+      },
+    };
+  }
+  if (api === 'events') return { events, session: { id, events } };
+  if (api === 'both') {
+    return {
+      events,
+      session: {
+        id,
+        events: [],
+        snapshotEvents: () => Object.freeze([...events]),
+      },
+    };
+  }
+  throw new TypeError(`unsupported Session API fixture: ${api}`);
+}
+
+function forEachSessionApi(interaction, run) {
+  for (const sessionApi of ['snapshotEvents', 'events', 'both']) {
+    test(
+      `modern adapter routes ${interaction} through ${sessionApi} only to the active dsh-im turn`,
+      () => run(sessionApi),
+    );
+  }
+}
+
 test('modern adapter maps the narrow legacy API without changing HarnessClient', async () => {
   const calls = [];
   let pageCalls = 0;
@@ -199,20 +233,20 @@ test('modern adapter preserves Typert business failures as Harness RPC errors', 
   );
 });
 
-test('modern adapter routes an approval only to the active dsh-im turn', async () => {
-  const session = { id: 'session', events: [] };
+forEachSessionApi('an approval', async (sessionApi) => {
+  const { events, session } = sessionFixture(sessionApi);
   const eventRecord = (event) => ({ type: 'event', event });
   let fixture;
   let turnTask;
   const append = (event) => {
-    session.events.push(event);
+    events.push(event);
     fixture.emit('session/event', session, event);
   };
   const gateway = {
     async invoke(request) {
       const endpoint = `${request.namespace}/${request.method}`;
       if (endpoint === 'session/page') {
-        return { records: session.events.map(eventRecord), hasMore: false };
+        return { records: events.map(eventRecord), hasMore: false };
       }
       if (endpoint === 'session/prompt') {
         const rpcId = request.args.request.requestId;
@@ -267,6 +301,7 @@ test('modern adapter routes an approval only to the active dsh-im turn', async (
     logPrefix: 'modern-test',
   });
   const interactions = [];
+  const resolutions = [];
   const answer = await client.ask('session', 'approve it', {
     timeoutMs: 5_000,
     onInteraction: async (interaction) => {
@@ -280,35 +315,40 @@ test('modern adapter routes an approval only to the active dsh-im turn', async (
         },
       });
     },
+    onInteractionResolved: (resolution) => resolutions.push(resolution),
   });
   await turnTask;
   assert.equal(answer, 'approved');
   assert.equal(interactions.length, 1);
   assert.equal(interactions[0].kind, 'approval');
-  assert.equal(session.events[3].data.outcome, 'allowed-once');
+  assert.equal(events[3].data.outcome, 'allowed-once');
+  assert.equal(resolutions.length, 1);
+  assert.equal(resolutions[0].kind, 'approval');
+  assert.equal(resolutions[0].outcome, 'allowed-once');
 
+  const other = sessionFixture(sessionApi, 'other').session;
   const delegated = await fixture.waterfall('approval/request', {
-    agent: { id: 'other', session: { id: 'other', events: [] } },
+    agent: { id: 'other', session: other },
     toolName: 'bash',
   }, () => Promise.resolve('browser-owned'));
   assert.equal(delegated, 'browser-owned');
 });
 
-test('modern adapter routes structured questions only to the active dsh-im turn', async () => {
-  const session = { id: 'session', events: [] };
+forEachSessionApi('structured questions', async (sessionApi) => {
+  const { events, session } = sessionFixture(sessionApi);
   const eventRecord = (event) => ({ type: 'event', event });
   let fixture;
   let turnTask;
   let structuredAnswer;
   const append = (event) => {
-    session.events.push(event);
+    events.push(event);
     fixture.emit('session/event', session, event);
   };
   const gateway = {
     async invoke(request) {
       const endpoint = `${request.namespace}/${request.method}`;
       if (endpoint === 'session/page') {
-        return { records: session.events.map(eventRecord), hasMore: false };
+        return { records: events.map(eventRecord), hasMore: false };
       }
       if (endpoint === 'session/prompt') {
         const rpcId = request.args.request.requestId;
@@ -357,6 +397,7 @@ test('modern adapter routes structured questions only to the active dsh-im turn'
     logPrefix: 'modern-question-test',
   });
   const interactions = [];
+  const resolutions = [];
   const answer = await client.ask('session', 'ask a question', {
     timeoutMs: 5_000,
     onInteraction: async (interaction) => {
@@ -369,20 +410,48 @@ test('modern adapter routes structured questions only to the active dsh-im turn'
         },
       });
     },
+    onInteractionResolved: (resolution) => resolutions.push(resolution),
   });
   await turnTask;
   assert.equal(answer, 'question answered');
   assert.equal(interactions.length, 1);
   assert.equal(interactions[0].kind, 'question');
+  assert.equal(resolutions.length, 1);
+  assert.equal(resolutions[0].kind, 'question');
+  assert.equal(resolutions[0].outcome, 'answered');
   assert.deepEqual(structuredAnswer, {
     answers: [{ id: 'environment', selected: ['Test'] }],
   });
 
+  const other = sessionFixture(sessionApi, 'other').session;
   const delegated = await fixture.waterfall('user-questions/request', {
-    agent: { id: 'other', session: { id: 'other', events: [] } },
+    agent: { id: 'other', session: other },
     questions: [{ id: 'other', question: 'Browser-owned?' }],
   }, () => Promise.resolve({ answers: [{ id: 'other', selected: [], custom: 'yes' }] }));
   assert.deepEqual(delegated, {
     answers: [{ id: 'other', selected: [], custom: 'yes' }],
   });
+});
+
+test('modern adapter delegates interactions when a Session exposes no readable events', async () => {
+  const gateway = {
+    async invoke() { throw new Error('unused'); },
+    async stream() { throw new Error('unused'); },
+  };
+  const fixture = fakeContext(gateway);
+  modernHarnessApi(fixture.ctx);
+  const session = { id: 'unsupported' };
+
+  const approval = await fixture.waterfall('approval/request', {
+    agent: { id: session.id, session },
+    toolName: 'bash',
+  }, () => Promise.resolve('browser-owned'));
+  assert.equal(approval, 'browser-owned');
+
+  const questionAnswer = { answers: [{ id: 'other', selected: [], custom: 'yes' }] };
+  const question = await fixture.waterfall('user-questions/request', {
+    agent: { id: session.id, session },
+    questions: [{ id: 'other', question: 'Browser-owned?' }],
+  }, () => Promise.resolve(questionAnswer));
+  assert.deepEqual(question, questionAnswer);
 });

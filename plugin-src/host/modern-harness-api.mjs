@@ -52,6 +52,15 @@ function questionError(message, code) {
   return error;
 }
 
+function sessionEvents(session) {
+  if (typeof session?.snapshotEvents === 'function') {
+    const events = session.snapshotEvents();
+    if (Array.isArray(events)) return events;
+  }
+  const events = session?.events;
+  return Array.isArray(events) ? events : null;
+}
+
 function matchesQuestions(value, pending) {
   if (!value || typeof value !== 'object'
     || value.sessionId !== pending.sessionId
@@ -385,15 +394,15 @@ class ModernHarnessApi {
   }
 
   #claimableAgent(agent) {
-    const sessionId = agent?.session?.id ?? agent?.id;
-    if (typeof sessionId !== 'string' || !agent?.session || !Array.isArray(agent.session.events)) {
-      return null;
-    }
+    const session = agent?.session;
+    const sessionId = session?.id ?? agent?.id;
+    const events = sessionEvents(session);
+    if (typeof sessionId !== 'string' || !events) return null;
     return hasActiveHarnessInteractionOwner(
       this.#scope,
       sessionId,
-      agent.session.events,
-    ) ? { sessionId, session: agent.session } : null;
+      events,
+    ) ? { sessionId, events } : null;
   }
 
   #questionFrame(pending) {
@@ -464,8 +473,8 @@ class ModernHarnessApi {
     const claimed = new Set([...this.#pendingApprovals.values()].map((entry) => entry.approvalId));
     const decided = new Set();
     let approvalId;
-    for (let index = owner.session.events.length - 1; index >= 0; index -= 1) {
-      const event = owner.session.events[index];
+    for (let index = owner.events.length - 1; index >= 0; index -= 1) {
+      const event = owner.events[index];
       if (event.type === 'approval/decided') {
         decided.add(event.data?.id);
       } else if (event.type === 'approval/asked') {
