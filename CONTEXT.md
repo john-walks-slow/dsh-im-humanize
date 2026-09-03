@@ -28,6 +28,10 @@ _Avoid_: Chat ID、会话 Key
 由 `botId + targetId` 稳定标识、并绑定到可更新会话路由的主动投递位置；它不依赖当前 Harness Session 或最近一条入站消息。
 _Avoid_: Session ID、ChatRef、临时 Webhook
 
+**会话同步目标（Session Sync Target）**：
+经用户明确开启、随其私聊会话路由当前绑定的 Harness Session 变化的投递目标；它使该 Session 与该私聊之间形成双向文字可见性。
+_Avoid_: 双向绑定、Session 投递地址、默认机器人
+
 **渠道能力（Channel Capability）**：
 某个机器人实例在当前权限和运行条件下可以可靠提供的原生输入、交互或呈现能力。
 _Avoid_: 平台支持、SDK 功能
