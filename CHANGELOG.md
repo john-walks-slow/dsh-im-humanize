@@ -6,10 +6,34 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.9.0] - 2026-09-03
+
+### Added / 新增
+
+- 飞书的 Harness 审批与单选问题默认使用带按钮的交互卡片；审批人和答题人会绑定到发起者，多题场景会拒绝过期卡片，并在卡片不可用时保留纯文本降级流程。可通过 `DSH_IM_INTERACTION_CARDS=0` 或 `interactionCards=false` 继续使用纯文本交互。
+  Harness approvals and single-choice questions in Feishu now use interactive cards with buttons by default. Decisions are bound to the initiating actor, stale cards are rejected in multi-question flows, and plain-text fallback remains available when cards cannot be used. Set `DSH_IM_INTERACTION_CARDS=0` or `interactionCards=false` to keep the plain-text interaction flow.
+
+- 九个渠道的工作区命令新增快捷别名：`/ws` 等价于 `/workspace`，`/workspaces` 与 `/wsl` 等价于 `/workspacelist`。
+  Workspace commands across all nine channels now have shortcuts: `/ws` aliases `/workspace`, while `/workspaces` and `/wsl` alias `/workspacelist`.
+
 ### Fixed / 修复
 
 - Harness 回复等待改为按活动续期：持续产生事件或 Harness 明确报告 Session 仍在运行的长任务不再被固定 10 分钟上限误报超时；已开始但停止推进且不再运行的任务仍会按停滞窗口超时。
   Harness reply waits now renew from activity: long-running turns that keep producing events or are still reported as running no longer hit a fixed ten-minute timeout, while started turns that stop progressing and are no longer running still time out after the stall window.
+
+- 引用消息注入 Harness 时不再携带内部消息 ID、作者 ID、空附件数组及默认 `truncated: false`，减少与回答无关的元数据，同时保留作者名称、正文、有效附件及不可用原因。
+  Quoted-message context sent to Harness no longer includes internal message IDs, author IDs, empty attachment arrays, or the default `truncated: false`, reducing irrelevant metadata while preserving the author name, content, useful attachments, and unavailable reason.
+
+- 飞书交互卡片现在保持引用回复语义，避免问题或审批卡片脱离触发它的消息上下文。
+  Feishu interaction cards now preserve reply semantics so question and approval cards stay attached to the message context that triggered them.
+
+- 上下文增强设置中的字段帮助提示会按左右栏定位，不再被设置面板边缘裁切。
+  Field-help tooltips in Context enhancement settings now align to their column instead of being clipped by the settings-panel edge.
+
+### Documentation / 文档
+
+- 中英文 README 的详细安装、命令、访问模式与上下文增强说明已拆分到独立指南，并补充主动投递 Webhook 方案等文档。
+  Detailed installation, command, access-mode, and Context enhancement material has moved from the Chinese and English READMEs into focused guides, with additional documentation for proactive-delivery webhooks and related workflows.
 
 ## [4.8.0] - 2026-09-02
 
@@ -606,7 +630,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.8.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.9.0...HEAD
+[4.9.0]: https://github.com/xmanrui/dsh-im/compare/v4.8.0...v4.9.0
 [4.8.0]: https://github.com/xmanrui/dsh-im/compare/v4.7.0...v4.8.0
 [4.7.0]: https://github.com/xmanrui/dsh-im/compare/v4.6.0...v4.7.0
 [4.6.0]: https://github.com/xmanrui/dsh-im/compare/v4.5.0...v4.6.0
