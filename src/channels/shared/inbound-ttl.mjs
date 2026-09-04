@@ -1,4 +1,4 @@
-export const DEFAULT_INBOUND_TTL_HOURS = 0;
+export const DEFAULT_INBOUND_TTL_HOURS = 168;
 export const INBOUND_TTL_MAX_HOURS = 8760;
 
 const INTEGER_STRING = /^[+-]?\d+$/;

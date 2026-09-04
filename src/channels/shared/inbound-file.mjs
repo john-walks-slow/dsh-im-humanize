@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs';
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
@@ -252,9 +252,27 @@ export async function sweepInboundAttachments(workspace, ttlHours, {
     return { deleted: 0 };
   }
   const root = resolve(workspace, FILES_DIRECTORY);
+  let canonicalWorkspace;
+  let canonicalRoot;
+  try {
+    [canonicalWorkspace, canonicalRoot] = await Promise.all([
+      realpath(workspace),
+      realpath(root),
+    ]);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { deleted: 0 };
+    throw error;
+  }
+  const rootInWorkspace = relative(canonicalWorkspace, canonicalRoot);
+  if (!rootInWorkspace || rootInWorkspace.startsWith('..') || isAbsolute(rootInWorkspace)) {
+    throw new InboundFileError(
+      'inbound-file-root-outside-workspace',
+      'The inbound attachment directory does not resolve inside the Harness Session workspace.',
+    );
+  }
   let entries;
   try {
-    entries = await readdir(root, { withFileTypes: true });
+    entries = await readdir(canonicalRoot, { withFileTypes: true });
   } catch (error) {
     if (error?.code === 'ENOENT') return { deleted: 0 };
     throw error;
@@ -266,11 +284,15 @@ export async function sweepInboundAttachments(workspace, ttlHours, {
     const stagedAt = parseInboundDirectoryName(entry.name);
     if (stagedAt === null) continue;
     const directory = join(root, entry.name);
-    if (typeof isTracked === 'function' && isTracked(directory)) continue;
+    const canonicalDirectory = join(canonicalRoot, entry.name);
+    if (typeof isTracked === 'function'
+      && (isTracked(directory) || (directory !== canonicalDirectory && isTracked(canonicalDirectory)))) {
+      continue;
+    }
     const ageHours = (current - stagedAt) / 3_600_000;
     if (ttlHours === 0 || ageHours >= ttlHours) {
       try {
-        await rm(directory, { recursive: true, force: true });
+        await rm(canonicalDirectory, { recursive: true, force: true });
         deleted += 1;
       } catch {
         // One undeletable directory must not abort the remaining sweep.

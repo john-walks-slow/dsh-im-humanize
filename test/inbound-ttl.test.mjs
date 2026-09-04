@@ -59,7 +59,7 @@ async function stageDirectory(workspace, name, content = 'x') {
 }
 
 test('normalizeInboundTtlHours accepts -1, 0, and 1..8760 whole hours only', () => {
-  assert.equal(DEFAULT_INBOUND_TTL_HOURS, 0);
+  assert.equal(DEFAULT_INBOUND_TTL_HOURS, 168);
   assert.equal(INBOUND_TTL_MAX_HOURS, 8760);
   assert.deepEqual([
     normalizeInboundTtlHours(-1),
@@ -225,6 +225,29 @@ test('sweepInboundAttachments tolerates a missing inbound root and unparseable T
   assert.deepEqual(await sweepInboundAttachments(workspace, 'soon'), { deleted: 0 });
   assert.equal((await stat(staged)).isDirectory(), true);
   await assert.rejects(sweepInboundAttachments('', 0), TypeError);
+});
+
+test('sweepInboundAttachments refuses an attachment root outside the workspace', async (t) => {
+  const root = await directory(t, 'dsh-im-ttl-outside-root-');
+  const workspace = join(root, 'workspace');
+  const external = join(root, 'external');
+  const sentinel = join(external, 'inbound', '20200101-000000-external', 'sentinel.txt');
+  await mkdir(workspace, { recursive: true });
+  await mkdir(dirname(sentinel), { recursive: true });
+  await writeFile(sentinel, 'must survive');
+  try {
+    await symlink(external, join(workspace, '.dsh-im'));
+  } catch (error) {
+    t.skip(`symlinks are unavailable on this filesystem: ${error?.message}`);
+    return;
+  }
+
+  await assert.rejects(
+    sweepInboundAttachments(workspace, 0),
+    (error) => error instanceof InboundFileError
+      && error.code === 'inbound-file-root-outside-workspace',
+  );
+  assert.equal(await readFile(sentinel, 'utf8'), 'must survive');
 });
 
 test('stageInboundFiles reports the batch directory before any file is written', async (t) => {
