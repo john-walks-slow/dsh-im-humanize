@@ -27,6 +27,7 @@ import {
   observeBotWorkspaceRemovals,
 } from '../../../../src/channels/shared/bot-workspace-store.mjs';
 import { listAgentPresetCatalog } from '../../../../src/channels/shared/agent-preset.mjs';
+import { listModelCatalog } from '../../../../src/channels/shared/model-setting.mjs';
 import { createDeliveryAdapter } from '../../delivery-adapter.mjs';
 import {
   accessPolicyProvider,
@@ -191,6 +192,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   const proxyEnv = internals.proxyEnv ?? process.env;
   const wsAgent = createFeishuWebSocketAgent(proxyEnv, internals.createProxyAgent);
 
+  const modelCatalog = () => listModelCatalog(harness);
   const coreController = new Controller({
     registerApp: (options) => lark.registerApp(options),
     verifyApp,
@@ -247,6 +249,7 @@ export async function createProductionController(ctx, config = {}, internals = {
     workspaces,
     stateFor: stateForBotId,
     agentPresetCatalog,
+    modelCatalog,
   });
 
   const supervisor = createSupervisor({

@@ -11,6 +11,7 @@ import {
   SET_AGENT_PRESET_ENDPOINT,
   validAgentPresetPayload,
 } from './agent-preset-rpc.mjs';
+import { SET_MODEL_ENDPOINT, validModelPayload } from './model-setting-rpc.mjs';
 
 export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   status: 'connection.status',
@@ -18,6 +19,7 @@ export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
   setWorkspace: SET_WORKSPACE_ENDPOINT,
+  setModel: SET_MODEL_ENDPOINT,
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
   setContextEnhancement: SET_CONTEXT_ENHANCEMENT_ENDPOINT,
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
@@ -70,6 +72,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === TOKEN_BOT_ENDPOINTS.setWorkspace) {
     return validWorkspacePayload(payload)
       ? null : '请输入工作区绝对路径。';
+  }
+  if (endpoint === TOKEN_BOT_ENDPOINTS.setModel) {
+    return validModelPayload(payload)
+      ? null : '请选择有效模型。';
   }
   if (endpoint === TOKEN_BOT_ENDPOINTS.setAgentPreset) {
     return validAgentPresetPayload(payload)
@@ -164,6 +170,9 @@ export function createTokenBotRpcHandler(controller, { channel }) {
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.setWorkspace) {
         if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
         value = await controller.updateWorkspace(payload.botId, payload.workspace);
+      } else if (endpoint === TOKEN_BOT_ENDPOINTS.setModel) {
+        if (typeof controller.updateModel !== 'function') throw new Error('Model update is unavailable');
+        value = await controller.updateModel(payload.botId, payload.model);
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.setContextEnhancement) {
         if (typeof controller.updateContextEnhancement !== 'function') throw new Error('Context enhancement update is unavailable');
         value = await controller.updateContextEnhancement(payload.botId, payload.config);

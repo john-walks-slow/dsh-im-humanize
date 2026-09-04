@@ -21,6 +21,11 @@ import {
   AgentPresetEditor,
   EMPTY_AGENT_PRESET_CATALOG,
 } from "../../agent-preset.js";
+import {
+  EMPTY_MODEL_CATALOG,
+  ModelCatalogContext,
+  ModelEditor,
+} from "../../model-setting.js";
 import { useWorkspaceSnapshotFence } from "../../workspace-snapshot-fence.js";
 import {
   BotSettingsButton,
@@ -470,6 +475,7 @@ export function BotCard({
   onReconnect,
   onRepairCallback,
   onWorkspaceSave,
+  onModelSave,
   onAgentPresetSave,
   onContextEnhancementSave,
   onRequestRemove,
@@ -535,6 +541,11 @@ export function BotCard({
         workspace: connection.workspace,
         disabled: Boolean(busy),
         onSave: onWorkspaceSave,
+      }),
+      h(ModelEditor, {
+        model: connection.model,
+        disabled: Boolean(busy),
+        onSave: onModelSave,
       }),
       h(AgentPresetEditor, {
         agentPreset: connection.agentPreset,
@@ -634,6 +645,7 @@ function BotList(props) {
           onReconnect: () => props.onReconnect(bot),
           onRepairCallback: () => props.onRepairCallback(bot),
           onWorkspaceSave: (workspace) => props.onWorkspaceSave(bot, workspace),
+          onModelSave: (model) => props.onModelSave(bot, model),
           onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(bot, agentPreset),
           onContextEnhancementSave: (config) => props.onContextEnhancementSave(bot, config),
           onRequestRemove: () => props.onRequestRemove(bot),
@@ -688,6 +700,7 @@ export function mergeFeishuSnapshotState(
     pageError: null,
     statusError: null,
     agentPresetCatalog: snapshot.agentPresetCatalog ?? current.agentPresetCatalog,
+    modelCatalog: snapshot.modelCatalog ?? current.modelCatalog,
   };
 }
 
@@ -701,6 +714,7 @@ export function FeishuSettingsTab({ rpcCall }) {
     pageError: null,
     statusError: null,
     agentPresetCatalog: EMPTY_AGENT_PRESET_CATALOG,
+    modelCatalog: EMPTY_MODEL_CATALOG,
   });
   const [pageBusy, setPageBusy] = React.useState(false);
   const [provisionBusy, setProvisionBusy] = React.useState(false);
@@ -1349,7 +1363,9 @@ export function FeishuSettingsTab({ rpcCall }) {
     else removeButtonRefs.current.delete(botId);
   }, []);
 
-  return h(AgentPresetCatalogContext.Provider, {
+  return h(ModelCatalogContext.Provider, {
+    value: model.modelCatalog ?? EMPTY_MODEL_CATALOG,
+  }, h(AgentPresetCatalogContext.Provider, {
     value: model.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
   }, h("section", { className: "bxf-page dim-channelPage", "aria-label": "飞书机器人设置" },
     h(Heading, {
@@ -1397,6 +1413,9 @@ export function FeishuSettingsTab({ rpcCall }) {
                   onReconnect: (bot) => void reconnectOneBot(bot),
                   onRepairCallback: repairCallback,
                   onWorkspaceSave: saveWorkspace,
+                  onModelSave: (connection, selectedModel) => saveBotSetting(
+                    connection, "model", FEISHU_ENDPOINTS.setModel, { model: selectedModel },
+                  ),
                   onAgentPresetSave: (connection, agentPreset) => saveBotSetting(
                     connection, "preset", FEISHU_ENDPOINTS.setAgentPreset, { agentPreset },
                   ),
@@ -1411,5 +1430,5 @@ export function FeishuSettingsTab({ rpcCall }) {
                 })
               : null,
           ),
-  ));
+  )));
 }

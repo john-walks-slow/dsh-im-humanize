@@ -6,6 +6,7 @@ import { SET_CONTEXT_ENHANCEMENT_ENDPOINT, validContextEnhancementPayload } from
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, SET_WORKSPACE_ENDPOINT, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
 import { SET_AGENT_PRESET_ENDPOINT, validAgentPresetPayload } from '../shared/agent-preset-rpc.mjs';
+import { SET_MODEL_ENDPOINT, validModelPayload } from '../shared/model-setting-rpc.mjs';
 
 export const WHATSAPP_RPC_CHANNEL = '/whatsapp';
 export const WHATSAPP_ENDPOINTS = Object.freeze({
@@ -17,6 +18,7 @@ export const WHATSAPP_ENDPOINTS = Object.freeze({
   deleteBot: 'bot.delete',
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
   setWorkspace: SET_WORKSPACE_ENDPOINT,
+  setModel: SET_MODEL_ENDPOINT,
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
   setContextEnhancement: SET_CONTEXT_ENHANCEMENT_ENDPOINT,
 });
@@ -61,6 +63,9 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === WHATSAPP_ENDPOINTS.setWorkspace) {
     return validWorkspacePayload(payload)
       ? null : '请输入工作区绝对路径。';
+  }
+  if (endpoint === WHATSAPP_ENDPOINTS.setModel) {
+    return validModelPayload(payload) ? null : '请选择有效模型。';
   }
   if (endpoint === WHATSAPP_ENDPOINTS.setAgentPreset) {
     return validAgentPresetPayload(payload)
@@ -170,6 +175,12 @@ export function createWhatsappRpcHandler(controller, { encodeQr = qrDataUrl } = 
         if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
         value = await publicStatus(
           await controller.updateWorkspace(payload.botId, payload.workspace),
+          cachedEncode,
+        );
+      } else if (endpoint === WHATSAPP_ENDPOINTS.setModel) {
+        if (typeof controller.updateModel !== 'function') throw new Error('Model update is unavailable');
+        value = await publicStatus(
+          await controller.updateModel(payload.botId, payload.model),
           cachedEncode,
         );
       } else if (endpoint === WHATSAPP_ENDPOINTS.setContextEnhancement) {

@@ -21,6 +21,11 @@ import {
   AgentPresetEditor,
   EMPTY_AGENT_PRESET_CATALOG,
 } from '../../agent-preset.js';
+import {
+  EMPTY_MODEL_CATALOG,
+  ModelCatalogContext,
+  ModelEditor,
+} from '../../model-setting.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import {
   BotSettingsButton,
@@ -208,6 +213,7 @@ export function AccountCard({
   removing,
   onReconnect,
   onWorkspaceSave,
+  onModelSave,
   onAgentPresetSave,
   onContextEnhancementSave,
   onRequestRemove,
@@ -243,6 +249,11 @@ export function AccountCard({
         workspace: account.workspace,
         disabled: Boolean(busy),
         onSave: onWorkspaceSave,
+      }),
+      h(ModelEditor, {
+        model: account.model,
+        disabled: Boolean(busy),
+        onSave: onModelSave,
       }),
       h(AgentPresetEditor, {
         agentPreset: account.agentPreset,
@@ -296,6 +307,7 @@ function AccountList(props) {
         removing: props.removeTarget === account.botId,
         onReconnect: () => props.onReconnect(account),
         onWorkspaceSave: (workspace) => props.onWorkspaceSave(account, workspace),
+        onModelSave: (model) => props.onModelSave(account, model),
         onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(account, agentPreset),
         onContextEnhancementSave: (config) => props.onContextEnhancementSave(account, config),
         onRequestRemove: () => props.onRequestRemove(account),
@@ -324,6 +336,7 @@ export function WeixinSettingsTab({ rpcCall }) {
   const [model, setModel] = React.useState({
     phase: 'loading', bots: [], totals: EMPTY_TOTALS, revision: 0, error: null,
     agentPresetCatalog: EMPTY_AGENT_PRESET_CATALOG,
+    modelCatalog: EMPTY_MODEL_CATALOG,
   });
   const [provision, setProvision] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
@@ -367,6 +380,7 @@ export function WeixinSettingsTab({ rpcCall }) {
         phase: 'ready', bots: snapshot.bots, totals: snapshot.totals,
         revision: snapshot.revision, error: null,
         agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+        modelCatalog: snapshot.modelCatalog ?? EMPTY_MODEL_CATALOG,
       });
       if (snapshot.provisioning) {
         setProvision((current) => mergeWeixinProvisioningSnapshot(
@@ -558,6 +572,7 @@ export function WeixinSettingsTab({ rpcCall }) {
         setModel((current) => ({
           ...current, bots: snapshot.bots, totals: snapshot.totals, revision: snapshot.revision,
           agentPresetCatalog: snapshot.agentPresetCatalog ?? current.agentPresetCatalog,
+          modelCatalog: snapshot.modelCatalog ?? current.modelCatalog,
         }));
       }
       const refreshed = snapshot.bots.find((bot) => bot.botId === account.botId);
@@ -603,6 +618,7 @@ export function WeixinSettingsTab({ rpcCall }) {
           phase: 'ready', bots: snapshot.bots, totals: snapshot.totals,
           revision: snapshot.revision, error: null,
           agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+          modelCatalog: snapshot.modelCatalog ?? EMPTY_MODEL_CATALOG,
         });
       }
     } finally {
@@ -625,6 +641,7 @@ export function WeixinSettingsTab({ rpcCall }) {
           phase: 'ready', bots: snapshot.bots, totals: snapshot.totals,
           revision: snapshot.revision, error: null,
           agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+          modelCatalog: snapshot.modelCatalog ?? EMPTY_MODEL_CATALOG,
         });
       }
     } finally {
@@ -646,6 +663,7 @@ export function WeixinSettingsTab({ rpcCall }) {
         setModel((current) => ({
           ...current, bots: snapshot.bots, totals: snapshot.totals, revision: snapshot.revision,
           agentPresetCatalog: snapshot.agentPresetCatalog ?? current.agentPresetCatalog,
+          modelCatalog: snapshot.modelCatalog ?? current.modelCatalog,
         }));
       }
       setRemoveTarget(null);
@@ -686,7 +704,9 @@ export function WeixinSettingsTab({ rpcCall }) {
     });
   }
 
-  return h(AgentPresetCatalogContext.Provider, {
+  return h(ModelCatalogContext.Provider, {
+    value: model.modelCatalog ?? EMPTY_MODEL_CATALOG,
+  }, h(AgentPresetCatalogContext.Provider, {
     value: model.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
   }, h('section', { className: 'dxw-page dim-channelPage', 'aria-label': '微信设置' },
     h(Heading, {
@@ -721,6 +741,9 @@ export function WeixinSettingsTab({ rpcCall }) {
                   removeTarget,
                   onReconnect: (account) => void reconnect(account),
                   onWorkspaceSave: saveWorkspace,
+                  onModelSave: (account, selectedModel) => saveBotSetting(
+                    account, 'model', WEIXIN_ENDPOINTS.setModel, { model: selectedModel },
+                  ),
                   onAgentPresetSave: (account, agentPreset) => saveBotSetting(
                     account, 'preset', WEIXIN_ENDPOINTS.setAgentPreset, { agentPreset },
                   ),
@@ -732,5 +755,5 @@ export function WeixinSettingsTab({ rpcCall }) {
                   onCancelRemove: () => setRemoveTarget(null),
                 })
               : null),
-  ));
+  )));
 }

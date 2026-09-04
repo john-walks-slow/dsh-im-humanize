@@ -23,6 +23,12 @@ import {
   normalizeContextEnhancementConfig,
   validateContextEnhancementConfig,
 } from './context-enhancement.mjs';
+import {
+  modelCatalogHas,
+  normalizeModelCatalog,
+  sameModelSelection,
+  validateModelSelection,
+} from './model-setting.mjs';
 import { WORKSPACE_SESSION_STALE } from './workspace-session.mjs';
 
 const EMPTY_DOCUMENT = Object.freeze({ version: 1, workspaces: Object.freeze({}) });
@@ -179,6 +185,22 @@ function normalizeDocument(value) {
       }
     }
   }
+  const models = {};
+  if (value.models !== undefined) {
+    if (!value.models || typeof value.models !== 'object' || Array.isArray(value.models)) {
+      return null;
+    }
+    for (const [botId, model] of Object.entries(value.models)) {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(botId)) return null;
+      try {
+        const normalized = validateModelSelection(model);
+        if (!normalized) return null;
+        models[botId] = normalized;
+      } catch {
+        return null;
+      }
+    }
+  }
   const contextEnhancement = Object.create(null);
   // Enhancement damage is isolated from the existing workspace/preset document.
   if (value.contextEnhancement && typeof value.contextEnhancement === 'object'
@@ -200,6 +222,7 @@ function normalizeDocument(value) {
     version,
     workspaces,
     agentPresets,
+    models,
     contextEnhancement,
     deliveryTargets,
     accessPolicies,
@@ -210,12 +233,14 @@ function storedDocument({
   version,
   workspaces,
   agentPresets,
+  models,
   contextEnhancement,
   deliveryTargets,
   accessPolicies,
 }) {
   const document = { version, workspaces };
   if (Object.keys(agentPresets).length > 0) document.agentPresets = agentPresets;
+  if (Object.keys(models).length > 0) document.models = models;
   if (Object.keys(contextEnhancement).length > 0) {
     document.contextEnhancement = contextEnhancement;
   }
@@ -267,6 +292,7 @@ export class BotWorkspaceStore {
   #version = 1;
   #workspaces = {};
   #agentPresets = {};
+  #models = {};
   #contextEnhancement = {};
   #deliveryTargets = Object.create(null);
   #accessPolicies = Object.create(null);
@@ -293,6 +319,7 @@ export class BotWorkspaceStore {
       this.#version = normalized.version;
       this.#workspaces = normalized.workspaces;
       this.#agentPresets = normalized.agentPresets;
+      this.#models = normalized.models;
       this.#contextEnhancement = normalized.contextEnhancement;
       this.#deliveryTargets = normalized.deliveryTargets;
       this.#accessPolicies = normalized.accessPolicies;
@@ -301,6 +328,7 @@ export class BotWorkspaceStore {
       this.#version = 1;
       this.#workspaces = {};
       this.#agentPresets = {};
+      this.#models = {};
       this.#contextEnhancement = {};
       this.#deliveryTargets = Object.create(null);
       this.#accessPolicies = Object.create(null);
@@ -339,6 +367,11 @@ export class BotWorkspaceStore {
 
   agentPresetFor(botId) {
     return this.#agentPresets[botIdOf(botId)] ?? null;
+  }
+
+  modelFor(botId) {
+    const selection = this.#models[botIdOf(botId)];
+    return selection ? { ...selection } : null;
   }
 
   contextEnhancementFor(botId) {
@@ -571,6 +604,37 @@ export class BotWorkspaceStore {
     });
   }
 
+  async setModel(botId, value, { incarnation } = {}) {
+    const id = botIdOf(botId);
+    if (!this.has(id)
+      || (incarnation !== undefined && incarnation !== this.incarnationFor(id))) {
+      const error = new Error('找不到要修改的机器人。');
+      error.code = 'workspace-bot-not-found';
+      throw error;
+    }
+    const model = validateModelSelection(value);
+    return this.#enqueue(id, async () => {
+      if (!this.has(id)
+        || (incarnation !== undefined && incarnation !== this.incarnationFor(id))) {
+        const error = new Error('找不到要修改的机器人。');
+        error.code = 'workspace-bot-not-found';
+        throw error;
+      }
+      const previous = this.#models[id] ?? null;
+      if (sameModelSelection(previous, model)) return model ? { ...model } : null;
+      if (model) this.#models[id] = model;
+      else delete this.#models[id];
+      try {
+        await this.#persist();
+      } catch (error) {
+        if (previous) this.#models[id] = previous;
+        else delete this.#models[id];
+        throw error;
+      }
+      return model ? { ...model } : null;
+    });
+  }
+
   async setContextEnhancement(botId, value, { incarnation } = {}) {
     const id = botIdOf(botId);
     const expectedIncarnation = incarnation === undefined ? this.incarnationFor(id) : incarnation;
@@ -770,6 +834,7 @@ export class BotWorkspaceStore {
     const candidates = new Set([
       ...Object.keys(this.#workspaces),
       ...Object.keys(this.#agentPresets),
+      ...Object.keys(this.#models),
       ...Object.keys(this.#contextEnhancement),
       ...Object.keys(this.#deliveryTargets),
       ...Object.keys(this.#accessPolicies),
@@ -789,6 +854,7 @@ export class BotWorkspaceStore {
           ...bot,
           workspace: this.workspaceFor(bot.botId),
           agentPreset: this.agentPresetFor(bot.botId),
+          model: this.modelFor(bot.botId),
           contextEnhancement: this.contextEnhancementFor(bot.botId),
           accessPolicy: this.accessPolicyFor(bot.botId),
         }
@@ -820,13 +886,15 @@ export class BotWorkspaceStore {
   async #retireCurrentIncarnation(id) {
     const hadWorkspace = Object.hasOwn(this.#workspaces, id);
     const hadPreset = Object.hasOwn(this.#agentPresets, id);
+    const hadModel = Object.hasOwn(this.#models, id);
     const hadContextEnhancement = Object.hasOwn(this.#contextEnhancement, id);
     const hadDeliveryTargets = Object.hasOwn(this.#deliveryTargets, id);
     const hadAccessPolicy = Object.hasOwn(this.#accessPolicies, id);
-    const needsCleanup = hadWorkspace || hadPreset || hadContextEnhancement
+    const needsCleanup = hadWorkspace || hadPreset || hadModel || hadContextEnhancement
       || hadDeliveryTargets || hadAccessPolicy || this.#dirtyRemovals.has(id);
     delete this.#workspaces[id];
     delete this.#agentPresets[id];
+    delete this.#models[id];
     delete this.#contextEnhancement[id];
     delete this.#deliveryTargets[id];
     delete this.#accessPolicies[id];
@@ -869,6 +937,7 @@ export class BotWorkspaceStore {
       version,
       workspaces: this.#workspaces,
       agentPresets: this.#agentPresets,
+      models: this.#models,
       contextEnhancement,
       deliveryTargets,
       accessPolicies,
@@ -879,6 +948,7 @@ export class BotWorkspaceStore {
   async #persistCurrentDocument() {
     if (Object.keys(this.#workspaces).length > 0
       || Object.keys(this.#agentPresets).length > 0
+      || Object.keys(this.#models).length > 0
       || Object.keys(this.#contextEnhancement).length > 0
       || Object.keys(this.#deliveryTargets).length > 0
       || Object.keys(this.#accessPolicies).length > 0) {
@@ -903,9 +973,23 @@ function resolveAgentPresetCatalog(catalog) {
     : normalizeAgentPresetCatalog(value);
 }
 
+function resolveModelCatalog(catalog) {
+  if (!catalog) return null;
+  const value = typeof catalog === 'function' ? catalog() : catalog;
+  return value && typeof value.then === 'function'
+    ? value.then(normalizeModelCatalog)
+    : normalizeModelCatalog(value);
+}
+
 function unavailableAgentPreset() {
   const error = new Error('Agent Preset 不存在或不可用。');
   error.code = 'agent-preset-unavailable';
+  return error;
+}
+
+function unavailableModel() {
+  const error = new Error('模型不存在或不可用。');
+  error.code = 'model-selection-unavailable';
   return error;
 }
 
@@ -916,17 +1000,23 @@ function assertCurrentBotScope(isCurrentScope) {
   throw error;
 }
 
-function decorateResult(workspaces, result, catalog) {
+function decorateResult(workspaces, result, agentPresetCatalogSource, modelCatalogSource) {
   const decorate = (value) => {
     const decorated = workspaces.decorateStatus(value);
-    if (!catalog || !decorated || typeof decorated !== 'object') return decorated;
-    const attachCatalog = (agentPresetCatalog) => (
-      agentPresetCatalog ? { ...decorated, agentPresetCatalog } : decorated
-    );
-    const agentPresetCatalog = resolveAgentPresetCatalog(catalog);
-    return agentPresetCatalog && typeof agentPresetCatalog.then === 'function'
-      ? agentPresetCatalog.then(attachCatalog)
-      : attachCatalog(agentPresetCatalog);
+    if ((!agentPresetCatalogSource && !modelCatalogSource)
+      || !decorated || typeof decorated !== 'object') return decorated;
+    const attachCatalogs = ([agentPresetCatalog, modelCatalog]) => ({
+      ...decorated,
+      ...(agentPresetCatalog ? { agentPresetCatalog } : {}),
+      ...(modelCatalog ? { modelCatalog } : {}),
+    });
+    const catalogs = [
+      resolveAgentPresetCatalog(agentPresetCatalogSource),
+      resolveModelCatalog(modelCatalogSource),
+    ];
+    return catalogs.some((catalog) => catalog && typeof catalog.then === 'function')
+      ? Promise.all(catalogs).then(attachCatalogs)
+      : attachCatalogs(catalogs);
   };
   return result && typeof result.then === 'function'
     ? result.then(decorate)
@@ -1158,11 +1248,27 @@ export function createBotWorkspaceScope(
           }
           const generation = workspaces.generationFor(botId);
           const agentPreset = workspaces.agentPresetFor(botId);
+          const model = workspaces.modelFor(botId);
           const sessionId = await target.createSession({
             ...options,
             workspace: workspaces.workspaceFor(botId),
             ...(agentPreset == null ? {} : { agentPreset }),
           });
+          if (model) {
+            if (typeof target.selectSessionModel !== 'function') {
+              throw new TypeError('Harness does not support model selection');
+            }
+            const selected = await target.selectSessionModel(
+              sessionId,
+              model,
+              options.signal ? { signal: options.signal } : {},
+            );
+            if (!sameModelSelection(selected?.selected, model)) {
+              const error = new Error('Harness did not confirm the selected model');
+              error.code = 'model-selection-mismatch';
+              throw error;
+            }
+          }
           sessionGenerations.set(sessionId, generation);
           return sessionId;
         };
@@ -1324,7 +1430,12 @@ export function createBotScopedHarness(harness, options) {
   return createBotWorkspaceScope(harness, options).harness;
 }
 
-export function createWorkspaceAwareController(controller, { workspaces, stateFor, agentPresetCatalog } = {}) {
+export function createWorkspaceAwareController(controller, {
+  workspaces,
+  stateFor,
+  agentPresetCatalog,
+  modelCatalog,
+} = {}) {
   if (!controller || !workspaces || typeof stateFor !== 'function') {
     throw new TypeError('controller, workspaces, and stateFor are required');
   }
@@ -1337,7 +1448,12 @@ export function createWorkspaceAwareController(controller, { workspaces, stateFo
       if (transitions.get(botId) === current) transitions.delete(botId);
     });
   };
-  const decorate = (value) => decorateResult(workspaces, value, agentPresetCatalog);
+  const decorate = (value) => decorateResult(
+    workspaces,
+    value,
+    agentPresetCatalog,
+    modelCatalog,
+  );
   const updateWorkspace = (botId, workspace) => {
     // Capture at API invocation, before even waiting for an older outer
     // transition. A queued request still belongs to the incarnation that the
@@ -1380,6 +1496,32 @@ export function createWorkspaceAwareController(controller, { workspaces, stateFo
         workspaces,
         await controller.status(),
         catalog ?? agentPresetCatalog,
+        modelCatalog,
+      );
+    });
+  };
+  const updateModel = (botId, value) => {
+    const incarnation = workspaces.incarnationFor(botId);
+    const model = validateModelSelection(value);
+    return withBotTransition(botId, async () => {
+      const snapshot = await controller.status();
+      if (!snapshot?.bots?.some((bot) => bot?.botId === botId)) {
+        const error = new Error('找不到要修改的机器人。');
+        error.code = 'workspace-bot-not-found';
+        throw error;
+      }
+      const catalog = model && modelCatalog
+        ? await resolveModelCatalog(modelCatalog)
+        : null;
+      if (model && (!modelCatalog || !modelCatalogHas(catalog, model))) {
+        throw unavailableModel();
+      }
+      await workspaces.setModel(botId, model, { incarnation });
+      return decorateResult(
+        workspaces,
+        await controller.status(),
+        agentPresetCatalog,
+        catalog ?? modelCatalog,
       );
     });
   };
@@ -1393,13 +1535,17 @@ export function createWorkspaceAwareController(controller, { workspaces, stateFo
         error.code = 'workspace-bot-not-found';
         throw error;
       }
-      const catalog = await resolveAgentPresetCatalog(agentPresetCatalog);
+      const [catalog, models] = await Promise.all([
+        resolveAgentPresetCatalog(agentPresetCatalog),
+        resolveModelCatalog(modelCatalog),
+      ]);
       const decorated = workspaces.decorateStatus(snapshot);
       const updated = {
         ...decorated,
         bots: decorated.bots.map((bot) => bot?.botId === botId
           ? { ...bot, contextEnhancement: config } : bot),
         ...(catalog ? { agentPresetCatalog: catalog } : {}),
+        ...(models ? { modelCatalog: models } : {}),
       };
       // QR/status projection can fail too. Prepare the complete response before
       // commit so a failed save never publishes new running settings.
@@ -1418,13 +1564,17 @@ export function createWorkspaceAwareController(controller, { workspaces, stateFo
         error.code = 'workspace-bot-not-found';
         throw error;
       }
-      const catalog = await resolveAgentPresetCatalog(agentPresetCatalog);
+      const [catalog, models] = await Promise.all([
+        resolveAgentPresetCatalog(agentPresetCatalog),
+        resolveModelCatalog(modelCatalog),
+      ]);
       const decorated = workspaces.decorateStatus(snapshot);
       const updated = {
         ...decorated,
         bots: decorated.bots.map((bot) => bot?.botId === botId
           ? { ...bot, accessPolicy: policy } : bot),
         ...(catalog ? { agentPresetCatalog: catalog } : {}),
+        ...(models ? { modelCatalog: models } : {}),
       };
       // Prepare the complete channel-specific response before commit. Failed
       // projections and disk writes must leave the live policy unchanged.
@@ -1472,6 +1622,7 @@ export function createWorkspaceAwareController(controller, { workspaces, stateFo
     get(target, property) {
       if (property === 'updateWorkspace') return updateWorkspace;
       if (property === 'updateAgentPreset') return updateAgentPreset;
+      if (property === 'updateModel') return updateModel;
       if (property === 'updateContextEnhancement') return updateContextEnhancement;
       if (property === 'updateAccessPolicy') return updateAccessPolicy;
       const value = Reflect.get(target, property, target);

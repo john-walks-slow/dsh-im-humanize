@@ -10,6 +10,11 @@ import {
   AgentPresetEditor,
   EMPTY_AGENT_PRESET_CATALOG,
 } from '../../agent-preset.js';
+import {
+  EMPTY_MODEL_CATALOG,
+  ModelCatalogContext,
+  ModelEditor,
+} from '../../model-setting.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import {
   BotSettingsButton,
@@ -75,7 +80,7 @@ export function createTokenChannelSettings(definition) {
     accountSettingsEndpoint = null,
   } = definition;
 
-  function AccountCard({ account, busy, testNotice, removing, onReconnect, onWorkspaceSave, onAgentPresetSave, onContextEnhancementSave, onAccountSettingsSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
+  function AccountCard({ account, busy, testNotice, removing, onReconnect, onWorkspaceSave, onModelSave, onAgentPresetSave, onContextEnhancementSave, onAccountSettingsSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
     const state = busy === 'reconnect' ? 'connecting' : account.state;
     const tone = account.connected ? 'success' : state === 'error' ? 'error' : 'warning';
     const stateLabel = account.connected ? '运行正常' : state === 'connecting' ? '正在连接' : '连接未就绪';
@@ -109,6 +114,11 @@ export function createTokenChannelSettings(definition) {
           workspace: account.workspace,
           disabled: Boolean(busy),
           onSave: onWorkspaceSave,
+        }),
+        h(ModelEditor, {
+          model: account.model,
+          disabled: Boolean(busy),
+          onSave: onModelSave,
         }),
         h(AgentPresetEditor, {
           agentPreset: account.agentPreset,
@@ -161,6 +171,7 @@ export function createTokenChannelSettings(definition) {
     const [model, setModel] = React.useState({
       phase: 'loading', bots: [], totals: { configured: 0, connected: 0 }, error: null,
       agentPresetCatalog: EMPTY_AGENT_PRESET_CATALOG,
+      modelCatalog: EMPTY_MODEL_CATALOG,
     });
     const [credentialOpen, setCredentialOpen] = React.useState(false);
     const [credentialError, setCredentialError] = React.useState(null);
@@ -198,6 +209,7 @@ export function createTokenChannelSettings(definition) {
         setModel({
           phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
           agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+          modelCatalog: snapshot.modelCatalog ?? EMPTY_MODEL_CATALOG,
         });
       } catch (error) {
         if (error?.name !== 'AbortError' && mounted.current && !signal?.aborted
@@ -244,6 +256,7 @@ export function createTokenChannelSettings(definition) {
           setModel({
           phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
           agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+          modelCatalog: snapshot.modelCatalog ?? EMPTY_MODEL_CATALOG,
         });
         }
         setCredentialOpen(false);
@@ -266,6 +279,7 @@ export function createTokenChannelSettings(definition) {
           setModel({
           phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
           agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+          modelCatalog: snapshot.modelCatalog ?? EMPTY_MODEL_CATALOG,
         });
         }
         if (mounted.current && operation === 'reconnect') {
@@ -318,6 +332,12 @@ export function createTokenChannelSettings(definition) {
                 endpoints.setWorkspace,
                 { botId: account.botId, workspace },
               ),
+              onModelSave: (selectedModel) => botAction(
+                account,
+                'model',
+                endpoints.setModel,
+                { botId: account.botId, model: selectedModel },
+              ),
               onAgentPresetSave: (agentPreset) => botAction(
                 account,
                 'preset',
@@ -350,7 +370,9 @@ export function createTokenChannelSettings(definition) {
             })))))
       : null;
 
-    return h(AgentPresetCatalogContext.Provider, {
+    return h(ModelCatalogContext.Provider, {
+      value: model.modelCatalog ?? EMPTY_MODEL_CATALOG,
+    }, h(AgentPresetCatalogContext.Provider, {
       value: model.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
     }, h('section', {
       className: `ddt-page ${pageClass} dim-channelPage`,
@@ -418,7 +440,7 @@ export function createTokenChannelSettings(definition) {
                       'aria-hidden': 'true',
                     }, h(LogoGlyph, { size: 64 }))))
               : null,
-            botList)));
+            botList))));
   }
 
   return { SettingsTab, AccountCard };

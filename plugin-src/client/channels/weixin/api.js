@@ -1,4 +1,5 @@
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
+import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } from '../../model-setting.js';
 import { normalizeLastMessageError } from '../../last-message-error.js';
 import { normalizeAccessPolicy } from '../../../../src/channels/shared/access-policy.mjs';
 import { normalizeContextEnhancementConfig } from '../../../../src/channels/shared/context-enhancement.mjs';
@@ -13,6 +14,7 @@ export const WEIXIN_ENDPOINTS = Object.freeze({
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
   setWorkspace: 'bot.workspace.set',
+  setModel: SET_MODEL_ENDPOINT,
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
   setContextEnhancement: 'bot.context-enhancement.set',
   setAccessPolicy: 'bot.access-policy.set',
@@ -124,6 +126,7 @@ function normalizeBot(value) {
     connected,
     configured: value.configured === true,
     workspace: string(value.workspace).slice(0, 4_096),
+    model: normalizeModelSelection(value.model),
     agentPreset: normalizeAgentPresetId(value.agentPreset),
     contextEnhancement: normalizeContextEnhancementConfig(value.contextEnhancement),
     ...(Object.hasOwn(value, 'accessPolicy')
@@ -169,6 +172,7 @@ export function normalizeSnapshot(value) {
     provisioning: value.provisioning ? normalizeProvisioning(value.provisioning) : null,
     testMessage: normalizeTestMessage(value.testMessage),
     agentPresetCatalog: normalizeAgentPresetCatalog(value.agentPresetCatalog),
+    modelCatalog: normalizeModelCatalog(value.modelCatalog),
   };
 }
 

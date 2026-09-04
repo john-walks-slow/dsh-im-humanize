@@ -10,6 +10,11 @@ import {
   AgentPresetEditor,
   EMPTY_AGENT_PRESET_CATALOG,
 } from '../../agent-preset.js';
+import {
+  EMPTY_MODEL_CATALOG,
+  ModelCatalogContext,
+  ModelEditor,
+} from '../../model-setting.js';
 import { useWorkspaceSnapshotFence } from '../../workspace-snapshot-fence.js';
 import {
   BotSettingsButton,
@@ -185,6 +190,7 @@ export function WhatsappAccountCard({
   removing,
   onReconnect,
   onWorkspaceSave,
+  onModelSave,
   onAgentPresetSave,
   onContextEnhancementSave,
   onRequestRemove,
@@ -226,6 +232,11 @@ export function WhatsappAccountCard({
         disabled: Boolean(busy),
         onSave: onWorkspaceSave,
       }),
+      h(ModelEditor, {
+        model: account.model,
+        disabled: Boolean(busy),
+        onSave: onModelSave,
+      }),
       h(AgentPresetEditor, {
         agentPreset: account.agentPreset,
         disabled: Boolean(busy),
@@ -266,6 +277,7 @@ export function WhatsappSettingsTab({ rpcCall }) {
   const [model, setModel] = React.useState({
     phase: 'loading', bots: [], totals: { configured: 0, connected: 0 }, error: null,
     agentPresetCatalog: EMPTY_AGENT_PRESET_CATALOG,
+    modelCatalog: EMPTY_MODEL_CATALOG,
   });
   const [provision, setProvision] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
@@ -304,6 +316,7 @@ export function WhatsappSettingsTab({ rpcCall }) {
       setModel({
         phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
         agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+        modelCatalog: snapshot.modelCatalog ?? EMPTY_MODEL_CATALOG,
       });
       if (restore && snapshot.provisioning) setProvision({
         ...snapshot.provisioning,
@@ -435,6 +448,7 @@ export function WhatsappSettingsTab({ rpcCall }) {
         setModel({
           phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
           agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
+          modelCatalog: snapshot.modelCatalog ?? EMPTY_MODEL_CATALOG,
         });
         if (operation === 'reconnect') {
           setTestNoticeByBot((current) => ({
@@ -487,6 +501,12 @@ export function WhatsappSettingsTab({ rpcCall }) {
               WHATSAPP_ENDPOINTS.setWorkspace,
               { botId: account.botId, workspace },
             ),
+            onModelSave: (selectedModel) => botAction(
+              account,
+              'model',
+              WHATSAPP_ENDPOINTS.setModel,
+              { botId: account.botId, model: selectedModel },
+            ),
             onAgentPresetSave: (agentPreset) => botAction(
               account,
               'preset',
@@ -511,7 +531,9 @@ export function WhatsappSettingsTab({ rpcCall }) {
           })))))
     : null;
 
-  return h(AgentPresetCatalogContext.Provider, {
+  return h(ModelCatalogContext.Provider, {
+    value: model.modelCatalog ?? EMPTY_MODEL_CATALOG,
+  }, h(AgentPresetCatalogContext.Provider, {
     value: model.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
   }, h('section', {
     className: 'ddt-page dwa-page dim-channelPage',
@@ -550,5 +572,5 @@ export function WhatsappSettingsTab({ rpcCall }) {
               : model.bots.length === 0
                 ? h(EmptyView, { busy, onStart: () => void startProvisioning(false) })
                 : null,
-          botList)));
+          botList))));
 }

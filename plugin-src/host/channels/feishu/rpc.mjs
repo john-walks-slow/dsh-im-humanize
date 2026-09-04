@@ -5,10 +5,15 @@ import {
 } from '../../../../src/channels/shared/agent-preset.mjs';
 import { publicConnectionTestResult } from '../../../../src/channels/shared/connection-test.mjs';
 import { publicMessageFailure } from '../../../../src/channels/shared/message-failure.mjs';
+import {
+  normalizeModelCatalog,
+  normalizeModelSelection,
+} from '../../../../src/channels/shared/model-setting.mjs';
 import { normalizeAccessPolicy } from '../../../../src/channels/shared/access-policy.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
 import { validAgentPresetPayload } from '../shared/agent-preset-rpc.mjs';
+import { validModelPayload } from '../shared/model-setting-rpc.mjs';
 import { validContextEnhancementPayload } from '../shared/context-enhancement-rpc.mjs';
 import { SET_ACCESS_POLICY_ENDPOINT, validAccessPolicyPayload } from '../shared/access-policy-rpc.mjs';
 import { normalizeContextEnhancementConfig } from '../../../../src/channels/shared/context-enhancement.mjs';
@@ -283,6 +288,7 @@ function publicBotEntry(entry) {
     state: connectionState(source, registration, connected),
     connected,
     configured: source.configured === true,
+    model: normalizeModelSelection(source.model),
     agentPreset: normalizeAgentPresetId(source.agentPreset),
     contextEnhancement: normalizeContextEnhancementConfig(source.contextEnhancement),
     accessPolicy: normalizeAccessPolicy(source.accessPolicy),
@@ -333,6 +339,7 @@ export async function toPublicFeishuStatus(status, { encodeQr = qrCodeDataUrl } 
     health: publicHealth(source, connected),
     bots,
     agentPresetCatalog: normalizeAgentPresetCatalog(source.agentPresetCatalog),
+    modelCatalog: normalizeModelCatalog(source.modelCatalog),
     totals: {
       configured: bots.length || (source.configured === true ? 1 : 0),
       connected: bots.length ? bots.filter((bot) => bot.connected).length : (connected ? 1 : 0),
@@ -421,6 +428,9 @@ function validPayload(endpoint, payload) {
   if (endpoint === FEISHU_ENDPOINTS.setWorkspace) {
     return validWorkspacePayload(payload)
       ? null : '请输入工作区绝对路径。';
+  }
+  if (endpoint === FEISHU_ENDPOINTS.setModel) {
+    return validModelPayload(payload) ? null : '请选择有效模型。';
   }
   if (endpoint === FEISHU_ENDPOINTS.setAgentPreset) {
     return validAgentPresetPayload(payload)
@@ -690,6 +700,12 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
         if (typeof controller.updateWorkspace !== 'function') throw new Error('Workspace update is unavailable');
         value = await toPublicFeishuStatus(
           await controller.updateWorkspace(payload.botId, payload.workspace),
+          { encodeQr: cachedEncodeQr },
+        );
+      } else if (endpoint === FEISHU_ENDPOINTS.setModel) {
+        if (typeof controller.updateModel !== 'function') throw new Error('Model update is unavailable');
+        value = await toPublicFeishuStatus(
+          await controller.updateModel(payload.botId, payload.model),
           { encodeQr: cachedEncodeQr },
         );
       } else if (endpoint === FEISHU_ENDPOINTS.setContextEnhancement) {
