@@ -10,6 +10,7 @@ function memoryAdapter({ channel = 'telegram', botId = 'bot_one' } = {}) {
   return {
     channel,
     sends,
+    listBots: () => [botId],
     ownsBot: (candidate) => candidate === botId,
     listTargets: () => [...targets.values()].map((target) => structuredClone(target)),
     listSuggestions: () => [{ kind: 'chat', route: { chatId: '123' } }],
@@ -60,6 +61,7 @@ test('DeliveryService shares target CRUD and sending through one adapter', async
     channel: 'telegram',
     targets: [target],
   });
+  assert.deepEqual(await service.listBots(), [{ botId: 'bot_one', channel: 'telegram' }]);
   assert.deepEqual(await service.listSuggestions('bot_one'), {
     botId: 'bot_one',
     channel: 'telegram',

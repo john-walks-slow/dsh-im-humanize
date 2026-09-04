@@ -165,6 +165,14 @@ const targets = await ctx.dshIm.listTargets(botId);
 // [{ targetId, name?, kind, route }, ...]
 ```
 
+同 Host 插件可以通过同一个服务发现已配置机器人：
+
+```js
+const bots = await ctx.dshIm.listBots();
+// [{ botId, channel }, ...]
+```
+返回值只包含稳定的公开元数据，不包含凭据、平台路由或目标内容。
+
 调用失败时 Promise 会拒绝，`error.code` 使用本文后面的公共错误码。
 
 ## 通过 Connection RPC 发送

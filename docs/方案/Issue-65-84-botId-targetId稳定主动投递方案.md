@@ -226,6 +226,7 @@ deleteDeliveryTarget(botId, targetId)
 
 ```js
 service.registerAdapter(adapter)                              // 返回 unregister
+service.listBots()
 service.listTargets(botId)
 service.listSuggestions(botId)
 service.createTarget(botId, target)
@@ -297,6 +298,7 @@ ctx.provide('dshIm', Object.freeze({
   send: (botId, targetId, text, options) =>
     deliveryService.send(botId, targetId, text, options),
   listTargets: (botId) => deliveryService.listTargets(botId),
+  listBots: () => deliveryService.listBots(),
 }))
 ```
 
@@ -314,9 +316,10 @@ await ctx.dshIm.send(
 
 约束：
 
-- 服务名沿用 #65 建议的 `dshIm`，方法名保持最小，只暴露 `send` 和 `listTargets`。
+- 服务名沿用 #65 建议的 `dshIm`，方法名保持最小，只暴露 `send`、`listTargets` 和 `listBots`。
 - 目标 CRUD 由设置页/管理 RPC 完成，避免 Host 插件顺便承担配置 UI。
 - `listTargets()` 返回已保存的 `{ targetId, name, kind, route }[]`。Cordis 公共服务不暴露 `listChats/chatRef`；设置页候选使用第 9 节的专用 RPC 端点。
+- `listBots()` 返回已配置机器人的 `{ botId, channel }[]`，只包含稳定公开元数据，不暴露凭据、平台路由或目标内容。
 - Cordis 服务和 RPC 持有的是同一个 `DeliveryService` 实例；测试必须证明两者不是两套 registry。
 - Host/渠道关闭时用现有 `ctx.effect()` 注销服务、RPC 和渠道适配器，不留下失效 Runtime 引用。
 

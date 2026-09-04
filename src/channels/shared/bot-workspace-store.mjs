@@ -323,6 +323,12 @@ export class BotWorkspaceStore {
     return Object.hasOwn(this.#workspaces, id) && !this.#removals.has(id);
   }
 
+  listBotIds() {
+    return Object.keys(this.#workspaces)
+      .filter((botId) => !this.#removals.has(botId))
+      .sort();
+  }
+
   incarnationFor(botId) {
     return this.#incarnations.get(botIdOf(botId)) ?? null;
   }
