@@ -6,15 +6,23 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.11.0] - 2026-09-05
+
 ### Added / 新增
 
 - 已保存的私聊投递目标新增默认关闭的「会话双向同步」开关。开启后，DSH Web／CLI 在该私聊当前 Session 中提交的用户文字和完成后的助手文字会通过原机器人同步回私聊；IM 自身输入不会重复投递。九个 IM 渠道共用同一实现，自动跟随 `/session`、`/new` 和工作区切换后的当前会话；首版仅支持当前 Host 的私聊文字，不支持显式远程 `harnessBaseUrl`、群聊、Topic 或 Thread。
   Saved direct-message delivery targets now have an opt-in **Two-way Session sync** switch. When enabled, user text submitted from DSH Web/CLI and the completed assistant text in that DM's current Session are mirrored through the original bot, while IM-originated input is never duplicated. One shared implementation covers all nine IM channels and follows the current Session across `/session`, `/new`, and workspace changes. The first version supports text DMs on the current Host only, excluding explicit remote `harnessBaseUrl` connections, groups, Topics, and Threads.
 
+- 九个 IM 渠道的每个机器人新增独立模型设置，可从 Host 当前可用模型中选择或跟随默认；设置只影响之后新建的 Session，已有 Session 与正在生成的回复不变。
+  Every bot across all nine IM channels now has an independent model setting, selectable from the Host's current model catalog or left to follow the default. The setting applies only to newly created Sessions and does not alter existing Sessions or in-progress replies.
+
 ### Changed / 变更
 
 - npm 包元数据新增已验证兼容 DSH `0.1.3-alpha.1`；兼容测试使用官方发布提交 `d347e70`，并完成九渠道各一台机器人的真实主动投递与双向同步冒烟。
   npm package metadata now declares verified compatibility with DSH `0.1.3-alpha.1`. Compatibility testing used official release commit `d347e70` and completed real proactive-delivery and two-way-sync smoke tests with one bot on each of the nine channels.
+
+- 飞书的「群聊响应方式」与「群聊以话题方式回复」已从机器人卡片主页移入该机器人的设置页，使卡片布局与其他渠道保持一致。
+  Feishu's “Group response mode” and “Reply to group chats as topics” controls have moved from the bot-card overview into that bot's settings page, aligning the card layout with the other channels.
 
 ### Fixed / 修复
 
@@ -681,7 +689,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.10.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.11.0...HEAD
+[4.11.0]: https://github.com/xmanrui/dsh-im/compare/v4.10.0...v4.11.0
 [4.10.0]: https://github.com/xmanrui/dsh-im/compare/v4.9.1...v4.10.0
 [4.9.1]: https://github.com/xmanrui/dsh-im/compare/v4.9.0...v4.9.1
 [4.9.0]: https://github.com/xmanrui/dsh-im/compare/v4.8.0...v4.9.0
