@@ -65,6 +65,28 @@ test('Host control executor validates and mutates the exact open owned turn sync
   assert.deepEqual(calls[1], ['cancel', { kind: 'user' }, { keepInbox: true }]);
 });
 
+test('Host control executor reads modern Session event snapshots', () => {
+  const { agent, calls } = liveAgent({
+    session: {
+      snapshotEvents: () => Object.freeze([
+        { seq: 1, type: 'turn/start', data: { turn: 7 } },
+        { seq: 2, type: 'user/message', data: { source: { rpcId: 'prompt-owned' } } },
+      ]),
+    },
+  });
+  const { controlExecutor } = createHarnessSessionExecutors(
+    contextWith({ get: () => agent }),
+  );
+
+  assert.equal(controlExecutor({
+    sessionId: 'session-one',
+    expectedTurn: 7,
+    promptRpcId: 'prompt-owned',
+    action: 'stop',
+  }), true);
+  assert.deepEqual(calls, [['cancel', { kind: 'user' }, { keepInbox: true }]]);
+});
+
 test('Host control executor refuses idle, replaced, closed, and foreign turns without waking', () => {
   const { agent, calls } = liveAgent();
   const { controlExecutor } = createHarnessSessionExecutors(contextWith({ get: () => agent }));
