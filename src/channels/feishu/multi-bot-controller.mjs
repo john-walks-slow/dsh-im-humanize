@@ -90,6 +90,7 @@ function configuredBotFingerprint(config) {
     botOpenId: config.botOpenId,
     activated: config.activated,
     groupResponseMode: normalizeFeishuGroupResponseMode(config.groupResponseMode),
+    groupTopicReply: config.groupTopicReply === true,
     groupMessagePermissionGranted: config.groupMessagePermissionGranted === true,
     deletionPending: config.deletionPending === true,
     connectedAt: config.connectedAt ?? null,
@@ -584,6 +585,20 @@ export class MultiBotDshFeishuController {
     }));
   }
 
+  async updateGroupTopicReply(botId, groupTopicReply) {
+    this.#assertOpen();
+    if (typeof groupTopicReply !== 'boolean') {
+      throw new TypeError('Invalid Feishu group topic reply flag');
+    }
+    return this.#serializeConfig(() => this.#withBotTransition(botId, async () => {
+      const config = this.#requireBot(botId);
+      const saved = await this.#configStore.saveBot({ ...config, groupTopicReply });
+      this.#runtimes.get(botId)?.setGroupTopicReply?.(saved.groupTopicReply);
+      this.#touch();
+      return this.status(botId);
+    }));
+  }
+
   async deleteBot(botId) {
     this.#assertOpen();
     return this.#serializeConfig(() => this.#withBotTransition(botId, async () => {
@@ -646,6 +661,7 @@ export class MultiBotDshFeishuController {
         connected,
         configured: true,
         groupResponseMode: normalizeFeishuGroupResponseMode(config.groupResponseMode),
+        groupTopicReply: config.groupTopicReply === true,
         groupMessagePermissionGranted: config.groupMessagePermissionGranted === true,
         bot: publicBot(config),
         connection,

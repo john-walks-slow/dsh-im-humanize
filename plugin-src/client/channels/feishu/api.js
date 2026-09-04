@@ -29,6 +29,7 @@ export const FEISHU_ENDPOINTS = Object.freeze({
   setContextEnhancement: "bot.context-enhancement.set",
   setAccessPolicy: "bot.access-policy.set",
   setGroupResponseMode: "bot.group-response-mode.set",
+  setGroupTopicReply: "bot.group-topic-reply.set",
   // Kept for rolling upgrades. The multi-bot UI never calls these endpoints.
   testConnection: "connection.test",
   disconnect: "connection.disconnect",
@@ -212,6 +213,7 @@ export function normalizeBotConnection(value, fallbackBotId) {
       ? { accessPolicy: normalizeAccessPolicy(value.accessPolicy) }
       : {}),
     groupResponseMode: normalizeGroupResponseMode(value.groupResponseMode),
+    groupTopicReply: value.groupTopicReply === true,
     groupMessagePermissionGranted: value.groupMessagePermissionGranted === true,
     bot: normalizeBot(value.bot),
     health: normalizeHealth(value.health, connected),

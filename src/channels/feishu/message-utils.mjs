@@ -13,6 +13,19 @@ const FEISHU_CARD_UNAVAILABLE_TEXTS = new Set([
 const FEISHU_IMAGE_PERMISSION_MESSAGE =
   '飞书机器人缺少图片读取权限 im:message:readonly（飞书显示为“获取单聊、群组消息”）。请私聊机器人执行 /repair 命令，或者在「IM机器人」设置页点击“补全权限”按钮并扫码。按飞书提示发布新版本、完成必要审批后，再重新发送图片。';
 
+/** Managed-topic group key: one per Feishu topic auto-rooted at a message. */
+export function managedGroupKey(chatId, rootMessageId) {
+  if (!chatId) throw new Error('Feishu managed-topic key needs a chat_id');
+  if (!rootMessageId) throw new Error('Feishu managed-topic key needs a root message id');
+  return `group:${chatId}:managed:${rootMessageId}`;
+}
+
+/** Whether a key denotes a topic-isolated group conversation (thread or managed). */
+export function isTopicGroupKey(key) {
+  return typeof key === 'string' && key.startsWith('group:')
+    && (key.includes(':thread:') || key.includes(':managed:'));
+}
+
 export function conversationKey(event) {
   const chatType = event?.message?.chat_type;
   if (chatType === 'p2p') {

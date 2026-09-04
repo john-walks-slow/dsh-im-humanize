@@ -5,6 +5,8 @@ import {
   extractText,
   isAllowedSender,
   isBotSender,
+  isTopicGroupKey,
+  managedGroupKey,
   splitText,
 } from './message-utils.mjs';
 import {
@@ -101,6 +103,10 @@ import {
 // Lazily evaluated: t() must run after setImHostLanguage, not at import time.
 const INTERACTION_RESOLVED_TEXT = () => t('这个问题已在其他客户端处理，无需再次回答。');
 const RESOLVED_REPLY_TTL_MS = 30 * 60_000;
+/** Managed-topic root candidates expire without a returned thread_id. */
+const ROOT_CANDIDATE_TTL_MS = 30 * 60_000;
+/** Bound main-feed roots awaiting a topic so silent drops cannot grow them. */
+const MAX_ROOT_CANDIDATES = 512;
 
 const MENU_COMMAND = /^\/m(?:enu)?$/i;
 const REPAIR_COMMAND_PREFIX = /^\/repair(?:\s|$)/i;
@@ -480,6 +486,14 @@ export class FeishuHarnessBridge {
   #appId;
   #botOpenId;
   #groupResponseMode;
+  /** When true, group replies that belong to a Feishu topic ask reply_in_thread. */
+  #groupTopicReply = false;
+  /** Group chats this bot has seen; only these may use topic replies. */
+  #groupChatIds = new Set();
+  /** Anchor message id → whether its replies should stay in a Feishu topic. */
+  #anchorTopicReply = new Map();
+  /** Main-feed roots this bot intends to auto-open as topics, awaiting thread_id. */
+  #rootCandidates = new Map();
   #repair;
   #repairAttempt = null;
   #repairMonitorVersion = 0;
@@ -516,6 +530,7 @@ export class FeishuHarnessBridge {
     appId,
     botOpenId,
     groupResponseMode = FEISHU_GROUP_RESPONSE_MODES.ALL,
+    groupTopicReply = false,
     repair,
     repairPollIntervalMs = REPAIR_POLL_INTERVAL_MS,
     repairLinkWaitMs = REPAIR_LINK_WAIT_MS,
@@ -555,6 +570,7 @@ export class FeishuHarnessBridge {
     this.#appId = nonEmptyString(appId);
     this.#botOpenId = nonEmptyString(botOpenId);
     this.#groupResponseMode = normalizeFeishuGroupResponseMode(groupResponseMode);
+    this.#groupTopicReply = groupTopicReply === true;
     this.#repair = repair ?? null;
     this.#repairPollIntervalMs = repairPollIntervalMs;
     this.#repairLinkWaitMs = repairLinkWaitMs;
@@ -576,12 +592,116 @@ export class FeishuHarnessBridge {
     this.#groupResponseMode = normalizeFeishuGroupResponseMode(value);
   }
 
+  setGroupTopicReply(value) {
+    this.#groupTopicReply = value === true;
+  }
+
   #isAddressed(event) {
     if (event?.message?.chat_type === 'p2p') return true;
     const mentions = Array.isArray(event?.message?.mentions) ? event.message.mentions : [];
     if (!this.#botOpenId) return mentions.length > 0;
     return mentions.some((mention) => mention?.id?.open_id === this.#botOpenId
       || mention?.open_id === this.#botOpenId);
+  }
+
+  /**
+   * Conversation key for one inbound event. When group-topic replies are on,
+   * a main-feed question addressed to the bot opens a fresh managed topic
+   * session instead of joining the shared group session, and messages inside
+   * a topic we already opened resolve back to that same managed session.
+   */
+  #resolveKey(event) {
+    const chatType = event?.message?.chat_type;
+    const chatId = nonEmptyString(event?.message?.chat_id);
+    if (chatType !== 'group') return conversationKey(event);
+    const messageId = nonEmptyString(event?.message?.message_id);
+    const threadId = nonEmptyString(event?.message?.thread_id);
+    if (threadId) {
+      const root = this.#state?.topicRootFor?.(threadId) ?? null;
+      return root && chatId
+        ? managedGroupKey(chatId, root.rootMessageId)
+        : `group:${chatId}:thread:${threadId}`;
+    }
+    if (this.#groupTopicReply && chatId && messageId && this.#isAddressed(event)) {
+      return managedGroupKey(chatId, messageId);
+    }
+    return `group:${chatId}`;
+  }
+
+  /**
+   * Record whether replies anchored on `messageId` should stay in a topic.
+   * `asRoot` marks a main-feed question this bot will auto-open as a topic.
+   */
+  #rememberTopicReply(messageId, key) {
+    if (!nonEmptyString(messageId)) return;
+    this.#anchorTopicReply.set(messageId, this.#groupTopicReply && isTopicGroupKey(key));
+    if (this.#anchorTopicReply.size > 2048) {
+      const oldest = this.#anchorTopicReply.keys().next().value;
+      if (oldest !== undefined) this.#anchorTopicReply.delete(oldest);
+    }
+    if (typeof key === 'string' && key.startsWith('group:')) {
+      const chatId = key.split(':')[1];
+      if (chatId) this.#groupChatIds.add(chatId);
+    }
+  }
+
+  /** Whether a reply anchored on `replyTo` must ask Feishu to keep it in a topic. */
+  #replyInThreadFor(replyTo) {
+    return this.#groupTopicReply
+      && nonEmptyString(replyTo)
+      && this.#anchorTopicReply.get(replyTo) === true;
+  }
+
+  /** Drop expired root candidates so a silently dropped reply cannot leak memory. */
+  #pruneRootCandidates(now = Date.now()) {
+    for (const [messageId, expiresAt] of this.#rootCandidates) {
+      if (expiresAt <= now) this.#rootCandidates.delete(messageId);
+    }
+  }
+
+  /** Track a main-feed root this bot will auto-open as a topic, bounded + TTL'd. */
+  #rememberTopicRoot(messageId) {
+    if (!nonEmptyString(messageId)) return;
+    const now = Date.now();
+    this.#pruneRootCandidates(now);
+    this.#rootCandidates.delete(messageId);
+    this.#rootCandidates.set(messageId, now + ROOT_CANDIDATE_TTL_MS);
+    while (this.#rootCandidates.size > MAX_ROOT_CANDIDATES) {
+      const oldest = this.#rootCandidates.keys().next().value;
+      if (oldest === undefined) break;
+      this.#rootCandidates.delete(oldest);
+    }
+  }
+
+  /** Forget a root candidate once its topic opened or the reply degraded. */
+  #forgetTopicRoot(messageId) {
+    if (!nonEmptyString(messageId)) return;
+    this.#rootCandidates.delete(messageId);
+  }
+
+  /** Persist thread_id once Feishu auto-opened a topic from a managed root. */
+  async #registerTopicFromReply(replyTo, chatId, response) {
+    const threadId = nonEmptyString(response?.data?.thread_id);
+    if (threadId) {
+      await this.#registerTopicThreadId(threadId, replyTo, chatId);
+    } else {
+      // No thread_id means the topic did not open; drop the candidate so a
+      // later addressed question opens a fresh session, not a stale slot.
+      this.#forgetTopicRoot(replyTo);
+    }
+  }
+
+  /** Persist thread_id when the reply anchor is a root this bot auto-opened. */
+  async #registerTopicThreadId(threadId, rootMessageId, chatId) {
+    this.#pruneRootCandidates();
+    if (!threadId || !this.#rootCandidates.has(rootMessageId)) return;
+    this.#rootCandidates.delete(rootMessageId);
+    if (!chatId || typeof this.#state?.setTopic !== 'function') return;
+    try {
+      await this.#state.setTopic(threadId, { rootMessageId, chatId });
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] failed to record managed topic:', error?.message ?? String(error));
+    }
   }
 
   accept(event) {
@@ -606,12 +726,13 @@ export class FeishuHarnessBridge {
 
     let key;
     try {
-      key = conversationKey(event);
+      key = this.#resolveKey(event);
     } catch {
       this.#status.messagesRejected += 1;
       this.#status.lastRejectedAt = new Date().toISOString();
       return Promise.resolve();
     }
+    this.#rememberTopicReply(messageId, key);
 
     const commandMessage = extractInboundMessage(event, this.#client);
     const commandText = nonEmptyString(commandMessage.content) ?? '';
@@ -634,6 +755,15 @@ export class FeishuHarnessBridge {
     if (!access.allowed) {
       this.#acceptedMessageIds.set(messageId, null);
       return this.#finishAccessDecision(event, messageId, access);
+    }
+    // Register a managed-topic root only after access is allowed, so a
+    // rejected or ignored question never reserves a candidate slot.
+    if (this.#groupTopicReply
+      && event?.message?.chat_type === 'group'
+      && !nonEmptyString(event?.message?.thread_id)
+      && isTopicGroupKey(key)
+      && key.includes(':managed:')) {
+      this.#rememberTopicRoot(messageId);
     }
     if (event.message.chat_type === 'p2p') {
       const chatId = nonEmptyString(event.message.chat_id);
@@ -1910,6 +2040,7 @@ export class FeishuHarnessBridge {
   }) {
     // Confirmations triggered by a card interaction stay anchored to the
     // card's message so they land inside the same Feishu topic.
+    this.#rememberTopicReply(messageId, key);
     const reply = (text) => this.#send(chatId, text, { replyTo: messageId });
     // Approval card buttons: approve:<approvalId> / reject:<approvalId>
     if (action.startsWith('approve:') || action.startsWith('reject:')) {
@@ -2383,18 +2514,25 @@ export class FeishuHarnessBridge {
       try {
         const response = await this.#client.im.v1.message.reply({
           path: { message_id: replyTo },
-          data: { msg_type: 'interactive', content },
+          data: {
+            msg_type: 'interactive',
+            content,
+            ...(this.#replyInThreadFor(replyTo) ? { reply_in_thread: true } : {}),
+          },
         });
         if (response?.code && response.code !== 0) {
           throw new Error(`Feishu card reply failed: ${response.msg || response.code}`);
         }
         const repliedMessageId = nonEmptyString(response?.data?.message_id);
+        await this.#registerTopicFromReply(replyTo, chatId, response);
         if (repliedMessageId) {
           this.#rememberCardRoute(repliedMessageId, chatId, options);
           return repliedMessageId;
         }
       } catch (error) {
         this.#logger.warn?.('[dsh-feishu] threaded card reply failed; sending a plain card:', error?.message ?? String(error));
+        // The topic never opened; a managed root candidate must not linger.
+        this.#forgetTopicRoot(replyTo);
       }
     }
     const response = await this.#client.im.v1.message.create({
@@ -3206,6 +3344,10 @@ export class FeishuHarnessBridge {
         || (validLastSeq(entry.lastSeq) && entry.lastSeq >= event.seq)
         || (validEventSeq(failedSeq) && event.seq > failedSeq)) continue;
       try {
+        // Re-derive topic intent at delivery time: the push may outlive the
+        // bounded in-memory anchor cache, but the conversation key still tells
+        // us whether the completion belongs to a Feishu topic.
+        this.#rememberTopicReply(entry.replyToMessageId ?? null, key);
         await this.#sendCard(
           entry.chatId,
           completionCard(sessionId, entry.title, reason),
@@ -3346,12 +3488,18 @@ export class FeishuHarnessBridge {
         ? (file) => this.#channel.sendImage(chatId, file, {
             replyTo,
             signal: this.#signal,
+            ...(this.#replyInThreadFor(replyTo)
+              ? { replyInThread: true, onReplyThreadId: async (threadId) => this.#registerTopicThreadId(threadId, replyTo, chatId) }
+              : {}),
           })
         : undefined,
       sendFile: typeof this.#channel?.sendFile === 'function'
         ? (file) => this.#channel.sendFile(chatId, file, {
             replyTo,
             signal: this.#signal,
+            ...(this.#replyInThreadFor(replyTo)
+              ? { replyInThread: true, onReplyThreadId: async (threadId) => this.#registerTopicThreadId(threadId, replyTo, chatId) }
+              : {}),
           })
         : undefined,
       onFailure: (artifact, error) => setLastMessageFailure(this.#status, error, {
@@ -3499,7 +3647,12 @@ export class FeishuHarnessBridge {
           completedArtifacts = completed.artifacts ?? [];
           await controller.setContent(answerTextForDelivery(completedAnswer, completedArtifacts));
         },
-      }, { replyTo: messageId });
+      }, {
+        replyTo: messageId,
+        ...(this.#replyInThreadFor(messageId)
+          ? { replyInThread: true, onReplyThreadId: async (threadId) => this.#registerTopicThreadId(threadId, messageId, chatId) }
+          : {}),
+      });
     } catch (error) {
       this.#status.streamErrors = (this.#status.streamErrors ?? 0) + 1;
       if (completedAnswer || completedArtifacts.length > 0) {
@@ -4007,11 +4160,16 @@ export class FeishuHarnessBridge {
       try {
         const response = await this.#client.im.v1.message.reply({
           path: { message_id: replyTo },
-          data: { msg_type: 'text', content },
+          data: {
+            msg_type: 'text',
+            content,
+            ...(this.#replyInThreadFor(replyTo) ? { reply_in_thread: true } : {}),
+          },
         });
         if (response?.code && response.code !== 0) {
           throw new Error(`Feishu reply failed: ${response.msg || response.code}`);
         }
+        await this.#registerTopicFromReply(replyTo, chatId, response);
         return nonEmptyString(response?.data?.message_id);
       } catch (error) {
         // The referenced message may be gone (recalled/deleted); keep the
@@ -4020,6 +4178,8 @@ export class FeishuHarnessBridge {
           '[dsh-feishu] threaded reply failed; falling back to a plain message:',
           error?.message ?? String(error),
         );
+        // The topic never opened; a managed root candidate must not linger.
+        this.#forgetTopicRoot(replyTo);
       }
     }
     const response = await this.#client.im.v1.message.create({

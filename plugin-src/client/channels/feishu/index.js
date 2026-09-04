@@ -542,6 +542,50 @@ function GroupResponseModeEditor({
   );
 }
 
+function GroupTopicReplyEditor({ value = false, disabled = false, onSave }) {
+  const current = value === true ? "on" : "off";
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState(null);
+
+  const change = async (event) => {
+    const next = event.target.value === "on";
+    if ((next ? "on" : "off") === current || saving || disabled) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave?.(next);
+    } catch (cause) {
+      setError(cause?.message ?? "群聊以话题方式回复设置保存失败，请重试。");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return h("div", { className: "bxf-responseMode dim-responseMode" },
+    h("div", { className: "bxf-responseModeHeader dim-responseModeHeader" },
+      h("span", null, "群聊以话题方式回复"),
+      saving
+        ? h("span", { className: "bxf-responseModeStatus dim-responseModeStatus" }, "保存中…")
+        : null),
+    h("select", {
+      className: "bxf-responseModeSelect dim-responseModeSelect",
+      value: current,
+      disabled: disabled || saving,
+      "aria-label": "群聊以话题方式回复",
+      onChange: (event) => { void change(event); },
+    },
+      h("option", { value: "off" }, "关闭（群内直接回复）"),
+      h("option", { value: "on" }, "开启（自动开启独立飞书话题）"),
+    ),
+    h("small", { className: "bxf-responseModeHelp dim-responseModeHelp" },
+      "开启后，群聊中向机器人提问会自动开启独立飞书话题，回复落在话题内；每个话题是 dsh 会话列表里一条独立会话，上下文互不串。私聊不受影响。"),
+    error ? h("p", {
+      className: "bxf-responseModeError dim-responseModeError",
+      role: "alert",
+    }, error) : null,
+  );
+}
+
 export function BotCard({
   connection,
   busy,
@@ -557,6 +601,7 @@ export function BotCard({
   onAgentPresetSave,
   onContextEnhancementSave,
   onGroupResponseModeSave,
+  onGroupTopicReplySave,
   onGroupMessagePermissionAuthorize,
   onRequestRemove,
   onConfirmRemove,
@@ -634,6 +679,11 @@ export function BotCard({
         authorizationDisabled: repairDisabled,
         onSave: onGroupResponseModeSave,
         onAuthorize: onGroupMessagePermissionAuthorize,
+      }),
+      h(GroupTopicReplyEditor, {
+        value: connection.groupTopicReply,
+        disabled: Boolean(busy),
+        onSave: onGroupTopicReplySave,
       }),
       provisionContent
         ? h("section", {
@@ -726,6 +776,7 @@ function BotList(props) {
           onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(bot, agentPreset),
           onContextEnhancementSave: (config) => props.onContextEnhancementSave(bot, config),
           onGroupResponseModeSave: (groupResponseMode) => props.onGroupResponseModeSave(bot, groupResponseMode),
+          onGroupTopicReplySave: (groupTopicReply) => props.onGroupTopicReplySave(bot, groupTopicReply),
           onGroupMessagePermissionAuthorize: () => props.onGroupMessagePermissionAuthorize(bot),
           onRequestRemove: () => props.onRequestRemove(bot),
           onConfirmRemove: () => props.onConfirmRemove(bot),
@@ -1545,6 +1596,9 @@ export function FeishuSettingsTab({ rpcCall }) {
                     connection, "context-enhancement", FEISHU_ENDPOINTS.setContextEnhancement, { config },
                   ),
                   onGroupResponseModeSave: saveGroupResponseMode,
+                  onGroupTopicReplySave: (connection, groupTopicReply) => saveBotSetting(
+                    connection, "group-topic-reply", FEISHU_ENDPOINTS.setGroupTopicReply, { groupTopicReply },
+                  ),
                   onGroupMessagePermissionAuthorize: authorizeGroupMessages,
                   onRequestRemove: requestRemove,
                   onConfirmRemove: (bot) => void confirmRemove(bot),

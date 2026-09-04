@@ -202,6 +202,7 @@ export async function createProductionController(ctx, config = {}, internals = {
         domain: botConfig.domain,
         botOpenId: botConfig.botOpenId,
         groupResponseMode: botConfig.groupResponseMode,
+        groupTopicReply: botConfig.groupTopicReply,
         ownerOpenIds: botConfig.ownerOpenIds ?? [botConfig.ownerOpenId],
         harness: workspaceScope.harness,
         state: workspaceScope.state,
