@@ -158,8 +158,18 @@ test('IM settings renders nine IM channels plus the AI Office connector', async 
   assert.match(markup, /aria-label="dsh-im GitHub"/);
   assert.match(markup, /dim-updateTrigger[^>]*aria-haspopup="dialog"[^>]*>检查更新</);
   assert.ok(markup.indexOf('dim-updateTrigger') < markup.indexOf('dim-githubAction'));
+  assert.ok(markup.indexOf('dim-githubAction') < markup.indexOf('dim-generalSettingsAction'));
   assert.match(markup, /aria-describedby="[^"]+"/);
   assert.match(markup, /role="tooltip"[^>]*>帮助与反馈 · 前往 GitHub</);
+  assert.match(markup, /id="dim-general-settings-trigger"/);
+  assert.match(markup, /aria-label="通用设置"/);
+  assert.doesNotMatch(markup, /aria-current="page"/);
+  assert.match(markup, /role="tooltip"[^>]*>通用设置<\/span>/);
+  const settingsButtonMarkup = markup.match(
+    /<button[^>]*id="dim-general-settings-trigger"[^>]*>(.*?)<\/button>/,
+  )?.[1] ?? '';
+  assert.match(settingsButtonMarkup, /data-im-icon="global-settings"/);
+  assert.doesNotMatch(settingsButtonMarkup, /通用设置/);
   assert.match(styles, /\.dim-title \{[^}]*margin: 0 0 18px;/);
   assert.match(styles, /\.dim-title p \{[^}]*color: var\(--dsw-alias-label-secondary, #646a73\);[^}]*font-size: 12px;[^}]*font-weight: 500;/);
   assert.match(styles, /\.dim-brand \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*align-items: flex-start;[^}]*gap: 1px;/);
@@ -171,6 +181,16 @@ test('IM settings renders nine IM channels plus the AI Office connector', async 
   assert.match(styles, /\.dim-githubLink \{[^}]*border: 1px solid var\(--dsw-alias-border-l2, #dfe1e5\);[^}]*text-decoration: none;/);
   assert.match(styles, /\.dim-githubTooltip \{[^}]*top: calc\(100% \+ 8px\);[^}]*transform: translateY\(-3px\);/);
   assert.match(styles, /\.dim-githubAction:hover \.dim-githubTooltip, \.dim-githubAction:focus-within \.dim-githubTooltip \{[^}]*opacity: 1;[^}]*visibility: visible;/);
+  assert.match(styles, /\.dim-generalSettingsButton \{[^}]*width: 30px;[^}]*height: 30px;[^}]*display: grid;[^}]*border: 1px solid var\(--dsw-alias-border-l2, #dfe1e5\);/);
+  assert.match(styles, /\.dim-generalSettingsTooltip \{[^}]*top: calc\(100% \+ 8px\);[^}]*transform: translateY\(-3px\);/);
+  assert.match(styles, /\.dim-generalSettingsAction:hover \.dim-generalSettingsTooltip, \.dim-generalSettingsButton:focus-visible \+ \.dim-generalSettingsTooltip \{[^}]*opacity: 1;[^}]*visibility: visible;/);
+  assert.match(styles, /\.dim-generalSettingsButton\[aria-current="page"\] \+ \.dim-generalSettingsTooltip \{[^}]*opacity: 0;[^}]*visibility: hidden;/);
+  assert.doesNotMatch(styles, /\.dim-generalSettingsAction:focus-within \.dim-generalSettingsTooltip/);
+  assert.match(styles, /\.dim-globalTtlTooltip \{[^}]*position: absolute;[^}]*opacity: 0;[^}]*visibility: hidden;/);
+  assert.match(styles, /\.dim-globalTtlHelp:hover \.dim-globalTtlTooltip, \.dim-globalTtlHelpButton:focus-visible \+ \.dim-globalTtlTooltip \{[^}]*opacity: 1;[^}]*visibility: visible;/);
+  assert.doesNotMatch(styles, /\.dim-globalTtlHelp:focus-within \.dim-globalTtlTooltip/);
+  assert.match(styles, /\.dim-globalSweepAction \{[^}]*position: relative;[^}]*margin-left: auto;/);
+  assert.match(styles, /\.dim-globalSweepConfirm \{[^}]*position: absolute;[^}]*top: calc\(100% \+ 8px\);[^}]*right: 0;/);
   assert.doesNotMatch(markup, /\d+ 个渠道|dim-channelCount/);
   assert.match(markup, />微信</);
   assert.match(markup, />飞书</);
@@ -193,52 +213,63 @@ test('IM settings renders nine IM channels plus the AI Office connector', async 
   assert.match(markup, /dim-logoWhatsapp/);
   assert.match(markup, /dim-logoOffice/);
   assert.match(styles, /\.dim-logoFeishu svg \{ width: 28px; height: 28px; \}/);
-  assert.equal((markup.match(/role="tab"/g) ?? []).length, 11);
+  assert.equal((markup.match(/role="tab"/g) ?? []).length, 10);
   assert.equal((markup.match(/aria-selected="true"/g) ?? []).length, 1);
   assert.doesNotMatch(markup, /role="switch"|type="checkbox"/);
   assert.doesNotMatch(markup, /dim-chevron|扫码绑定<\/small>|扫码接入<\/small>/);
   assert.doesNotMatch(markup, />INSTANT MESSAGING<|>Channel<|>微信设置</);
 });
 
-test('the global settings entry sits above the channel tabs in the rail', () => {
+test('the general settings gear sits to the right of GitHub and outside the channel rail', () => {
   const markup = renderToStaticMarkup(React.createElement(IMSettingsTab, {
     globalSettingsRpcCall: async () => ({ ok: true, value: { ttlHours: 0 } }),
     weixinRpcCall: async () => ({ ok: true, value: {} }),
   }));
 
-  assert.match(markup, /id="dim-tab-global-settings"/);
+  assert.match(markup, /id="dim-general-settings-trigger"/);
   assert.match(markup, /aria-controls="dim-panel-global-settings"/);
-  assert.match(markup, /class="dim-channel dim-channelGlobal"/);
-  assert.match(markup, /dim-logoGlobal/);
+  assert.match(markup, /class="dim-generalSettingsAction"/);
   assert.match(markup, /data-im-icon="global-settings"/);
-  assert.match(markup, />全局设置<\/strong>/);
-  assert.ok(markup.indexOf('dim-tab-global-settings') < markup.indexOf('dim-tab-weixin'));
+  assert.ok(markup.indexOf('dim-githubAction') < markup.indexOf('dim-generalSettingsAction'));
+  assert.ok(markup.indexOf('dim-generalSettingsAction') < markup.indexOf('dim-layout'));
+  assert.doesNotMatch(markup, /id="dim-tab-global-settings"/);
+  assert.doesNotMatch(markup, /dim-channelGlobal|dim-logoGlobal/);
   assert.match(markup, /aria-label="IM 设置导航"/);
-  // The global panel only mounts once its tab is selected; the rail entry must
-  // not steal the initial selection from the first channel.
+  // The general panel only mounts once its header action is selected; the
+  // action must not steal the initial selection from the first channel.
   assert.doesNotMatch(markup, /id="dim-panel-global-settings"/);
 });
 
-test('the global settings panel is one compact block without a save button', () => {
+test('the general settings page uses an Attachments tab with contextual help and an explicit save button', () => {
   const markup = renderToStaticMarkup(React.createElement(GlobalSettingsPanel, {
     rpcCall: async () => ({ ok: true, value: { ttlHours: 24 } }),
   }));
 
-  assert.match(markup, /aria-label="全局设置"/);
+  assert.match(markup, /aria-label="通用设置"/);
+  assert.match(markup, /<h2>通用设置<\/h2>/);
+  assert.match(markup, /role="tablist" aria-label="通用设置分类"/);
+  assert.match(markup, /id="dim-general-settings-tab-attachments"[^>]*role="tab"[^>]*aria-selected="true"[^>]*>附件<\/button>/);
+  assert.match(markup, /id="dim-general-settings-panel-attachments"[^>]*role="tabpanel"[^>]*aria-labelledby="dim-general-settings-tab-attachments"/);
+  assert.equal((markup.match(/role="tab"/g) ?? []).length, 1);
   // No label wrapper: the input takes its accessible name from the heading.
   assert.doesNotMatch(markup, /<label/);
   assert.match(markup, /<input[^>]*aria-labelledby="dim-globalTtlTitle"/);
+  assert.match(markup, /aria-label="查看附件保留时长说明"/);
+  assert.match(markup, /class="dim-globalTtlTooltip" role="tooltip"/);
   assert.match(markup, /<code>1~8760<\/code>/);
-  assert.match(markup, /正在读取全局设置…/);
-  // The sweep action shares the heading row, right-aligned.
-  assert.ok(markup.indexOf('附件保留时长') < markup.indexOf('清理过期附件'));
-  assert.match(markup, />清理过期附件<\/button>/);
-  // Blur-to-save replaced the save button entirely.
-  assert.doesNotMatch(markup, /type="submit"/);
-  assert.doesNotMatch(markup, />保存</);
+  assert.match(markup, /正在读取通用设置…/);
+  // Field actions share one row; the heading stays dedicated to its label and help.
+  const ttlFormMarkup = markup.match(/<form class="dim-globalTtlRow"[^]*?<\/form>/)?.[0] ?? '';
+  assert.doesNotMatch(markup, /dim-globalHeadActions/);
+  assert.match(ttlFormMarkup, />清理过期附件<\/button>/);
+  assert.ok(ttlFormMarkup.indexOf('保存') < ttlFormMarkup.indexOf('清理过期附件'));
+  assert.match(ttlFormMarkup, /aria-haspopup="dialog"/);
+  assert.match(ttlFormMarkup, /aria-expanded="false"/);
+  assert.doesNotMatch(ttlFormMarkup, /role="alertdialog"|>确认清理<\/button>/);
+  assert.match(markup, /<button[^>]*type="submit"[^>]*disabled=""[^>]*data-kind="primary"[^>]*>保存<\/button>/);
 });
 
-test('the sweep confirm state is announced without a visible hint paragraph', async () => {
+test('the sweep action opens a separate confirmation popover and supports cancel', async () => {
   const calls = [];
   const rpcCall = async (endpoint, payload) => {
     calls.push({ endpoint, payload });
@@ -258,18 +289,30 @@ test('the sweep confirm state is announced without a visible hint paragraph', as
   await act(async () => {
     findButton(renderer, '清理过期附件').props.onClick();
   });
+  const trigger = findButton(renderer, '清理过期附件');
   const confirmButton = findButton(renderer, '确认清理');
+  const confirmDialog = renderer.root.findByProps({ role: 'alertdialog' });
+  assert.equal(nodeText(trigger), '清理过期附件');
+  assert.equal(trigger.props['aria-expanded'], true);
   assert.equal(confirmButton.props['data-kind'], 'danger');
-  // Only the screen-reader live region carries the confirmation wording.
-  const liveRegion = renderer.root.find(
-    (node) => node.props.className === 'dim-globalScreenReader',
-  );
-  assert.equal(nodeText(liveRegion), '再次点击确认执行清理');
-  assert.equal(confirmButton.props['aria-describedby'], liveRegion.props.id);
+  assert.equal(confirmDialog.props['aria-label'], '确认清理过期附件');
+  assert.match(nodeText(confirmDialog), /确认清理当前已过期的附件？取消确认清理/);
+
+  // Cancel closes the popover without running the sweep.
+  await act(async () => {
+    findButton(renderer, '取消').props.onClick();
+  });
+  assert.equal(renderer.root.findAllByProps({ role: 'alertdialog' }).length, 0);
+  assert.equal(findButton(renderer, '清理过期附件').props['aria-expanded'], false);
+  assert.equal(calls.filter((call) => call.endpoint === 'settings.inbound-ttl.sweep').length, 0);
+
+  await act(async () => {
+    findButton(renderer, '清理过期附件').props.onClick();
+  });
 
   // Confirming still runs the sweep RPC, silently and without result text.
   await act(async () => {
-    confirmButton.props.onClick();
+    findButton(renderer, '确认清理').props.onClick();
     await flushMicrotasks();
   });
   assert.equal(calls.filter((call) => call.endpoint === 'settings.inbound-ttl.sweep').length, 1);
@@ -281,7 +324,7 @@ test('the sweep confirm state is announced without a visible hint paragraph', as
   act(() => renderer.unmount());
 });
 
-test('the TTL input saves on blur, reverts invalid values, and stays quiet when unchanged', async () => {
+test('the TTL input saves explicitly, preserves invalid text for correction, and disables save when unchanged', async () => {
   const calls = [];
   const rpcCall = async (endpoint, payload) => {
     calls.push({ endpoint, payload });
@@ -298,24 +341,33 @@ test('the TTL input saves on blur, reverts invalid values, and stays quiet when 
     await flushMicrotasks();
   });
   const input = () => renderer.root.findByProps({ id: 'dim-globalTtlInput' });
+  const form = () => renderer.root.findByProps({ className: 'dim-globalTtlRow' });
+  const saveButton = () => findButton(renderer, '保存');
   const inlineNote = () => renderer.root.findAllByProps({ className: 'dim-globalInline' })
     .at(-1);
   assert.equal(input().props.value, '24');
   assert.equal(input().props.disabled, false);
+  assert.equal(saveButton().props.disabled, true);
 
-  // Valid changed value: blur saves it immediately and silently.
+  // A valid changed value is not persisted until the user explicitly saves.
   await act(async () => {
     input().props.onChange({ target: { value: '48' } });
   });
   await act(async () => {
     input().props.onBlur();
+  });
+  assert.equal(calls.filter((call) => call.endpoint === 'settings.inbound-ttl.set').length, 0);
+  assert.equal(saveButton().props.disabled, false);
+  await act(async () => {
+    form().props.onSubmit({ preventDefault() {} });
     await flushMicrotasks();
   });
   assert.deepEqual(calls.at(-1), { endpoint: 'settings.inbound-ttl.set', payload: { ttlHours: 48 } });
   assert.equal(input().props.value, '48');
-  assert.equal(renderer.root.findAllByProps({ className: 'dim-globalInline' }).length, 0);
+  assert.equal(nodeText(inlineNote()), '已保存');
+  assert.equal(saveButton().props.disabled, true);
 
-  // Invalid value: blur neither saves nor keeps the dangling text.
+  // Invalid input stays available for correction and cannot be submitted.
   await act(async () => {
     input().props.onChange({ target: { value: 'abc' } });
   });
@@ -324,11 +376,12 @@ test('the TTL input saves on blur, reverts invalid values, and stays quiet when 
     await flushMicrotasks();
   });
   assert.equal(calls.filter((call) => call.endpoint === 'settings.inbound-ttl.set').length, 1);
-  assert.equal(input().props.value, '48');
+  assert.equal(input().props.value, 'abc');
   assert.equal(input().props['aria-invalid'], 'true');
+  assert.equal(saveButton().props.disabled, true);
   assert.equal(nodeText(inlineNote()), '请输入 -1、0 或 1~8760 之间的整数。');
 
-  // Unchanged value: blur is silent.
+  // Restoring the saved value clears the error and keeps Save disabled.
   await act(async () => {
     input().props.onChange({ target: { value: '48' } });
   });
@@ -338,10 +391,11 @@ test('the TTL input saves on blur, reverts invalid values, and stays quiet when 
   });
   assert.equal(calls.filter((call) => call.endpoint === 'settings.inbound-ttl.set').length, 1);
   assert.equal(input().props['aria-invalid'], undefined);
+  assert.equal(saveButton().props.disabled, true);
   act(() => renderer.unmount());
 });
 
-test('a failed blur save keeps the input enabled with the error inline', async () => {
+test('a failed explicit save keeps the input enabled with the error inline', async () => {
   const rpcCall = async (endpoint) => {
     if (endpoint === 'settings.inbound-ttl.get') return { ok: true, value: { ttlHours: 24 } };
     if (endpoint === 'settings.inbound-ttl.set') {
@@ -356,12 +410,13 @@ test('a failed blur save keeps the input enabled with the error inline', async (
     await flushMicrotasks();
   });
   const input = () => renderer.root.findByProps({ id: 'dim-globalTtlInput' });
+  const form = () => renderer.root.findByProps({ className: 'dim-globalTtlRow' });
 
   await act(async () => {
     input().props.onChange({ target: { value: '72' } });
   });
   await act(async () => {
-    input().props.onBlur();
+    form().props.onSubmit({ preventDefault() {} });
     await flushMicrotasks();
   });
   assert.equal(input().props.disabled, false);
@@ -1012,7 +1067,7 @@ test('client registers one top-level bilingual IM settings section with a direct
       `class="dim-brandVersion">v${IM_PLUGIN_VERSION.replaceAll('.', '\\.')}<\\/span>`,
     ));
     assert.match(markup, /Help &amp; feedback · Open GitHub/);
-    assert.match(markup, /Global settings/);
+    assert.match(markup, /General settings/);
     assert.match(markup, />WeChat<|>Feishu<|>DingTalk<|>WeCom</);
     assert.match(markup, />QQ<[^]*>Slack<[^]*>Telegram<[^]*>Discord<[^]*>WhatsApp</);
     assert.match(markup, />AI Office<\/strong><small class="dim-channelNote">\(Experimental\)<\/small>/);
@@ -1110,9 +1165,11 @@ test('all nine channel settings and connected cards render English copy', () => 
     const globalMarkup = renderToStaticMarkup(React.createElement(GlobalSettingsPanel, {
       rpcCall: async () => ({ ok: true, value: { ttlHours: 24 } }),
     }));
+    assert.match(globalMarkup, /General settings/);
+    assert.match(globalMarkup, />Attachments<\/button>/);
     assert.match(globalMarkup, /Attachment retention \(hours\)/);
     assert.match(globalMarkup, /Clean up expired attachments/);
-    assert.match(globalMarkup, /Loading global settings…/);
+    assert.match(globalMarkup, /Loading general settings…/);
     assert.doesNotMatch(globalMarkup, /[\p{Script=Han}]/u);
 
     const pages = [

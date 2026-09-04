@@ -189,10 +189,11 @@ export function IMSettingsTab({
   const [runningVersion, setRunningVersion] = React.useState(IM_PLUGIN_VERSION);
   const [deliverySettings, setDeliverySettings] = React.useState(null);
   const githubTooltipId = React.useId();
+  const generalSettingsTooltipId = React.useId();
   const globalSettingsSelected = selected === GLOBAL_SETTINGS_TAB_ID;
   const active = CHANNELS.find((channel) => channel.id === selected) ?? CHANNELS[0];
   const activeTabId = globalSettingsSelected
-    ? `dim-tab-${GLOBAL_SETTINGS_TAB_ID}`
+    ? 'dim-general-settings-trigger'
     : `dim-tab-${active.id}`;
   const activePanelId = globalSettingsSelected
     ? `dim-panel-${GLOBAL_SETTINGS_TAB_ID}`
@@ -269,26 +270,29 @@ export function IMSettingsTab({
           id: githubTooltipId,
           className: 'dim-githubTooltip',
           role: 'tooltip',
-        }, '帮助与反馈 · 前往 GitHub'))),
-    ),
-    h('div', { className: 'dim-layout' },
-      h('nav', { className: 'dim-rail', role: 'tablist', 'aria-label': 'IM 设置导航' },
+        }, '帮助与反馈 · 前往 GitHub')),
+      h('span', { className: 'dim-generalSettingsAction' },
         h('button', {
           type: 'button',
-          role: 'tab',
-          id: `dim-tab-${GLOBAL_SETTINGS_TAB_ID}`,
-          className: 'dim-channel dim-channelGlobal',
-          'aria-selected': globalSettingsSelected,
+          id: 'dim-general-settings-trigger',
+          className: 'dim-generalSettingsButton',
+          'aria-label': '通用设置',
+          'aria-describedby': generalSettingsTooltipId,
           'aria-controls': `dim-panel-${GLOBAL_SETTINGS_TAB_ID}`,
+          'aria-current': globalSettingsSelected ? 'page' : undefined,
           onClick: () => {
             setSelected(GLOBAL_SETTINGS_TAB_ID);
             setDeliverySettings(null);
           },
-        },
-        h('span', { className: 'dim-logo dim-logoGlobal', 'aria-hidden': 'true' },
-          h(GlobalSettingsLogoGlyph)),
-        h('span', { className: 'dim-channelCopy' },
-          h('strong', null, '全局设置'))),
+        }, h(GlobalSettingsLogoGlyph, { size: 17 })),
+        h('span', {
+          id: generalSettingsTooltipId,
+          className: 'dim-generalSettingsTooltip',
+          role: 'tooltip',
+        }, '通用设置'))),
+    ),
+    h('div', { className: 'dim-layout' },
+      h('nav', { className: 'dim-rail', role: 'tablist', 'aria-label': 'IM 设置导航' },
         CHANNELS.map((channel) => h('button', {
           key: channel.id,
           type: 'button',
