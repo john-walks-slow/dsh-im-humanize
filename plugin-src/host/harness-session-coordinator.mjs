@@ -55,12 +55,12 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-function steeringMessage(text) {
+function steeringMessage(text, rpcId) {
   return deepFreeze({
     id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text }],
-    source: { kind: 'user' },
+    source: { kind: 'user', rpcId },
   });
 }
 
@@ -71,7 +71,7 @@ function agentBusyError(cause) {
 }
 
 function createControlExecutor(agents) {
-  return ({ sessionId, expectedTurn, promptRpcId, action, text }) => {
+  return ({ sessionId, expectedTurn, promptRpcId, inputRpcId, action, text }) => {
     const agent = agents.get(sessionId);
     // An unattached Session cannot be coordinated in-process. Let the client
     // retain its legacy HTTP path for deployments where attachment is lazy.
@@ -83,10 +83,11 @@ function createControlExecutor(agents) {
       return true;
     }
     if (action === 'steer') {
-      if (typeof text !== 'string' || !text.trim()) return false;
+      if (typeof text !== 'string' || !text.trim()
+        || typeof inputRpcId !== 'string' || !inputRpcId) return false;
       // inject() never wakes an idle driver. Because validation and injection
       // share one JS tick, this context can only target this live turn's next step.
-      agent.inject(steeringMessage(text));
+      agent.inject(steeringMessage(text, inputRpcId));
       return true;
     }
     throw new TypeError(`Unsupported Harness control action: ${String(action)}`);

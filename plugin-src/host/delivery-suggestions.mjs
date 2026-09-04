@@ -115,6 +115,52 @@ export function deliverySuggestionFromConversationKey(channel, key) {
   }
 }
 
+/** Convert only a persisted private-chat key into its stable delivery route. */
+export function privateDeliverySuggestionFromConversationKey(channel, key) {
+  const separator = typeof key === 'string' ? key.indexOf(':') : -1;
+  const prefix = separator > 0 ? key.slice(0, separator) : '';
+  const privatePrefix = {
+    weixin: 'p2p',
+    feishu: 'p2p',
+    dingtalk: 'p2p',
+    wecom: 'direct',
+    qq: 'c2c',
+    slack: 'direct',
+    telegram: 'direct',
+    discord: 'direct',
+    whatsapp: 'direct',
+  }[channel];
+  if (!privatePrefix || prefix !== privatePrefix) return null;
+  return deliverySuggestionFromConversationKey(channel, key);
+}
+
+function routeIdentity(value) {
+  if (!isRecord(value?.route) || typeof value.kind !== 'string') return null;
+  return JSON.stringify([
+    value.kind,
+    Object.keys(value.route).sort().map((key) => [key, value.route[key]]),
+  ]);
+}
+
+/** Check that one saved private conversation key still identifies this target route. */
+export function privateConversationKeyMatchesTarget(channel, key, target) {
+  const suggestion = privateDeliverySuggestionFromConversationKey(channel, key);
+  const suggestionIdentity = routeIdentity(suggestion);
+  return suggestionIdentity !== null && suggestionIdentity === routeIdentity(target);
+}
+
+/** Resolve exactly one current private conversation for a normalized delivery target. */
+export function resolvePrivateConversationKey(channel, sessions, target) {
+  if (!CHANNELS.has(channel) || !isRecord(sessions)) return null;
+  const matches = [];
+  for (const [key, sessionId] of Object.entries(sessions)) {
+    if (typeof sessionId !== 'string' || !sessionId) continue;
+    if (privateConversationKeyMatchesTarget(channel, key, target)) matches.push(key);
+    if (matches.length > 1) return null;
+  }
+  return matches[0] ?? null;
+}
+
 /**
  * Extract and de-duplicate stable delivery routes from a persisted sessions map.
  * Session ids and every other state field are intentionally ignored.

@@ -134,6 +134,22 @@ const SESSION_SUGGESTIONS = {
   },
 };
 
+const PRIVATE_TARGETS = {
+  weixin: { targetId: 'private', kind: 'user', route: { toUserId: 'wx-user' } },
+  feishu: { targetId: 'private', kind: 'user', route: { openId: 'ou_user' } },
+  dingtalk: { targetId: 'private', kind: 'user', route: { userId: 'staff-one' } },
+  wecom: { targetId: 'private', kind: 'user', route: { chatId: 'member-one' } },
+  qq: { targetId: 'private', kind: 'user', route: { userOpenId: 'user-openid' } },
+  slack: { targetId: 'private', kind: 'conversation', route: { channelId: 'D123456' } },
+  telegram: { targetId: 'private', kind: 'chat', route: { chatId: '88' } },
+  discord: {
+    targetId: 'private', kind: 'channel', route: { channelId: '123456789012345678' },
+  },
+  whatsapp: {
+    targetId: 'private', kind: 'user', route: { jid: '16505550123@s.whatsapp.net' },
+  },
+};
+
 test('all nine delivery adapters validate and forward one stable target', async () => {
   for (const [channel, target] of Object.entries(TARGETS)) {
     const calls = [];
@@ -158,7 +174,9 @@ test('all nine delivery adapters validate and forward one stable target', async 
     assert.equal(adapter.channel, channel);
     assert.equal(adapter.ownsBot(`bot-${channel}`), true);
     assert.equal(adapter.ownsBot('bot-other'), false);
-    assert.deepEqual(adapter.listTargets(`bot-${channel}`), [target]);
+    const listed = await adapter.listTargets(`bot-${channel}`);
+    assert.deepEqual(listed.map(({ sessionSync: _sessionSync, ...entry }) => entry), [target]);
+    assert.equal(listed[0].sessionSync.enabled, false);
     assert.deepEqual(await adapter.listSuggestions(`bot-${channel}`), suggestions);
     assert.deepEqual(
       await adapter.sendText(`bot-${channel}`, target, 'hello', { signal: undefined }),
@@ -167,6 +185,73 @@ test('all nine delivery adapters validate and forward one stable target', async 
     assert.deepEqual(calls[0], [
       'send', `bot-${channel}`, target, 'hello', { signal: undefined },
     ]);
+  }
+});
+
+test('all nine adapters enable, resolve, and revalidate one private Session target', async () => {
+  for (const [channel, target] of Object.entries(PRIVATE_TARGETS)) {
+    const botId = `bot-${channel}`;
+    const sessions = { ...SESSION_SUGGESTIONS[channel].sessions };
+    const conversationKey = Object.keys(sessions).find((key) => (
+      sessions[key] === SESSION_SUGGESTIONS[channel].sessions[Object.keys(sessions)[0]]
+    ));
+    const sessionId = sessions[conversationKey];
+    let syncKey = null;
+    const sends = [];
+    const workspaces = {
+      has: (candidate) => candidate === botId,
+      listBotIds: () => [botId],
+      listDeliveryTargets: () => [structuredClone(target)],
+      deliveryTargetFor: (_botId, targetId) => (
+        targetId === target.targetId ? structuredClone(target) : null
+      ),
+      listSessionSyncTargets: () => syncKey
+        ? [{ botId, targetId: target.targetId, conversationKey: syncKey }]
+        : [],
+      async setDeliveryTargetSessionSync(_botId, _targetId, value) { syncKey = value; },
+      createDeliveryTarget() {},
+      updateDeliveryTarget() {},
+      deleteDeliveryTarget() {},
+    };
+    const adapter = createDeliveryAdapter({
+      channel,
+      workspaces,
+      coreController: {
+        async sendProactiveText(...args) { sends.push(args); },
+      },
+      stateFor: async () => ({ snapshot: () => ({ sessions }) }),
+    });
+
+    assert.deepEqual((await adapter.listTargets(botId))[0].sessionSync, {
+      enabled: false, state: 'off',
+    }, channel);
+    assert.deepEqual(await adapter.setSessionSync(botId, target.targetId, true), {
+      enabled: true, state: 'active',
+    }, channel);
+    assert.equal(syncKey, conversationKey, channel);
+    assert.deepEqual(await adapter.listSessionSyncTargets(sessionId), [{
+      botId, targetId: target.targetId,
+    }], channel);
+    assert.deepEqual(
+      await adapter.sendSessionSyncText(botId, target.targetId, sessionId, 'synced'),
+      { sent: true },
+      channel,
+    );
+    assert.deepEqual(sends.at(-1), [botId, target, 'synced', {}], channel);
+
+    sessions[conversationKey] = `${sessionId}-new`;
+    assert.deepEqual(await adapter.listSessionSyncTargets(sessionId), [], channel);
+    await assert.rejects(
+      adapter.sendSessionSyncText(botId, target.targetId, sessionId, 'stale'),
+      { code: 'session-sync-unavailable' },
+      channel,
+    );
+    delete sessions[conversationKey];
+    assert.deepEqual((await adapter.listTargets(botId))[0].sessionSync, {
+      enabled: true, state: 'waiting',
+    }, channel);
+    await adapter.setSessionSync(botId, target.targetId, false);
+    assert.equal(syncKey, null, channel);
   }
 });
 

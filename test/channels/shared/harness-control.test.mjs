@@ -8,6 +8,7 @@ import { createBotWorkspaceScope } from '../../../src/channels/shared/bot-worksp
 import {
   HarnessClient,
   HarnessTurnError,
+  consumeDshImInputOrigin,
 } from '../../../src/channels/shared/harness-client.mjs';
 import {
   OUTBOUND_ARTIFACT_TOOL,
@@ -566,6 +567,11 @@ test('in-process control executor receives exact ownership and suppresses contro
   const control = { owner: {}, key: 'direct:executor' };
   const asking = turn.client.ask(turn.id, 'work', { control, timeoutMs: 2_000 });
   await turn.admitted;
+  assert.equal(
+    consumeDshImInputOrigin('http://127.0.0.1:3982', turn.promptRpcId()),
+    true,
+    'the IM queue prompt must be registered before its user event',
+  );
 
   assert.equal(await turn.client.steerActiveTurn(turn.id, 'stay in this turn', control), true);
   assert.equal(await turn.client.stopActiveTurn(turn.id, control), true);
@@ -576,6 +582,13 @@ test('in-process control executor receives exact ownership and suppresses contro
     { sessionId: turn.id, expectedTurn: 7, action: 'stop', text: undefined },
   ]);
   assert.ok(executions.every(({ promptRpcId }) => typeof promptRpcId === 'string' && promptRpcId));
+  assert.equal(typeof executions[0].inputRpcId, 'string');
+  assert.equal(
+    consumeDshImInputOrigin('http://127.0.0.1:3982', executions[0].inputRpcId),
+    true,
+    'the IM steer id must be registered before the in-process injection',
+  );
+  assert.equal(executions[1].inputRpcId, undefined);
   assert.equal(turn.calls.some(({ method, payload }) => (
     method === 'session.cancel' || (method === 'session.prompt' && payload.mode === 'steer')
   )), false);
@@ -618,6 +631,12 @@ test('steer uses mode steer only while the exact owned turn is still active', as
     content: [{ type: 'text', text: 'first line\nsecond line' }],
     clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   });
+  assert.equal(typeof steer.options.rpcId, 'string');
+  assert.equal(
+    consumeDshImInputOrigin('http://127.0.0.1:3982', steer.options.rpcId),
+    true,
+    'the fallback steer RPC must carry its registered IM input id',
+  );
 
   turn.finish({ text: 'done', reason: 'completed' });
   assert.equal(await asking, 'done');

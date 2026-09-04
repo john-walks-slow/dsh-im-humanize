@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   BotWorkspaceStore,
+  CURRENT_DOCUMENT_VERSION,
   createBotScopedHarness,
   createBotWorkspaceScope,
   createWorkspaceAwareController,
@@ -142,6 +143,75 @@ test('BotWorkspaceStore migrates v1 on the first delivery target and persists ta
   assert.equal(await reloaded.deleteDeliveryTarget('bot_delivery', 'daily-report'), true);
   assert.deepEqual(reloaded.listDeliveryTargets('bot_delivery'), []);
   assert.equal(JSON.parse(await readFile(path, 'utf8')).version, 2);
+});
+
+test('BotWorkspaceStore persists private Session sync in v3 without exposing or losing other bot settings', async (t) => {
+  const { path, defaultWorkspace } = await fixture(t);
+  const accessPolicy = {
+    direct: {
+      mode: 'open',
+      open: { defaultCanExecuteCommands: true, commandPermissionOverrides: [] },
+      allowlist: { users: [] },
+    },
+    group: {
+      mode: 'allowlist',
+      open: { defaultCanExecuteCommands: false, commandPermissionOverrides: [] },
+      allowlist: { users: [{ id: 'ops', canExecuteCommands: true }] },
+    },
+  };
+  const contextEnhancement = {
+    group: { enabled: true, fields: ['senderId', 'botId'], guidance: 'group guide' },
+    direct: { enabled: false, fields: ['senderId'], guidance: '' },
+  };
+  const store = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await store.ensure('bot_sync', {
+    defaultAgentPreset: 'coding-agent',
+    initialAccessPolicy: accessPolicy,
+  });
+  await store.setModel('bot_sync', { provider: 'deepseek', model: 'deepseek-v3' });
+  await store.setContextEnhancement('bot_sync', contextEnhancement);
+  await store.createDeliveryTarget('bot_sync', {
+    targetId: 'alice', name: 'Alice', kind: 'user', route: { openId: 'ou_alice' },
+  });
+
+  assert.equal(await store.setDeliveryTargetSessionSync('bot_sync', 'alice', 'p2p:ou_alice'), true);
+  let saved = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(saved.version, CURRENT_DOCUMENT_VERSION);
+  assert.equal(saved.agentPresets.bot_sync, 'coding-agent');
+  assert.deepEqual(saved.models.bot_sync, { provider: 'deepseek', model: 'deepseek-v3' });
+  assert.deepEqual(saved.contextEnhancement.bot_sync, contextEnhancement);
+  assert.deepEqual(saved.accessPolicies.bot_sync, accessPolicy);
+  assert.deepEqual(saved.deliveryTargets.bot_sync.alice.sessionSync, {
+    conversationKey: 'p2p:ou_alice',
+  });
+  assert.equal(JSON.stringify(store.deliveryTargetFor('bot_sync', 'alice')).includes('p2p:'), false);
+  assert.deepEqual(store.listSessionSyncTargets(), [{
+    botId: 'bot_sync', targetId: 'alice', conversationKey: 'p2p:ou_alice',
+  }]);
+
+  await store.updateDeliveryTarget('bot_sync', 'alice', {
+    name: 'Alice renamed', kind: 'user', route: { openId: 'ou_alice' },
+  });
+  saved = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(saved.version, CURRENT_DOCUMENT_VERSION);
+  assert.deepEqual(saved.deliveryTargets.bot_sync.alice.sessionSync, {
+    conversationKey: 'p2p:ou_alice',
+  });
+
+  await store.updateDeliveryTarget('bot_sync', 'alice', {
+    name: 'Someone else', kind: 'user', route: { openId: 'ou_other' },
+  });
+  saved = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(saved.version, CURRENT_DOCUMENT_VERSION);
+  assert.equal(saved.deliveryTargets.bot_sync.alice.sessionSync, undefined);
+  assert.deepEqual(store.listSessionSyncTargets(), []);
+
+  await store.setDeliveryTargetSessionSync('bot_sync', 'alice', 'p2p:ou_other');
+  assert.equal(await store.setDeliveryTargetSessionSync('bot_sync', 'alice', null), false);
+  saved = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(saved.version, CURRENT_DOCUMENT_VERSION);
+  assert.equal(saved.deliveryTargets.bot_sync.alice.sessionSync, undefined);
+  assert.deepEqual(saved.accessPolicies.bot_sync, accessPolicy);
 });
 
 test('BotWorkspaceStore keeps delivery targets bot-scoped and removes them with the bot', async (t) => {

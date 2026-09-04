@@ -25,7 +25,14 @@ const DELIVERY_ERROR_CODES = new Set([
   'bot-not-connected',
   'target-rejected',
   'delivery-failed',
+  'session-sync-unavailable',
   'cancelled',
+]);
+
+const SESSION_SYNC_METHODS = Object.freeze([
+  'setSessionSync',
+  'listSessionSyncTargets',
+  'sendSessionSyncText',
 ]);
 
 function deliveryError(code, message = code, options) {
@@ -93,8 +100,29 @@ function validateAdapter(adapter) {
   return adapter;
 }
 
+function sessionSyncState(value, available) {
+  const enabled = value?.enabled === true;
+  if (!available) return { enabled, state: 'unavailable' };
+  const state = value?.state;
+  if (['off', 'active', 'waiting', 'unavailable'].includes(state)) {
+    return { enabled, state };
+  }
+  return { enabled: false, state: 'unavailable' };
+}
+
 export class DeliveryService {
   #adapters = new Map();
+  #unavailableSessionSyncChannels;
+
+  constructor({ unavailableSessionSyncChannels = [] } = {}) {
+    if (!Array.isArray(unavailableSessionSyncChannels)
+      || unavailableSessionSyncChannels.some((channel) => (
+        typeof channel !== 'string' || !CHANNEL_PATTERN.test(channel)
+      ))) {
+      throw new TypeError('unavailableSessionSyncChannels must contain valid channel ids');
+    }
+    this.#unavailableSessionSyncChannels = new Set(unavailableSessionSyncChannels);
+  }
 
   registerAdapter(value) {
     const adapter = validateAdapter(value);
@@ -113,7 +141,15 @@ export class DeliveryService {
     try {
       const targets = await adapter.listTargets(id);
       if (!Array.isArray(targets)) throw new TypeError('Adapter returned invalid targets');
-      return { botId: id, channel: adapter.channel, targets };
+      const available = this.#supportsSessionSync(adapter);
+      return {
+        botId: id,
+        channel: adapter.channel,
+        targets: targets.map((target) => ({
+          ...target,
+          sessionSync: sessionSyncState(target?.sessionSync, available),
+        })),
+      };
     } catch (error) {
       throw publicOperationError(error);
     }
@@ -188,6 +224,72 @@ export class DeliveryService {
     }
   }
 
+  async setSessionSync(botId, targetId, enabled) {
+    const id = botIdOf(botId);
+    const targetKey = targetIdOf(targetId);
+    if (typeof enabled !== 'boolean') throw deliveryError('bad-request', 'Invalid enabled state');
+    const adapter = await this.#adapterFor(id);
+    const hasMethods = SESSION_SYNC_METHODS.every((method) => typeof adapter[method] === 'function');
+    if (!hasMethods || (enabled && !this.#supportsSessionSync(adapter))) {
+      throw deliveryError('session-sync-unavailable', 'Session sync is unavailable');
+    }
+    try {
+      return await adapter.setSessionSync(id, targetKey, enabled);
+    } catch (error) {
+      throw publicOperationError(error);
+    }
+  }
+
+  async listSessionSyncTargets(sessionId) {
+    if (typeof sessionId !== 'string' || !sessionId) {
+      throw deliveryError('bad-request', 'Invalid Session id');
+    }
+    const targets = [];
+    for (const { adapter } of this.#adapters.values()) {
+      if (!this.#supportsSessionSync(adapter)) continue;
+      try {
+        const listed = await adapter.listSessionSyncTargets(sessionId);
+        if (!Array.isArray(listed)) throw new TypeError('Adapter returned invalid sync targets');
+        for (const target of listed) {
+          targets.push({
+            channel: adapter.channel,
+            botId: botIdOf(target?.botId),
+            targetId: targetIdOf(target?.targetId),
+          });
+        }
+      } catch (error) {
+        console.warn(
+          `[dsh-im] ignored ${adapter.channel} Session sync target lookup failure`
+            + ` (${error?.code ?? error?.name ?? 'unknown-error'})`,
+        );
+      }
+    }
+    return targets;
+  }
+
+  async sendSessionSyncText(botId, targetId, sessionId, text, { signal } = {}) {
+    const id = botIdOf(botId);
+    const targetKey = targetIdOf(targetId);
+    if (typeof sessionId !== 'string' || !sessionId
+      || typeof text !== 'string' || !text.trim()) {
+      throw deliveryError('bad-request', 'Invalid session sync delivery');
+    }
+    cancellation(signal);
+    const adapter = await this.#adapterFor(id);
+    if (!this.#supportsSessionSync(adapter)) {
+      throw deliveryError('session-sync-unavailable', 'Session sync is unavailable');
+    }
+    try {
+      await adapter.sendSessionSyncText(id, targetKey, sessionId, text, { signal });
+      return { sent: true };
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
+        throw deliveryError('cancelled', 'Request cancelled', { cause: error });
+      }
+      throw publicOperationError(error);
+    }
+  }
+
   async send(botId, targetIdOrDraft, text, { signal } = {}) {
     const id = botIdOf(botId);
     const targetKey = typeof targetIdOrDraft === 'string'
@@ -232,8 +334,13 @@ export class DeliveryService {
     }
     throw deliveryError('unknown-bot', 'Unknown bot');
   }
+
+  #supportsSessionSync(adapter) {
+    return !this.#unavailableSessionSyncChannels.has(adapter.channel)
+      && SESSION_SYNC_METHODS.every((method) => typeof adapter[method] === 'function');
+  }
 }
 
-export function createDeliveryService() {
-  return new DeliveryService();
+export function createDeliveryService(options) {
+  return new DeliveryService(options);
 }

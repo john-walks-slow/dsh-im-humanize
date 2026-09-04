@@ -131,6 +131,8 @@ Use the proxy URL required by your network and restart the Host after changing i
 
 All nine IM channels can proactively send text through a stable `botId + targetId` pair. Bot settings support choosing a known conversation or entering a target manually, testing the current route before saving, and copying call parameters. HTTP POST, same-Host plugins, and Connection RPC share the same target configuration and delivery core.
 
+Saved direct-message targets also offer an opt-in **Two-way Session sync** switch. Once enabled, user text submitted from DSH Web/CLI and the final assistant text in that DM's current Session are mirrored back to the DM; ordinary IM prompts and `/steer` are not duplicated. The switch follows the current Session across `/session`, `/new`, and workspace changes. The first version supports text DMs on the current Host only; groups, Topics, Threads, and explicit remote `harnessBaseUrl` connections are unavailable.
+
 See the [Proactive Delivery Guide](PROACTIVE_DELIVERY.en.md) ([简体中文](PROACTIVE_DELIVERY.md)) for setup steps, native fields for all nine channels, complete call examples, management endpoints, error codes, and troubleshooting.
 
 ### Context enhancement

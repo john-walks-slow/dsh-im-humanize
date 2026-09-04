@@ -78,6 +78,18 @@ Assume the Feishu bot has already received a message in the alert group:
 
 If the group Chat ID is edited later, callers can continue using the same `botId + release-alerts` pair.
 
+## Two-way sync for direct-message Sessions
+
+A saved direct-message target has an opt-in **Two-way Session sync** switch. When enabled:
+
+1. User text submitted from DSH Web/CLI to the DM's current Session is sent to the DM with a `[来自 DSH]` prefix.
+2. After that turn completes successfully, the final assistant text merged in step order is sent once more with a `[DSH 助手]` prefix.
+3. Ordinary IM prompts and `/steer` continue through the existing reply path. They are neither duplicated nor forwarded to another target.
+
+The setting stores the private conversation target, never a `sessionId`, so it follows `/session` changes automatically. After `/new` or a workspace change, its status becomes **Waiting for this DM to establish a new Session** and recovers as soon as that DM creates one; the switch does not need to be toggled again.
+
+Enabling requires one uniquely known DM that already has a current Session for this bot. Groups, Slack Threads, Telegram Topics, Discord server channels, and targets that cannot be confirmed as DMs are unavailable. A channel with an explicit remote `harnessBaseUrl` is also unsupported. The first version mirrors current-Host text only—no images, files, cards, tool progress, approvals, or history. Changing the target type or native route disables sync; renaming the target does not.
+
 ## Native fields for all nine channels
 
 Choose a known conversation whenever possible. Obtain and enter a platform-native ID manually only when the target is missing from the suggestions.
@@ -250,10 +262,11 @@ Every response is either `{ ok: true, value }` or `{ ok: false, error: { code, m
 | `target.create` | `{ botId, target: { targetId, name?, kind, route } }` | The complete created target |
 | `target.update` | `{ botId, targetId, target: { name?, kind, route } }` | The complete updated target |
 | `target.delete` | `{ botId, targetId }` | `{ deleted: true }` |
+| `target.session-sync.set` | `{ botId, targetId, enabled }` | `{ enabled, state }`; manages DM sync from the local settings UI |
 | `target.test` | `{ botId, targetId }` | `{ sent: true }` |
 | `target.test` | `{ botId, target: { kind, route } }` | `{ sent: true }`; tests a draft without saving it |
 
-Payloads are validated with exact fields. The inner `target` in `target.update` must not contain `targetId`; a draft test must not contain `targetId` or `name`.
+Payloads are validated with exact fields. The inner `target` in `target.update` must not contain `targetId`; a draft test must not contain `targetId` or `name`. Every target returned by `target.list` includes read-only `sessionSync: { enabled, state }`, where `state` is `off`, `active`, `waiting`, or `unavailable`; the internal private-conversation key is never returned to the client.
 
 ## Error handling
 
@@ -269,6 +282,7 @@ An HTTP failure returns `{ "error": { "code", "message", "details" } }`. Same-Ho
 | `bot-not-connected` | 503 | The bot is offline; let the caller decide whether to retry after reconnection |
 | `target-rejected` | 422 | The platform explicitly rejected the target or the bot lacks permission; check platform permissions and the target ID |
 | `delivery-failed` | 502 | A network, platform, or other safely redacted delivery failure; check bot state and Host logs |
+| `session-sync-unavailable` | — | The target is not a confirmed current-Host DM, has no current Session, or uses a remote Harness; create it from a known DM and establish a Session first |
 | `cancelled` | 408 | The call was cancelled; stop or start a new call as required by the application |
 
 The HTTP protocol layer may also return `method-not-allowed` (405), `unsupported-media-type` (415), or `payload-too-large` (413).

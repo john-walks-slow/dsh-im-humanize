@@ -78,6 +78,18 @@
 
 以后即使编辑并更换群 Chat ID，调用方仍可继续使用同一组 `botId + release-alerts`。
 
+## 私聊会话双向同步
+
+已保存的私聊目标可以在目标行开启「会话双向同步」，默认关闭。开启后：
+
+1. DSH Web／CLI 向该私聊当前绑定的 Session 提交的用户文字，会以 `[来自 DSH]` 开头发送到私聊。
+2. 该 Turn 成功完成后，按 step 合并的最终助手文字会以 `[DSH 助手]` 开头再发送一次。
+3. IM 用户自己的普通提问和 `/steer` 仍走原回复链，不会被同步逻辑重复发送或转发给其他目标。
+
+开关只保存私聊目标，不保存 `sessionId`，因此会自动跟随 `/session` 切换。执行 `/new` 或切换工作区后，状态暂时显示「等待该私聊建立新会话」；该私聊下一次建立 Session 后自动恢复，无需重新开关。
+
+开启要求目标来自该机器人已经聊过、已有当前 Session 的唯一私聊。群聊、Slack Thread、Telegram Topic、Discord 服务器频道和其他无法确认是私聊的目标显示为不可用。显式配置了远程 `harnessBaseUrl` 的渠道也不支持；首版仅同步当前 Host 的文字，不同步图片、文件、卡片、工具过程、审批或历史消息。修改目标类型或平台路由会自动关闭同步，改名不会。
+
 ## 九渠道手动填写字段
 
 优先从已聊会话中选择。只有目标未出现在候选中时，才需要手动取得以下平台原生 ID。
@@ -250,10 +262,11 @@ async function sendDailyReport(connection, summary) {
 | `target.create` | `{ botId, target: { targetId, name?, kind, route } }` | 已创建的完整目标 |
 | `target.update` | `{ botId, targetId, target: { name?, kind, route } }` | 更新后的完整目标 |
 | `target.delete` | `{ botId, targetId }` | `{ deleted: true }` |
+| `target.session-sync.set` | `{ botId, targetId, enabled }` | `{ enabled, state }`；仅供本机设置页管理私聊同步 |
 | `target.test` | `{ botId, targetId }` | `{ sent: true }` |
 | `target.test` | `{ botId, target: { kind, route } }` | `{ sent: true }`；测试草稿，不保存 |
 
-接口严格校验字段。`target.update` 的内部 `target` 不能包含 `targetId`；草稿测试不能包含 `targetId` 或 `name`。
+接口严格校验字段。`target.update` 的内部 `target` 不能包含 `targetId`；草稿测试不能包含 `targetId` 或 `name`。`target.list` 返回的每个目标带只读 `sessionSync: { enabled, state }`，其中 `state` 为 `off`、`active`、`waiting` 或 `unavailable`；内部私聊键不会返回客户端。
 
 ## 错误处理
 
@@ -269,6 +282,7 @@ HTTP 失败响应格式为 `{ "error": { "code", "message", "details" } }`。同
 | `bot-not-connected` | 503 | 机器人当前离线；恢复连接后由调用方决定是否重试 |
 | `target-rejected` | 422 | 平台明确拒绝目标或机器人缺少发送权限；检查平台权限和目标 ID |
 | `delivery-failed` | 502 | 网络、平台或其他无法安全细分的发送失败；检查连接状态和 Host 日志 |
+| `session-sync-unavailable` | — | 目标不是可确认的当前 Host 私聊，尚无当前 Session，或渠道使用远程 Harness；先从已聊私聊创建目标并建立 Session |
 | `cancelled` | 408 | 调用被取消；按业务需要结束或重新发起 |
 
 HTTP 协议层还可能返回 `method-not-allowed`（405）、`unsupported-media-type`（415）或 `payload-too-large`（413）。

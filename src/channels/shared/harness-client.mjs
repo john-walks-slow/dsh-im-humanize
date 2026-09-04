@@ -24,6 +24,8 @@ import { watchHarnessMux } from './harness-mux.mjs';
 const interactionRegistries = new Map();
 const hostInteractionRegistries = new WeakMap();
 const MAX_ERROR_CLASSIFICATION_BYTES = 64;
+const IM_INPUT_ORIGIN_TTL_MS = 30 * 60 * 1000;
+const MAX_IM_INPUT_ORIGINS = 4096;
 
 async function smallResponseText(response) {
   const stream = response?.body;
@@ -91,11 +93,40 @@ function interactionRegistry(scope) {
       ownerships: new Map(),
       claims: new Map(),
       controls: new WeakMap(),
+      imInputOrigins: new Map(),
       nextOrder: 0,
     };
     registries.set(scope, registry);
   }
   return registry;
+}
+
+function pruneImInputOrigins(origins, now = Date.now()) {
+  for (const [rpcId, expiresAt] of origins) {
+    if (expiresAt > now) continue;
+    origins.delete(rpcId);
+  }
+  while (origins.size > MAX_IM_INPUT_ORIGINS) {
+    origins.delete(origins.keys().next().value);
+  }
+}
+
+function registerImInputOrigin(registry, rpcId) {
+  const origins = registry.imInputOrigins;
+  pruneImInputOrigins(origins);
+  origins.delete(rpcId);
+  origins.set(rpcId, Date.now() + IM_INPUT_ORIGIN_TTL_MS);
+  pruneImInputOrigins(origins);
+  return () => origins.delete(rpcId);
+}
+
+/** Consume a dsh-im prompt id while handling its durable user/message event. */
+export function consumeDshImInputOrigin(scope, rpcId) {
+  if (!scope || !['object', 'function', 'string'].includes(typeof scope)
+    || typeof rpcId !== 'string' || !rpcId) return false;
+  const origins = interactionRegistry(scope).imInputOrigins;
+  pruneImInputOrigins(origins);
+  return origins.delete(rpcId);
 }
 
 // A Host RPC may not accept cancellation itself. Bound the caller's wait
@@ -311,12 +342,57 @@ function sleep(ms, signal) {
   });
 }
 
-function assistantMessageText(event) {
-  return (event?.data?.message?.content ?? [])
-    .filter((part) => part.type === 'text' && typeof part.text === 'string')
+/** Join only visible text blocks from one Harness message payload. */
+export function textFromHarnessContent(content) {
+  return (Array.isArray(content) ? content : [])
+    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
     .map((part) => part.text)
     .join('\n')
     .trim();
+}
+
+function assistantMessageText(event) {
+  return textFromHarnessContent(event?.data?.message?.content);
+}
+
+/** Aggregate assistant text in stable step/index order for one Harness Turn. */
+export class AssistantTextAccumulator {
+  #steps = new Map();
+  #legacyText = '';
+
+  appendDelta(step, index, text) {
+    if (typeof text !== 'string' || !text) return;
+    const stepNumber = Number.isSafeInteger(step) ? step : 0;
+    const partIndex = Number.isSafeInteger(index) ? index : 0;
+    this.#legacyText = '';
+    const parts = this.#steps.get(stepNumber) ?? new Map();
+    parts.set(partIndex, (parts.get(partIndex) ?? '') + text);
+    this.#steps.set(stepNumber, parts);
+  }
+
+  setCanonical(step, text) {
+    if (typeof text !== 'string' || !text.trim()) return;
+    if (!Number.isSafeInteger(step)) {
+      this.#steps.clear();
+      this.#legacyText = text.trim();
+      return;
+    }
+    this.#legacyText = '';
+    this.#steps.set(step, new Map([[0, text.trim()]]));
+  }
+
+  get text() {
+    if (this.#steps.size === 0) return this.#legacyText;
+    return [...this.#steps.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, parts]) => [...parts.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([, text]) => text)
+        .join('\n')
+        .trim())
+      .filter(Boolean)
+      .join('\n\n');
+  }
 }
 
 function nonEmptyText(value) {
@@ -418,7 +494,7 @@ export class HarnessReplyTracker {
   #lastSeq;
   #openTurn = null;
   #targetTurn = null;
-  #stepText = new Map();
+  #assistantText = new AssistantTextAccumulator();
   #latestText = '';
   #finished = false;
   #reason = null;
@@ -453,25 +529,6 @@ export class HarnessReplyTracker {
 
   get turn() {
     return this.#targetTurn;
-  }
-
-  #accumulatedText() {
-    const ordered = [...this.#stepText.entries()]
-      .map(([key, text]) => {
-        const [step, index] = key.split(':').map(Number);
-        return { step, index, text };
-      })
-      .sort((left, right) => left.step - right.step || left.index - right.index);
-    const steps = new Map();
-    for (const part of ordered) {
-      const texts = steps.get(part.step) ?? [];
-      texts.push(part.text);
-      steps.set(part.step, texts);
-    }
-    return [...steps.values()]
-      .map((parts) => parts.join('\n').trim())
-      .filter(Boolean)
-      .join('\n\n');
   }
 
   #commitText(text, pushUpdate) {
@@ -524,24 +581,16 @@ export class HarnessReplyTracker {
       if (event.type === 'assistant/chunk' && event.data?.chunk?.type === 'text-delta') {
         const step = event.data?.step ?? 0;
         const index = event.data.chunk.index ?? 0;
-        const key = `${step}:${index}`;
-        this.#stepText.set(key, (this.#stepText.get(key) ?? '') + event.data.chunk.text);
-        this.#commitText(this.#accumulatedText(), pushUpdate);
+        this.#assistantText.appendDelta(step, index, event.data.chunk.text);
+        this.#commitText(this.#assistantText.text, pushUpdate);
         continue;
       }
 
       if (event.type === 'assistant/message') {
         const text = assistantMessageText(event);
         const step = Number.isSafeInteger(event.data?.step) ? event.data.step : null;
-        if (step === null) {
-          this.#commitText(text, pushUpdate);
-        } else if (text) {
-          for (const partKey of [...this.#stepText.keys()]) {
-            if (partKey.startsWith(`${step}:`)) this.#stepText.delete(partKey);
-          }
-          this.#stepText.set(`${step}:0`, text);
-          this.#commitText(this.#accumulatedText(), pushUpdate);
-        }
+        this.#assistantText.setCanonical(step, text);
+        this.#commitText(this.#assistantText.text, pushUpdate);
         continue;
       }
 
@@ -1209,31 +1258,40 @@ export class HarnessClient {
     const ownership = await this.#refreshControlOwnership(sessionId, control, options);
     if (!ownership || ownership.stopRequested) return false;
     if (this.#activeControlOwnership(sessionId, control) !== ownership) return false;
-    if (this.#controlExecutor) {
-      const accepted = this.#controlExecutor({
-        sessionId,
-        expectedTurn: ownership.turn,
-        promptRpcId: ownership.promptRpcId,
-        action: 'steer',
-        text,
-      });
-      if (accepted && typeof accepted.then === 'function') {
-        throw new TypeError('controlExecutor must return synchronously');
-      }
-      if (accepted !== undefined) {
-        if (typeof accepted !== 'boolean') {
-          throw new TypeError('controlExecutor must return a boolean or undefined');
+    const inputRpcId = `${this.#rpcIdPrefix}-steer-${randomUUID()}`;
+    const releaseInputOrigin = registerImInputOrigin(this.#interactionRegistry, inputRpcId);
+    try {
+      if (this.#controlExecutor) {
+        const accepted = this.#controlExecutor({
+          sessionId,
+          expectedTurn: ownership.turn,
+          promptRpcId: ownership.promptRpcId,
+          inputRpcId,
+          action: 'steer',
+          text,
+        });
+        if (accepted && typeof accepted.then === 'function') {
+          throw new TypeError('controlExecutor must return synchronously');
         }
-        return accepted;
+        if (accepted !== undefined) {
+          if (typeof accepted !== 'boolean') {
+            throw new TypeError('controlExecutor must return a boolean or undefined');
+          }
+          if (!accepted) releaseInputOrigin();
+          return accepted;
+        }
       }
+      await this.rpc('session.prompt', {
+        sessionId,
+        mode: 'steer',
+        content: [{ type: 'text', text }],
+        clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      }, 30_000, { ...options, rpcId: inputRpcId });
+      return true;
+    } catch (error) {
+      releaseInputOrigin();
+      throw error;
     }
-    await this.rpc('session.prompt', {
-      sessionId,
-      mode: 'steer',
-      content: [{ type: 'text', text }],
-      clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    }, 30_000, options);
-    return true;
   }
 
   #consumeInteractionOwnerships(sessionId, entries) {
@@ -1323,6 +1381,7 @@ export class HarnessClient {
     );
     const baselineSeq = Math.max(-1, ...(before.events ?? []).map(({ event }) => event.seq ?? -1));
     const promptRpcId = `${this.#rpcIdPrefix}-${randomUUID()}`;
+    const releasePromptInputOrigin = registerImInputOrigin(this.#interactionRegistry, promptRpcId);
     const tracker = new HarnessReplyTracker({ promptRpcId, afterSeq: baselineSeq });
     const interactionController = onInteraction || onInteractionResolved
       ? new AbortController()
@@ -1539,6 +1598,7 @@ export class HarnessClient {
         throw turnStoppedError();
       }
     } finally {
+      releasePromptInputOrigin();
       if (!promptAccepted || turnFinished) {
         for (const staged of stagedBatches) {
           try {

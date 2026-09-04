@@ -14,6 +14,7 @@ import { installDeliveryRpc } from './delivery-rpc.mjs';
 import { installDeliveryHttp } from './delivery-http.mjs';
 import { createDeliveryService } from './delivery-service.mjs';
 import { installInboundTtlRpc } from './inbound-ttl-rpc.mjs';
+import { installSessionSyncCoordinator } from './session-sync-coordinator.mjs';
 import { installUpdateRpc } from './update-rpc.mjs';
 
 export const name = 'dsh-im-host';
@@ -36,6 +37,8 @@ export function createImHostPlugin(internals = {}) {
   const startInboundTtl = internals.installInboundTtlRpc ?? installInboundTtlRpc;
   const startDelivery = internals.installDeliveryRpc ?? installDeliveryRpc;
   const startDeliveryHttp = internals.installDeliveryHttp ?? installDeliveryHttp;
+  const startSessionSync = internals.installSessionSyncCoordinator
+    ?? installSessionSyncCoordinator;
   const makeDeliveryService = internals.createDeliveryService ?? createDeliveryService;
   const startFeishu = internals.applyFeishu ?? applyFeishu;
   const startWeixin = internals.applyWeixin ?? applyWeixin;
@@ -63,7 +66,11 @@ export function createImHostPlugin(internals = {}) {
     name,
     inject,
     async apply(ctx, config = {}) {
-      const deliveryService = makeDeliveryService();
+      const unavailableSessionSyncChannels = channels
+        .map(([channel]) => channel)
+        .filter((channel) => channel !== 'office'
+          && config[channel]?.harnessBaseUrl !== undefined);
+      const deliveryService = makeDeliveryService({ unavailableSessionSyncChannels });
       if (typeof ctx?.provide === 'function') {
         ctx.provide('dshIm', Object.freeze({
           send: (botId, targetId, text, options) => (
@@ -134,6 +141,16 @@ export function createImHostPlugin(internals = {}) {
     }
     if (failures.length === channels.length) {
       throw new AggregateError(failures, 'dsh-im failed to activate every channel');
+    }
+    if (typeof ctx?.on === 'function') {
+      try {
+        startSessionSync(ctx, deliveryService, {
+          logger,
+          inputScope: ctx.root ?? ctx,
+        });
+      } catch (error) {
+        logger.error?.('[dsh-im] failed to activate Session sync; continuing with channels', error);
+      }
     }
   }
 }

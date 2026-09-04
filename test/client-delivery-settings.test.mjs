@@ -678,6 +678,62 @@ test('each saved target tests only its own botId and targetId and keeps row-loca
   }
 });
 
+test('saved private targets toggle Session sync while unavailable targets stay disabled', async (t) => {
+  const calls = [];
+  let targets = [{
+    targetId: 'alice',
+    name: 'Alice',
+    kind: 'user',
+    route: { openId: 'ou_alice' },
+    sessionSync: { enabled: false, state: 'off' },
+  }, {
+    targetId: 'group',
+    name: '项目群',
+    kind: 'group',
+    route: { chatId: 'oc_group' },
+    sessionSync: { enabled: false, state: 'unavailable' },
+  }];
+  const rpcCall = async (endpoint, payload) => {
+    calls.push({ endpoint, payload });
+    if (endpoint === DELIVERY_ENDPOINTS.list) {
+      return { ok: true, value: { targets: structuredClone(targets) } };
+    }
+    if (endpoint === DELIVERY_ENDPOINTS.sessionSync) {
+      targets = targets.map((target) => target.targetId === payload.targetId
+        ? { ...target, sessionSync: { enabled: payload.enabled, state: payload.enabled ? 'active' : 'off' } }
+        : target);
+      return { ok: true, value: targets[0].sessionSync };
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`);
+  };
+  const renderer = await mount(t, {
+    channel: 'feishu', account: connectedAccount, rpcCall, onBack() {},
+  });
+  let privateRow = renderer.root.findByProps({ 'data-target-id': 'alice' });
+  const groupRow = renderer.root.findByProps({ 'data-target-id': 'group' });
+  const privateToggle = privateRow.findByProps({ 'aria-label': '会话双向同步' });
+  assert.equal(privateToggle.props.checked, false);
+  assert.equal(privateToggle.props.disabled, false);
+  assert.match(textOf(privateRow), /关闭时不发送 DSH 会话消息/);
+  assert.equal(groupRow.findByProps({ 'aria-label': '会话双向同步' }).props.disabled, true);
+
+  await act(async () => {
+    privateToggle.props.onChange({ target: { checked: true } });
+    await flush();
+    await flush();
+  });
+  assert.deepEqual(calls.find((call) => call.endpoint === DELIVERY_ENDPOINTS.sessionSync), {
+    endpoint: DELIVERY_ENDPOINTS.sessionSync,
+    payload: { botId: 'bot_feishu_01', targetId: 'alice', enabled: true },
+  });
+  privateRow = renderer.root.findByProps({ 'data-target-id': 'alice' });
+  assert.equal(privateRow.findByProps({ 'aria-label': '会话双向同步' }).props.checked, true);
+  assert.match(textOf(privateRow), /自动跟随该私聊的当前会话/);
+
+  await act(async () => { button(privateRow, '编辑').props.onClick(); });
+  assert.match(textOf(renderer.root.findByType('form')), /修改接收位置会关闭会话双向同步/);
+});
+
 test('new target defaults to recent conversations and selection creates an editable unsaved draft', async (t) => {
   const calls = [];
   let targets = [

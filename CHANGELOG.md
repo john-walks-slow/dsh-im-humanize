@@ -6,6 +6,16 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Added / 新增
+
+- 已保存的私聊投递目标新增默认关闭的「会话双向同步」开关。开启后，DSH Web／CLI 在该私聊当前 Session 中提交的用户文字和完成后的助手文字会通过原机器人同步回私聊；IM 自身输入不会重复投递。九个 IM 渠道共用同一实现，自动跟随 `/session`、`/new` 和工作区切换后的当前会话；首版仅支持当前 Host 的私聊文字，不支持显式远程 `harnessBaseUrl`、群聊、Topic 或 Thread。
+  Saved direct-message delivery targets now have an opt-in **Two-way Session sync** switch. When enabled, user text submitted from DSH Web/CLI and the completed assistant text in that DM's current Session are mirrored through the original bot, while IM-originated input is never duplicated. One shared implementation covers all nine IM channels and follows the current Session across `/session`, `/new`, and workspace changes. The first version supports text DMs on the current Host only, excluding explicit remote `harnessBaseUrl` connections, groups, Topics, and Threads.
+
+### Changed / 变更
+
+- npm 包元数据新增已验证兼容 DSH `0.1.3-alpha.1`；兼容测试使用官方发布提交 `d347e70`，并完成九渠道各一台机器人的真实主动投递与双向同步冒烟。
+  npm package metadata now declares verified compatibility with DSH `0.1.3-alpha.1`. Compatibility testing used official release commit `d347e70` and completed real proactive-delivery and two-way-sync smoke tests with one bot on each of the nine channels.
+
 ### Fixed / 修复
 
 - 九个 IM 渠道现在会按 step 顺序保留同一 Turn 的全部助手正文，并用定稿消息替换同 step 的流式草稿；多 step 回答不再在最终投递或进入新 step 时只剩最后一段。

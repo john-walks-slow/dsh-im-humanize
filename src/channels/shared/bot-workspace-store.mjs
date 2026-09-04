@@ -31,6 +31,8 @@ import {
 } from './model-setting.mjs';
 import { WORKSPACE_SESSION_STALE } from './workspace-session.mjs';
 
+const DELIVERY_DOCUMENT_VERSION = 2;
+export const CURRENT_DOCUMENT_VERSION = 3;
 const EMPTY_DOCUMENT = Object.freeze({ version: 1, workspaces: Object.freeze({}) });
 
 function workspaceSessionStale(message) {
@@ -90,13 +92,21 @@ function jsonRecord(value) {
   }
 }
 
-function normalizeDeliveryTarget(value, { targetId } = {}) {
+function conversationKeyOf(value) {
+  if (typeof value !== 'string' || !value || value.length > 1_024
+    || value.trim() !== value || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw deliveryTargetError('invalid-target', 'Invalid private conversation key');
+  }
+  return value;
+}
+
+function normalizeDeliveryTarget(value, { targetId, allowSessionSync = false } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw deliveryTargetError('invalid-target', 'Invalid delivery target');
   }
   const allowed = targetId === undefined
-    ? new Set(['targetId', 'name', 'kind', 'route'])
-    : new Set(['name', 'kind', 'route']);
+    ? new Set(['targetId', 'name', 'kind', 'route', ...(allowSessionSync ? ['sessionSync'] : [])])
+    : new Set(['name', 'kind', 'route', ...(allowSessionSync ? ['sessionSync'] : [])]);
   if (Object.keys(value).some((key) => !allowed.has(key))) {
     throw deliveryTargetError('invalid-target', 'Invalid delivery target');
   }
@@ -111,15 +121,37 @@ function normalizeDeliveryTarget(value, { targetId } = {}) {
     }
     name = value.name.trim();
   }
+  let sessionSync;
+  if (value.sessionSync !== undefined) {
+    if (!allowSessionSync || !value.sessionSync || typeof value.sessionSync !== 'object'
+      || Array.isArray(value.sessionSync)
+      || Object.keys(value.sessionSync).length !== 1
+      || !Object.hasOwn(value.sessionSync, 'conversationKey')) {
+      throw deliveryTargetError('invalid-target', 'Invalid delivery target session sync');
+    }
+    sessionSync = { conversationKey: conversationKeyOf(value.sessionSync.conversationKey) };
+  }
   return {
     targetId: id,
     ...(name === undefined ? {} : { name }),
     kind: value.kind,
     route: jsonRecord(value.route),
+    ...(sessionSync === undefined ? {} : { sessionSync }),
   };
 }
 
-function normalizeDeliveryTargets(value) {
+function publicDeliveryTarget(value, { targetId } = {}) {
+  const normalized = normalizeDeliveryTarget(value, { targetId, allowSessionSync: true });
+  const { sessionSync: _sessionSync, ...target } = normalized;
+  return target;
+}
+
+function sameDeliveryRoute(left, right) {
+  return left?.kind === right?.kind
+    && JSON.stringify(left?.route) === JSON.stringify(right?.route);
+}
+
+function normalizeDeliveryTargets(value, { version } = {}) {
   const deliveryTargets = Object.create(null);
   if (value === undefined) return deliveryTargets;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -129,7 +161,10 @@ function normalizeDeliveryTargets(value) {
       if (!targets || typeof targets !== 'object' || Array.isArray(targets)) return null;
       const normalizedTargets = Object.create(null);
       for (const [targetId, target] of Object.entries(targets)) {
-        const normalized = normalizeDeliveryTarget(target, { targetId });
+        const normalized = normalizeDeliveryTarget(target, {
+          targetId,
+          allowSessionSync: version >= CURRENT_DOCUMENT_VERSION,
+        });
         const { targetId: _targetId, ...stored } = normalized;
         normalizedTargets[targetId] = stored;
       }
@@ -162,7 +197,8 @@ function normalizeAccessPolicies(value, workspaces) {
 }
 
 function normalizeDocument(value) {
-  if (!value || ![1, 2].includes(value.version) || !value.workspaces
+  if (!value || ![1, DELIVERY_DOCUMENT_VERSION, CURRENT_DOCUMENT_VERSION].includes(value.version)
+    || !value.workspaces
     || typeof value.workspaces !== 'object' || Array.isArray(value.workspaces)) return null;
   const workspaces = {};
   for (const [botId, workspace] of Object.entries(value.workspaces)) {
@@ -212,10 +248,13 @@ function normalizeDocument(value) {
     }
   }
   if (value.version === 1 && value.deliveryTargets !== undefined) return null;
-  const deliveryTargets = normalizeDeliveryTargets(value.deliveryTargets);
+  const deliveryTargets = normalizeDeliveryTargets(value.deliveryTargets, { version: value.version });
   if (!deliveryTargets) return null;
   const accessPolicies = normalizeAccessPolicies(value.accessPolicies, workspaces);
-  const version = value.accessPolicies === undefined ? value.version : 2;
+  const version = Math.max(
+    value.version,
+    value.accessPolicies === undefined ? 1 : DELIVERY_DOCUMENT_VERSION,
+  );
   return {
     // A v1 file cannot be emitted with this optional v2 section. If one is
     // recovered from an interrupted/manual edit, retain it on the next write.
@@ -244,10 +283,10 @@ function storedDocument({
   if (Object.keys(contextEnhancement).length > 0) {
     document.contextEnhancement = contextEnhancement;
   }
-  if (version >= 2 && Object.keys(deliveryTargets).length > 0) {
+  if (version >= DELIVERY_DOCUMENT_VERSION && Object.keys(deliveryTargets).length > 0) {
     document.deliveryTargets = deliveryTargets;
   }
-  if (version >= 2 && Object.keys(accessPolicies).length > 0) {
+  if (version >= DELIVERY_DOCUMENT_VERSION && Object.keys(accessPolicies).length > 0) {
     document.accessPolicies = accessPolicies;
   }
   return document;
@@ -392,7 +431,7 @@ export class BotWorkspaceStore {
     const id = botIdOf(botId);
     if (!this.has(id)) throw deliveryTargetError('unknown-bot', 'Unknown bot');
     return Object.entries(this.#deliveryTargets[id] ?? {})
-      .map(([targetId, target]) => normalizeDeliveryTarget(target, { targetId }))
+      .map(([targetId, target]) => publicDeliveryTarget(target, { targetId }))
       .sort((left, right) => left.targetId.localeCompare(right.targetId));
   }
 
@@ -401,7 +440,29 @@ export class BotWorkspaceStore {
     const targetKey = targetIdOf(targetId);
     if (!this.has(id)) throw deliveryTargetError('unknown-bot', 'Unknown bot');
     const target = this.#deliveryTargets[id]?.[targetKey];
-    return target ? normalizeDeliveryTarget(target, { targetId: targetKey }) : null;
+    return target ? publicDeliveryTarget(target, { targetId: targetKey }) : null;
+  }
+
+  listSessionSyncTargets() {
+    const targets = [];
+    for (const [botId, botTargets] of Object.entries(this.#deliveryTargets)) {
+      if (!this.has(botId)) continue;
+      for (const [targetId, target] of Object.entries(botTargets)) {
+        const normalized = normalizeDeliveryTarget(target, {
+          targetId,
+          allowSessionSync: true,
+        });
+        if (!normalized.sessionSync) continue;
+        targets.push({
+          botId,
+          targetId,
+          conversationKey: normalized.sessionSync.conversationKey,
+        });
+      }
+    }
+    return targets.sort((left, right) => (
+      left.botId.localeCompare(right.botId) || left.targetId.localeCompare(right.targetId)
+    ));
   }
 
   async createDeliveryTarget(botId, value) {
@@ -417,10 +478,11 @@ export class BotWorkspaceStore {
         ...this.#deliveryTargets,
         [id]: { ...(this.#deliveryTargets[id] ?? {}), [targetId]: stored },
       };
-      await this.#persist(this.#contextEnhancement, next, 2);
+      const nextVersion = Math.max(this.#version, DELIVERY_DOCUMENT_VERSION);
+      await this.#persist(this.#contextEnhancement, next, nextVersion);
       this.#deliveryTargets = next;
-      this.#version = 2;
-      return normalizeDeliveryTarget(stored, { targetId });
+      this.#version = nextVersion;
+      return publicDeliveryTarget(stored, { targetId });
     });
   }
 
@@ -434,14 +496,19 @@ export class BotWorkspaceStore {
         throw deliveryTargetError('unknown-target', 'Unknown target');
       }
       const { targetId: _targetId, ...stored } = replacement;
+      const previous = this.#deliveryTargets[id][targetKey];
+      const nextStored = previous.sessionSync && sameDeliveryRoute(previous, stored)
+        ? { ...stored, sessionSync: previous.sessionSync }
+        : stored;
       const next = {
         ...this.#deliveryTargets,
-        [id]: { ...this.#deliveryTargets[id], [targetKey]: stored },
+        [id]: { ...this.#deliveryTargets[id], [targetKey]: nextStored },
       };
-      await this.#persist(this.#contextEnhancement, next, 2);
+      const nextVersion = Math.max(this.#version, DELIVERY_DOCUMENT_VERSION);
+      await this.#persist(this.#contextEnhancement, next, nextVersion);
       this.#deliveryTargets = next;
-      this.#version = 2;
-      return normalizeDeliveryTarget(stored, { targetId: targetKey });
+      this.#version = nextVersion;
+      return publicDeliveryTarget(nextStored, { targetId: targetKey });
     });
   }
 
@@ -458,10 +525,37 @@ export class BotWorkspaceStore {
       const next = { ...this.#deliveryTargets };
       if (Object.keys(botTargets).length > 0) next[id] = botTargets;
       else delete next[id];
-      await this.#persist(this.#contextEnhancement, next, 2);
+      const nextVersion = Math.max(this.#version, DELIVERY_DOCUMENT_VERSION);
+      await this.#persist(this.#contextEnhancement, next, nextVersion);
       this.#deliveryTargets = next;
-      this.#version = 2;
+      this.#version = nextVersion;
       return true;
+    });
+  }
+
+  async setDeliveryTargetSessionSync(botId, targetId, conversationKeyOrNull) {
+    const id = botIdOf(botId);
+    const targetKey = targetIdOf(targetId);
+    const conversationKey = conversationKeyOrNull === null
+      ? null
+      : conversationKeyOf(conversationKeyOrNull);
+    return this.#enqueue(id, async () => {
+      if (!this.has(id)) throw deliveryTargetError('unknown-bot', 'Unknown bot');
+      const previous = this.#deliveryTargets[id]?.[targetKey];
+      if (!previous) throw deliveryTargetError('unknown-target', 'Unknown target');
+      const previousKey = previous.sessionSync?.conversationKey ?? null;
+      if (previousKey === conversationKey) return conversationKey !== null;
+      const nextStored = { ...previous };
+      if (conversationKey === null) delete nextStored.sessionSync;
+      else nextStored.sessionSync = { conversationKey };
+      const next = {
+        ...this.#deliveryTargets,
+        [id]: { ...this.#deliveryTargets[id], [targetKey]: nextStored },
+      };
+      await this.#persist(this.#contextEnhancement, next, CURRENT_DOCUMENT_VERSION);
+      this.#deliveryTargets = next;
+      this.#version = CURRENT_DOCUMENT_VERSION;
+      return conversationKey !== null;
     });
   }
 
@@ -510,7 +604,9 @@ export class BotWorkspaceStore {
           this.#generations.set(id, this.#freshGeneration());
           this.#incarnations.set(id, this.#freshIncarnation());
         }
-        const nextVersion = initializesAccessPolicy ? 2 : this.#version;
+        const nextVersion = initializesAccessPolicy
+          ? Math.max(this.#version, DELIVERY_DOCUMENT_VERSION)
+          : this.#version;
         try {
           await this.#persist(
             this.#contextEnhancement,
@@ -668,11 +764,11 @@ export class BotWorkspaceStore {
       await this.#persist(
         this.#contextEnhancement,
         this.#deliveryTargets,
-        2,
+        Math.max(this.#version, DELIVERY_DOCUMENT_VERSION),
         next,
       );
       this.#accessPolicies = next;
-      this.#version = 2;
+      this.#version = Math.max(this.#version, DELIVERY_DOCUMENT_VERSION);
       return policy;
     });
   }

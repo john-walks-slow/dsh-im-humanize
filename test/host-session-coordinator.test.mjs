@@ -42,6 +42,7 @@ test('Host control executor validates and mutates the exact open owned turn sync
     sessionId: 'session-one',
     expectedTurn: 7,
     promptRpcId: 'prompt-owned',
+    inputRpcId: 'steer-one',
     action: 'steer',
     text: '先检查日志\n再继续',
   }), true);
@@ -50,7 +51,7 @@ test('Host control executor validates and mutates the exact open owned turn sync
   assert.equal(calls[0][0], 'inject');
   assert.equal(message.role, 'user');
   assert.deepEqual(message.content, [{ type: 'text', text: '先检查日志\n再继续' }]);
-  assert.deepEqual(message.source, { kind: 'user' });
+  assert.deepEqual(message.source, { kind: 'user', rpcId: 'steer-one' });
   assert.match(message.id, /^[0-9a-f-]{36}$/i);
   assert.equal(Object.isFrozen(message), true);
   assert.equal(Object.isFrozen(message.content), true);
@@ -94,6 +95,7 @@ test('Host control executor refuses idle, replaced, closed, and foreign turns wi
     sessionId: 'session-one',
     expectedTurn: 7,
     promptRpcId: 'prompt-owned',
+    inputRpcId: 'steer-refused',
     action: 'steer',
     text: 'must not wake',
   };

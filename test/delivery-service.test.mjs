@@ -59,7 +59,10 @@ test('DeliveryService shares target CRUD and sending through one adapter', async
   assert.deepEqual(await service.listTargets('bot_one'), {
     botId: 'bot_one',
     channel: 'telegram',
-    targets: [target],
+    targets: [{
+      ...target,
+      sessionSync: { enabled: false, state: 'unavailable' },
+    }],
   });
   assert.deepEqual(await service.listBots(), [{ botId: 'bot_one', channel: 'telegram' }]);
   assert.deepEqual(await service.listSuggestions('bot_one'), {
@@ -225,4 +228,70 @@ test('DeliveryService adapter replacement has stale-safe unregister semantics', 
   assert.equal((await service.listTargets('bot_one')).targets.length, 1);
   assert.equal(unregisterSecond(), true);
   await assert.rejects(service.listTargets('bot_one'), { code: 'unknown-bot' });
+});
+
+test('DeliveryService exposes and revalidates local Session sync without changing public send', async () => {
+  const service = createDeliveryService();
+  const adapter = memoryAdapter();
+  const syncCalls = [];
+  adapter.listTargets = () => [{
+    targetId: 'direct', kind: 'chat', route: { chatId: '123' },
+    sessionSync: { enabled: false, state: 'off' },
+  }];
+  adapter.setSessionSync = async (...args) => {
+    syncCalls.push(['set', ...args]);
+    return { enabled: args[2], state: args[2] ? 'active' : 'off' };
+  };
+  adapter.listSessionSyncTargets = async (sessionId) => (
+    sessionId === 'session-one' ? [{ botId: 'bot_one', targetId: 'direct' }] : []
+  );
+  adapter.sendSessionSyncText = async (...args) => syncCalls.push(['send', ...args]);
+  service.registerAdapter(adapter);
+
+  assert.deepEqual((await service.listTargets('bot_one')).targets[0].sessionSync, {
+    enabled: false, state: 'off',
+  });
+  assert.deepEqual(await service.setSessionSync('bot_one', 'direct', true), {
+    enabled: true, state: 'active',
+  });
+  assert.deepEqual(await service.listSessionSyncTargets('session-one'), [{
+    channel: 'telegram', botId: 'bot_one', targetId: 'direct',
+  }]);
+  assert.deepEqual(
+    await service.sendSessionSyncText('bot_one', 'direct', 'session-one', 'hello'),
+    { sent: true },
+  );
+  assert.deepEqual(syncCalls, [
+    ['set', 'bot_one', 'direct', true],
+    ['send', 'bot_one', 'direct', 'session-one', 'hello', { signal: undefined }],
+  ]);
+});
+
+test('DeliveryService marks explicit remote Harness channels unavailable for Session sync', async () => {
+  const service = createDeliveryService({ unavailableSessionSyncChannels: ['telegram'] });
+  const adapter = memoryAdapter();
+  const calls = [];
+  adapter.listTargets = () => [{
+    targetId: 'direct', kind: 'chat', route: { chatId: '123' },
+    sessionSync: { enabled: true, state: 'active' },
+  }];
+  adapter.setSessionSync = async (...args) => {
+    calls.push(args);
+    return { enabled: false, state: 'off' };
+  };
+  adapter.listSessionSyncTargets = async () => [{ botId: 'bot_one', targetId: 'direct' }];
+  adapter.sendSessionSyncText = async () => {};
+  service.registerAdapter(adapter);
+
+  assert.deepEqual((await service.listTargets('bot_one')).targets[0].sessionSync, {
+    enabled: true, state: 'unavailable',
+  });
+  await assert.rejects(service.setSessionSync('bot_one', 'direct', true), {
+    code: 'session-sync-unavailable',
+  });
+  assert.deepEqual(await service.listSessionSyncTargets('session-one'), []);
+  assert.deepEqual(await service.setSessionSync('bot_one', 'direct', false), {
+    enabled: false, state: 'off',
+  });
+  assert.deepEqual(calls, [['bot_one', 'direct', false]]);
 });
