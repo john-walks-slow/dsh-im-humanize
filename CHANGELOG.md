@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Fixed / 修复
+
+- 九个 IM 渠道现在会按 step 顺序保留同一 Turn 的全部助手正文，并用定稿消息替换同 step 的流式草稿；多 step 回答不再在最终投递或进入新 step 时只剩最后一段。
+  All nine IM channels now retain every assistant text step in turn order and replace each step's streamed draft with its canonical message, preventing multi-step replies from collapsing to the final fragment during streaming or final delivery.
+
 ## [4.10.0] - 2026-09-05
 
 ### Added / 新增

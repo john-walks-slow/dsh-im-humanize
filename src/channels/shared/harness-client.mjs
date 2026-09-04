@@ -455,6 +455,31 @@ export class HarnessReplyTracker {
     return this.#targetTurn;
   }
 
+  #accumulatedText() {
+    const ordered = [...this.#stepText.entries()]
+      .map(([key, text]) => {
+        const [step, index] = key.split(':').map(Number);
+        return { step, index, text };
+      })
+      .sort((left, right) => left.step - right.step || left.index - right.index);
+    const steps = new Map();
+    for (const part of ordered) {
+      const texts = steps.get(part.step) ?? [];
+      texts.push(part.text);
+      steps.set(part.step, texts);
+    }
+    return [...steps.values()]
+      .map((parts) => parts.join('\n').trim())
+      .filter(Boolean)
+      .join('\n\n');
+  }
+
+  #commitText(text, pushUpdate) {
+    if (!text || text === this.#latestText) return;
+    this.#latestText = text;
+    pushUpdate({ type: 'text', text });
+  }
+
   consumeAll(entries) {
     const updates = [];
     // 同一批轮询内的 text 帧只保留最新累积，其余事件逐帧透出，
@@ -501,25 +526,21 @@ export class HarnessReplyTracker {
         const index = event.data.chunk.index ?? 0;
         const key = `${step}:${index}`;
         this.#stepText.set(key, (this.#stepText.get(key) ?? '') + event.data.chunk.text);
-        const prefix = `${step}:`;
-        const text = [...this.#stepText.entries()]
-          .filter(([partKey]) => partKey.startsWith(prefix))
-          .sort(([left], [right]) => Number(left.split(':')[1]) - Number(right.split(':')[1]))
-          .map(([, part]) => part)
-          .join('\n')
-          .trim();
-        if (text && text !== this.#latestText) {
-          this.#latestText = text;
-          pushUpdate({ type: 'text', text });
-        }
+        this.#commitText(this.#accumulatedText(), pushUpdate);
         continue;
       }
 
       if (event.type === 'assistant/message') {
         const text = assistantMessageText(event);
-        if (text && text !== this.#latestText) {
-          this.#latestText = text;
-          pushUpdate({ type: 'text', text });
+        const step = Number.isSafeInteger(event.data?.step) ? event.data.step : null;
+        if (step === null) {
+          this.#commitText(text, pushUpdate);
+        } else if (text) {
+          for (const partKey of [...this.#stepText.keys()]) {
+            if (partKey.startsWith(`${step}:`)) this.#stepText.delete(partKey);
+          }
+          this.#stepText.set(`${step}:0`, text);
+          this.#commitText(this.#accumulatedText(), pushUpdate);
         }
         continue;
       }
