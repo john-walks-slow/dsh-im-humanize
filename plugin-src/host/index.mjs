@@ -68,6 +68,7 @@ export function createImHostPlugin(internals = {}) {
             deliveryService.send(botId, targetId, text, options)
           ),
           listTargets: async (botId) => (await deliveryService.listTargets(botId)).targets,
+          listBots: () => deliveryService.listBots(),
         }));
       }
       const activate = async (readyCtx) => {
