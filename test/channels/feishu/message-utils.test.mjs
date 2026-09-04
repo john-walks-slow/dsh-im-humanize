@@ -7,6 +7,8 @@ import {
   extractText,
   isAllowedSender,
   isBotSender,
+  isTopicGroupKey,
+  managedGroupKey,
   splitText,
 } from '../../../src/channels/feishu/message-utils.mjs';
 
@@ -671,6 +673,21 @@ test('conversationKey isolates topic-group threads without affecting regular gro
     sender: { sender_id: { open_id: 'ou_test' } },
     message: { chat_type: 'group', chat_id: 'oc_group', thread_id: '   ' },
   }), 'group:oc_group');
+});
+
+test('managedGroupKey builds per-topic managed keys and requires ids', () => {
+  assert.equal(managedGroupKey('oc_group', 'om_root'), 'group:oc_group:managed:om_root');
+  assert.throws(() => managedGroupKey('', 'om_root'), /chat_id/);
+  assert.throws(() => managedGroupKey('oc_group', ''), /message id/);
+});
+
+test('isTopicGroupKey recognizes thread and managed group keys only', () => {
+  assert.equal(isTopicGroupKey('group:oc_group:thread:omt_a'), true);
+  assert.equal(isTopicGroupKey('group:oc_group:managed:om_root'), true);
+  assert.equal(isTopicGroupKey('group:oc_group'), false);
+  assert.equal(isTopicGroupKey('p2p:ou_test'), false);
+  assert.equal(isTopicGroupKey(null), false);
+  assert.equal(isTopicGroupKey(''), false);
 });
 
 test('splitText preserves all text', () => {

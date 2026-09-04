@@ -110,6 +110,7 @@ export class FeishuRuntime {
   #domain;
   #botOpenId;
   #groupResponseMode;
+  #groupTopicReply;
   #ownerOpenIds;
   #harness;
   #state;
@@ -139,6 +140,7 @@ export class FeishuRuntime {
     domain = 'feishu',
     botOpenId,
     groupResponseMode,
+    groupTopicReply = false,
     ownerOpenId,
     ownerOpenIds,
     harness,
@@ -174,6 +176,7 @@ export class FeishuRuntime {
     this.#domain = domain;
     this.#botOpenId = nonEmptyString(botOpenId);
     this.#groupResponseMode = normalizeFeishuGroupResponseMode(groupResponseMode);
+    this.#groupTopicReply = groupTopicReply === true;
     this.#ownerOpenIds = normalizedOwners;
     this.#harness = harness;
     this.#state = state;
@@ -196,6 +199,11 @@ export class FeishuRuntime {
   setGroupResponseMode(value) {
     this.#groupResponseMode = normalizeFeishuGroupResponseMode(value);
     this.#bridge?.setGroupResponseMode(this.#groupResponseMode);
+  }
+
+  setGroupTopicReply(value) {
+    this.#groupTopicReply = value === true;
+    this.#bridge?.setGroupTopicReply(this.#groupTopicReply);
   }
 
   async start() {
@@ -286,6 +294,7 @@ export class FeishuRuntime {
         appId: this.#appId,
         botOpenId: this.#botOpenId,
         groupResponseMode: this.#groupResponseMode,
+        groupTopicReply: this.#groupTopicReply,
         repair: this.#repair,
         replyTimeoutMs: this.#replyTimeoutMs,
         // Interaction cards (approval/question buttons) are on by default.

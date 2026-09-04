@@ -773,3 +773,77 @@ test('rotate() keeps oversized chunked delivery on the rotated card chain', asyn
   const settingsByCard = calls.settings.map((s) => s.path.card_id);
   assert.deepEqual([...new Set(settingsByCard)].length, settingsByCard.length, 'each card finishes exactly once');
 });
+
+test('VerifiedFeishuChannel asks reply_in_thread for a streamed card and reports the created thread', async () => {
+  const { client, calls } = fakeClient({
+    replyMessage: async (request) => {
+      calls.replies.push(request);
+      return {
+        code: 0,
+        data: {
+          message_id: 'om-stream-topic',
+          thread_id: request.data.reply_in_thread === true ? 'omt_stream' : undefined,
+        },
+      };
+    },
+  });
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+  const threadIds = [];
+  const result = await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent('第一段');
+    },
+  }, {
+    replyTo: 'om_user',
+    replyInThread: true,
+    onReplyThreadId: async (threadId) => threadIds.push(threadId),
+  });
+
+  assert.equal(result.messageId, 'om-stream-topic');
+  assert.equal(calls.replies[0].data.reply_in_thread, true);
+  assert.deepEqual(threadIds, ['omt_stream']);
+});
+
+test('VerifiedFeishuChannel keeps reply_in_thread off by default', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+  await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent('第一段');
+    },
+  }, { replyTo: 'om_user' });
+  assert.equal(calls.replies[0].data.reply_in_thread, undefined);
+});
+
+test('VerifiedFeishuChannel sends artifacts into a topic via reply_in_thread and reports the thread', async () => {
+  const { client, calls } = fakeClient({
+    replyMessage: async (request) => {
+      calls.replies.push(request);
+      return {
+        code: 0,
+        data: {
+          message_id: 'om-file-topic',
+          thread_id: request.data.reply_in_thread === true ? 'omt_file' : undefined,
+        },
+      };
+    },
+  });
+  const channel = new VerifiedFeishuChannel({ client });
+  const file = {
+    artifactId: 'artifact-topic',
+    deliveryKey: 'delivery-topic',
+    fileName: 'result.txt',
+    mediaType: 'text/plain',
+    size: 3,
+    bytes: Buffer.from('abc'),
+  };
+  const threadIds = [];
+  await channel.sendFile('oc_chat', file, {
+    replyTo: 'om_user',
+    replyInThread: true,
+    onReplyThreadId: async (threadId) => threadIds.push(threadId),
+  });
+  assert.equal(calls.replies[0].data.reply_in_thread, true);
+  assert.equal(calls.replies[0].data.msg_type, 'file');
+  assert.deepEqual(threadIds, ['omt_file']);
+});

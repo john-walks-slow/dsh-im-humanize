@@ -30,13 +30,34 @@ test('PluginConfigStore persists non-secret onboarding facts', async () => {
     ...store.get(),
     groupResponseMode: 'all',
     groupMessagePermissionGranted: true,
+    groupTopicReply: true,
   });
   const reloaded = (await new PluginConfigStore(path).load()).get();
   assert.equal(reloaded.groupResponseMode, 'all');
   assert.equal(reloaded.groupMessagePermissionGranted, true);
+  assert.equal(reloaded.groupTopicReply, true);
 
   await store.clear();
   assert.equal(store.get(), null);
+});
+
+test('PluginConfigStore defaults groupTopicReply off and only persists a literal true', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-feishu-config-topic-'));
+  const path = join(dir, 'config.json');
+  const store = await new PluginConfigStore(path).load();
+
+  await store.save({
+    appId: 'cli_topic',
+    ownerOpenId: 'ou_owner',
+    domain: 'feishu',
+    groupTopicReply: 'yes', // must not be accepted as true
+  });
+  assert.equal(store.get().groupTopicReply, false);
+
+  await store.save({ ...store.get(), groupTopicReply: true });
+  assert.equal((await new PluginConfigStore(path).load()).get().groupTopicReply, true);
+
+  await store.clear();
 });
 
 test('PluginConfigStore stays unconfigured after a failed write and can retry', async () => {

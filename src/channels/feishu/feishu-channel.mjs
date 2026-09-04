@@ -208,7 +208,7 @@ export class VerifiedFeishuChannel {
     let activeCard = null;
     let rotating = false;
     try {
-      activeCard = await this.#createStreamCard(chatId, options.replyTo);
+      activeCard = await this.#createStreamCard(chatId, options);
       cards.push(activeCard);
       let lastContent = this.#initialText;
       // issue #86：独立交互消息（提问/审批）落在占位卡下方后，最终答案不得
@@ -217,7 +217,7 @@ export class VerifiedFeishuChannel {
       // 交互消息之后。旧卡纳入 cards，参与 recall 与 providerMessageIds。
       const ensureActiveCard = async () => {
         if (!rotating) return activeCard;
-        activeCard = await this.#createStreamCard(chatId, options.replyTo);
+        activeCard = await this.#createStreamCard(chatId, options);
         cards.push(activeCard);
         rotating = false;
         return activeCard;
@@ -255,7 +255,7 @@ export class VerifiedFeishuChannel {
       for (const [index, chunk] of chunks.entries()) {
         const card = index === 0
           ? await ensureActiveCard()
-          : await this.#createStreamCard(chatId, options.replyTo);
+          : await this.#createStreamCard(chatId, options);
         if (index > 0) cards.push(card);
         await this.#updateStreamCard(card, chunk);
         await this.#finishStreamCard(card);
@@ -272,19 +272,33 @@ export class VerifiedFeishuChannel {
     }
   }
 
-  async sendFile(chatId, file, { replyTo, signal } = {}) {
+  async sendFile(chatId, file, {
+    replyTo,
+    signal,
+    replyInThread = false,
+    onReplyThreadId,
+  } = {}) {
     return this.#sendArtifact(chatId, file, {
       replyTo,
       signal,
+      replyInThread,
+      onReplyThreadId,
       messageType: 'file',
       presentation: 'feishu-file',
     });
   }
 
-  async sendImage(chatId, file, { replyTo, signal } = {}) {
+  async sendImage(chatId, file, {
+    replyTo,
+    signal,
+    replyInThread = false,
+    onReplyThreadId,
+  } = {}) {
     return this.#sendArtifact(chatId, file, {
       replyTo,
       signal,
+      replyInThread,
+      onReplyThreadId,
       messageType: 'image',
       presentation: 'feishu-image',
     });
@@ -293,6 +307,8 @@ export class VerifiedFeishuChannel {
   async #sendArtifact(chatId, file, {
     replyTo,
     signal,
+    replyInThread = false,
+    onReplyThreadId,
     messageType,
     presentation,
   }) {
@@ -349,7 +365,12 @@ export class VerifiedFeishuChannel {
     const request = replyTo
       ? {
           path: { message_id: replyTo },
-          data: { msg_type: messageType, content, uuid },
+          data: {
+            msg_type: messageType,
+            content,
+            uuid,
+            ...(replyInThread === true ? { reply_in_thread: true } : {}),
+          },
         }
       : {
           params: { receive_id_type: 'chat_id' },
@@ -399,6 +420,10 @@ export class VerifiedFeishuChannel {
     if (typeof messageId !== 'string' || !messageId) {
       throw fileDeliveryError('message send', undefined, undefined, { uncertain: true });
     }
+    if (replyTo && typeof onReplyThreadId === 'function') {
+      const threadId = response?.data?.thread_id;
+      if (typeof threadId === 'string' && threadId) await onReplyThreadId(threadId);
+    }
     return createDeliveryReceipt({
       deliveryId: file.deliveryKey,
       presentation,
@@ -410,7 +435,7 @@ export class VerifiedFeishuChannel {
     });
   }
 
-  async #createStreamCard(chatId, replyTo) {
+  async #createStreamCard(chatId, options = {}) {
     const content = streamPreview(this.#initialText);
     const response = assertApiSuccess('Feishu card.create', await this.#client.cardkit.v1.card.create({
       data: {
@@ -420,7 +445,7 @@ export class VerifiedFeishuChannel {
     }));
     const cardId = response?.data?.card_id;
     if (!cardId) throw new Error('Feishu card.create returned no card_id');
-    const messageId = await this.#sendCard(chatId, cardId, replyTo);
+    const messageId = await this.#sendCard(chatId, cardId, options);
     return { cardId, messageId, content, sequence: 0 };
   }
 
@@ -455,12 +480,18 @@ export class VerifiedFeishuChannel {
     assertApiSuccess('Feishu card.settings', response);
   }
 
-  async #sendCard(chatId, cardId, replyTo) {
+  async #sendCard(chatId, cardId, options = {}) {
+    const replyTo = options.replyTo;
+    const replyInThread = options.replyInThread === true;
     const content = JSON.stringify({ type: 'card', data: { card_id: cardId } });
     const response = replyTo
       ? await this.#client.im.v1.message.reply({
         path: { message_id: replyTo },
-        data: { msg_type: 'interactive', content },
+        data: {
+          msg_type: 'interactive',
+          content,
+          ...(replyInThread ? { reply_in_thread: true } : {}),
+        },
       })
       : await this.#client.im.v1.message.create({
         params: { receive_id_type: 'chat_id' },
@@ -469,6 +500,10 @@ export class VerifiedFeishuChannel {
     assertApiSuccess('Feishu message send', response);
     const messageId = response?.data?.message_id;
     if (!messageId) throw new Error('Feishu message send returned no message_id');
+    if (replyTo && typeof options.onReplyThreadId === 'function') {
+      const threadId = response?.data?.thread_id;
+      if (typeof threadId === 'string' && threadId) await options.onReplyThreadId(threadId);
+    }
     return messageId;
   }
 

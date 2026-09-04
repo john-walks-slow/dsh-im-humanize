@@ -7,6 +7,7 @@ const EMPTY_STATE = Object.freeze({
   seenMessageIds: [],
   watches: {},
   includeArchivedSessions: false,
+  topics: {},
 });
 
 /** One conversation key may watch at most this many sessions. */
@@ -40,6 +41,7 @@ export class StateStore {
         includeArchivedSessions: typeof parsed.includeArchivedSessions === 'boolean'
           ? parsed.includeArchivedSessions
           : false,
+        topics: parsed.topics && typeof parsed.topics === 'object' ? parsed.topics : {},
       };
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
@@ -134,6 +136,29 @@ export class StateStore {
       for (const entry of list) if (validWatchEntry(entry)) ids.add(entry.sessionId);
     }
     return [...ids];
+  }
+
+  // ── Managed Feishu topics (thread_id → root message, persisted) ────────
+
+  topicRootFor(threadId) {
+    const entry = this.#state.topics[threadId];
+    return entry && typeof entry === 'object'
+      && typeof entry.rootMessageId === 'string' && entry.rootMessageId.length > 0
+      && typeof entry.chatId === 'string' && entry.chatId.length > 0
+      ? { rootMessageId: entry.rootMessageId, chatId: entry.chatId }
+      : null;
+  }
+
+  async setTopic(threadId, root) {
+    const validRoot = root && typeof root === 'object'
+      && typeof root.rootMessageId === 'string' && root.rootMessageId.length > 0
+      && typeof root.chatId === 'string' && root.chatId.length > 0;
+    if (!validRoot) throw new TypeError('Invalid Feishu topic root');
+    this.#state.topics[threadId] = {
+      rootMessageId: root.rootMessageId,
+      chatId: root.chatId,
+    };
+    await this.#persist();
   }
 
   // ── Session-list archived policy (per bot) ───────────────────

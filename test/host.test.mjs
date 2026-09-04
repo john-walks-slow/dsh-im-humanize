@@ -65,6 +65,7 @@ test('Host provides #65 and installs #84 with the same delivery service', async 
     async listTargets(botId) {
       return { botId, channel: 'telegram', targets: [{ targetId: 'target' }] };
     },
+    async listBots() { return [{ botId: 'bot_one', channel: 'telegram' }]; },
   };
   const provided = [];
   const rpc = [];
@@ -97,6 +98,7 @@ test('Host provides #65 and installs #84 with the same delivery service', async 
   assert.equal(http[0][1], deliveryService);
   assert.ok(channelServices.every((service) => service === deliveryService));
   assert.deepEqual(await provided[0][1].listTargets('bot_one'), [{ targetId: 'target' }]);
+  assert.deepEqual(await provided[0][1].listBots(), [{ botId: 'bot_one', channel: 'telegram' }]);
   assert.deepEqual(await provided[0][1].send('bot_one', 'target', 'hello'), { sent: true });
   assert.deepEqual(sent, [['bot_one', 'target', 'hello', undefined]]);
 });
@@ -122,6 +124,7 @@ test('#65 activates a real Cordis consumer without crossing the Connection RPC',
       return { sent: true };
     },
     async listTargets() { return { targets: [] }; },
+    async listBots() { return []; },
   };
   const internals = Object.fromEntries(CHANNELS.map(([, applyName]) => [
     applyName,

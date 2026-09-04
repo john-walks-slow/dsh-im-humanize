@@ -144,6 +144,7 @@ export function createDeliveryAdapter({ channel, workspaces, coreController, sta
   return Object.freeze({
     channel,
     ownsBot: (botId) => workspaces.has(botId),
+    listBots: () => workspaces.listBotIds(),
     listTargets: (botId) => workspaces.listDeliveryTargets(botId),
     async listSuggestions(botId) {
       const state = await stateFor(botId);

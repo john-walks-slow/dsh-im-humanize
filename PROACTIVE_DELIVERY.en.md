@@ -165,6 +165,14 @@ const targets = await ctx.dshIm.listTargets(botId);
 // [{ targetId, name?, kind, route }, ...]
 ```
 
+Companion plugins can discover configured bots through the same Host service:
+
+```js
+const bots = await ctx.dshIm.listBots();
+// [{ botId, channel }, ...]
+```
+The result contains stable public metadata only; it never includes credentials, platform routes, or target data.
+
 On failure, the Promise rejects with an Error whose `code` is one of the public error codes below.
 
 ## Send through Connection RPC

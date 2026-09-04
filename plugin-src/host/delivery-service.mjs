@@ -7,6 +7,7 @@ const DRAFT_TARGET_ID = '__test__';
 
 const ADAPTER_METHODS = Object.freeze([
   'ownsBot',
+  'listBots',
   'listTargets',
   'listSuggestions',
   'createTarget',
@@ -116,6 +117,20 @@ export class DeliveryService {
     } catch (error) {
       throw publicOperationError(error);
     }
+  }
+
+  async listBots() {
+    const bots = [];
+    for (const { adapter } of this.#adapters.values()) {
+      try {
+        const ids = await adapter.listBots();
+        if (!Array.isArray(ids)) throw new TypeError('Adapter returned invalid bots');
+        for (const botId of ids) bots.push({ botId: botIdOf(botId), channel: adapter.channel });
+      } catch (error) {
+        throw publicOperationError(error);
+      }
+    }
+    return bots;
   }
 
   async listSuggestions(botId) {

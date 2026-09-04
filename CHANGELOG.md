@@ -11,6 +11,9 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 入站附件改为按时间戳目录持久落盘，并新增全局保留时长（TTL）设置：`-1` 永久保留、`0`（默认）每轮对话结束后立即删除、`1-8760` 整数小时后自动清理；清理在进程启动、每 30 分钟及设置页手动触发时执行，进行中对话的目录会被跳过。设置页新增全局设置入口。历史 `turn-` 目录及无法解析的目录不参与清理，需要手动删除。清扫仅覆盖各渠道当前配置的工作区；Bot 通过 `/workspace` 切换工作区后，旧工作区中已持久化的附件目录不再参与自动清理，需手动删除。
   Inbound attachments now persist under timestamped directories with a global retention (TTL) setting: `-1` keeps them forever, `0` (the default) deletes each directory right after its turn ends, and whole hours `1-8760` clean them automatically. Sweeps run at process startup, every 30 minutes, and on demand from the settings page, always skipping directories owned by in-flight turns. The settings page gains a global settings entry. Legacy `turn-` directories and unparseable names are never touched and must be removed manually. Sweeping only covers each channel's currently configured workspaces; after a bot switches its workspace via `/workspace`, persisted attachment directories left in the previous workspace are no longer swept and must be removed manually.
 
+- 飞书机器人设置新增「群聊以话题方式回复」开关：开启后，群聊中向机器人提问会自动开启一条独立的飞书话题，回答落在话题内；每个话题是 dsh 会话列表里的一条独立会话，上下文互不串。私聊不受影响。可分别对每个机器人开启或关闭。
+  Feishu bots gain a “Reply to group chats as Feishu topics” switch. When enabled, a question addressed to the bot in a group auto-opens a dedicated Feishu topic and replies stay inside it; each topic is an independent conversation in dsh with its own context. Private chats are unaffected. The switch is configured per bot.
+
 ## [4.9.1] - 2026-09-04
 
 ### Fixed / 修复

@@ -22,7 +22,9 @@ function agentsFromContext(ctx) {
 
 function currentOwnedTurn(agent, expectedTurn, promptRpcId) {
   if (agent?.status !== 'running') return false;
-  const events = agent?.session?.events;
+  const events = typeof agent?.session?.snapshotEvents === 'function'
+    ? agent.session.snapshotEvents()
+    : agent?.session?.events;
   if (!Array.isArray(events)) return false;
 
   let openTurn = null;

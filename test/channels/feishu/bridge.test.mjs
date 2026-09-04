@@ -7347,3 +7347,259 @@ test('menu stop and steer reply friendly when no session is bound', async () => 
   assert.equal(calls.steer.length, 0);
   assert.match(JSON.parse(sent.at(-1).content).text, /没有绑定会话/);
 });
+
+function topicReplyFixture({ groupTopicReply = false } = {}) {
+  const topics = new Map();
+  const replies = [];
+  const creates = [];
+  const seen = new Set();
+  const client = {
+    im: { v1: { message: {
+      reply: async (request) => {
+        replies.push(request);
+        return {
+          code: 0,
+          data: {
+            message_id: `om-reply-${replies.length}`,
+            ...(request.data.reply_in_thread === true ? { thread_id: 'omt-auto-1' } : {}),
+          },
+        };
+      },
+      create: async (request) => {
+        creates.push(request);
+        return { code: 0, data: { message_id: 'om-create-1' } };
+      },
+    } } },
+  };
+  const fixture = {
+    seen,
+    state: {
+      hasSeen: (id) => seen.has(id),
+      markSeen: async (id) => seen.add(id),
+      sessionFor: () => null,
+      setSession: async () => true,
+      clearSession: async () => {},
+      topicRootFor: (threadId) => topics.get(threadId) ?? null,
+      setTopic: async (threadId, root) => topics.set(threadId, root),
+    },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: {},
+    harness: { ensureRunning: async () => true },
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    botOpenId: 'ou_bot',
+    groupTopicReply,
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  return { bridge, topics, replies, creates };
+}
+
+function groupHelpEvent(messageId, { mention = true, threadId } = {}) {
+  return event(messageId, '/help', {
+    senderOpenId: 'ou_user',
+    chat_type: 'group',
+    chat_id: 'oc_group',
+    ...(mention
+      ? { mentions: [{ key: '@_bot', id: { open_id: 'ou_bot' } }] }
+      : { mentions: [] }),
+    ...(threadId ? { thread_id: threadId } : {}),
+  });
+}
+
+test('groupTopicReply auto-opens a topic for an addressed main-feed question and registers it', async () => {
+  const { bridge, topics, replies, creates } = topicReplyFixture({ groupTopicReply: true });
+  await bridge.accept(groupHelpEvent('om-help-root'));
+  await bridge.waitForIdle();
+
+  assert.equal(creates.length, 0, 'the answer must be a reply, not a plain group message');
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].data.reply_in_thread, true);
+  assert.equal(replies[0].data.msg_type, 'text');
+  assert.deepEqual(topics.get('omt-auto-1'), { rootMessageId: 'om-help-root', chatId: 'oc_group' });
+});
+
+test('groupTopicReply keeps replies inside a pre-existing Feishu topic without claiming it', async () => {
+  const { bridge, topics, replies } = topicReplyFixture({ groupTopicReply: true });
+  await bridge.accept(groupHelpEvent('om-help-topic', { threadId: 'omt_existing' }));
+  await bridge.waitForIdle();
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].data.reply_in_thread, true);
+  assert.equal(topics.size, 0, 'a topic the bot did not open must not be registered as managed');
+});
+
+test('groupTopicReply leaves unaddressed all-mode chatter in the flat group session', async () => {
+  const { bridge, topics, replies } = topicReplyFixture({ groupTopicReply: true });
+  await bridge.accept(groupHelpEvent('om-help-unaddressed', { mention: false }));
+  await bridge.waitForIdle();
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].data.reply_in_thread, undefined);
+  assert.equal(topics.size, 0);
+});
+
+test('groupTopicReply is inert in private chats', async () => {
+  const { bridge, topics, replies } = topicReplyFixture({ groupTopicReply: true });
+  await bridge.accept(event('om-help-p2p', '/help', { senderOpenId: 'ou_user' }));
+  await bridge.waitForIdle();
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].data.reply_in_thread, undefined);
+  assert.equal(topics.size, 0);
+});
+
+test('groupTopicReply disabled keeps the pre-feature flat reply behavior', async () => {
+  const { bridge, topics, replies } = topicReplyFixture({ groupTopicReply: false });
+  await bridge.accept(groupHelpEvent('om-help-flat'));
+  await bridge.waitForIdle();
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].data.reply_in_thread, undefined);
+  assert.equal(topics.size, 0);
+});
+
+test('groupTopicReply opens no topic for a group question denied by the access policy', async () => {
+  const topics = new Map();
+  const replies = [];
+  const creates = [];
+  const seen = new Set();
+  const client = {
+    im: { v1: { message: {
+      reply: async (request) => {
+        replies.push(request);
+        return {
+          code: 0,
+          data: {
+            message_id: `om-reply-${replies.length}`,
+            ...(request.data.reply_in_thread === true ? { thread_id: 'omt-auto-1' } : {}),
+          },
+        };
+      },
+      create: async (request) => {
+        creates.push(request);
+        return { code: 0, data: { message_id: 'om-create-1' } };
+      },
+    } } },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: {},
+    harness: { ensureRunning: async () => true },
+    state: {
+      hasSeen: (id) => seen.has(id),
+      markSeen: async (id) => seen.add(id),
+      sessionFor: () => null,
+      setSession: async () => true,
+      clearSession: async () => {},
+      topicRootFor: (threadId) => topics.get(threadId) ?? null,
+      setTopic: async (threadId, root) => topics.set(threadId, root),
+    },
+    status: bridgeStatus(),
+    // An empty group allowlist denies every ordinary group sender.
+    accessPolicy: directAccessPolicy({ users: [], privilegedIds: [] }),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    botOpenId: 'ou_bot',
+    groupTopicReply: true,
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  await bridge.accept(groupHelpEvent('om-help-denied'));
+  await bridge.waitForIdle();
+
+  assert.equal(replies.length, 0, 'a denied group question must not open a topic');
+  assert.equal(creates.length, 0, 'a denied group question must not be answered at all');
+  assert.equal(topics.size, 0, 'a denied group question must not register a managed topic');
+});
+
+function topicTurnFixture() {
+  const sessions = new Map();
+  const topics = new Map();
+  const seen = new Set();
+  const replies = [];
+  const asked = [];
+  const state = {
+    hasSeen: (id) => seen.has(id),
+    markSeen: async (id) => seen.add(id),
+    sessionFor: (key) => sessions.get(key) ?? null,
+    setSession: async (key, sessionId) => sessions.set(key, sessionId),
+    clearSession: async (key) => sessions.delete(key),
+    topicRootFor: (threadId) => topics.get(threadId) ?? null,
+    setTopic: async (threadId, root) => topics.set(threadId, root),
+  };
+  const client = {
+    im: { v1: { message: {
+      reply: async (request) => {
+        replies.push(request);
+        return {
+          code: 0,
+          data: {
+            message_id: `om-reply-${replies.length}`,
+            ...(request.data.reply_in_thread === true ? { thread_id: 'omt-auto-1' } : {}),
+          },
+        };
+      },
+      create: async () => ({ code: 0, data: { message_id: 'om-create' } }),
+    } } },
+  };
+  const harness = {
+    ensureRunning: async () => true,
+    sessionExists: async () => true,
+    createSession: async () => 'session-topic',
+    ask: async (sessionId, text) => {
+      asked.push({ sessionId, text });
+      return `回答：${text}`;
+    },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: {},
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    botOpenId: 'ou_bot',
+    groupTopicReply: true,
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  return { bridge, state, topics, sessions, replies, asked };
+}
+
+function groupMentionEvent(messageId, text, extra = {}) {
+  return event(messageId, text, {
+    senderOpenId: 'ou_user',
+    chat_type: 'group',
+    chat_id: 'oc_group',
+    mentions: [{ key: '@_bot', id: { open_id: 'ou_bot' } }],
+    ...extra,
+  });
+}
+
+test('a follow-up inside the auto-created topic continues the managed dsh session', async () => {
+  const { bridge, state, topics, sessions, replies, asked } = topicTurnFixture();
+
+  await bridge.accept(groupMentionEvent('om-topic-root', '第一个问题'));
+  await bridge.waitForIdle();
+  assert.equal(sessions.get('group:oc_group:managed:om-topic-root'), 'session-topic');
+  assert.equal(replies[0].data.reply_in_thread, true);
+  assert.deepEqual(topics.get('omt-auto-1'), {
+    rootMessageId: 'om-topic-root',
+    chatId: 'oc_group',
+  });
+  assert.equal(asked[0].sessionId, 'session-topic');
+
+  // User keeps typing inside the topic Feishu created; the same managed key
+  // must resolve and reuse the same session (context continuity).
+  await bridge.accept(groupMentionEvent('om-topic-follow', '继续说', {
+    thread_id: 'omt-auto-1',
+  }));
+  await bridge.waitForIdle();
+
+  assert.equal(sessions.size, 1, 'no second session may be created for the same topic');
+  assert.equal(sessions.get('group:oc_group:managed:om-topic-root'), 'session-topic');
+  assert.equal(asked.length, 2);
+  assert.equal(asked[1].sessionId, 'session-topic');
+  assert.equal(replies[1].data.reply_in_thread, true);
+});

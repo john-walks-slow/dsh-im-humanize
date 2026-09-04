@@ -287,6 +287,7 @@ function publicBotEntry(entry) {
     contextEnhancement: normalizeContextEnhancementConfig(source.contextEnhancement),
     accessPolicy: normalizeAccessPolicy(source.accessPolicy),
     groupResponseMode: normalizeFeishuGroupResponseMode(source.groupResponseMode),
+    groupTopicReply: source.groupTopicReply === true,
     groupMessagePermissionGranted: source.groupMessagePermissionGranted === true,
     bot: publicBot(source.bot),
     health: publicHealth(source, connected),
@@ -439,6 +440,13 @@ function validPayload(endpoint, payload) {
       && isFeishuGroupResponseMode(payload.groupResponseMode)
       ? null
       : '请选择群聊响应方式。';
+  }
+  if (endpoint === FEISHU_ENDPOINTS.setGroupTopicReply) {
+    return hasOnlyKeys(payload, new Set(['botId', 'groupTopicReply']))
+      && safeOpaqueId(payload.botId)
+      && typeof payload.groupTopicReply === 'boolean'
+      ? null
+      : '请选择是否以话题方式回复。';
   }
   return 'Unknown Feishu endpoint.';
 }
@@ -708,6 +716,14 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
         }
         value = await toPublicFeishuStatus(
           await controller.updateGroupResponseMode(payload.botId, payload.groupResponseMode),
+          { encodeQr: cachedEncodeQr },
+        );
+      } else if (endpoint === FEISHU_ENDPOINTS.setGroupTopicReply) {
+        if (typeof controller.updateGroupTopicReply !== 'function') {
+          throw new Error('Group topic reply update is unavailable');
+        }
+        value = await toPublicFeishuStatus(
+          await controller.updateGroupTopicReply(payload.botId, payload.groupTopicReply),
           { encodeQr: cachedEncodeQr },
         );
       } else {
