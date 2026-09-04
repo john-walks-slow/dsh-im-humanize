@@ -233,6 +233,88 @@ test('modern adapter preserves Typert business failures as Harness RPC errors', 
   );
 });
 
+test('modern adapter exposes DSH v2 live assistant chunks through legacy history', async () => {
+  const records = [
+    {
+      type: 'event',
+      event: { type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } },
+    },
+    {
+      type: 'event',
+      event: {
+        type: 'user/message', seq: 1, time: 1,
+        data: { turn: 1, source: { kind: 'user', rpcId: 'prompt' }, message: { content: [] } },
+      },
+    },
+  ];
+  const gateway = {
+    async invoke(request) {
+      if (`${request.namespace}/${request.method}` !== 'session/page') {
+        throw new Error('unexpected invoke');
+      }
+      return { records, hasMore: false };
+    },
+    async stream(request) {
+      if (`${request.namespace}/${request.method}` !== 'session/follow') {
+        throw new Error('unexpected stream');
+      }
+      return asyncValues({
+        type: 'snapshot', cursor: 1, records, hasMore: false,
+        projections: { asOfSeq: 1, values: {} },
+      });
+    },
+  };
+  const fixture = fakeContext(gateway);
+  const api = modernHarnessApi(fixture.ctx);
+
+  await api.sessions.history({ rpcId: 'baseline', payload: { sessionId: 'session' } });
+  const agent = { session: { id: 'session', seq: 2 } };
+  fixture.emit('agent/assistant-stream', {
+    agent,
+    frame: {
+      type: 'start', attemptId: 'session:1', revision: 1, turn: 1, step: 1,
+    },
+  });
+  fixture.emit('agent/assistant-stream', {
+    agent,
+    frame: {
+      type: 'chunk', attemptId: 'session:1', revision: 2, index: 0, time: 2,
+      chunk: { type: 'text-delta', index: 0, text: '你好' },
+    },
+  });
+  fixture.emit('agent/assistant-stream', {
+    agent,
+    frame: {
+      type: 'chunk', attemptId: 'session:1', revision: 3, index: 1, time: 3,
+      chunk: { type: 'text-delta', index: 0, text: '，世界' },
+    },
+  });
+
+  const live = await api.sessions.history({
+    rpcId: 'live', payload: { sessionId: 'session' },
+  });
+  const chunks = live.result.value.events.filter(
+    ({ event }) => event.type === 'assistant/chunk',
+  );
+  assert.deepEqual(chunks.map(({ event }) => event.data.chunk.text), ['你好', '，世界']);
+  assert.ok(chunks.every(({ event }) => event.seq > 1 && event.seq < 2));
+  assert.ok(chunks[0].event.seq < chunks[1].event.seq);
+
+  fixture.emit('agent/assistant-stream', {
+    agent,
+    frame: {
+      type: 'end', attemptId: 'session:1', revision: 4, index: 2,
+      outcome: { kind: 'committed', eventType: 'assistant/message', seq: 2 },
+    },
+  });
+  const settled = await api.sessions.history({
+    rpcId: 'settled', payload: { sessionId: 'session' },
+  });
+  assert.equal(settled.result.value.events.some(
+    ({ event }) => event.type === 'assistant/chunk',
+  ), false);
+});
+
 forEachSessionApi('an approval', async (sessionApi) => {
   const { events, session } = sessionFixture(sessionApi);
   const eventRecord = (event) => ({ type: 'event', event });
