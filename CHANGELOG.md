@@ -6,6 +6,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.10.0] - 2026-09-05
+
 ### Added / 新增
 
 - 入站附件改为按时间戳目录持久落盘，并新增全局保留时长（TTL）设置：`-1` 永久保留、`0` 每轮对话结束后立即删除、`1-8760` 整数小时后自动清理，默认 `168` 小时（7 天）；清理在进程启动、每 30 分钟及设置页手动触发时执行，进行中对话的目录会被跳过。通用设置通过顶部 GitHub 按钮右侧的齿轮进入，附件保留功能位于首个「附件」Tab；取值说明收纳在标题右侧的问号中，修改后通过「保存」按钮明确提交。清扫会拒绝位于工作区外的符号链接附件目录。历史 `turn-` 目录及无法解析的目录不参与清理，需要手动删除。清扫仅覆盖各渠道当前配置的工作区；Bot 通过 `/workspace` 切换工作区后，旧工作区中已持久化的附件目录不再参与自动清理，需手动删除。
@@ -13,6 +15,22 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 - 飞书机器人设置新增「群聊以话题方式回复」开关：开启后，群聊中向机器人提问会自动开启一条独立的飞书话题，回答落在话题内；每个话题是 dsh 会话列表里的一条独立会话，上下文互不串。私聊不受影响。可分别对每个机器人开启或关闭。
   Feishu bots gain a “Reply to group chats as Feishu topics” switch. When enabled, a question addressed to the bot in a group auto-opens a dedicated Feishu topic and replies stay inside it; each topic is an independent conversation in dsh with its own context. Private chats are unaffected. The switch is configured per bot.
+
+- 同 Host 插件的 `ctx.dshIm` 服务新增 `listBots()`，可发现已配置机器人的公开 `botId` 与渠道类型，再配合现有 `listTargets()` 和 `send()` 完成主动投递；返回值不包含凭据、平台路由或目标内容。
+  The same-Host `ctx.dshIm` service now exposes `listBots()`, allowing plugins to discover each configured bot's public `botId` and channel before using the existing `listTargets()` and `send()` APIs for proactive delivery. Results contain no credentials, provider routes, or target content.
+
+### Changed / 变更
+
+- npm 包元数据现在声明已验证兼容 DSH `0.1.2-alpha.4`、`0.1.2-alpha.5` 与 `0.1.2-rc.1` 的 Web profile。
+  npm package metadata now declares verified Web-profile compatibility with DSH `0.1.2-alpha.4`, `0.1.2-alpha.5`, and `0.1.2-rc.1`.
+
+### Fixed / 修复
+
+- 新版 DSH Session 使用 `snapshotEvents()` 时，IM 的 `/stop` 现在可以再次识别并停止当前所属 Turn。
+  IM `/stop` once again recognizes and cancels the currently owned turn when running against modern DSH Sessions that expose `snapshotEvents()`.
+
+- 飞书在 DSH v2 生成回复期间会重新接收并转发实时 assistant chunk，流式卡片不再等到最终消息落盘后才显示整段回答。
+  Feishu now receives and forwards live assistant chunks while DSH v2 is generating, so streaming cards no longer wait for the final durable message before displaying the full reply.
 
 ## [4.9.1] - 2026-09-04
 
@@ -648,7 +666,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.9.1...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.10.0...HEAD
+[4.10.0]: https://github.com/xmanrui/dsh-im/compare/v4.9.1...v4.10.0
 [4.9.1]: https://github.com/xmanrui/dsh-im/compare/v4.9.0...v4.9.1
 [4.9.0]: https://github.com/xmanrui/dsh-im/compare/v4.8.0...v4.9.0
 [4.8.0]: https://github.com/xmanrui/dsh-im/compare/v4.7.0...v4.8.0
