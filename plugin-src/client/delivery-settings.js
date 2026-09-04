@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import { AccessPolicySettingsPage } from './access-policy-settings.js';
+import { FeishuGroupSettingsPage } from './channels/feishu/group-settings.js';
 import { h, isEnglish, localizeText } from './i18n.js';
 
 export const DELIVERY_RPC_CHANNEL = '/dsh-im-delivery';
@@ -23,6 +24,15 @@ export const BOT_SETTINGS_TABS = Object.freeze([
   Object.freeze({ id: 'delivery', label: '投递设置' }),
   Object.freeze({ id: 'access', label: '访问设置' }),
 ]);
+
+export const FEISHU_BOT_SETTINGS_TABS = Object.freeze([
+  ...BOT_SETTINGS_TABS,
+  Object.freeze({ id: 'group', label: '群聊' }),
+]);
+
+export function botSettingsTabsForChannel(channel) {
+  return channel === 'feishu' ? FEISHU_BOT_SETTINGS_TABS : BOT_SETTINGS_TABS;
+}
 
 const CHANNEL_DEFINITIONS = Object.freeze({
   weixin: {
@@ -672,8 +682,9 @@ export function DeliveryTargetSettingsPage({
     }
   };
 
-  const activeTab = BOT_SETTINGS_TABS.find((tab) => tab.id === activeTabId)
-    ?? BOT_SETTINGS_TABS[0];
+  const settingsTabs = botSettingsTabsForChannel(channel);
+  const activeTab = settingsTabs.find((tab) => tab.id === activeTabId)
+    ?? settingsTabs[0];
   const activeTabDomId = `dim-bot-settings-${activeTab.id}-tab`;
   const activePanelId = `dim-bot-settings-${activeTab.id}-panel`;
 
@@ -688,7 +699,7 @@ export function DeliveryTargetSettingsPage({
       className: 'dim-botSettingsTabs',
       role: 'tablist',
       'aria-label': '机器人设置页签',
-    }, BOT_SETTINGS_TABS.map((tab) => h('button', {
+    }, settingsTabs.map((tab) => h('button', {
       key: tab.id,
       id: `dim-bot-settings-${tab.id}-tab`,
       type: 'button',
@@ -712,6 +723,11 @@ export function DeliveryTargetSettingsPage({
         rpcCall: accessRpcCall,
         onSaved: setAccessPolicy,
       })
+    : activeTab.id === 'group' && channel === 'feishu'
+      ? h(FeishuGroupSettingsPage, {
+          account,
+          rpcCall: accessRpcCall,
+        })
     : h(React.Fragment, null,
   h('section', { className: 'dim-deliveryIdentity', 'aria-labelledby': 'dim-delivery-bot-title' },
     h('div', { className: 'dim-deliveryIdentityHeading' },

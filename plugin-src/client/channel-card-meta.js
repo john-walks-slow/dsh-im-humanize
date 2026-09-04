@@ -22,7 +22,14 @@ function SettingsGlyph() {
   h('path', { d: 'M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.55V21h-4v-.08A1.7 1.7 0 0 0 8.97 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.52-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.97a1.7 1.7 0 0 0-.34-1.88l-.06-.06L7.03 4.2l.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.52 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06a1.7 1.7 0 0 0-.34 1.88A1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z' }));
 }
 
-export function BotSettingsButton({ channel, botId, botName, connected, accessPolicy }) {
+export function BotSettingsButton({
+  channel,
+  botId,
+  botName,
+  connected,
+  accessPolicy,
+  channelSettings,
+}) {
   const { openBotSettings } = React.useContext(BotSettingsContext);
   const tooltipId = React.useId();
   return h('span', { className: 'dim-botSettingsAction' },
@@ -33,6 +40,7 @@ export function BotSettingsButton({ channel, botId, botName, connected, accessPo
       'aria-label': '更多机器人设置',
       'aria-describedby': tooltipId,
       onClick: () => openBotSettings?.({
+        ...(channelSettings && typeof channelSettings === 'object' ? channelSettings : {}),
         channel,
         botId,
         botName,

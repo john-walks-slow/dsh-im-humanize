@@ -12,6 +12,10 @@ import {
   FeishuSettingsTab,
 } from '../../../plugin-src/client/channels/feishu/index.js';
 import {
+  FeishuGroupSettingsPage,
+  GroupResponseModeEditor,
+} from '../../../plugin-src/client/channels/feishu/group-settings.js';
+import {
   en,
   setImTranslator,
 } from '../../../plugin-src/client/i18n.js';
@@ -73,31 +77,54 @@ test('Feishu connection check requests and displays test-message feedback', asyn
 
   assert.match(markup, /补全权限/);
   assert.match(markup, /aria-label="为飞书测试机器人补全权限与回调"/);
-  assert.match(markup, /<select[^>]*aria-label="群聊响应方式"/);
-  assert.match(markup, /仅在 @机器人时响应（推荐）/);
-  assert.match(markup, /响应所有群消息/);
-  assert.match(markup, /选择全部消息后会打开飞书官方授权流程/);
+  assert.doesNotMatch(markup, /aria-label="群聊响应方式"/);
+  assert.doesNotMatch(markup, /aria-label="群聊以话题方式回复"/);
 });
 
-test('Feishu bot card saves group response mode from a dropdown', async () => {
-  const saved = [];
+test('Feishu group settings page saves both migrated group controls', async () => {
+  let groupResponseMode = 'mention';
+  let groupTopicReply = false;
+  const calls = [];
+  const snapshot = () => ({
+    schemaVersion: 2,
+    revision: calls.length + 1,
+    state: 'connected',
+    bots: [{
+      botId: 'bot-mode-test',
+      state: 'connected',
+      connected: true,
+      groupResponseMode,
+      groupTopicReply,
+      groupMessagePermissionGranted: true,
+      bot: { name: '响应模式机器人' },
+      health: { status: 'healthy', summary: '长连接运行正常' },
+    }],
+  });
+  const rpcCall = async (endpoint, payload) => {
+    calls.push({ endpoint, payload });
+    if (endpoint === FEISHU_ENDPOINTS.status) return { ok: true, value: snapshot() };
+    if (endpoint === FEISHU_ENDPOINTS.setGroupResponseMode) {
+      groupResponseMode = payload.groupResponseMode;
+      return { ok: true, value: snapshot() };
+    }
+    if (endpoint === FEISHU_ENDPOINTS.setGroupTopicReply) {
+      groupTopicReply = payload.groupTopicReply;
+      return { ok: true, value: snapshot() };
+    }
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
   let renderer;
   await act(async () => {
-    renderer = create(React.createElement(BotCard, {
-      connection: {
+    renderer = create(React.createElement(FeishuGroupSettingsPage, {
+      account: {
         botId: 'bot-mode-test',
-        state: 'connected',
-        connected: true,
+        botName: '响应模式机器人',
         groupResponseMode: 'mention',
-        bot: { name: '响应模式机器人', appIdMasked: 'cli_mode••••test' },
-        health: { summary: '长连接运行正常', lastCheckedAt: Date.now() },
+        groupMessagePermissionGranted: true,
       },
-      onGroupResponseModeSave: async (value) => saved.push(value),
-      onReconnect() {},
-      onRequestRemove() {},
-      onConfirmRemove() {},
-      onCancelRemove() {},
+      rpcCall,
     }));
+    await flushMicrotasks();
   });
   const select = renderer.root.findByProps({ 'aria-label': '群聊响应方式' });
   assert.equal(select.type, 'select');
@@ -110,35 +137,42 @@ test('Feishu bot card saves group response mode from a dropdown', async () => {
     select.props.onChange({ target: { value: 'all' } });
     await flushMicrotasks();
   });
-  assert.deepEqual(saved, ['all']);
+  assert.ok(calls.some(({ endpoint, payload }) => (
+    endpoint === FEISHU_ENDPOINTS.setGroupResponseMode
+      && payload.botId === 'bot-mode-test'
+      && payload.groupResponseMode === 'all'
+  )));
+  assert.equal(renderer.root.findByProps({ 'aria-label': '群聊响应方式' }).props.value, 'all');
+
+  const topicSelect = renderer.root.findByProps({ 'aria-label': '群聊以话题方式回复' });
+  assert.equal(topicSelect.props.value, 'off');
+  await act(async () => {
+    topicSelect.props.onChange({ target: { value: 'on' } });
+    await flushMicrotasks();
+  });
+  assert.ok(calls.some(({ endpoint, payload }) => (
+    endpoint === FEISHU_ENDPOINTS.setGroupTopicReply
+      && payload.botId === 'bot-mode-test'
+      && payload.groupTopicReply === true
+  )));
+  assert.equal(
+    renderer.root.findByProps({ 'aria-label': '群聊以话题方式回复' }).props.value,
+    'on',
+  );
   await act(async () => renderer.unmount());
 });
 
-test('Feishu bot card offers authorization recovery for all-message mode', () => {
-  const baseConnection = {
-    botId: 'bot-permission-recovery',
-    state: 'connected',
-    connected: true,
-    groupResponseMode: 'all',
-    bot: { name: '权限恢复机器人', appIdMasked: 'cli_reco••••very' },
-    health: { summary: '长连接运行正常', lastCheckedAt: Date.now() },
-  };
-  const reauthorizeMarkup = renderToStaticMarkup(React.createElement(BotCard, {
-    connection: { ...baseConnection, groupMessagePermissionGranted: true },
-    onReconnect() {},
-    onRequestRemove() {},
-    onConfirmRemove() {},
-    onCancelRemove() {},
+test('Feishu group response setting offers authorization recovery for all-message mode', () => {
+  const reauthorizeMarkup = renderToStaticMarkup(React.createElement(GroupResponseModeEditor, {
+    value: 'all',
+    permissionGranted: true,
   }));
   assert.match(reauthorizeMarkup, /aria-label="重新授权群消息权限"/);
   assert.match(reauthorizeMarkup, />重新授权</);
 
-  const legacyMarkup = renderToStaticMarkup(React.createElement(BotCard, {
-    connection: { ...baseConnection, groupMessagePermissionGranted: false },
-    onReconnect() {},
-    onRequestRemove() {},
-    onConfirmRemove() {},
-    onCancelRemove() {},
+  const legacyMarkup = renderToStaticMarkup(React.createElement(GroupResponseModeEditor, {
+    value: 'all',
+    permissionGranted: false,
   }));
   assert.match(legacyMarkup, /尚未确认“获取群组中所有消息”权限/);
   assert.match(legacyMarkup, />去授权</);
@@ -218,11 +252,18 @@ test('selecting all group messages opens the official permission flow before sav
 
   let renderer;
   await act(async () => {
-    renderer = create(React.createElement(FeishuSettingsTab, { rpcCall }));
+    renderer = create(React.createElement(FeishuGroupSettingsPage, {
+      account: {
+        botId: 'bot_group_permission',
+        botName: '权限机器人',
+        groupResponseMode: 'mention',
+        groupMessagePermissionGranted: false,
+      },
+      rpcCall,
+    }));
     await flushMicrotasks();
   });
-  const targetCard = () => renderer.root.findByProps({ 'data-bot-id': 'bot_group_permission' });
-  const select = targetCard().findByProps({ 'aria-label': '群聊响应方式' });
+  const select = renderer.root.findByProps({ 'aria-label': '群聊响应方式' });
   await act(async () => {
     select.props.onChange({ target: { value: 'all' } });
     await flushMicrotasks();
@@ -233,15 +274,13 @@ test('selecting all group messages opens the official permission flow before sav
       && payload.botId === 'bot_group_permission'
   )));
   assert.equal(calls.some(({ endpoint }) => endpoint === FEISHU_ENDPOINTS.setGroupResponseMode), false);
-  const permissionPanel = targetCard().findByProps({
-    'data-provision-for': 'bot_group_permission',
+  const permissionPanel = renderer.root.findByProps({
+    'aria-label': '权限机器人的飞书授权流程',
   });
   assert.equal(permissionPanel.findByType('a').props.href,
     'https://open.feishu.cn/page/launcher?tp=sdk&clientID=cli_permission&addons=encoded');
   assert.match(textOf(permissionPanel), /只增量开通“获取群组中所有消息”权限/);
-  assert.equal(renderer.root.findByProps({ 'data-bot-id': 'bot_before_permission' })
-    .findAllByProps({ 'data-provision-for': 'bot_group_permission' }).length, 0);
-  assert.equal(targetCard().findByProps({ 'aria-label': '群聊响应方式' }).props.value, 'mention');
+  assert.equal(renderer.root.findByProps({ 'aria-label': '群聊响应方式' }).props.value, 'mention');
   await act(async () => renderer.unmount());
 });
 
@@ -310,12 +349,19 @@ test('reauthorizing all-message mode starts the same bot-scoped permission flow'
 
   let renderer;
   await act(async () => {
-    renderer = create(React.createElement(FeishuSettingsTab, { rpcCall }));
+    renderer = create(React.createElement(FeishuGroupSettingsPage, {
+      account: {
+        botId: 'bot_reauthorize',
+        botName: '重新授权机器人',
+        groupResponseMode: 'all',
+        groupMessagePermissionGranted: true,
+      },
+      rpcCall,
+    }));
     await flushMicrotasks();
   });
-  const targetCard = () => renderer.root.findByProps({ 'data-bot-id': 'bot_reauthorize' });
   await act(async () => {
-    targetCard().findByProps({ 'aria-label': '重新授权群消息权限' }).props.onClick();
+    renderer.root.findByProps({ 'aria-label': '重新授权群消息权限' }).props.onClick();
     await flushMicrotasks();
   });
 
@@ -324,7 +370,9 @@ test('reauthorizing all-message mode starts the same bot-scoped permission flow'
       && payload.botId === 'bot_reauthorize'
   )));
   assert.equal(calls.some(({ endpoint }) => endpoint === FEISHU_ENDPOINTS.setGroupResponseMode), false);
-  assert.match(textOf(targetCard().findByProps({ 'data-provision-for': 'bot_reauthorize' })),
+  assert.match(textOf(renderer.root.findByProps({
+    'aria-label': '重新授权机器人的飞书授权流程',
+  })),
     /正在为「重新授权机器人」开通群消息权限/);
   await act(async () => renderer.unmount());
 });
