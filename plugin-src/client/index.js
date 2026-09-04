@@ -49,6 +49,12 @@ import {
   DeliveryTargetSettingsPage,
 } from './delivery-settings.js';
 import {
+  GLOBAL_SETTINGS_RPC_CHANNEL,
+  GLOBAL_SETTINGS_TAB_ID,
+  GlobalSettingsLogoGlyph,
+  GlobalSettingsPanel,
+} from './global-settings.js';
+import {
   createLoopbackAwareRpcCalls,
   replacePageLocation,
 } from './loopback-recovery.js';
@@ -173,6 +179,7 @@ export function IMSettingsTab({
   officeRpcCall,
   updateRpcCall,
   deliveryRpcCall,
+  globalSettingsRpcCall,
   workspaceDirectoryPicker,
   browserLocation = globalThis.location,
   navigateToRecoveryUrl = replacePageLocation,
@@ -182,7 +189,14 @@ export function IMSettingsTab({
   const [runningVersion, setRunningVersion] = React.useState(IM_PLUGIN_VERSION);
   const [deliverySettings, setDeliverySettings] = React.useState(null);
   const githubTooltipId = React.useId();
+  const globalSettingsSelected = selected === GLOBAL_SETTINGS_TAB_ID;
   const active = CHANNELS.find((channel) => channel.id === selected) ?? CHANNELS[0];
+  const activeTabId = globalSettingsSelected
+    ? `dim-tab-${GLOBAL_SETTINGS_TAB_ID}`
+    : `dim-tab-${active.id}`;
+  const activePanelId = globalSettingsSelected
+    ? `dim-panel-${GLOBAL_SETTINGS_TAB_ID}`
+    : `dim-panel-${active.id}`;
   const reportLoopbackRecovery = React.useCallback((recovery) => {
     setLoopbackRecovery((current) => current?.url === recovery.url ? current : recovery);
   }, []);
@@ -202,6 +216,7 @@ export function IMSettingsTab({
     officeRpcCall,
     updateRpcCall,
     deliveryRpcCall,
+    globalSettingsRpcCall,
   }, {
     location: browserLocation,
     onRecovery: reportLoopbackRecovery,
@@ -211,6 +226,7 @@ export function IMSettingsTab({
     discordRpcCall,
     deliveryRpcCall,
     feishuRpcCall,
+    globalSettingsRpcCall,
     officeRpcCall,
     qqRpcCall,
     reportLoopbackRecovery,
@@ -256,14 +272,30 @@ export function IMSettingsTab({
         }, '帮助与反馈 · 前往 GitHub'))),
     ),
     h('div', { className: 'dim-layout' },
-      h('nav', { className: 'dim-rail', role: 'tablist', 'aria-label': 'IM 渠道' },
+      h('nav', { className: 'dim-rail', role: 'tablist', 'aria-label': 'IM 设置导航' },
+        h('button', {
+          type: 'button',
+          role: 'tab',
+          id: `dim-tab-${GLOBAL_SETTINGS_TAB_ID}`,
+          className: 'dim-channel dim-channelGlobal',
+          'aria-selected': globalSettingsSelected,
+          'aria-controls': `dim-panel-${GLOBAL_SETTINGS_TAB_ID}`,
+          onClick: () => {
+            setSelected(GLOBAL_SETTINGS_TAB_ID);
+            setDeliverySettings(null);
+          },
+        },
+        h('span', { className: 'dim-logo dim-logoGlobal', 'aria-hidden': 'true' },
+          h(GlobalSettingsLogoGlyph)),
+        h('span', { className: 'dim-channelCopy' },
+          h('strong', null, '全局设置'))),
         CHANNELS.map((channel) => h('button', {
           key: channel.id,
           type: 'button',
           role: 'tab',
           id: `dim-tab-${channel.id}`,
           className: 'dim-channel',
-          'aria-selected': channel.id === active.id,
+          'aria-selected': !globalSettingsSelected && channel.id === active.id,
           'aria-controls': `dim-panel-${channel.id}`,
           onClick: () => {
             setSelected(channel.id);
@@ -279,8 +311,8 @@ export function IMSettingsTab({
       h('main', {
         className: 'dim-panel',
         role: 'tabpanel',
-        id: `dim-panel-${active.id}`,
-        'aria-labelledby': `dim-tab-${active.id}`,
+        id: activePanelId,
+        'aria-labelledby': activeTabId,
       },
       loopbackRecovery
         ? h(LoopbackRecoveryNotice, {
@@ -289,7 +321,9 @@ export function IMSettingsTab({
           })
         : null,
       h(BotSettingsContext.Provider, { value: botSettingsContext },
-        deliverySettings?.channel === active.id
+        globalSettingsSelected
+          ? h(GlobalSettingsPanel, { rpcCall: rpcCalls.globalSettingsRpcCall })
+          : deliverySettings?.channel === active.id
           ? h(DeliveryTargetSettingsPage, {
               channel: active.id,
               account: deliverySettings,
@@ -370,6 +404,8 @@ export function apply(ctx) {
     ctx.connection.rpc.call(UPDATE_RPC_CHANNEL, endpoint, payload, signal);
   const deliveryRpcCall = (endpoint, payload, signal) =>
     ctx.connection.rpc.call(DELIVERY_RPC_CHANNEL, endpoint, payload, signal);
+  const globalSettingsRpcCall = (endpoint, payload, signal) =>
+    ctx.connection.rpc.call(GLOBAL_SETTINGS_RPC_CHANNEL, endpoint, payload, signal);
   const workspaceDirectoryPicker = Object.freeze({
     listDirectory: (path, signal) =>
       callWorkspaceDirectoryApi(ctx, 'listDirectory', path, signal),
@@ -395,6 +431,7 @@ export function apply(ctx) {
       officeRpcCall,
       updateRpcCall,
       deliveryRpcCall,
+      globalSettingsRpcCall,
       workspaceDirectoryPicker,
     }),
   }, IMSettingsTab));

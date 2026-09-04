@@ -7,6 +7,10 @@ import { createConnectionSupervisor } from './connection-supervisor.mjs';
 import { createHarnessCommandExecutor } from '../../harness-command-executor.mjs';
 import { harnessConnection } from '../../harness-connection.mjs';
 import { createHarnessSessionExecutors } from '../../harness-session-coordinator.mjs';
+import {
+  getInboundTtlRuntime,
+  registerInboundTtlWorkspaces,
+} from '../../inbound-ttl-runtime.mjs';
 import { verifyFeishuApp } from '../../../../src/channels/feishu/feishu-app.mjs';
 import { FeishuRuntime } from '../../../../src/channels/feishu/feishu-runtime.mjs';
 import { HarnessClient } from '../../../../src/channels/feishu/harness-client.mjs';
@@ -158,10 +162,19 @@ export async function createProductionController(ctx, config = {}, internals = {
     return stateFor(botConfig);
   };
   const commandExecutor = createHarnessCommandExecutor(ctx, internals.commandExecutor);
+  const inboundTtl = internals.inboundTtl ?? getInboundTtlRuntime(ctx, config);
+  const inboundTtlService = inboundTtl?.service ?? inboundTtl;
+  registerInboundTtlWorkspaces(ctx, inboundTtlService, {
+    workspaces,
+    configStore: observedConfigStore,
+    defaultWorkspace,
+    botIdFrom: (bot) => bot?.id,
+  });
   const { controlExecutor, sessionMaintenanceExecutor, fileIngressExecutor } = createHarnessSessionExecutors(ctx, {
     controlExecutor: internals.controlExecutor,
     sessionMaintenanceExecutor: internals.sessionMaintenanceExecutor,
     fileIngressExecutor: internals.fileIngressExecutor,
+    inboundTtlService,
   });
   const harness = new Harness({
     ...connection,

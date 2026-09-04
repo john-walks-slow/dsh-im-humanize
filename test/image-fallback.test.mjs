@@ -158,7 +158,7 @@ test('HarnessClient restages rejected images as workspace files and retries text
 
   const files = manifestFiles(retryContent);
   assert.deepEqual(files.map(({ name }) => name), ['photo.png']);
-  assert.match(files[0].path, /^\.dsh-im[\\/]inbound[\\/]turn-[^\\/]+[\\/]01-photo\.png$/);
+  assert.match(files[0].path, /^\.dsh-im[\\/]inbound[\\/]\d{8}-\d{6}-[^\\/]+[\\/]01-photo\.png$/);
 
   // The exact image bytes were staged into the Session workspace via ingress.
   assert.equal(ingressCalls.length, 1);

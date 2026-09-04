@@ -842,6 +842,22 @@ const EN = Object.freeze({
   '正在读取投递目标…': 'Loading delivery targets…',
   '尚未配置投递目标': 'No delivery targets yet',
   '点击“新建目标”可从已聊过的会话选择，也可手动填写。': 'Select New target to choose a conversation or enter the details manually.',
+  '全局设置': 'Global settings',
+  'IM 设置导航': 'IM settings navigation',
+  '附件保留时长 (小时)': 'Attachment retention (hours)',
+  '永久保留，不会自动清理': 'Keep forever; nothing is removed automatically',
+  '每 Turn 结束后立即清理': 'Cleaned up as soon as each turn ends',
+  '小时后自动清理': 'hours until automatic cleanup',
+  '请输入 -1、0 或 1~${INBOUND_TTL_MAX_HOURS} 之间的整数。': 'Enter -1, 0, or an integer from 1 to ${INBOUND_TTL_MAX_HOURS}.',
+  '设置保存失败，请稍后重试。': 'Could not save the setting. Try again later.',
+  '全局设置暂不可用。': 'Global settings are unavailable.',
+  '正在读取全局设置…': 'Loading global settings…',
+  '无法读取全局设置，请稍后重试。': 'Could not load global settings. Try again later.',
+  '全局设置返回了无法识别的响应。': 'Global settings returned an unrecognized response.',
+  '清理过期附件': 'Clean up expired attachments',
+  '确认清理': 'Confirm cleanup',
+  '再次点击确认执行清理': 'Click again to confirm cleanup',
+  '正在清理…': 'Cleaning up…',
 });
 
 export const en = EN;
@@ -870,6 +886,8 @@ function translateDynamic(text) {
   if (match) return `${match[1]}/${match[2]} online`;
   match = /^已接入 (\d+) 个机器人，其中 (\d+) 个在线$/.exec(text);
   if (match) return `${match[2]} of ${match[1]} bots online`;
+  match = /^请输入 -1、0 或 1~(\d+) 之间的整数。$/.exec(text);
+  if (match) return `Enter -1, 0, or an integer from 1 to ${match[1]}.`;
   match = /^正在读取\s*(.+?)\s*机器人状态…$/.exec(text);
   if (match) return `Loading ${channelName(match[1])} bot status…`;
   match = /^无法读取\s*(.+?)\s*机器人状态$/.exec(text);

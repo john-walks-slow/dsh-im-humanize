@@ -57,6 +57,7 @@ test('Host update initialization failure leaves all channel activations availabl
   const internals = Object.fromEntries(channels.map((channel) => [`apply${channel}`, async () => calls.push(channel)]));
   internals.installUpdateRpc = () => { throw new Error('updater unavailable'); };
   internals.installDeliveryRpc = () => {};
+  internals.installInboundTtlRpc = () => {};
   const errors = [];
   await createImHostPlugin(internals).apply({
     connection: { rpc: {} }, logger: { error: (...args) => errors.push(args) },

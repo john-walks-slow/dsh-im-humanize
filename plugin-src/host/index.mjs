@@ -13,6 +13,7 @@ import { setImHostLanguage } from '../../src/channels/shared/i18n.mjs';
 import { installDeliveryRpc } from './delivery-rpc.mjs';
 import { installDeliveryHttp } from './delivery-http.mjs';
 import { createDeliveryService } from './delivery-service.mjs';
+import { installInboundTtlRpc } from './inbound-ttl-rpc.mjs';
 import { installUpdateRpc } from './update-rpc.mjs';
 
 export const name = 'dsh-im-host';
@@ -32,6 +33,7 @@ function channelConfig(config, name, deliveryService) {
 
 export function createImHostPlugin(internals = {}) {
   const startUpdate = internals.installUpdateRpc ?? installUpdateRpc;
+  const startInboundTtl = internals.installInboundTtlRpc ?? installInboundTtlRpc;
   const startDelivery = internals.installDeliveryRpc ?? installDeliveryRpc;
   const startDeliveryHttp = internals.installDeliveryHttp ?? installDeliveryHttp;
   const makeDeliveryService = internals.createDeliveryService ?? createDeliveryService;
@@ -109,6 +111,11 @@ export function createImHostPlugin(internals = {}) {
         startUpdate(ctx);
       } catch (error) {
         logger.error?.('[dsh-im] failed to activate update management; continuing with channels', error);
+      }
+      try {
+        startInboundTtl(ctx, { config });
+      } catch (error) {
+        logger.error?.('[dsh-im] failed to activate inbound TTL settings; continuing with channels', error);
       }
       try {
         startDelivery(ctx, deliveryService, { authority: config.rpcAuthority });

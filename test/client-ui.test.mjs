@@ -5,6 +5,7 @@ import test from 'node:test';
 import { transform } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import TestRenderer from 'react-test-renderer';
 
 import {
   apply as applyClient,
@@ -58,6 +59,10 @@ import {
   setImTranslator,
   zh,
 } from '../plugin-src/client/i18n.js';
+import {
+  GLOBAL_SETTINGS_RPC_CHANNEL,
+  GlobalSettingsPanel,
+} from '../plugin-src/client/global-settings.js';
 
 const STYLES_URL = new URL('../plugin-src/client/styles.js', import.meta.url);
 const FEISHU_STYLES_URL = new URL(
@@ -98,6 +103,26 @@ const QQ_SOURCE_URL = new URL(
   '../plugin-src/client/channels/qq/index.js',
   import.meta.url,
 );
+
+const { act, create } = TestRenderer;
+
+async function flushMicrotasks() {
+  for (let index = 0; index < 6; index += 1) await Promise.resolve();
+}
+
+function nodeText(node) {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (!node) return '';
+  const children = Array.isArray(node) ? node : node.children;
+  return Array.isArray(children) ? children.map(nodeText).join('') : nodeText(children);
+}
+
+function findButton(renderer, label) {
+  const button = renderer.root.findAllByType('button')
+    .find((candidate) => nodeText(candidate) === label);
+  assert.ok(button, `missing button: ${label}`);
+  return button;
+}
 
 test('IM settings renders nine IM channels plus the AI Office connector', async () => {
   const { default: packageMetadata } = await import('../package.json', {
@@ -168,11 +193,183 @@ test('IM settings renders nine IM channels plus the AI Office connector', async 
   assert.match(markup, /dim-logoWhatsapp/);
   assert.match(markup, /dim-logoOffice/);
   assert.match(styles, /\.dim-logoFeishu svg \{ width: 28px; height: 28px; \}/);
-  assert.equal((markup.match(/role="tab"/g) ?? []).length, 10);
+  assert.equal((markup.match(/role="tab"/g) ?? []).length, 11);
   assert.equal((markup.match(/aria-selected="true"/g) ?? []).length, 1);
   assert.doesNotMatch(markup, /role="switch"|type="checkbox"/);
   assert.doesNotMatch(markup, /dim-chevron|扫码绑定<\/small>|扫码接入<\/small>/);
   assert.doesNotMatch(markup, />INSTANT MESSAGING<|>Channel<|>微信设置</);
+});
+
+test('the global settings entry sits above the channel tabs in the rail', () => {
+  const markup = renderToStaticMarkup(React.createElement(IMSettingsTab, {
+    globalSettingsRpcCall: async () => ({ ok: true, value: { ttlHours: 0 } }),
+    weixinRpcCall: async () => ({ ok: true, value: {} }),
+  }));
+
+  assert.match(markup, /id="dim-tab-global-settings"/);
+  assert.match(markup, /aria-controls="dim-panel-global-settings"/);
+  assert.match(markup, /class="dim-channel dim-channelGlobal"/);
+  assert.match(markup, /dim-logoGlobal/);
+  assert.match(markup, /data-im-icon="global-settings"/);
+  assert.match(markup, />全局设置<\/strong>/);
+  assert.ok(markup.indexOf('dim-tab-global-settings') < markup.indexOf('dim-tab-weixin'));
+  assert.match(markup, /aria-label="IM 设置导航"/);
+  // The global panel only mounts once its tab is selected; the rail entry must
+  // not steal the initial selection from the first channel.
+  assert.doesNotMatch(markup, /id="dim-panel-global-settings"/);
+});
+
+test('the global settings panel is one compact block without a save button', () => {
+  const markup = renderToStaticMarkup(React.createElement(GlobalSettingsPanel, {
+    rpcCall: async () => ({ ok: true, value: { ttlHours: 24 } }),
+  }));
+
+  assert.match(markup, /aria-label="全局设置"/);
+  // No label wrapper: the input takes its accessible name from the heading.
+  assert.doesNotMatch(markup, /<label/);
+  assert.match(markup, /<input[^>]*aria-labelledby="dim-globalTtlTitle"/);
+  assert.match(markup, /<code>1~8760<\/code>/);
+  assert.match(markup, /正在读取全局设置…/);
+  // The sweep action shares the heading row, right-aligned.
+  assert.ok(markup.indexOf('附件保留时长') < markup.indexOf('清理过期附件'));
+  assert.match(markup, />清理过期附件<\/button>/);
+  // Blur-to-save replaced the save button entirely.
+  assert.doesNotMatch(markup, /type="submit"/);
+  assert.doesNotMatch(markup, />保存</);
+});
+
+test('the sweep confirm state is announced without a visible hint paragraph', async () => {
+  const calls = [];
+  const rpcCall = async (endpoint, payload) => {
+    calls.push({ endpoint, payload });
+    if (endpoint === 'settings.inbound-ttl.get') return { ok: true, value: { ttlHours: 24 } };
+    if (endpoint === 'settings.inbound-ttl.sweep') {
+      return { ok: true, value: { deletedDirectories: 2, sweptWorkspaces: 5 } };
+    }
+    throw new Error(`unexpected endpoint: ${endpoint}`);
+  };
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(GlobalSettingsPanel, { rpcCall }));
+    await flushMicrotasks();
+  });
+
+  await act(async () => {
+    findButton(renderer, '清理过期附件').props.onClick();
+  });
+  const confirmButton = findButton(renderer, '确认清理');
+  assert.equal(confirmButton.props['data-kind'], 'danger');
+  // Only the screen-reader live region carries the confirmation wording.
+  const liveRegion = renderer.root.find(
+    (node) => node.props.className === 'dim-globalScreenReader',
+  );
+  assert.equal(nodeText(liveRegion), '再次点击确认执行清理');
+  assert.equal(confirmButton.props['aria-describedby'], liveRegion.props.id);
+
+  // Confirming still runs the sweep RPC, silently and without result text.
+  await act(async () => {
+    confirmButton.props.onClick();
+    await flushMicrotasks();
+  });
+  assert.equal(calls.filter((call) => call.endpoint === 'settings.inbound-ttl.sweep').length, 1);
+  assert.deepEqual(
+    renderer.root.findAllByProps({ className: 'dim-globalFeedback' }),
+    [],
+  );
+  assert.ok(findButton(renderer, '清理过期附件'));
+  act(() => renderer.unmount());
+});
+
+test('the TTL input saves on blur, reverts invalid values, and stays quiet when unchanged', async () => {
+  const calls = [];
+  const rpcCall = async (endpoint, payload) => {
+    calls.push({ endpoint, payload });
+    if (endpoint === 'settings.inbound-ttl.get') return { ok: true, value: { ttlHours: 24 } };
+    if (endpoint === 'settings.inbound-ttl.set') {
+      return { ok: true, value: { ttlHours: payload.ttlHours } };
+    }
+    throw new Error(`unexpected endpoint: ${endpoint}`);
+  };
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(GlobalSettingsPanel, { rpcCall }));
+    await flushMicrotasks();
+  });
+  const input = () => renderer.root.findByProps({ id: 'dim-globalTtlInput' });
+  const inlineNote = () => renderer.root.findAllByProps({ className: 'dim-globalInline' })
+    .at(-1);
+  assert.equal(input().props.value, '24');
+  assert.equal(input().props.disabled, false);
+
+  // Valid changed value: blur saves it immediately and silently.
+  await act(async () => {
+    input().props.onChange({ target: { value: '48' } });
+  });
+  await act(async () => {
+    input().props.onBlur();
+    await flushMicrotasks();
+  });
+  assert.deepEqual(calls.at(-1), { endpoint: 'settings.inbound-ttl.set', payload: { ttlHours: 48 } });
+  assert.equal(input().props.value, '48');
+  assert.equal(renderer.root.findAllByProps({ className: 'dim-globalInline' }).length, 0);
+
+  // Invalid value: blur neither saves nor keeps the dangling text.
+  await act(async () => {
+    input().props.onChange({ target: { value: 'abc' } });
+  });
+  await act(async () => {
+    input().props.onBlur();
+    await flushMicrotasks();
+  });
+  assert.equal(calls.filter((call) => call.endpoint === 'settings.inbound-ttl.set').length, 1);
+  assert.equal(input().props.value, '48');
+  assert.equal(input().props['aria-invalid'], 'true');
+  assert.equal(nodeText(inlineNote()), '请输入 -1、0 或 1~8760 之间的整数。');
+
+  // Unchanged value: blur is silent.
+  await act(async () => {
+    input().props.onChange({ target: { value: '48' } });
+  });
+  await act(async () => {
+    input().props.onBlur();
+    await flushMicrotasks();
+  });
+  assert.equal(calls.filter((call) => call.endpoint === 'settings.inbound-ttl.set').length, 1);
+  assert.equal(input().props['aria-invalid'], undefined);
+  act(() => renderer.unmount());
+});
+
+test('a failed blur save keeps the input enabled with the error inline', async () => {
+  const rpcCall = async (endpoint) => {
+    if (endpoint === 'settings.inbound-ttl.get') return { ok: true, value: { ttlHours: 24 } };
+    if (endpoint === 'settings.inbound-ttl.set') {
+      return { ok: false, error: { code: 'store-unavailable', message: '无法写入设置存储。' } };
+    }
+    throw new Error(`unexpected endpoint: ${endpoint}`);
+  };
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(GlobalSettingsPanel, { rpcCall }));
+    await flushMicrotasks();
+  });
+  const input = () => renderer.root.findByProps({ id: 'dim-globalTtlInput' });
+
+  await act(async () => {
+    input().props.onChange({ target: { value: '72' } });
+  });
+  await act(async () => {
+    input().props.onBlur();
+    await flushMicrotasks();
+  });
+  assert.equal(input().props.disabled, false);
+  assert.equal(input().props.value, '72');
+  const note = renderer.root.findAllByProps({ className: 'dim-globalInline' }).at(-1);
+  assert.equal(nodeText(note), '无法写入设置存储。');
+  assert.equal(note.props.role, 'alert');
+  act(() => renderer.unmount());
 });
 
 test('all channel styles use the current Harness theme tokens', async () => {
@@ -791,7 +988,11 @@ test('client registers one top-level bilingual IM settings section with a direct
     const injected = registrations[0].options.inject();
     const signal = new AbortController().signal;
     await injected.updateRpcCall('update.status', {}, signal);
-    assert.deepEqual(rpcCalls, [['/dsh-im', 'update.status', {}, signal]]);
+    await injected.globalSettingsRpcCall('settings.inbound-ttl.get', {}, signal);
+    assert.deepEqual(rpcCalls, [
+      ['/dsh-im', 'update.status', {}, signal],
+      [GLOBAL_SETTINGS_RPC_CHANNEL, 'settings.inbound-ttl.get', {}, signal],
+    ]);
     assert.deepEqual(
       await injected.workspaceDirectoryPicker.listDirectory('/workspace/current', signal),
       { path: '/workspace/current', entries: [] },
@@ -811,6 +1012,7 @@ test('client registers one top-level bilingual IM settings section with a direct
       `class="dim-brandVersion">v${IM_PLUGIN_VERSION.replaceAll('.', '\\.')}<\\/span>`,
     ));
     assert.match(markup, /Help &amp; feedback · Open GitHub/);
+    assert.match(markup, /Global settings/);
     assert.match(markup, />WeChat<|>Feishu<|>DingTalk<|>WeCom</);
     assert.match(markup, />QQ<[^]*>Slack<[^]*>Telegram<[^]*>Discord<[^]*>WhatsApp</);
     assert.match(markup, />AI Office<\/strong><small class="dim-channelNote">\(Experimental\)<\/small>/);
@@ -905,6 +1107,14 @@ test('all nine channel settings and connected cards render English copy', () => 
 
   setImTranslator((key) => en[key] ?? key);
   try {
+    const globalMarkup = renderToStaticMarkup(React.createElement(GlobalSettingsPanel, {
+      rpcCall: async () => ({ ok: true, value: { ttlHours: 24 } }),
+    }));
+    assert.match(globalMarkup, /Attachment retention \(hours\)/);
+    assert.match(globalMarkup, /Clean up expired attachments/);
+    assert.match(globalMarkup, /Loading global settings…/);
+    assert.doesNotMatch(globalMarkup, /[\p{Script=Han}]/u);
+
     const pages = [
       WeixinSettingsTab,
       FeishuSettingsTab,
