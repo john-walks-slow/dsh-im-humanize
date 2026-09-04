@@ -113,7 +113,7 @@ function createSessionMaintenanceExecutor(agents) {
   };
 }
 
-function createFileIngressExecutor(agents) {
+function createFileIngressExecutor(agents, { inboundTtlService } = {}) {
   return ({ sessionId, workspace, files, signal }) => {
     const agent = agents.get(sessionId);
     const attachedWorkspace = agent?.session?.header?.cwd;
@@ -126,7 +126,19 @@ function createFileIngressExecutor(agents) {
         'The Harness Session workspace is unavailable for inbound files.',
       );
     }
-    return stageInboundFiles({ files }, { workspace: exactWorkspace, signal });
+    const staged = stageInboundFiles({ files }, {
+      workspace: exactWorkspace,
+      signal,
+      ...(inboundTtlService ? { retention: inboundTtlService.stagingRetention() } : {}),
+      // Registration at creation time closes the mid-staging sweep window;
+      // trackStaged later re-registers idempotently and owns the release.
+      ...(typeof inboundTtlService?.trackDirectory === 'function'
+        ? { onStagedDirectory: (directory) => inboundTtlService.trackDirectory(directory) }
+        : {}),
+    });
+    return inboundTtlService
+      ? staged.then((result) => (result ? inboundTtlService.trackStaged(result) : result))
+      : staged;
   };
 }
 
@@ -136,7 +148,9 @@ function createFileIngressExecutor(agents) {
  * when an Agent is attached, its live Session header remains authoritative.
  */
 export function createHarnessSessionExecutors(ctx, provided = {}) {
-  const { controlExecutor, sessionMaintenanceExecutor, fileIngressExecutor } = provided;
+  const {
+    controlExecutor, sessionMaintenanceExecutor, fileIngressExecutor, inboundTtlService,
+  } = provided;
   if (controlExecutor !== undefined && typeof controlExecutor !== 'function') {
     throw new TypeError('controlExecutor must be a function');
   }
@@ -147,6 +161,11 @@ export function createHarnessSessionExecutors(ctx, provided = {}) {
   if (fileIngressExecutor !== undefined && typeof fileIngressExecutor !== 'function') {
     throw new TypeError('fileIngressExecutor must be a function');
   }
+  if (inboundTtlService !== undefined
+    && (typeof inboundTtlService?.stagingRetention !== 'function'
+      || typeof inboundTtlService?.trackStaged !== 'function')) {
+    throw new TypeError('inboundTtlService must expose stagingRetention() and trackStaged()');
+  }
 
   const agents = controlExecutor && sessionMaintenanceExecutor && fileIngressExecutor
     ? undefined
@@ -156,6 +175,6 @@ export function createHarnessSessionExecutors(ctx, provided = {}) {
     sessionMaintenanceExecutor: sessionMaintenanceExecutor
       ?? (agents ? createSessionMaintenanceExecutor(agents) : undefined),
     fileIngressExecutor: fileIngressExecutor
-      ?? createFileIngressExecutor(agents ?? { get: () => undefined }),
+      ?? createFileIngressExecutor(agents ?? { get: () => undefined }, { inboundTtlService }),
   };
 }

@@ -1,11 +1,40 @@
 import { createWriteStream } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
 import { t } from './i18n.mjs';
 
 const FILES_DIRECTORY = join('.dsh-im', 'inbound');
+const RETENTIONS = new Set(['turn', 'persistent']);
+const DIRECTORY_TIMESTAMP_PATTERN = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/;
+
+function padded(value) {
+  return String(value).padStart(2, '0');
+}
+
+/** Timestamp prefix (`yyyyMMdd-HHmmss-`) handed to mkdtemp for random suffixes. */
+function inboundDirectoryPrefix(now = new Date()) {
+  return `${now.getFullYear()}${padded(now.getMonth() + 1)}${padded(now.getDate())}`
+    + `-${padded(now.getHours())}${padded(now.getMinutes())}${padded(now.getSeconds())}-`;
+}
+
+/**
+ * Parse the local-time instant encoded in a staged inbound directory name,
+ * returning null for legacy `turn-` names and anything unparseable.
+ */
+export function parseInboundDirectoryName(name) {
+  if (typeof name !== 'string') return null;
+  const match = DIRECTORY_TIMESTAMP_PATTERN.exec(name);
+  if (!match) return null;
+  const [year, month, day, hour, minute, second] = match.slice(1).map(Number);
+  const date = new Date(year, month - 1, day, hour, minute, second);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day
+    || date.getHours() !== hour || date.getMinutes() !== minute || date.getSeconds() !== second) {
+    return null;
+  }
+  return date;
+}
 
 export class InboundFileError extends Error {
   constructor(code, message, userMessage = t('文件接收失败，请重新发送后再试。'), options = {}) {
@@ -97,7 +126,18 @@ export function prefetchInboundFiles(message, { signal } = {}) {
 export async function stageInboundFiles(message, {
   workspace,
   signal,
+  retention = 'turn',
+  onStagedDirectory = null,
 } = {}) {
+  if (!RETENTIONS.has(retention)) {
+    throw new InboundFileError(
+      'inbound-file-retention-invalid',
+      `Unknown inbound file retention: ${String(retention)}`,
+    );
+  }
+  if (onStagedDirectory !== null && typeof onStagedDirectory !== 'function') {
+    throw new TypeError('onStagedDirectory must be a function');
+  }
   const sources = fileSources(message);
   if (sources.length === 0) return null;
   if (typeof workspace !== 'string' || !isAbsolute(workspace)) {
@@ -110,7 +150,10 @@ export async function stageInboundFiles(message, {
   signal?.throwIfAborted();
   const root = resolve(workspace, FILES_DIRECTORY);
   await mkdir(root, { recursive: true, mode: 0o700 });
-  const directory = await mkdtemp(join(root, 'turn-'));
+  const directory = await mkdtemp(join(root, inboundDirectoryPrefix()));
+  // Register the batch before any file is written so a concurrent TTL=0
+  // sweep can never observe the directory as untracked mid-staging.
+  onStagedDirectory?.(directory);
   const files = [];
 
   try {
@@ -177,7 +220,11 @@ export async function stageInboundFiles(message, {
     }
     return Object.freeze({
       files: Object.freeze(files),
+      directory,
+      retention,
       async cleanup() {
+        // Persistent retention leaves the directory to the global TTL sweeper.
+        if (retention !== 'turn') return;
         await rm(directory, { recursive: true, force: true });
       },
     });
@@ -185,6 +232,52 @@ export async function stageInboundFiles(message, {
     await rm(directory, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
+}
+
+/**
+ * Delete expired staged inbound directories under one workspace. Only
+ * directories whose names parse as `yyyyMMdd-HHmmss` timestamps are managed;
+ * legacy `turn-` names and anything unparseable stay untouched. Directories
+ * reported as tracked by an in-flight turn are always skipped.
+ */
+export async function sweepInboundAttachments(workspace, ttlHours, {
+  now = () => new Date(),
+  isTracked,
+} = {}) {
+  if (typeof workspace !== 'string' || !workspace) {
+    throw new TypeError('sweepInboundAttachments requires a workspace');
+  }
+  // An unparsable TTL must never widen into unconditional deletion.
+  if (ttlHours !== 0 && !(Number.isInteger(ttlHours) && ttlHours > 0)) {
+    return { deleted: 0 };
+  }
+  const root = resolve(workspace, FILES_DIRECTORY);
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { deleted: 0 };
+    throw error;
+  }
+  const current = now();
+  let deleted = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const stagedAt = parseInboundDirectoryName(entry.name);
+    if (stagedAt === null) continue;
+    const directory = join(root, entry.name);
+    if (typeof isTracked === 'function' && isTracked(directory)) continue;
+    const ageHours = (current - stagedAt) / 3_600_000;
+    if (ttlHours === 0 || ageHours >= ttlHours) {
+      try {
+        await rm(directory, { recursive: true, force: true });
+        deleted += 1;
+      } catch {
+        // One undeletable directory must not abort the remaining sweep.
+      }
+    }
+  }
+  return { deleted };
 }
 
 export function appendInboundFilesToPrompt(prompt, staged) {

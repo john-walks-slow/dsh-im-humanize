@@ -146,7 +146,7 @@ test('Host file ingress stages bytes in the exact attached Session cwd', async (
 
   assert.equal(staged.files.length, 1);
   assert.equal(staged.files[0].name, 'attached.txt');
-  assert.match(staged.files[0].path, /^\.dsh-im\/inbound\/turn-[^/]+\/01-attached\.txt$/);
+  assert.match(staged.files[0].path, /^\.dsh-im\/inbound\/\d{8}-\d{6}-[^/]+\/01-attached\.txt$/);
   assert.equal(
     await readFile(resolve(sessionWorkspace, staged.files[0].path), 'utf8'),
     'session bytes',

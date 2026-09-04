@@ -146,7 +146,7 @@ test('stageInboundFiles keeps display names but makes traversal-like storage nam
   }, { workspace: root });
 
   assert.equal(staged.files[0].name, 'report:?*.txt');
-  assert.match(staged.files[0].path, /^\.dsh-im\/inbound\/turn-[^/]+\/01-report___\.txt$/);
+  assert.match(staged.files[0].path, /^\.dsh-im\/inbound\/\d{8}-\d{6}-[^/]+\/01-report___\.txt$/);
   assert.equal(await readFile(absoluteStagedPath(root, staged.files[0]), 'utf8'), 'safe');
   await staged.cleanup();
 });
