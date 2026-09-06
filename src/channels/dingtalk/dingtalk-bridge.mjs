@@ -71,7 +71,12 @@ import {
 } from '../shared/inbound-access.mjs';
 import { t } from '../shared/i18n.mjs';
 import { createMessageBreakHandler } from '../shared/message-break.mjs';
-import { normalizeOnNewMessage } from '../shared/new-message-policy.mjs';
+import {
+  normalizeOnNewMessage,
+  resolveNewMessagePolicy,
+  fireAndForgetStop,
+  trySteer,
+} from '../shared/new-message-policy.mjs';
 
 const CARD_INITIAL_TEXT = '已连接 DeepSeek Harness，正在思考…';
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
@@ -557,7 +562,7 @@ export class DingtalkHarnessBridge {
     return structuredClone(this.#status);
   }
 
-  accept(message, { contextSnapshot } = {}) {
+  async accept(message, { contextSnapshot } = {}) {
     if (this.#signal?.aborted) return Promise.resolve();
     const messageId = nonEmptyString(message?.msgId);
     const sender = senderStaffId(message);
@@ -794,7 +799,54 @@ export class DingtalkHarnessBridge {
       pending.queue = current;
       return finish(current);
     }
+    // onNewMessage policy: check before enqueuing as a new turn.
+    const policy = resolveNewMessagePolicy({
+      hasQueue: this.#queues.has(key),
+      hasPendingInteraction: this.#pendingInteractions.has(key),
+      hasPendingApproval: this.#approvals.hasPending(key),
+      onNewMessage: this.#onNewMessage,
+    });
+    if (policy === 'interrupt') {
+      const current = this.#enqueueMessage(message, messageId, sender, key, { statusReaction });
+      fireAndForgetStop({
+        session: this.#boundSession(key),
+        control: { owner: this, key },
+        signal: this.#signal,
+        logger: this.#logger,
+      });
+      return finish(current);
+    }
+    if (policy === 'steer') {
+      const text = typeof message.content === 'string' ? message.content.trim() : '';
+      if (text && !hasInboundImages(message) && !hasInboundFiles(message)) {
+        const steered = await trySteer({
+          session: this.#boundSession(key),
+          text,
+          control: { owner: this, key },
+          signal: this.#signal,
+          logger: this.#logger,
+        });
+        if (steered) {
+          if (!this.#state.hasSeen(messageId)) {
+            await this.#state.markSeen(messageId);
+            this.#status.messagesReceived += 1;
+            this.#status.lastMessageAt = new Date().toISOString();
+          }
+          return finish(undefined);
+        }
+      }
+      return finish(this.#enqueueMessage(message, messageId, sender, key, { statusReaction }));
+    }
     return finish(this.#enqueueMessage(message, messageId, sender, key, { statusReaction }));
+  }
+
+  /** Get a workspace session bound to the conversation's current session ID. */
+  #boundSession(key) {
+    if (typeof this.#state?.sessionFor !== 'function') return null;
+    const sessionId = this.#state.sessionFor(key);
+    if (typeof sessionId !== 'string' || !sessionId) return null;
+    if (typeof this.#harness?.workspaceSession !== 'function') return null;
+    return this.#harness.workspaceSession(sessionId);
   }
 
   async #showMenu(message, key) {

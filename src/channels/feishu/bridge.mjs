@@ -827,7 +827,7 @@ export class FeishuHarnessBridge {
     }
   }
 
-  accept(event) {
+  async accept(event) {
     if (this.#signal?.aborted) return Promise.resolve();
     const messageId = nonEmptyString(event?.message?.message_id);
     if (!messageId || isBotSender(event)) return Promise.resolve();
@@ -1100,7 +1100,53 @@ export class FeishuHarnessBridge {
       this.#interactionTasks.add(current);
       return current;
     }
+    // onNewMessage policy: check before enqueuing as a new turn.
+    const policy = resolveNewMessagePolicy({
+      hasQueue: this.#queues.has(key),
+      hasPendingInteraction: this.#pendingInteractions.has(key),
+      hasPendingApproval: this.#approvals.hasPending(key),
+      onNewMessage: this.#onNewMessage,
+    });
+    if (policy === 'interrupt') {
+      const current = this.#enqueueMessage(event, messageId, key, processingReaction);
+      fireAndForgetStop({
+        session: this.#boundSession(key),
+        control: { owner: this, key },
+        signal: this.#signal,
+        logger: this.#logger,
+      });
+      return current;
+    }
+    if (policy === 'steer') {
+      if (commandText && !hasImages && !hasFiles) {
+        const steered = await trySteer({
+          session: this.#boundSession(key),
+          text: commandText,
+          control: { owner: this, key },
+          signal: this.#signal,
+          logger: this.#logger,
+        });
+        if (steered) {
+          if (!this.#state.hasSeen(messageId)) {
+            await this.#state.markSeen(messageId);
+            this.#status.messagesReceived += 1;
+            this.#status.lastMessageAt = new Date().toISOString();
+          }
+          return;
+        }
+      }
+      return this.#enqueueMessage(event, messageId, key, processingReaction);
+    }
     return this.#enqueueMessage(event, messageId, key, processingReaction);
+  }
+
+  /** Get a workspace session bound to the conversation's current session ID. */
+  #boundSession(key) {
+    if (typeof this.#state?.sessionFor !== 'function') return null;
+    const sessionId = this.#state.sessionFor(key);
+    if (typeof sessionId !== 'string' || !sessionId) return null;
+    if (typeof this.#harness?.workspaceSession !== 'function') return null;
+    return this.#harness.workspaceSession(sessionId);
   }
 
   #finishBatchResult(event, messageId, processingReaction, result) {

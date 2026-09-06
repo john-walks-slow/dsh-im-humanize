@@ -65,7 +65,12 @@ import {
 } from '../shared/inbound-access.mjs';
 import { t } from '../shared/i18n.mjs';
 import { createMessageBreakHandler } from '../shared/message-break.mjs';
-import { normalizeOnNewMessage } from '../shared/new-message-policy.mjs';
+import {
+  normalizeOnNewMessage,
+  resolveNewMessagePolicy,
+  fireAndForgetStop,
+  trySteer,
+} from '../shared/new-message-policy.mjs';
 
 const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
 
@@ -877,7 +882,7 @@ export class WecomHarnessBridge {
       ?? await runCompactCommand(text, this.#harness, this.#state, key, options);
   }
 
-  accept(frame) {
+  async accept(frame) {
     if (this.#signal?.aborted) return Promise.resolve();
     const body = bodyOf(frame);
     const messageId = nonEmptyString(body.msgid);
@@ -1044,7 +1049,55 @@ export class WecomHarnessBridge {
       pending.queue = current;
       return current;
     }
+    // onNewMessage policy: check before enqueuing as a new turn.
+    const policy = resolveNewMessagePolicy({
+      hasQueue: this.#queues.has(key),
+      hasPendingInteraction: this.#pendingInteractions.has(key),
+      hasPendingApproval: this.#approvals.hasPending(key),
+      onNewMessage: this.#onNewMessage,
+    });
+    if (policy === 'interrupt') {
+      const current = this.#enqueueMessage(frame, messageId, key);
+      fireAndForgetStop({
+        session: this.#boundSession(key),
+        control: { owner: this, key },
+        signal: this.#signal,
+        logger: this.#logger,
+      });
+      return current;
+    }
+    if (policy === 'steer') {
+      const text = messageText(frame);
+      const isTextOnly = bodyOf(frame).msgtype === 'text';
+      if (text && isTextOnly) {
+        const steered = await trySteer({
+          session: this.#boundSession(key),
+          text,
+          control: { owner: this, key },
+          signal: this.#signal,
+          logger: this.#logger,
+        });
+        if (steered) {
+          if (!this.#state.hasSeen(messageId)) {
+            await this.#state.markSeen(messageId);
+            this.#status.messagesReceived += 1;
+            this.#status.lastMessageAt = new Date().toISOString();
+          }
+          return;
+        }
+      }
+      return this.#enqueueMessage(frame, messageId, key);
+    }
     return this.#enqueueMessage(frame, messageId, key);
+  }
+
+  /** Get a workspace session bound to the conversation's current session ID. */
+  #boundSession(key) {
+    if (typeof this.#state?.sessionFor !== 'function') return null;
+    const sessionId = this.#state.sessionFor(key);
+    if (typeof sessionId !== 'string' || !sessionId) return null;
+    if (typeof this.#harness?.workspaceSession !== 'function') return null;
+    return this.#harness.workspaceSession(sessionId);
   }
 
   #enqueueMessage(frame, messageId, key, {

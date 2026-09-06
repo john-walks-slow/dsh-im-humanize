@@ -70,7 +70,12 @@ import {
 import { withSessionBindingLock } from '../shared/session-binding-lock.mjs';
 import { t } from '../shared/i18n.mjs';
 import { createMessageBreakHandler } from '../shared/message-break.mjs';
-import { normalizeOnNewMessage } from '../shared/new-message-policy.mjs';
+import {
+  normalizeOnNewMessage,
+  resolveNewMessagePolicy,
+  fireAndForgetStop,
+  trySteer,
+} from '../shared/new-message-policy.mjs';
 
 function interactionResolvedText() {
   return t('这个问题已在其他客户端处理，无需再次回答。');
@@ -674,6 +679,61 @@ export class QqHarnessBridge {
         });
       pending.queue = current;
       return current;
+    }
+    // onNewMessage policy: check before enqueuing as a new turn.
+    const policy = resolveNewMessagePolicy({
+      hasQueue: this.#queues.has(key),
+      hasPendingInteraction: this.#pendingInteractions.has(key),
+      hasPendingApproval: this.#approvals.hasPending(key),
+      onNewMessage: this.#onNewMessage,
+    });
+    if (policy === 'interrupt') {
+      const current = this.#enqueueMessage(message, messageId, key);
+      fireAndForgetStop({
+        session: this.#boundSession(key),
+        control: { owner: this, key },
+        signal: this.#signal,
+        logger: this.#logger,
+      });
+      return current;
+    }
+    if (policy === 'steer') {
+      return this.#steerOrEnqueue(message, messageId, key);
+    }
+    return this.#enqueueMessage(message, messageId, key);
+  }
+
+  /** Get a workspace session bound to the conversation's current session ID. */
+  #boundSession(key) {
+    if (typeof this.#state?.sessionFor !== 'function') return null;
+    const sessionId = this.#state.sessionFor(key);
+    if (typeof sessionId !== 'string' || !sessionId) return null;
+    if (typeof this.#harness?.workspaceSession !== 'function') return null;
+    return this.#harness.workspaceSession(sessionId);
+  }
+
+  /**
+   * steer: inject the new message's text as a steering instruction. If the
+   * turn has ended or steer fails, fall back to enqueuing as a new turn.
+   */
+  async #steerOrEnqueue(message, messageId, key) {
+    const text = typeof message.content === 'string' ? message.content.trim() : '';
+    if (!text || hasInboundImages(message) || hasInboundFiles(message)) {
+      return this.#enqueueMessage(message, messageId, key);
+    }
+    const steered = await trySteer({
+      session: this.#boundSession(key),
+      text,
+      control: { owner: this, key },
+      signal: this.#signal,
+      logger: this.#logger,
+    });
+    if (steered) {
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      this.#status.messagesReceived += 1;
+      this.#status.lastMessageAt = new Date().toISOString();
+      return;
     }
     return this.#enqueueMessage(message, messageId, key);
   }
