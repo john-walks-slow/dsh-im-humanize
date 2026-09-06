@@ -68,6 +68,13 @@ import {
   COMMAND_PERMISSION_DENIED_MESSAGE,
   evaluateInboundAccess,
 } from '../shared/inbound-access.mjs';
+import { createMessageBreakHandler } from '../shared/message-break.mjs';
+import {
+  fireAndForgetStop,
+  normalizeOnNewMessage,
+  resolveNewMessagePolicy,
+  trySteer,
+} from '../shared/new-message-policy.mjs';
 import { t } from '../shared/i18n.mjs';
 
 const INTERACTION_RESOLVED_TEXT = () => t('这个问题已在其他客户端处理，无需再次回答。');
@@ -321,6 +328,12 @@ export class WeixinHarnessBridge {
   #typingClosed = false;
   #typingRetryAt = 0;
   #typingTicketStale = false;
+  /** Streaming toggle (default true). When off, no progressive stream updates. */
+  #streaming = true;
+  /** message_break toggle (default false). When on, streaming is forced off. */
+  #messageBreak = false;
+  /** onNewMessage policy: interrupt (default) | queue | steer. */
+  #onNewMessage = 'interrupt';
 
   constructor({
     api,
@@ -337,6 +350,9 @@ export class WeixinHarnessBridge {
     maxMessageChars = DEFAULT_WEIXIN_MAX_MESSAGE_CHARS,
     typingKeepaliveMs = DEFAULT_TYPING_KEEPALIVE_MS,
     signal,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
   }) {
     if (!api || typeof api.sendText !== 'function') throw new TypeError('Weixin API is required');
     if (!baseUrl || !token || !ownerUserId) throw new TypeError('Weixin account credentials are required');
@@ -358,6 +374,11 @@ export class WeixinHarnessBridge {
     this.#maxMessageChars = maxMessageChars;
     this.#typingKeepaliveMs = typingKeepaliveMs;
     this.#signal = signal;
+    // messageBreak implies streaming off (mutually exclusive): the stream
+    // finish/reopen dance adds complexity without benefit for human-like chat.
+    this.#messageBreak = messageBreak === true;
+    this.#streaming = this.#messageBreak ? false : streaming !== false;
+    this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#deferred = createDeferredDeliveryCoordinator({ harness, state, signal, logger,
       deliver: (entry, outcome) => this.#deliverDeferredOutcome(entry, outcome),
     });
@@ -817,6 +838,15 @@ export class WeixinHarnessBridge {
         }
         await this.#state.markSeen(messageId);
         promptRecorded = true;
+        // Create message_break handler for this turn.
+        const messageBreakHandler = this.#messageBreak
+          ? createMessageBreakHandler({
+            sendSegment: async (segmentText) => {
+              await this.#send(sender, segmentText, contextToken, runId);
+            },
+            logger: this.#logger,
+          })
+          : null;
         ({ answer, artifacts = [] } = await askInWorkspaceSession({
           deferredDelivery: () => ({ coordinator: this.#deferred, target: { toUserId: sender } }),
           harness: this.#harness,
@@ -831,7 +861,14 @@ export class WeixinHarnessBridge {
             timeoutMs: this.#replyTimeoutMs,
             signal: this.#signal,
             control: { owner: this, key },
-            onUpdate: () => this.#resumeTyping(key, sender, contextToken),
+            onUpdate: messageBreakHandler
+              ? async (update) => {
+                this.#resumeTyping(key, sender, contextToken);
+                const handled = await messageBreakHandler.handleUpdate(update);
+                // If consumed, update was a message_break; otherwise ignore.
+                if (handled === null) return;
+              }
+              : () => this.#resumeTyping(key, sender, contextToken),
             onInteraction: (interaction) => this.#handleInteraction(interaction, {
               key,
               actor: sender,
@@ -856,19 +893,29 @@ export class WeixinHarnessBridge {
           this.#approvals.closeRoute(key),
         ]);
       }
-      const answerText = typeof answer === 'string' && answer.trim()
+      const baseAnswerText = typeof answer === 'string' && answer.trim()
         ? answer
         : artifacts.length > 0 ? t('结果文件已生成。') : answer;
+      // When message_break sent segments, the final message is only the
+      // remaining text after the last break point.
+      const answerText = messageBreakHandler?.hasBreaks()
+        ? messageBreakHandler.remainingText(baseAnswerText)
+        : baseAnswerText;
       let textDeliveryError = null;
       let textReceipt = null;
-      try {
-        textReceipt = createDeliveryReceipt({
-          deliveryId: messageId,
-          presentation: 'weixin-text',
-          providerMessageIds: await this.#send(sender, answerText, contextToken, runId),
-        });
-      } catch (error) {
-        textDeliveryError = channelDeliveryFailure(error);
+      // Skip sending an empty final message when all text was sent as segments.
+      if (messageBreakHandler?.hasBreaks() && !answerText.trim()) {
+        // Artifacts (if any) are delivered separately.
+      } else {
+        try {
+          textReceipt = createDeliveryReceipt({
+            deliveryId: messageId,
+            presentation: 'weixin-text',
+            providerMessageIds: await this.#send(sender, answerText, contextToken, runId),
+          });
+        } catch (error) {
+          textDeliveryError = channelDeliveryFailure(error);
+        }
       }
       const delivery = await this.#deliverArtifacts(
         sender,

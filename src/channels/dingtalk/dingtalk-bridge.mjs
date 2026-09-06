@@ -70,6 +70,8 @@ import {
   evaluateInboundAccess,
 } from '../shared/inbound-access.mjs';
 import { t } from '../shared/i18n.mjs';
+import { createMessageBreakHandler } from '../shared/message-break.mjs';
+import { normalizeOnNewMessage } from '../shared/new-message-policy.mjs';
 
 const CARD_INITIAL_TEXT = '已连接 DeepSeek Harness，正在思考…';
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
@@ -484,6 +486,9 @@ export class DingtalkHarnessBridge {
   #status;
   #logger;
   #replyTimeoutMs;
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
   #reactionTimeoutMs;
   #maxMessageChars;
   #signal;
@@ -509,6 +514,9 @@ export class DingtalkHarnessBridge {
     status = createDingtalkBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
     reactionTimeoutMs = 5_000,
     maxMessageChars = 4_000,
     signal,
@@ -529,6 +537,9 @@ export class DingtalkHarnessBridge {
     this.#logger = logger;
     this.#approvals = new HarnessApprovalQueue({ label: 'DingTalk', logger });
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#streaming = messageBreak === true ? false : streaming !== false;
+    this.#messageBreak = messageBreak === true;
+    this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#reactionTimeoutMs = Number.isFinite(reactionTimeoutMs) && reactionTimeoutMs > 0
       ? Math.floor(reactionTimeoutMs)
       : 5_000;
@@ -1289,6 +1300,15 @@ export class DingtalkHarnessBridge {
         cardStarted = await cardStream.start(t(CARD_INITIAL_TEXT));
         if (cardStarted) cardStartedAt = startedAt;
       }
+      // Create message_break handler for this turn.
+      const messageBreakHandler = this.#messageBreak
+        ? createMessageBreakHandler({
+          sendSegment: async (segmentText) => {
+            await this.#send(sessionWebhook, segmentText, this.#atUsersFor(message));
+          },
+          logger: this.#logger,
+        })
+        : null;
       const { answer, artifacts = [] } = await askInWorkspaceSession({
         deferredDelivery: () => ({ coordinator: this.#deferred, target: { ...cardTarget(message, sender), robotCode: this.#clientId } }),
         harness: this.#harness,
@@ -1303,8 +1323,15 @@ export class DingtalkHarnessBridge {
           timeoutMs: this.#replyTimeoutMs,
           signal: this.#signal,
           control: { owner: this, key },
-          onUpdate: cardStarted
-            ? (update) => cardStream.push(progressText(update))
+          onUpdate: (cardStarted || messageBreakHandler)
+            ? async (update) => {
+              if (messageBreakHandler) {
+                const handled = await messageBreakHandler.handleUpdate(update);
+                if (handled === null) return;
+                update = handled;
+              }
+              if (cardStarted) cardStream.push(progressText(update));
+            }
             : undefined,
           onInteraction: (interaction) => this.#handleInteraction(interaction, {
             key,
@@ -1320,9 +1347,12 @@ export class DingtalkHarnessBridge {
         this.#batchInputs.complete(key, batchSubmission.token);
         batchSettled = true;
       }
-      const answerText = typeof answer === 'string' && answer.trim()
+      const baseAnswerText = typeof answer === 'string' && answer.trim()
         ? answer
         : artifacts.length > 0 ? t('结果文件已生成。') : answer;
+      const answerText = messageBreakHandler?.hasBreaks()
+        ? messageBreakHandler.remainingText(baseAnswerText)
+        : baseAnswerText;
       let textDeliveryError = null;
       let textReceipt = null;
       let streamed = false;

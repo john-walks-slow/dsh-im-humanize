@@ -891,6 +891,23 @@ const EN = Object.freeze({
   '确认清理当前已过期的附件？': 'Clean up the attachments that are currently expired?',
   '确认清理': 'Confirm cleanup',
   '正在清理…': 'Cleaning up…',
+  // Humanization settings
+  '拟人化设置': 'Humanization settings',
+  '拟人化设置暂不可用。': 'Humanization settings are unavailable.',
+  '无法读取拟人化设置，请稍后重试。': 'Could not load humanization settings. Try again later.',
+  '暂无可用设置。': 'No settings available.',
+  '控制 AI 回复的发送方式，让对话更像真人交流。': 'Control how AI replies are delivered, making conversations feel more human.',
+  '流式回复': 'Streaming replies',
+  '开启后 AI 回复逐字显示。关闭后一次性发送完整回复，更有沉浸感。': 'When enabled, AI replies appear word by word. When disabled, the full reply is sent at once for better immersion.',
+  '分步消息 (message_break)': 'Message breaks (message_break)',
+  'AI 调用 message_break 工具在回复中插入断点，每个分段作为独立消息发送。开启后自动关闭流式回复。': 'The AI calls the message_break tool to insert breakpoints, sending each segment as a separate message. Enabling this automatically disables streaming.',
+  '新消息行为': 'New message behavior',
+  '生成中收到新消息时的处理方式：打断重发、排队等待、或注入为纠偏指令。交互等待时一律排队。': 'How to handle new messages received during generation: interrupt and resend, queue, or inject as a steering instruction. Pending interactions always queue.',
+  '打断重发 (interrupt)': 'Interrupt & resend (interrupt)',
+  '排队等待 (queue)': 'Queue & wait (queue)',
+  '注入纠偏 (steer)': 'Inject as steering (steer)',
+  '保存失败，请稍后重试。': 'Could not save. Try again later.',
+  '正在加载…': 'Loading…',
 });
 
 export const en = EN;

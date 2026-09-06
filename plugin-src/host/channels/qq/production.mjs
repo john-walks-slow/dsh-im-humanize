@@ -128,6 +128,9 @@ export async function createProductionController(ctx, config = {}, internals = {
           channel: 'qq', config: botConfig,
         }),
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
+        streaming: config.streaming !== false,
+        messageBreak: config.messageBreak === true,
+        onNewMessage: config.onNewMessage ?? 'interrupt',
         connectTimeoutMs: config.connectTimeoutMs ?? 20_000,
         logger: {
           error: (...args) => logger.error?.(`[${botId}]`, ...args),

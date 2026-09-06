@@ -17,6 +17,7 @@ import { createDeliveryService } from './delivery-service.mjs';
 import { installInboundTtlRpc } from './inbound-ttl-rpc.mjs';
 import { installSessionSyncCoordinator } from './session-sync-coordinator.mjs';
 import { installUpdateRpc } from './update-rpc.mjs';
+import { installHumanizeRpc } from './humanize-rpc.mjs';
 
 export const name = 'dsh-im-host';
 export const inject = [
@@ -104,6 +105,25 @@ export function createImHostPlugin(internals = {}) {
 
   async function activateChannels(ctx, config, deliveryService) {
     setImHostLanguage(config.language ?? process.env.DSH_IM_LANGUAGE);
+
+    // Load humanization settings from the file-backed store and merge them
+    // into the config so all channels receive the same values.
+    let humanizeStore = null;
+    try {
+      const result = installHumanizeRpc(ctx, { config, logger: ctx?.logger });
+      humanizeStore = result.store;
+      await humanizeStore.load();
+      const settings = humanizeStore.get();
+      config = {
+        ...config,
+        streaming: config.streaming ?? settings.streaming,
+        messageBreak: config.messageBreak ?? settings.messageBreak,
+        onNewMessage: config.onNewMessage ?? settings.onNewMessage,
+      };
+    } catch (error) {
+      ctx?.logger?.error?.('[dsh-im] humanization settings load failed; using defaults:', error);
+    }
+
     if (typeof ctx?.inject === 'function') {
       ctx.inject(['tools', 'systemPrompt'], (toolCtx) => {
         installOutboundArtifactTool(toolCtx);

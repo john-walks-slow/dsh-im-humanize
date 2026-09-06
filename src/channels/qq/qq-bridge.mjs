@@ -69,6 +69,8 @@ import {
 } from './qq-menu.mjs';
 import { withSessionBindingLock } from '../shared/session-binding-lock.mjs';
 import { t } from '../shared/i18n.mjs';
+import { createMessageBreakHandler } from '../shared/message-break.mjs';
+import { normalizeOnNewMessage } from '../shared/new-message-policy.mjs';
 
 function interactionResolvedText() {
   return t('这个问题已在其他客户端处理，无需再次回答。');
@@ -431,6 +433,9 @@ export class QqHarnessBridge {
   #status;
   #logger;
   #replyTimeoutMs;
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
   #signal;
   #fetchImpl;
   #fileUploadTimeoutMs;
@@ -456,6 +461,9 @@ export class QqHarnessBridge {
     status = createQqBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
     signal,
     fetchImpl = fetch,
     fileUploadTimeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS,
@@ -476,6 +484,9 @@ export class QqHarnessBridge {
     this.#status = status;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#streaming = messageBreak === true ? false : streaming !== false;
+    this.#messageBreak = messageBreak === true;
+    this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#signal = signal;
     this.#deferred = createDeferredDeliveryCoordinator({ harness, state, signal, logger,
       deliver: (entry, outcome) => this.#deliverDeferredOutcome(entry, outcome),
@@ -1023,6 +1034,15 @@ export class QqHarnessBridge {
         // Persist consumption before handing the prompt to Harness. Provider
         // redelivery after a failed error notice must never execute it twice.
         await markMessageSeen();
+        // Create message_break handler for this turn.
+        const messageBreakHandler = this.#messageBreak
+          ? createMessageBreakHandler({
+            sendSegment: async (segmentText) => {
+              await sendMarkdownReply(this.#bot, target, segmentText, { logger: this.#logger });
+            },
+            logger: this.#logger,
+          })
+          : null;
         ({ answer, artifacts = [] } = await askInWorkspaceSession({
           deferredDelivery: () => ({ coordinator: this.#deferred, target: { scope: target.scope, targetId: target.targetId } }),
           harness: this.#harness,
@@ -1038,17 +1058,30 @@ export class QqHarnessBridge {
             signal: this.#signal,
             control: { owner: this, key },
             progressMode: 'all',
-            onUpdate: (update) => {
-              if (update.error) {
-                const name = (nonEmptyString(update.toolName) ?? t('工具'))
-                  .replace(/[\r\n]+/gu, ' ')
-                  .slice(0, 80);
-                toolErrors.push(t(
-                  '工具调用「{name}」未成功，请检查工具配置或稍后重试。',
-                  { name },
-                ));
+            onUpdate: messageBreakHandler
+              ? async (update) => {
+                if (update.error) {
+                  const name = (nonEmptyString(update.toolName) ?? t('工具'))
+                    .replace(/[\r\n]+/gu, ' ')
+                    .slice(0, 80);
+                  toolErrors.push(t(
+                    '工具调用「{name}」未成功，请检查工具配置或稍后重试。',
+                    { name },
+                  ));
+                }
+                await messageBreakHandler.handleUpdate(update);
               }
-            },
+              : (update) => {
+                if (update.error) {
+                  const name = (nonEmptyString(update.toolName) ?? t('工具'))
+                    .replace(/[\r\n]+/gu, ' ')
+                    .slice(0, 80);
+                  toolErrors.push(t(
+                    '工具调用「{name}」未成功，请检查工具配置或稍后重试。',
+                    { name },
+                  ));
+                }
+              },
             onInteraction: (interaction) => this.#handleInteraction(interaction, {
               key,
               actor: sender,
@@ -1070,7 +1103,10 @@ export class QqHarnessBridge {
         ]);
       }
       this.#signal?.throwIfAborted();
-      const answerText = answerTextForDelivery(answer, artifacts);
+      const baseAnswerText = answerTextForDelivery(answer, artifacts);
+      const answerText = messageBreakHandler?.hasBreaks()
+        ? messageBreakHandler.remainingText(baseAnswerText)
+        : baseAnswerText;
       const displayAnswer = toolErrors.length > 0
         ? `${answerText}\n\n---\n\n${toolErrors.join('\n\n')}`
         : answerText;

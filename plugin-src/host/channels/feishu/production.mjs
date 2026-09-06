@@ -227,6 +227,9 @@ export async function createProductionController(ctx, config = {}, internals = {
           channel: 'feishu', config: botConfig,
         }),
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
+        streaming: config.streaming !== false,
+        messageBreak: config.messageBreak === true,
+        onNewMessage: config.onNewMessage ?? 'interrupt',
         slashCommands: config.slashCommands !== false,
         ...(wsAgent ? { wsAgent } : {}),
         logger: {

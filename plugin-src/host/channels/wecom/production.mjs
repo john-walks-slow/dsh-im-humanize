@@ -131,6 +131,9 @@ export async function createProductionController(ctx, config = {}, internals = {
           channel: 'wecom', config: botConfig,
         }),
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
+        streaming: config.streaming !== false,
+        messageBreak: config.messageBreak === true,
+        onNewMessage: config.onNewMessage ?? 'interrupt',
         connectTimeoutMs: config.connectTimeoutMs ?? 20_000,
         maxReconnectAttempts: config.maxReconnectAttempts ?? 10,
         logger: {

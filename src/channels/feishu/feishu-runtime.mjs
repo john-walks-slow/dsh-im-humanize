@@ -118,6 +118,9 @@ export class FeishuRuntime {
   #contextEnhancement;
   #accessPolicy;
   #replyTimeoutMs;
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
   #connectTimeoutMs;
   #requestTimeoutMs;
   #wsAgent;
@@ -151,6 +154,9 @@ export class FeishuRuntime {
     accessPolicy,
     repair,
     replyTimeoutMs = 600000,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
     connectTimeoutMs = 15000,
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     slashCommands = true,
@@ -187,6 +193,9 @@ export class FeishuRuntime {
     this.#accessPolicy = accessPolicy;
     this.#repair = repair ?? null;
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#streaming = messageBreak === true ? false : streaming !== false;
+    this.#messageBreak = messageBreak === true;
+    this.#onNewMessage = onNewMessage;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#requestTimeoutMs = requestTimeoutMs;
     this.#slashCommands = Boolean(slashCommands);
@@ -304,6 +313,9 @@ export class FeishuRuntime {
         groupResponseMode: this.#groupResponseMode,
         groupTopicReply: this.#groupTopicReply,
         stepPush: this.#stepPush,
+        streaming: this.#streaming,
+        messageBreak: this.#messageBreak,
+        onNewMessage: this.#onNewMessage,
         repair: this.#repair,
         replyTimeoutMs: this.#replyTimeoutMs,
         // Interaction cards (approval/question buttons) are on by default.

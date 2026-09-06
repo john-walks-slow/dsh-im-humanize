@@ -64,6 +64,8 @@ import {
   evaluateInboundAccess,
 } from '../shared/inbound-access.mjs';
 import { t } from '../shared/i18n.mjs';
+import { createMessageBreakHandler } from '../shared/message-break.mjs';
+import { normalizeOnNewMessage } from '../shared/new-message-policy.mjs';
 
 const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
 
@@ -550,8 +552,11 @@ export class WecomHarnessBridge {
   #status;
   #logger;
   #replyTimeoutMs;
-  #generateReqId;
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
   #signal;
+  #generateReqId;
   #fileUploadTimeoutMs;
   #queues = new Map();
   #pendingInteractions = new Map();
@@ -576,6 +581,9 @@ export class WecomHarnessBridge {
     status = createWecomBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
     generateStreamId = generateReqId,
     fileUploadTimeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS,
     signal,
@@ -595,6 +603,9 @@ export class WecomHarnessBridge {
     this.#status = status;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#streaming = messageBreak === true ? false : streaming !== false;
+    this.#messageBreak = messageBreak === true;
+    this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#generateReqId = generateStreamId;
     this.#fileUploadTimeoutMs = Math.min(fileUploadTimeoutMs, DEFAULT_FILE_UPLOAD_TIMEOUT_MS);
     this.#signal = signal;
@@ -1350,6 +1361,15 @@ export class WecomHarnessBridge {
       }
       await this.#state.markSeen(messageId);
       promptRecorded = true;
+      // Create message_break handler for this turn.
+      const messageBreakHandler = this.#messageBreak
+        ? createMessageBreakHandler({
+          sendSegment: async (segmentText) => {
+            await this.#sendActive(chatId, segmentText);
+          },
+          logger: this.#logger,
+        })
+        : null;
       const { answer, artifacts = [] } = await askInWorkspaceSession({
         deferredDelivery: () => ({ coordinator: this.#deferred, target: { chatId } }),
         harness: this.#harness,
@@ -1364,8 +1384,14 @@ export class WecomHarnessBridge {
           timeoutMs: this.#replyTimeoutMs,
           signal: this.#signal,
           control: { owner: this, key },
-          onUpdate: streamStarted && typeof this.#client.replyStreamNonBlocking === 'function'
+          onUpdate: (streamStarted && typeof this.#client.replyStreamNonBlocking === 'function') || messageBreakHandler
             ? async (update) => {
+                if (messageBreakHandler) {
+                  const handled = await messageBreakHandler.handleUpdate(update);
+                  if (handled === null) return;
+                  update = handled;
+                }
+                if (!streamStarted || typeof this.#client.replyStreamNonBlocking !== 'function') return;
                 if (update?.type === 'text') {
                   streamAnswerText = update.text;
                 } else {
@@ -1393,7 +1419,10 @@ export class WecomHarnessBridge {
       }
 
       this.#signal?.throwIfAborted();
-      const displayAnswer = answerTextForDelivery(answer, artifacts);
+      const baseAnswer = answerTextForDelivery(answer, artifacts);
+      const displayAnswer = messageBreakHandler?.hasBreaks()
+        ? messageBreakHandler.remainingText(baseAnswer)
+        : baseAnswer;
       const streamChunks = splitUtf8(
         streamContent(streamThinkingText, displayAnswer, { finish: true }),
       );

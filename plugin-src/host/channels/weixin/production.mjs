@@ -135,6 +135,9 @@ export async function createProductionController(ctx, config = {}, internals = {
           channel: 'weixin', config: accountConfig,
         }),
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
+        streaming: config.streaming !== false,
+        messageBreak: config.messageBreak === true,
+        onNewMessage: config.onNewMessage ?? 'interrupt',
         maxMessageChars: config.maxMessageChars ?? DEFAULT_WEIXIN_MAX_MESSAGE_CHARS,
         logger: {
           error: (...args) => logger.error?.(`[${botId}]`, ...args),

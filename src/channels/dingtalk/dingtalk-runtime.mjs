@@ -135,6 +135,9 @@ export class DingtalkRuntime {
   #accessPolicy;
   #logger;
   #replyTimeoutMs;
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
   #maxMessageChars;
   #connectTimeoutMs;
   #connectPollIntervalMs;
@@ -158,6 +161,7 @@ export class DingtalkRuntime {
     accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
+    streaming = true, messageBreak = false, onNewMessage = 'interrupt',
     maxMessageChars = 4_000,
     connectTimeoutMs = 15_000,
     connectPollIntervalMs = 25,
@@ -177,6 +181,9 @@ export class DingtalkRuntime {
     this.#accessPolicy = accessPolicy;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#streaming = messageBreak === true ? false : streaming !== false;
+    this.#messageBreak = messageBreak === true;
+    this.#onNewMessage = onNewMessage;
     this.#maxMessageChars = maxMessageChars;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#connectPollIntervalMs = connectPollIntervalMs;
@@ -249,6 +256,7 @@ export class DingtalkRuntime {
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
+        streaming: this.#streaming, messageBreak: this.#messageBreak, onNewMessage: this.#onNewMessage,
         maxMessageChars: this.#maxMessageChars,
         signal,
       });

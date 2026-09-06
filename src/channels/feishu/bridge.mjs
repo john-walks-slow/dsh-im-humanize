@@ -70,6 +70,13 @@ import {
   setLastMessageFailure,
 } from '../shared/message-failure.mjs';
 import { beginStatusReaction } from '../shared/status-reaction.mjs';
+import { createMessageBreakHandler, MESSAGE_BREAK_TOOL } from '../shared/message-break.mjs';
+import {
+  fireAndForgetStop,
+  normalizeOnNewMessage,
+  resolveNewMessagePolicy,
+  trySteer,
+} from '../shared/new-message-policy.mjs';
 import {
   COMMAND_PERMISSION_DENIED_MESSAGE,
   evaluateInboundAccess,
@@ -600,6 +607,12 @@ export class FeishuHarnessBridge {
   #cardDataTimeoutMs;
   /** When true, approval/question interactions render as Feishu cards (buttons). */
   #interactionCards = true;
+  /** Streaming toggle (default true). When off, no progressive stream updates. */
+  #streaming = true;
+  /** message_break toggle (default false). When on, streaming is forced off. */
+  #messageBreak = false;
+  /** onNewMessage policy: interrupt (default) | queue | steer. */
+  #onNewMessage = 'interrupt';
 
   constructor({
     client,
@@ -616,6 +629,9 @@ export class FeishuHarnessBridge {
     groupResponseMode = FEISHU_GROUP_RESPONSE_MODES.ALL,
     groupTopicReply = false,
     stepPush = false,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
     stepPushClock = null,
     repair,
     repairPollIntervalMs = REPAIR_POLL_INTERVAL_MS,
@@ -671,6 +687,9 @@ export class FeishuHarnessBridge {
     this.#cardDataTimeoutMs = cardDataTimeoutMs;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#interactionCards = interactionCards === true;
+    this.#messageBreak = messageBreak === true;
+    this.#streaming = this.#messageBreak ? false : streaming !== false;
+    this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#logger = logger;
     this.#approvals = new HarnessApprovalQueue({ label: 'Feishu', logger });
     this.#signal = signal;
@@ -3938,6 +3957,22 @@ export class FeishuHarnessBridge {
     // 证明它是过程说明时才 flush 为 💬 消息。turn 结束时缓冲内剩余的即最终步
     // ——不直推，改为最终答案的富文本 post 内容，避免同一句话重复出现。
     let pendingStep = null;
+    // Create a message_break handler for this turn. sendSegment sends each
+    // segment as a 💬 step message. When message_break is on, assistant-message
+    // updates are NOT buffered (the handler sends segments directly).
+    const messageBreakHandler = this.#messageBreak
+      ? createMessageBreakHandler({
+        sendSegment: async (segmentText) => {
+          await this.#sendStepMessage(
+            chatId, key,
+            [[{ tag: 'md', text: `💬 ${segmentText}` }]],
+            `💬 ${segmentText}`,
+            messageId,
+          );
+        },
+        logger: this.#logger,
+      })
+      : null;
     const flushPendingStep = async () => {
       if (!pendingStep) return;
       const note = pendingStep;
@@ -3963,7 +3998,21 @@ export class FeishuHarnessBridge {
         ...this.#interactionAskOptions(event, key, message.files),
         progressMode: 'all',
         onUpdate: async (update) => {
+          // message_break handler intercepts break updates and sends the
+          // segment text as a 💬 step message. Returns null when consumed.
+          if (messageBreakHandler) {
+            const handled = await messageBreakHandler.handleUpdate(update);
+            if (handled === null) {
+              // Clear pendingStep — the segment text already includes it.
+              pendingStep = null;
+              return;
+            }
+            update = handled;
+          }
           if (update.type === 'assistant-message') {
+            // When message_break is on, don't buffer — segments are sent
+            // by the handler at break points.
+            if (messageBreakHandler) return;
             if (pendingStep && Number(update.step) > Number(pendingStep.step)) {
               await flushPendingStep();
             }
@@ -3971,7 +4020,7 @@ export class FeishuHarnessBridge {
             return;
           }
           if (update.type === 'tool') {
-            await flushPendingStep();
+            if (!messageBreakHandler) await flushPendingStep();
             const { paragraphs, fallbackText } = this.#formatStepToolPost(update);
             await this.#sendStepMessage(chatId, key, paragraphs, fallbackText, messageId);
             return;
@@ -3993,10 +4042,15 @@ export class FeishuHarnessBridge {
     markAskComplete();
     const finalStepText = pendingStep ? pendingStep.text : null;
     pendingStep = null;
-    const finalText = (typeof finalStepText === 'string' && finalStepText.trim())
+    const baseText = (typeof finalStepText === 'string' && finalStepText.trim())
       ? finalStepText
       : completed.answer;
-    const deliveryText = answerTextForDelivery(finalText, completed.artifacts ?? []);
+    // When message_break sent segments, the final message is only the
+    // remaining text after the last break point.
+    const finalText = messageBreakHandler?.hasBreaks()
+      ? messageBreakHandler.remainingText(answerTextForDelivery(baseText, completed.artifacts ?? []))
+      : answerTextForDelivery(baseText, completed.artifacts ?? []);
+    const deliveryText = finalText;
     let textReceipt;
     let postDeliveryError = null;
     try {
@@ -4130,7 +4184,20 @@ export class FeishuHarnessBridge {
       }));
       contextEnhanced = content !== originalContent;
     }
-    if (!this.#channel?.stream) {
+    if (!this.#channel?.stream || !this.#streaming) {
+      // Create message_break handler for the plain text path.
+      const messageBreakHandler = this.#messageBreak
+        ? createMessageBreakHandler({
+          sendSegment: async (segmentText) => {
+            await this.#sendAnswerText(
+              chatId,
+              segmentText,
+              { deliveryId: messageId, presentation: 'feishu-text', replyTo: messageId },
+            );
+          },
+          logger: this.#logger,
+        })
+        : null;
       const { answer, artifacts = [] } = await askInWorkspaceSession({
         deferredDelivery: () => ({ coordinator: this.#deferred, chatId, replyToMessageId: messageId }),
         harness: this.#harness,
@@ -4141,21 +4208,38 @@ export class FeishuHarnessBridge {
         contextEnhanced,
         createOptions: { signal: this.#signal },
         existsOptions: { signal: this.#signal },
-        askOptions: this.#interactionAskOptions(event, key, message.files),
+        askOptions: {
+          ...this.#interactionAskOptions(event, key, message.files),
+          ...(messageBreakHandler ? {
+            onUpdate: async (update) => {
+              await messageBreakHandler.handleUpdate(update);
+            },
+          } : {}),
+        },
       });
       markAskComplete();
+      // When message_break sent segments, the final message is only the
+      // remaining text after the last break point.
+      const deliveryText = messageBreakHandler?.hasBreaks()
+        ? messageBreakHandler.remainingText(answerTextForDelivery(answer, artifacts))
+        : answerTextForDelivery(answer, artifacts);
       let textReceipt;
       let textSendError = null;
       try {
-        textReceipt = await this.#sendAnswerText(
-          chatId,
-          answerTextForDelivery(answer, artifacts),
-          {
-            deliveryId: messageId,
-            presentation: 'feishu-text',
-            replyTo: messageId,
-          },
-        );
+        // Skip sending an empty final message when all text was sent as segments.
+        if (messageBreakHandler?.hasBreaks() && !deliveryText.trim()) {
+          // Artifacts (if any) are delivered separately.
+        } else {
+          textReceipt = await this.#sendAnswerText(
+            chatId,
+            deliveryText,
+            {
+              deliveryId: messageId,
+              presentation: 'feishu-text',
+              replyTo: messageId,
+            },
+          );
+        }
       } catch (error) {
         textSendError = channelDeliveryFailure(error);
         this.#logger.warn?.(
