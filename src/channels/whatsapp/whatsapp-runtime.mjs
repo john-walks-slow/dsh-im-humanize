@@ -678,6 +678,9 @@ export class WhatsappRuntime {
   #accessPolicy;
   #logger;
   #replyTimeoutMs;
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
   #connectTimeoutMs;
   #mediaUploadTimeoutMs;
   #createSession;
@@ -697,6 +700,9 @@ export class WhatsappRuntime {
     accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
     connectTimeoutMs = 30_000,
     mediaUploadTimeoutMs = WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS,
     createSession = createWhatsappWebSession,
@@ -712,6 +718,9 @@ export class WhatsappRuntime {
     this.#accessPolicy = accessPolicy;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#streaming = streaming;
+    this.#messageBreak = messageBreak;
+    this.#onNewMessage = onNewMessage;
     this.#connectTimeoutMs = connectTimeoutMs;
     if (!Number.isSafeInteger(mediaUploadTimeoutMs) || mediaUploadTimeoutMs <= 0) {
       throw new TypeError('mediaUploadTimeoutMs must be a positive safe integer');
@@ -811,6 +820,9 @@ export class WhatsappRuntime {
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
+        streaming: this.#streaming,
+        messageBreak: this.#messageBreak,
+        onNewMessage: this.#onNewMessage,
         signal: controller.signal,
       });
       const now = Date.now();

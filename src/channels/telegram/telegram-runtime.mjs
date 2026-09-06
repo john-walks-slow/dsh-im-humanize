@@ -770,6 +770,9 @@ export class TelegramRuntime {
   #accessPolicy;
   #logger;
   #replyTimeoutMs;
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
   #createApi;
   #createHttpTransport;
   #status = createTelegramRuntimeStatus();
@@ -789,6 +792,9 @@ export class TelegramRuntime {
     accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
     createApi = (options) => new TelegramApi(options),
     createHttpTransport = createTelegramHttpTransport,
   }) {
@@ -803,6 +809,9 @@ export class TelegramRuntime {
     this.#accessPolicy = accessPolicy;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#streaming = streaming;
+    this.#messageBreak = messageBreak;
+    this.#onNewMessage = onNewMessage;
     this.#createApi = createApi;
     this.#createHttpTransport = createHttpTransport;
   }
@@ -905,6 +914,9 @@ export class TelegramRuntime {
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
+        streaming: this.#streaming,
+        messageBreak: this.#messageBreak,
+        onNewMessage: this.#onNewMessage,
         signal: controller.signal,
       });
 

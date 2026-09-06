@@ -409,6 +409,9 @@ export class SlackRuntime {
   #accessPolicy;
   #logger;
   #replyTimeoutMs;
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
   #connectTimeoutMs;
   #createApi;
   #createWebSocket;
@@ -434,6 +437,9 @@ export class SlackRuntime {
     accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
     connectTimeoutMs = 20_000,
     createApi = (options) => new SlackApi(options),
     createWebSocket = (url) => new WebSocket(url),
@@ -451,6 +457,9 @@ export class SlackRuntime {
     this.#accessPolicy = accessPolicy;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#streaming = streaming;
+    this.#messageBreak = messageBreak;
+    this.#onNewMessage = onNewMessage;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#createApi = createApi;
     this.#createWebSocket = createWebSocket;
@@ -530,6 +539,9 @@ export class SlackRuntime {
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
+        streaming: this.#streaming,
+        messageBreak: this.#messageBreak,
+        onNewMessage: this.#onNewMessage,
         signal: controller.signal,
       });
       let timer;

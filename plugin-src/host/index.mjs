@@ -9,6 +9,7 @@ import { apply as applyWecom } from './channels/wecom/index.mjs';
 import { apply as applyWeixin } from './channels/weixin/index.mjs';
 import { apply as applyWhatsapp } from './channels/whatsapp/index.mjs';
 import { installOutboundArtifactTool } from '../../src/channels/shared/semantic/artifact.mjs';
+import { installMessageBreakTool } from '../../src/channels/shared/message-break.mjs';
 import { setImHostLanguage } from '../../src/channels/shared/i18n.mjs';
 import { installDeliveryRpc } from './delivery-rpc.mjs';
 import { installDeliveryHttp } from './delivery-http.mjs';
@@ -104,11 +105,17 @@ export function createImHostPlugin(internals = {}) {
   async function activateChannels(ctx, config, deliveryService) {
     setImHostLanguage(config.language ?? process.env.DSH_IM_LANGUAGE);
     if (typeof ctx?.inject === 'function') {
-      ctx.inject(['tools', 'systemPrompt'], (artifactCtx) => {
-        installOutboundArtifactTool(artifactCtx);
+      ctx.inject(['tools', 'systemPrompt'], (toolCtx) => {
+        installOutboundArtifactTool(toolCtx);
+        if (config.messageBreak !== false) {
+          installMessageBreakTool(toolCtx);
+        }
       });
     } else {
       installOutboundArtifactTool(ctx);
+      if (config.messageBreak !== false) {
+        installMessageBreakTool(ctx);
+      }
     }
     const logger = typeof ctx?.logger === 'function'
       ? ctx.logger(name)

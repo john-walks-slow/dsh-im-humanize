@@ -63,6 +63,13 @@ import {
   setLastMessageFailure,
 } from './message-failure.mjs';
 import { beginStatusReaction } from './status-reaction.mjs';
+import { createMessageBreakHandler } from './message-break.mjs';
+import {
+  fireAndForgetStop,
+  normalizeOnNewMessage,
+  resolveNewMessagePolicy,
+  trySteer,
+} from './new-message-policy.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
 const FILE_ONLY_COMPLETION_TEXT = '任务已完成。';
@@ -152,6 +159,9 @@ export class TextHarnessBridge {
   #commandTasks = new Set();
   #approvals;
   #batches = new BatchInputManager();
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
 
   constructor({
     descriptor,
@@ -164,6 +174,9 @@ export class TextHarnessBridge {
     logger = console,
     replyTimeoutMs = 600_000,
     signal,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
   }) {
     if (!descriptor?.key || !descriptor?.label) throw new TypeError('A channel descriptor is required');
     if (!bot || typeof bot.sendText !== 'function') throw new TypeError('A bot client is required');
@@ -178,6 +191,11 @@ export class TextHarnessBridge {
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#signal = signal;
+    // messageBreak implies streaming off (mutually exclusive): the stream
+    // finish/reopen dance adds complexity without benefit for human-like chat.
+    this.#messageBreak = messageBreak === true;
+    this.#streaming = this.#messageBreak ? false : streaming !== false;
+    this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#deferred = createDeferredDeliveryCoordinator({ harness, state, signal, logger,
       deliver: (entry, outcome) => this.#deliverDeferredOutcome(entry, outcome),
     });
@@ -398,6 +416,22 @@ export class TextHarnessBridge {
       pending.queue = current;
       return current;
     }
+    // onNewMessage policy: decide how to handle a new message when a turn is
+    // already active. Pending interactions/approvals are already handled above
+    // (always queue), so here we only apply the policy when there's an active
+    // queue and no pending interaction.
+    const policy = resolveNewMessagePolicy({
+      hasQueue: this.#queues.has(key),
+      hasPendingInteraction: this.#pendingInteractions.has(key),
+      hasPendingApproval: this.#approvals.hasPending(key),
+      onNewMessage: this.#onNewMessage,
+    });
+    if (policy === 'interrupt') {
+      return this.#interruptAndResend(normalized, messageId, senderId, key);
+    }
+    if (policy === 'steer') {
+      return this.#steerOrEnqueue(normalized, messageId, senderId, key);
+    }
     return this.#enqueueMessage(normalized, messageId, senderId, key);
   }
 
@@ -430,6 +464,74 @@ export class TextHarnessBridge {
     });
     this.#commandTasks.add(task);
     return task;
+  }
+
+  /** Get a workspace session bound to the conversation's current session ID. */
+  #boundSession(key) {
+    if (typeof this.#state?.sessionFor !== 'function') return null;
+    const sessionId = this.#state.sessionFor(key);
+    if (typeof sessionId !== 'string' || !sessionId) return null;
+    if (typeof this.#harness?.workspaceSession !== 'function') return null;
+    return this.#harness.workspaceSession(sessionId);
+  }
+
+  /**
+   * interrupt: cancel the current turn immediately (fire-and-forget
+   * stopActiveTurn), then process the new message as a fresh turn once the
+   * old #process() settles.
+   */
+  #interruptAndResend(message, messageId, senderId, key) {
+    // Chain the new process after the current queue settles. The old
+    // #process() will detect turn/end (within ~300 ms) and return silently.
+    const previous = this.#queues.get(key) ?? Promise.resolve();
+    const current = previous
+      .catch(() => undefined)
+      .then(() => this.#process(message, messageId, senderId, key))
+      .finally(() => {
+        this.#acceptedMessageIds.delete(messageId);
+        if (this.#queues.get(key) === current) this.#queues.delete(key);
+      });
+    this.#queues.set(key, current);
+    // Fire-and-forget: stopActiveTurn is async (refresh ownership via RPC),
+    // but controlExecutor is synchronous. The old ask() polling loop will
+    // see turn/end on its next poll.
+    fireAndForgetStop({
+      session: this.#boundSession(key),
+      control: { owner: this, key },
+      signal: this.#signal,
+      logger: this.#logger,
+    });
+    return current;
+  }
+
+  /**
+   * steer: inject the new message's text as a steering instruction into the
+   * current turn via steerActiveTurn. If the turn has already ended or steer
+   * fails (non-text message, etc.), fall back to enqueuing as a new turn.
+   */
+  async #steerOrEnqueue(message, messageId, senderId, key) {
+    const text = cleanText(message.content);
+    // steer only supports plain text; images/files fall back to queue.
+    if (!text || hasInboundImages(message) || hasInboundFiles(message)) {
+      return this.#enqueueMessage(message, messageId, senderId, key);
+    }
+    const steered = await trySteer({
+      session: this.#boundSession(key),
+      text,
+      control: { owner: this, key },
+      signal: this.#signal,
+      logger: this.#logger,
+    });
+    if (steered) {
+      // Message consumed as a steering instruction — no new turn needed.
+      if (this.#state.hasSeen(messageId)) return;
+      await this.#state.markSeen(messageId);
+      this.#status.messagesReceived += 1;
+      this.#status.lastMessageAt = new Date().toISOString();
+      return;
+    }
+    // Turn ended or steer failed — process as a new message.
+    return this.#enqueueMessage(message, messageId, senderId, key);
   }
 
   #enqueueMessage(message, messageId, senderId, key, {
@@ -671,26 +773,39 @@ export class TextHarnessBridge {
         this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] typing indicator failed:`, error);
       });
       let streamFinished = false;
-      if (typeof this.#bot.openDeliveryStream === 'function') {
-        try {
-          stream = await this.#bot.openDeliveryStream(target);
-          semanticStream = true;
-        } catch (error) {
-          this.#logger.warn?.(
-            `[dsh-im:${this.#descriptor.key}] unable to start a semantic reply stream; using final delivery:`,
-            error,
-          );
-        }
-      } else if (typeof this.#bot.openStream === 'function') {
-        try {
-          stream = await this.#bot.openStream(target);
-        } catch (error) {
-          this.#logger.warn?.(
-            `[dsh-im:${this.#descriptor.key}] unable to start a streamed reply; using text:`,
-            error,
-          );
+      // Streaming is skipped when streaming=false or messageBreak=true
+      // (mutually exclusive). Without streaming, the reply is delivered as a
+      // single complete message at the end via sendDelivery/sendText.
+      if (this.#streaming) {
+        if (typeof this.#bot.openDeliveryStream === 'function') {
+          try {
+            stream = await this.#bot.openDeliveryStream(target);
+            semanticStream = true;
+          } catch (error) {
+            this.#logger.warn?.(
+              `[dsh-im:${this.#descriptor.key}] unable to start a semantic reply stream; using final delivery:`,
+              error,
+            );
+          }
+        } else if (typeof this.#bot.openStream === 'function') {
+          try {
+            stream = await this.#bot.openStream(target);
+          } catch (error) {
+            this.#logger.warn?.(
+              `[dsh-im:${this.#descriptor.key}] unable to start a streamed reply; using text:`,
+              error,
+            );
+          }
         }
       }
+      // Create a message_break handler for this turn. sendSegment sends each
+      // segment as a separate IM message. Only active when messageBreak=true.
+      const messageBreakHandler = this.#messageBreak
+        ? createMessageBreakHandler({
+          sendSegment: (segmentText) => this.#bot.sendText(target, segmentText),
+          logger: this.#logger,
+        })
+        : null;
       let content = hasImages || hasReply
         ? await promptContentForInboundMessage(message, { signal: this.#signal })
         : undefined;
@@ -723,7 +838,16 @@ export class TextHarnessBridge {
           timeoutMs: this.#replyTimeoutMs,
           signal: this.#signal,
           control: { owner: this, key: conversationKey },
-          onUpdate: stream ? async (update) => {
+          onUpdate: (stream || messageBreakHandler) ? async (update) => {
+            // message_break handler intercepts break updates and sends the
+            // segment text as a separate IM message. Returns null when
+            // consumed (the update is not passed to the stream handler).
+            if (messageBreakHandler) {
+              const handled = await messageBreakHandler.handleUpdate(update);
+              if (handled === null) return;
+              update = handled;
+            }
+            if (!stream) return;
             const progress = update.type === 'text' ? update.text
               : update.type === 'tool' ? t('正在使用{name}…', { name: update.name }) : update.text;
             if (progress) {
@@ -747,9 +871,15 @@ export class TextHarnessBridge {
         this.#batches.complete(conversationKey, batchSubmission.token);
       }
       const fileOnlyCompletion = !cleanText(answer) && artifacts.length > 0;
-      const visibleAnswer = fileOnlyCompletion
+      // When message_break was used, the segments before each break were
+      // already sent as separate messages. The final message is only the
+      // remaining text after the last break point.
+      const baseAnswer = fileOnlyCompletion
         ? t(FILE_ONLY_COMPLETION_TEXT)
         : answer;
+      const visibleAnswer = messageBreakHandler?.hasBreaks()
+        ? messageBreakHandler.remainingText(baseAnswer)
+        : baseAnswer;
       const answerFormat = fileOnlyCompletion ? 'plain' : 'markdown';
       let textDeliveryError = null;
       let textReceipt = null;
@@ -780,22 +910,28 @@ export class TextHarnessBridge {
         }
       }
       if (!streamFinished) {
-        try {
-          const result = typeof this.#bot.sendDelivery === 'function'
-            ? await this.#bot.sendDelivery(
-                target,
-                createTextDeliveryBlock(visibleAnswer, answerFormat),
-              )
-            : await this.#bot.sendText(target, visibleAnswer);
-          textReceipt = createDeliveryReceipt({
-            deliveryId: messageId,
-            presentation: result?.presentation ?? `${this.#descriptor.key}-text`,
-            providerMessageIds: providerMessageIdsFor(result),
-            deliveryOutcome: result?.deliveryOutcome,
-            reason: result?.reason,
-          });
-        } catch (error) {
-          textDeliveryError = channelDeliveryFailure(error);
+        // When message_break sent all text as segments, the remaining answer
+        // may be empty — skip sending an empty final message.
+        if (messageBreakHandler?.hasBreaks() && !cleanText(visibleAnswer)) {
+          // No final text to send; artifacts (if any) are delivered separately.
+        } else {
+          try {
+            const result = typeof this.#bot.sendDelivery === 'function'
+              ? await this.#bot.sendDelivery(
+                  target,
+                  createTextDeliveryBlock(visibleAnswer, answerFormat),
+                )
+              : await this.#bot.sendText(target, visibleAnswer);
+            textReceipt = createDeliveryReceipt({
+              deliveryId: messageId,
+              presentation: result?.presentation ?? `${this.#descriptor.key}-text`,
+              providerMessageIds: providerMessageIdsFor(result),
+              deliveryOutcome: result?.deliveryOutcome,
+              reason: result?.reason,
+            });
+          } catch (error) {
+            textDeliveryError = channelDeliveryFailure(error);
+          }
         }
       }
       const finalDeliveryUnknown = textReceipt?.deliveryOutcome === 'unknown';

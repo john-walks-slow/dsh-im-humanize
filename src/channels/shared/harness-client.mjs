@@ -14,6 +14,7 @@ import {
   isModelImageRejection,
 } from './image-prompt.mjs';
 import { outboundArtifactRegistry } from './semantic/artifact.mjs';
+import { MESSAGE_BREAK_TOOL } from './message-break.mjs';
 import { t } from './i18n.mjs';
 import { watchHarnessMux } from './harness-mux.mjs';
 
@@ -496,6 +497,7 @@ export class HarnessReplyTracker {
   #targetTurn = null;
   #assistantText = new AssistantTextAccumulator();
   #latestText = '';
+  #textAtLastBreak = '';
   #finished = false;
   #reason = null;
   #toolNames = new Map();
@@ -534,7 +536,25 @@ export class HarnessReplyTracker {
   #commitText(text, pushUpdate) {
     if (!text || text === this.#latestText) return;
     this.#latestText = text;
-    pushUpdate({ type: 'text', text });
+    // After a message_break, push only the segment text (text since the last
+    // break point) so streaming channels show only the new segment on a fresh
+    // stream. Before any break, #textAtLastBreak is '' and visibleText = text.
+    const visibleText = this.#textAtLastBreak
+      && text.startsWith(this.#textAtLastBreak)
+      ? text.substring(this.#textAtLastBreak.length)
+      : text;
+    if (!visibleText) return;
+    pushUpdate({ type: 'text', text: visibleText });
+  }
+
+  /** Text accumulated since the last message_break (or the full text if none). */
+  #segmentText() {
+    if (!this.#textAtLastBreak) return this.#latestText;
+    if (this.#latestText.startsWith(this.#textAtLastBreak)) {
+      return this.#latestText.substring(this.#textAtLastBreak.length);
+    }
+    // Fallback: canonical rewrite broke the prefix relationship.
+    return this.#latestText;
   }
 
   consumeAll(entries) {
@@ -603,6 +623,18 @@ export class HarnessReplyTracker {
           ?? nonEmptyText(event.data?.subCallId);
         if (callId) this.#toolNames.set(callId, name);
         this.#lastToolName = name;
+
+        // message_break is a no-op separator: the AI calls it between segments
+        // of text to indicate "send what I've written so far as a separate
+        // message." Push a special update with the text accumulated since the
+        // last break (or since the start), then advance the break point.
+        if (name === MESSAGE_BREAK_TOOL) {
+          const segmentText = this.#segmentText();
+          this.#textAtLastBreak = this.#latestText;
+          pushUpdate({ type: 'message_break', text: segmentText });
+          continue;
+        }
+
         let argsText = null;
         if (event.data?.arguments !== undefined && event.data?.arguments !== null) {
           if (typeof event.data.arguments === 'string') {
@@ -622,6 +654,9 @@ export class HarnessReplyTracker {
           ?? nonEmptyText(event.data?.subCallId);
         const toolName = (callId ? this.#toolNames.get(callId) : null)
           ?? this.#lastToolName;
+        // Suppress tool/result for message_break — it's a no-op separator,
+        // not a real tool whose result needs to be shown as progress.
+        if (toolName === MESSAGE_BREAK_TOOL) continue;
         const error = toolResultErrorText(event.data?.error);
         pushUpdate({
           type: 'status',

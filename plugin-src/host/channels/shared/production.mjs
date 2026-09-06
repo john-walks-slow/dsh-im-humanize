@@ -54,6 +54,14 @@ export async function createTokenProductionController(ctx, config, internals, de
     || Array.isArray(channelRuntimeOptions)) {
     throw new TypeError(`dsh-im ${channel} runtimeOptions must return an object`);
   }
+  // Pass the humanization config options (streaming, messageBreak, onNewMessage)
+  // from the global plugin config to every channel runtime. Per-bot overrides
+  // can be added later via the config store.
+  const humanizationOptions = {
+    streaming: config.streaming !== false,
+    messageBreak: config.messageBreak === true,
+    onNewMessage: config.onNewMessage ?? 'interrupt',
+  };
   const createSupervisor = internals.createConnectionSupervisor ?? createTokenConnectionSupervisor;
   const seedAccessPolicy = typeof definitions.initialAccessPolicyForBot === 'function'
     ? definitions.initialAccessPolicyForBot
@@ -129,6 +137,7 @@ export async function createTokenProductionController(ctx, config, internals, de
       });
       return new ResolvedRuntime({
         ...channelRuntimeOptions,
+        ...humanizationOptions,
         config: botConfig,
         token,
         harness: workspaceScope.harness,
