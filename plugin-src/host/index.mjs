@@ -110,7 +110,11 @@ export function createImHostPlugin(internals = {}) {
     // into the config so all channels receive the same values.
     let humanizeStore = null;
     try {
-      const result = installHumanizeRpc(ctx, { config, logger: ctx?.logger });
+      const result = installHumanizeRpc(ctx, {
+        config,
+        logger: ctx?.logger,
+        authority: config.rpcAuthority,
+      });
       humanizeStore = result.store;
       await humanizeStore.load();
       const settings = humanizeStore.get();

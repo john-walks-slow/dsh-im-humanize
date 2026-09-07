@@ -6,6 +6,7 @@ import {
   HumanizeSettingsStore,
   createHumanizeRpcHandler,
 } from '../../src/channels/shared/humanize-settings.mjs';
+import { resolveRpcAuthority } from './rpc-authority.mjs';
 
 export { HUMANIZE_RPC_CHANNEL, HUMANIZE_ENDPOINTS };
 
@@ -26,7 +27,7 @@ export function validHumanizePayload(endpoint, payload) {
   return false;
 }
 
-export function installHumanizeRpc(ctx, { config = {}, logger = null } = {}) {
+export function installHumanizeRpc(ctx, { config = {}, logger = null, authority } = {}) {
   const log = logger ?? (typeof ctx?.logger === 'function'
     ? ctx.logger('dsh-im-humanize')
     : (ctx?.logger ?? console));
@@ -40,7 +41,9 @@ export function installHumanizeRpc(ctx, { config = {}, logger = null } = {}) {
   const store = new HumanizeSettingsStore(settingsPath);
   const handler = createHumanizeRpcHandler({ store, logger: log });
 
-  // Register RPC channel on the Host connection (matches inbound-ttl-rpc.mjs).
+  // Register RPC channel on the Host connection (matches the channel RPC
+  // modules: authority follows config.rpcAuthority, 'loopback' by default,
+  // 'trusted-host' when the deployment serves a trusted remote hostname).
   // If the connection RPC surface is unavailable (e.g. headless fixtures,
   // reduced host contexts), degrade gracefully: skip registration, keep the
   // file-backed store working for config merge at activation time.
@@ -56,7 +59,7 @@ export function installHumanizeRpc(ctx, { config = {}, logger = null } = {}) {
         }
         return handler(endpoint, payload, signal);
       },
-      { authority: 'loopback' },
+      { authority: resolveRpcAuthority(authority ?? config.rpcAuthority) },
     );
   } else {
     log.warn?.('[dsh-im] Host Connection RPC unavailable; humanization panel disabled');
