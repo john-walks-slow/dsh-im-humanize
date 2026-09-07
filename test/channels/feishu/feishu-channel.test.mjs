@@ -909,3 +909,73 @@ test('issue #163: interactionPresented() 幂等且未换卡时调用无害', asy
   });
   assert.equal(calls.cards.length, 2);
 });
+
+test('issue #163: 呈现后与冻结内容相同的重放快照不写卡，累计快照只写增量', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+  await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent('过程 A');
+      await controller.rotate();
+      controller.interactionPresented();
+      await controller.setContent('过程 A');               // 核心重放提问前快照
+      await controller.setContent('过程 A + 增量 B');       // 累计快照
+    },
+  });
+  const newCardWrites = calls.updates.filter((u) => u.path.card_id === 'card-test-2');
+  // 修复后剥前缀得「 + 增量 B」；修复前整卡写入原文。
+  assert.equal(newCardWrites.at(-1).data.content, ' + 增量 B', '新卡内容必须精确等于剥离冻结前缀后的增量');
+});
+
+test('issue #163: 终稿分段只含增量，不再重复提问前过程', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+  await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent('过程 A');
+      await controller.rotate();
+      controller.interactionPresented();
+      await controller.setContent('过程 A\n\n最终回答 B');
+    },
+  });
+  const newCardWrites = calls.updates.filter((u) => u.path.card_id === 'card-test-2');
+  assert.ok(newCardWrites.at(-1).data.content.includes('最终回答 B'));
+  assert.ok(!newCardWrites.at(-1).data.content.includes('过程 A'), '终稿不得重放冻结前缀');
+  const oldCardWrites = calls.updates.filter((u) => u.path.card_id === 'card-test');
+  assert.ok(oldCardWrites.at(-1).data.content.includes('过程 A'), '提问前过程保留在旧卡');
+});
+
+test('issue #163: 非前缀匹配的工具行原样写入新卡（回归锚）', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+  await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent('过程 A');
+      await controller.rotate();
+      controller.interactionPresented();
+      await controller.setContent('_正在使用 read_file…_');
+    },
+  });
+  const newCardWrites = calls.updates.filter((u) => u.path.card_id === 'card-test-2');
+  assert.equal(newCardWrites.at(-1).data.content, '_正在使用 read_file…_');
+});
+
+test('issue #163: 两轮提问链式去重：第二轮冻结基线为第一轮累计快照', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+  await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent('过程 A');
+      await controller.rotate();
+      controller.interactionPresented();
+      await controller.setContent('过程 A + B1');      // 第一轮增量 B1
+      await controller.rotate();                        // 第二轮提问
+      controller.interactionPresented();
+      await controller.setContent('过程 A + B1 + B2');  // 第二轮增量「 + B2」
+    },
+  });
+  assert.equal(calls.cards.length, 3);
+  const card3Writes = calls.updates.filter((u) => u.path.card_id === 'card-test-3');
+  assert.ok(card3Writes.at(-1).data.content.includes('B2'));
+  assert.ok(!card3Writes.at(-1).data.content.includes('B1'), '第二轮新卡不得重放第一轮增量');
+});

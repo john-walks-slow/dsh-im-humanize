@@ -234,6 +234,16 @@ export class VerifiedFeishuChannel {
         rotating = false;
         return activeCard;
       };
+      // issue #163：冻结前缀去重——换卡定格时旧卡已展示 frozenContent；此后
+      // 新卡只展示剥离该前缀后的增量（重放快照剥为空白则跳过写卡），终稿
+      // 分段同样使用增量视图，提问前的过程不再重复播放。
+      let frozenContent = null;
+      let postRotationView = null;
+      const applyFrozenDedup = (next) => {
+        if (frozenContent === null || !next.startsWith(frozenContent)) return next;
+        const rest = next.slice(frozenContent.length);
+        return rest.trim().length > 0 ? rest : ''; // 不改写增量原文；全空白视为无增量
+      };
       const controller = {
         get messageId() {
           return activeCard.messageId;
@@ -245,6 +255,8 @@ export class VerifiedFeishuChannel {
           if (rotating) return;
           rotating = true;
           awaitingPresentation = true;
+          frozenContent = lastContent;
+          postRotationView = '';
           try {
             await this.#updateStreamCard(
               activeCard,
@@ -260,9 +272,14 @@ export class VerifiedFeishuChannel {
           const next = String(content ?? '') || '…';
           // 快照推进先于写卡：并发定格读取的是最新值。
           lastContent = next;
-          if (awaitingPresentation) return; // 换卡挂起：只挂起卡片写入
+          const visible = applyFrozenDedup(next);
+          if (frozenContent !== null) {
+            if (visible === '') return; // 无增量：不建卡不写卡（挂起与否则无关）
+            postRotationView = visible;
+          }
+          if (awaitingPresentation) return; // 换卡挂起：视图已推进，仅挂起卡片写入
           const card = await ensureActiveCard();
-          await this.#updateStreamCard(card, streamPreview(next));
+          await this.#updateStreamCard(card, streamPreview(visible));
         }),
       };
 
@@ -270,7 +287,11 @@ export class VerifiedFeishuChannel {
       await enqueue(async () => {
         // 终稿强制解除挂起：异常路径下呈现通知缺失时仍可收尾。
         awaitingPresentation = false;
-        const chunks = splitStreamContent(lastContent);
+        // 终稿使用增量视图；极端退化（增量全部为空）回退完整快照，宁重复不丢失。
+        const finalView = postRotationView !== null && postRotationView.trim().length > 0
+          ? postRotationView
+          : lastContent;
+        const chunks = splitStreamContent(finalView);
         for (const [index, chunk] of chunks.entries()) {
           const card = index === 0
             ? await ensureActiveCard()
