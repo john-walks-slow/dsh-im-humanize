@@ -4656,6 +4656,50 @@ test('issue #162: patch 失败时降级为 warn，答案提交不受影响', asy
   );
 });
 
+test('issue #162: 已答 interaction 的陈旧点击回复「已经回答过了」', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const entry = questionCardEntries(context.timeline)[0];
+  const textCount = context.timeline.filter((e) => e.kind === 'text-message').length;
+  await context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, 'answer:question-86:0:测试环境', 'ou_user'),
+  );
+  await context.bridge.waitForIdle();
+  const textsAfter = context.timeline.filter((e) => e.kind === 'text-message').slice(textCount);
+  assert.ok(textsAfter.some((e) => e.text.includes('已经回答过了')), '必须提示已回答过');
+  assert.ok(textsAfter.every((e) => !e.text.includes('其他客户端')), '不得再弹误导提示');
+});
+
+test('issue #162: answerCustom 校验通过回复引导文本', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  const { replyText } = await bridge_click_custom(context, { waitFinal: false });
+  assert.ok(replyText.includes('直接发送文字'), '引导文案必须与 canClaimInteractionReply 语义一致');
+});
+
+test('issue #162: 已答卡上的 answerCustom 陈旧点击走提示逻辑', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const entry = questionCardEntries(context.timeline)[0];
+  const textCount = context.timeline.filter((e) => e.kind === 'text-message').length;
+  await context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, 'answerCustom:question-86:0', 'ou_user'),
+  );
+  await context.bridge.waitForIdle();
+  const textsAfter = context.timeline.filter((e) => e.kind === 'text-message').slice(textCount);
+  assert.ok(textsAfter.some((e) => e.text.includes('已经回答过了')));
+});
+
+test('issue #162: 未答过的陈旧 interaction 点击保持现有「其他客户端」提示（回归锚）', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  const entry = await waitQuestionCard(context);
+  const textCount = context.timeline.filter((e) => e.kind === 'text-message').length;
+  await context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, 'answer:unknown-86:0:测试环境', 'ou_user'),
+  );
+  const textsAfter = context.timeline.filter((e) => e.kind === 'text-message').slice(textCount);
+  assert.ok(textsAfter.some((e) => e.text.includes('其他客户端')), '未答过的 id 保持现有提示');
+});
+
 test('issue #86: finalize failure degrades without blocking the interaction', async () => {
   const context = issue86RotationFixture({ failFinalize: true });
   await bridge_accept_and_answer(context);

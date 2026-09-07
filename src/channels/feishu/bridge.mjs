@@ -530,6 +530,9 @@ export class FeishuHarnessBridge {
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
   #resolvedQuestionReplies = new Map();
+  // issue #162：已提交答案的 interactionId → 过期时间（TTL-only，惰性清理，
+  // 与 #resolvedQuestionReplies 同风格）。陈旧点击据此给出「已回答」提示。
+  #answeredInteractionIds = new Map();
   // Keep the accepted configuration through the existing queue/reply lifecycle.
   #acceptedMessageIds = new Map();
   #interactionTasks = new Set();
@@ -2187,6 +2190,34 @@ export class FeishuHarnessBridge {
           && pending.actor === actor
           && Number(indexText) === pending.index) {
           await this.#submitQuestionAnswer(pending, optionLabel, { chatId, questionMessageId: messageId });
+        } else {
+          // issue #162：pending 已清除时区分「已答过」与「其他客户端处理」，
+          // 避免对同一张提问卡的重复点击弹出误导提示。
+          const staleNotice = pending
+            ? INTERACTION_RESOLVED_TEXT()
+            : this.#isAnsweredInteraction(interactionId)
+              ? t('这个问题已经回答过了。')
+              : INTERACTION_RESOLVED_TEXT();
+          await reply(staleNotice).catch(() => undefined);
+        }
+      }
+      return;
+    }
+    // issue #162：自定义答案入口——与 answer: 同构校验；通过后引导用户直接
+    // 发送文字消息（canClaimInteractionReply 语义：同 actor 的文本即答案）。
+    if (action.startsWith('answerCustom:')) {
+      const rest = action.slice('answerCustom:'.length);
+      const sep = rest.indexOf(':');
+      if (sep !== -1) {
+        const interactionId = rest.slice(0, sep);
+        const indexText = rest.slice(sep + 1);
+        const qKey = this.#interactionKeys.get(interactionId);
+        const pending = qKey ? this.#pendingInteractions.get(qKey) : null;
+        if (pending && pending.kind === 'question' && !pending.submitting
+          && pending.actor === actor && Number(indexText) === pending.index) {
+          await reply(t('想自定义答案？直接发送文字消息即可，将作为本题答案提交。')).catch(() => undefined);
+        } else if (!pending && this.#isAnsweredInteraction(interactionId)) {
+          await reply(t('这个问题已经回答过了。')).catch(() => undefined);
         } else {
           await reply(INTERACTION_RESOLVED_TEXT()).catch(() => undefined);
         }
@@ -4478,6 +4509,7 @@ export class FeishuHarnessBridge {
         },
       });
       await patchAnsweredCard();
+      this.#answeredInteractionIds.set(pending.interactionId, Date.now() + RESOLVED_REPLY_TTL_MS);
       this.#rememberResolvedInteraction(key, pending);
       this.#clearPendingInteraction(key, pending.interactionId);
       this.#status.lastError = null;
@@ -4694,6 +4726,14 @@ export class FeishuHarnessBridge {
       if (pending.inactive) this.#rememberResolvedInteraction(pending.key, pending);
     }
     pending.needsPresentation = false;
+  }
+
+  #isAnsweredInteraction(interactionId) {
+    const now = Date.now();
+    for (const [id, expiresAt] of this.#answeredInteractionIds) {
+      if (expiresAt <= now) this.#answeredInteractionIds.delete(id);
+    }
+    return this.#answeredInteractionIds.has(interactionId);
   }
 
   #rememberResolvedInteraction(key, pending) {
