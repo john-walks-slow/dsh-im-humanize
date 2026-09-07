@@ -65,6 +65,13 @@ const CHANNEL_DEFINITIONS = Object.freeze({
       group: [{ key: 'chatId', label: '群 Chat ID', placeholder: '填写群 chatid' }],
     },
   },
+  wecomApp: {
+    label: '企业微信应用',
+    kinds: [{ value: 'user', label: '私聊' }],
+    fields: {
+      user: [{ key: 'chatId', label: '用户 ID', placeholder: '填写企业微信用户 ID' }],
+    },
+  },
   qq: {
     label: 'QQ',
     kinds: [{ value: 'user', label: '单聊' }, { value: 'group', label: '群聊' }],
