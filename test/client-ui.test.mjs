@@ -681,6 +681,105 @@ test('Feishu bot settings render the step push toggle and save through the bot s
   await act(async () => renderer.unmount());
 });
 
+test('step push mode select appears only when enabled and saves through the mode endpoint', async (t) => {
+  const previousWindow = globalThis.window;
+  let nextTimer = 0;
+  const frames = new Map();
+  globalThis.window = {
+    setInterval() { return ++nextTimer; },
+    clearInterval() {},
+    setTimeout() { return ++nextTimer; },
+    clearTimeout() {},
+    requestAnimationFrame(callback) {
+      const id = ++nextTimer;
+      frames.set(id, callback);
+      queueMicrotask(() => {
+        const pending = frames.get(id);
+        if (!pending) return;
+        frames.delete(id);
+        pending();
+      });
+      return id;
+    },
+    cancelAnimationFrame(id) { frames.delete(id); },
+  };
+  t.after(() => {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  });
+
+  let stepPush = false;
+  let stepPushMode = 'post';
+  const calls = [];
+  const snapshot = () => ({
+    schemaVersion: 2,
+    revision: calls.length + 1,
+    state: 'connected',
+    bots: [{
+      botId: 'bot_step_push_mode',
+      state: 'connected',
+      connected: true,
+      groupResponseMode: 'mention',
+      groupTopicReply: false,
+      stepPush,
+      stepPushMode,
+      bot: { name: '分步直推机器人', appIdMasked: 'cli_step••••push' },
+      health: { status: 'healthy', summary: '长连接运行正常' },
+    }],
+  });
+  const rpcCall = async (endpoint, payload) => {
+    calls.push({ endpoint, payload });
+    if (endpoint === FEISHU_ENDPOINTS.status) return { ok: true, value: snapshot() };
+    if (endpoint === FEISHU_ENDPOINTS.setStepPush) {
+      stepPush = payload.stepPush;
+      return { ok: true, value: snapshot() };
+    }
+    if (endpoint === FEISHU_ENDPOINTS.setStepPushMode) {
+      stepPushMode = payload.stepPushMode;
+      return { ok: true, value: snapshot() };
+    }
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+
+  let renderer;
+  await act(async () => {
+    renderer = create(React.createElement(FeishuSettingsTab, { rpcCall }));
+    await flushTasks();
+  });
+
+  // While step push is off, no mode select is rendered.
+  const stepPushSelect = () => renderer.root.findByProps({ 'aria-label': '分步直推' });
+  assert.equal(
+    renderer.root.findAllByProps({ 'aria-label': '分步直推呈现方式' }).length,
+    0,
+    'the mode select stays hidden while step push is off',
+  );
+
+  await act(async () => {
+    stepPushSelect().props.onChange({ target: { value: 'on' } });
+    await flushTasks();
+  });
+
+  const modeSelect = () => renderer.root.findByProps({ 'aria-label': '分步直推呈现方式' });
+  assert.deepEqual(
+    modeSelect().findAllByType('option').map((option) => option.props.value),
+    ['post', 'streaming_card'],
+  );
+  assert.equal(modeSelect().props.value, 'post');
+
+  await act(async () => {
+    modeSelect().props.onChange({ target: { value: 'streaming_card' } });
+    await flushTasks();
+  });
+  assert.ok(calls.some(({ endpoint, payload }) => (
+    endpoint === FEISHU_ENDPOINTS.setStepPushMode
+      && payload.botId === 'bot_step_push_mode'
+      && payload.stepPushMode === 'streaming_card'
+  )));
+  assert.equal(modeSelect().props.value, 'streaming_card');
+  await act(async () => renderer.unmount());
+});
+
 test('credential binding is a distinct secondary action beside QR binding in four channels', async () => {
   const settings = [
     ['飞书', FeishuSettingsTab],

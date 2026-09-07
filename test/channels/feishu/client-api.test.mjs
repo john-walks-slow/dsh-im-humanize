@@ -23,6 +23,7 @@ test('multi-bot endpoints are bot-scoped and keep legacy operations separate', (
   assert.equal(FEISHU_ENDPOINTS.setGroupResponseMode, 'bot.group-response-mode.set');
   assert.equal(FEISHU_ENDPOINTS.setGroupTopicReply, 'bot.group-topic-reply.set');
   assert.equal(FEISHU_ENDPOINTS.setStepPush, 'bot.step-push.set');
+  assert.equal(FEISHU_ENDPOINTS.setStepPushMode, 'bot.step-push-mode.set');
   assert.equal(FEISHU_ENDPOINTS.testConnection, 'connection.test');
 });
 
@@ -40,6 +41,7 @@ test('client normalizes multiple independent bots and derives authoritative tota
         groupResponseMode: 'all',
         groupTopicReply: true,
         stepPush: true,
+        stepPushMode: 'streaming_card',
         groupMessagePermissionGranted: true,
         bot: {
           name: '销售助手',
@@ -57,6 +59,7 @@ test('client normalizes multiple independent bots and derives authoritative tota
         configured: true,
         groupTopicReply: 'stale-truthy', // must normalize to false
         stepPush: 'stale-truthy', // must normalize to false
+        stepPushMode: 'stale-unknown', // must normalize to the post default
         bot: { name: '研发助手', domain: 'lark' },
         health: { status: 'offline', summary: '等待重连' },
         error: { code: 'connection_failed', message: '连接失败' },
@@ -71,10 +74,12 @@ test('client normalizes multiple independent bots and derives authoritative tota
   assert.equal(snapshot.bots[0].groupResponseMode, 'all');
   assert.equal(snapshot.bots[0].groupTopicReply, true);
   assert.equal(snapshot.bots[0].stepPush, true);
+  assert.equal(snapshot.bots[0].stepPushMode, 'streaming_card');
   assert.equal(snapshot.bots[0].groupMessagePermissionGranted, true);
   assert.equal(snapshot.bots[1].groupResponseMode, 'mention');
   assert.equal(snapshot.bots[1].groupTopicReply, false);
   assert.equal(snapshot.bots[1].stepPush, false);
+  assert.equal(snapshot.bots[1].stepPushMode, 'post');
   assert.equal(snapshot.bots[1].groupMessagePermissionGranted, false);
   assert.equal(snapshot.bots[1].state, 'connecting');
   assert.equal(snapshot.bots[1].bot.domain, 'lark');

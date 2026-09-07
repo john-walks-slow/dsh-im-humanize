@@ -226,6 +226,13 @@ const EN = Object.freeze({
   '关闭（保持流式卡模式）': 'Off (keep the streaming card)',
   '开启（逐步推送工具调用与过程说明）': 'On (push tool calls and process notes step by step)',
   '分步直推设置保存失败，请重试。': 'Could not save the step push setting. Try again.',
+  '分步直推呈现方式': 'Step push presentation',
+  '逐条消息（每步一条富文本消息）': 'Discrete messages (one rich-text message per step)',
+  'zcode过程卡模式': 'ZCode process-card mode',
+  '过程说明、工具摘要与最终答案都在同一张卡片中原地刷新':
+    'Process notes, the tool summary, and the final answer refresh in place inside one card',
+  '思考与工具摘要折叠展示，最终答案在同一张卡片中原地刷新':
+    'Thinking and the tool summary stay folded; the final answer refreshes in place inside one card',
   '钉钉设置': 'DingTalk settings',
   '企业微信设置': 'WeCom settings',
   '扫码接入机器人': 'Scan QR code',

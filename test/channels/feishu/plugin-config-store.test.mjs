@@ -79,6 +79,25 @@ test('PluginConfigStore defaults stepPush off and only persists a literal true',
   await store.clear();
 });
 
+test('PluginConfigStore defaults stepPushMode to post and normalizes unknown values', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-feishu-config-step-push-mode-'));
+  const path = join(dir, 'config.json');
+  const store = await new PluginConfigStore(path).load();
+
+  await store.save({
+    appId: 'cli_step_push_mode',
+    ownerOpenId: 'ou_owner',
+    domain: 'feishu',
+    stepPushMode: 'bubble', // unknown values fall back to the post default
+  });
+  assert.equal(store.get().stepPushMode, 'post');
+
+  await store.save({ ...store.get(), stepPushMode: 'streaming_card' });
+  assert.equal((await new PluginConfigStore(path).load()).get().stepPushMode, 'streaming_card');
+
+  await store.clear();
+});
+
 test('PluginConfigStore stays unconfigured after a failed write and can retry', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-feishu-config-retry-'));
   const blockedParent = join(dir, 'blocked');

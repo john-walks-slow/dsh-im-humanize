@@ -903,6 +903,103 @@ export function approvalCard({ toolName, operation, reason, approvalId }) {
   return cardWith(t('🔐 工具审批'), elements);
 }
 
+// ── Streaming step card (流式过程卡片) ────────────────────────────────────
+
+/** One streaming step card carries at most this many JSON bytes after the
+ *  card has been serialized (Feishu caps card content near 30KB; stay lower
+ *  so headers and JSON escaping always fit). */
+export const STEP_STREAM_CARD_MAX_BYTES = 24_000;
+
+/**
+ * Build one streaming step card from the accumulated process blocks:
+ *   { kind: 'message', text }         — interim note / warning / context line
+ *   { kind: 'tools', lines: string[] } — tool-call summary panel
+ * `status`: 'running' keeps panels expanded and ends with an italic status
+ * line; 'completed' / 'stopped' collapse the panels and swap the status text;
+ * 'sealed' is an overflow spill chunk with no status line at all.
+ */
+export function stepStreamCard(blocks, { status = 'running' } = {}) {
+  const elements = [];
+  for (const block of Array.isArray(blocks) ? blocks : []) {
+    if (block?.kind === 'tools' || block?.kind === 'notes') {
+      const lines = (Array.isArray(block.lines) ? block.lines : [])
+        .filter((line) => typeof line === 'string' && line.trim());
+      if (lines.length === 0) continue;
+      const count = lines.length + (Number(block.omitted) || 0);
+      elements.push(stepPanel(lines, {
+        title: block.kind === 'tools'
+          ? t('🛠️ 工具摘要（{count}）', { count })
+          : t('💭 思考过程（{count}）', { count }),
+        // Tool summaries stay visible while the turn runs; thinking notes
+        // remain folded at all times.
+        expanded: block.kind === 'tools' && status === 'running',
+      }));
+      continue;
+    }
+    const text = typeof block?.text === 'string' ? block.text.trim() : '';
+    if (text) elements.push({ tag: 'markdown', content: text });
+  }
+  if (elements.length === 0) elements.push({ tag: 'markdown', content: ' ' });
+  if (status !== 'sealed') {
+    elements.push({ tag: 'markdown', content: `_${stepStatusText(status)}_` });
+  }
+  return JSON.stringify({
+    schema: '2.0',
+    header: { title: plainText(t('⚙️ 任务过程')), template: 'blue' },
+    body: { elements },
+  });
+}
+
+/** The collapsible grey panel used for tool summaries and thinking notes. */
+function stepPanel(lines, { title, expanded }) {
+  return {
+    tag: 'collapsible_panel',
+    expanded: expanded === true,
+    background_color: 'grey-50',
+    border: { color: 'grey', corner_radius: '8px' },
+    padding: '8px 8px 8px 8px',
+    header: {
+      title: { tag: 'plain_text', content: title },
+      vertical_align: 'center',
+      padding: '8px 8px 8px 8px',
+      icon: { tag: 'standard_icon', token: 'down-small-ccm_outlined', color: 'grey', size: '16px 16px' },
+      icon_position: 'right',
+      icon_expanded_angle: -180,
+    },
+    elements: [{ tag: 'markdown', content: lines.join('\n') }],
+  };
+}
+
+function stepStatusText(status) {
+  if (status === 'completed') return t('已完成');
+  if (status === 'stopped') return t('已停止');
+  return t('运行中');
+}
+
+/**
+ * Split accumulated blocks into card-sized chunks at block boundaries,
+ * budgeted by the encoded running-status card (the largest render). Every
+ * chunk keeps at least one block so progress is never dropped. The caller
+ * renders all but the last chunk as `sealed` and the last one live.
+ */
+export function splitStepStreamCardBlocks(blocks, limit = STEP_STREAM_CARD_MAX_BYTES) {
+  const list = (Array.isArray(blocks) ? blocks : []).filter(Boolean);
+  if (list.length === 0) return [];
+  const chunks = [];
+  let current = [];
+  for (const block of list) {
+    if (current.length > 0
+      && Buffer.byteLength(stepStreamCard([...current, block]), 'utf8') > limit) {
+      chunks.push(current);
+      current = [block];
+    } else {
+      current.push(block);
+    }
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
 /**
  * Interactive question card. When the question carries options, each option is
  * rendered as its own button; the selected option label is submitted via a

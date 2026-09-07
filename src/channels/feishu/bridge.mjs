@@ -89,7 +89,9 @@ import {
   presetCard,
   questionCard,
   sessionListCard,
+  splitStepStreamCardBlocks,
   statusCard,
+  stepStreamCard,
   steerCard,
   watchListCard,
   workspaceListCard,
@@ -100,6 +102,10 @@ import {
   FEISHU_GROUP_RESPONSE_MODES,
   normalizeFeishuGroupResponseMode,
 } from './group-response-mode.mjs';
+import {
+  FEISHU_STEP_PUSH_MODES,
+  normalizeFeishuStepPushMode,
+} from './step-push-mode.mjs';
 
 // Lazily evaluated: t() must run after setImHostLanguage, not at import time.
 const INTERACTION_RESOLVED_TEXT = () => t('这个问题已在其他客户端处理，无需再次回答。');
@@ -169,6 +175,17 @@ const STEP_PUSH_ERROR_MAX_CHARS = 200;
 /** One post message carries at most this many UTF-8 bytes after its rich-text
  *  content has been JSON encoded (Feishu caps rich-text requests at 30KB). */
 const STEP_PUSH_POST_CHUNK_MAX_BYTES = 24_000;
+/** Streaming-card mode coalesces card renders behind one PATCH per interval —
+ *  patching the same message is far more rate sensitive than posting. */
+const STEP_STREAM_PATCH_MIN_INTERVAL_MS = 1_000;
+/** One answer chunk inside the streaming card: small enough that the block
+ *  splitter can always distribute blocks across sealed/live cards. */
+const STEP_STREAM_ANSWER_CHUNK_MAX_BYTES = 18_000;
+/** Panels (tool summary / thinking) shed their oldest lines past this budget
+ *  so a single panel can never outgrow the card on its own. */
+const STEP_STREAM_PANEL_MAX_BYTES = 12_000;
+/** One thinking note is excerpted to this many characters inside its panel. */
+const STEP_STREAM_NOTE_MAX_CHARS = 500;
 
 /** Split one markdown answer into post-sized chunks at paragraph bounds,
  *  budgeted by the encoded rich-text content rather than the source string.
@@ -567,8 +584,14 @@ export class FeishuHarnessBridge {
   #groupTopicReply = false;
   /** When true, streaming turns push tool calls and interim notes as discrete messages. */
   #stepPush = false;
+  /** Step push presentation: 'post' (discrete messages) or 'streaming_card'. */
+  #stepPushMode = FEISHU_STEP_PUSH_MODES.POST;
   /** Per-conversation step push state: key → { lastSentAt, count, breakerLogged }. */
   #stepPushSendState = new Map();
+  /** Live streaming step cards: key → per-turn card state (streaming_card mode). */
+  #stepCards = new Map();
+  /** In-flight turn stop markers: key → { requested } for 已停止 sealing. */
+  #stepStopFlags = new Map();
   /** Injectable clock for step push throttling (tests pass a fake one). */
   #stepPushClock;
   /** Group chats this bot has seen; only these may use topic replies. */
@@ -616,6 +639,7 @@ export class FeishuHarnessBridge {
     groupResponseMode = FEISHU_GROUP_RESPONSE_MODES.ALL,
     groupTopicReply = false,
     stepPush = false,
+    stepPushMode = FEISHU_STEP_PUSH_MODES.POST,
     stepPushClock = null,
     repair,
     repairPollIntervalMs = REPAIR_POLL_INTERVAL_MS,
@@ -664,6 +688,7 @@ export class FeishuHarnessBridge {
     this.#groupResponseMode = normalizeFeishuGroupResponseMode(groupResponseMode);
     this.#groupTopicReply = groupTopicReply === true;
     this.#stepPush = stepPush === true;
+    this.#stepPushMode = normalizeFeishuStepPushMode(stepPushMode);
     this.#stepPushClock = stepPushClock ?? DEFAULT_STEP_PUSH_CLOCK;
     this.#repair = repair ?? null;
     this.#repairPollIntervalMs = repairPollIntervalMs;
@@ -698,6 +723,14 @@ export class FeishuHarnessBridge {
 
   setStepPush(value) {
     this.#stepPush = value === true;
+  }
+
+  setStepPushMode(value) {
+    this.#stepPushMode = normalizeFeishuStepPushMode(value);
+  }
+
+  get stepPushMode() {
+    return this.#stepPushMode;
   }
 
   #isAddressed(event) {
@@ -2957,6 +2990,7 @@ export class FeishuHarnessBridge {
         },
       );
       if (result?.stopped) {
+        this.#markStepStopRequested(key);
         await Promise.allSettled([
           this.#cancelPendingInteraction(key),
           this.#approvals.closeRoute(key),
@@ -3792,6 +3826,305 @@ export class FeishuHarnessBridge {
     await this.#sendStepPost(chatId, replyToMessageId, paragraphs, fallbackText);
   }
 
+  // ── Streaming step card (流式过程卡片) ─────────────────────────────────────
+
+  /** Ensure the per-turn card state exists without scheduling a render. */
+  #ensureStepCard(key, chatId, replyToMessageId) {
+    let card = this.#stepCards.get(key);
+    if (!card) {
+      card = {
+        blocks: [],
+        messageId: null,
+        chatId,
+        replyToMessageId,
+        broken: false,
+        lastRenderAt: 0,
+        renderQueued: false,
+        renderChain: null,
+        chunkCount: 1,
+        cardIds: [],
+        answerStart: null,
+        answerEnd: null,
+      };
+      this.#stepCards.set(key, card);
+    }
+    return card;
+  }
+
+  /**
+   * Append one process block to the turn's live streaming card: the first
+   * block of a turn opens a card in the request topic, later blocks re-render
+   * the same message via im.v1.message.patch. Consecutive tool lines merge
+   * into one collapsible panel. Renders are coalesced behind
+   * STEP_STREAM_PATCH_MIN_INTERVAL_MS; failures permanently downgrade the
+   * turn (card.broken) — the final answer still delivers through the normal
+   * ladder, and a flaky card never breaks the ask.
+   */
+  async #appendStepCardUpdate(key, chatId, replyToMessageId, block, { billable = true } = {}) {
+    const card = this.#ensureStepCard(key, chatId, replyToMessageId);
+    if (card.broken) return;
+    const last = card.blocks[card.blocks.length - 1];
+    if ((block.kind === 'tools' || block.kind === 'notes') && last?.kind === block.kind) {
+      for (const line of block.lines) this.#pushPanelLine(last, line);
+    } else {
+      card.blocks.push(block);
+    }
+    if (billable) {
+      this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
+    }
+    this.#queueStepCardRender(key, chatId);
+  }
+
+  /** Append one line to a foldable panel, shedding oldest lines past budget. */
+  #pushPanelLine(block, line) {
+    if (!Array.isArray(block.lines)) block.lines = [];
+    block.omitted = Number(block.omitted) || 0;
+    let size = Buffer.byteLength(block.lines.join('\n'), 'utf8');
+    const incoming = Buffer.byteLength(line, 'utf8');
+    while (block.lines.length > 0 && size + incoming > STEP_STREAM_PANEL_MAX_BYTES) {
+      const removed = block.lines.shift();
+      block.omitted += 1;
+      size -= Buffer.byteLength(`${removed}\n`, 'utf8');
+    }
+    block.lines.push(line);
+  }
+
+  /**
+   * Stream one finalized assistant step into the card as the live answer
+   * draft: the newest step rewrites the draft blocks, so the answer grows in
+   * place like ZCode's streaming card. Long answers are pre-chunked at
+   * paragraph bounds so the block splitter can always spill them across
+   * sealed cards. When a later tool call proves the draft interim,
+   * #morphStepCardAnswerToNote folds it into the thinking panel.
+   */
+  #streamStepCardAnswer(key, chatId, replyToMessageId, text) {
+    const card = this.#ensureStepCard(key, chatId, replyToMessageId);
+    if (card.broken) return;
+    const body = String(text ?? '');
+    if (!body.trim()) return;
+    this.#writeStepCardAnswer(card, body);
+    this.#queueStepCardRender(key, chatId);
+  }
+
+  /** Replace the draft interval with `text` chunked into splitter-safe blocks. */
+  #writeStepCardAnswer(card, text) {
+    const blocks = splitStepPostMarkdown(text, STEP_STREAM_ANSWER_CHUNK_MAX_BYTES)
+      .map((chunk) => ({ kind: 'message', text: chunk }));
+    if (card.answerStart !== null) {
+      card.blocks.splice(card.answerStart, card.answerEnd - card.answerStart + 1, ...blocks);
+    } else {
+      card.blocks.push(...blocks);
+    }
+    card.answerStart = card.blocks.length - blocks.length;
+    card.answerEnd = card.blocks.length - 1;
+  }
+
+  /** Convert the live answer draft into a folded thinking note in place. */
+  #morphStepCardAnswerToNote(key, text) {
+    const card = this.#stepCards.get(key);
+    if (!card || card.broken) return;
+    const body = String(text ?? '');
+    if (!body.trim()) return;
+    if (card.answerStart !== null) {
+      card.blocks.splice(card.answerStart, card.answerEnd - card.answerStart + 1);
+      card.answerStart = null;
+      card.answerEnd = null;
+    }
+    const excerpt = body.length > STEP_STREAM_NOTE_MAX_CHARS
+      ? `${body.slice(0, STEP_STREAM_NOTE_MAX_CHARS)}…`
+      : body;
+    const last = card.blocks[card.blocks.length - 1];
+    if (last?.kind === 'notes') {
+      this.#pushPanelLine(last, excerpt);
+    } else {
+      card.blocks.push({ kind: 'notes', lines: [excerpt], omitted: 0 });
+    }
+    this.#queueStepCardRender(key, card.chatId);
+  }
+
+  #queueStepCardRender(key, chatId) {
+    const card = this.#stepCards.get(key);
+    if (!card || card.broken || card.renderQueued) return;
+    card.renderQueued = true;
+    // The coalescing delay lives inside the serial chain, so a finish that
+    // awaits the chain can never race a pending first render.
+    const wait = Math.max(
+      0,
+      card.lastRenderAt + STEP_STREAM_PATCH_MIN_INTERVAL_MS - this.#stepPushClock.now(),
+    );
+    const previous = card.renderChain ?? Promise.resolve();
+    card.renderChain = previous
+      .catch(() => {})
+      .then(() => this.#stepPushClock.delay(wait))
+      .then(() => this.#renderStepCardNow(chatId, card))
+      .finally(() => {
+        card.renderQueued = false;
+      });
+  }
+
+  async #renderStepCardNow(chatId, card) {
+    if (card.broken) return;
+    const chunks = splitStepStreamCardBlocks(card.blocks);
+    const live = chunks[chunks.length - 1] ?? [];
+    try {
+      if (card.messageId === null) {
+        card.messageId = await this.#sendCard(
+          chatId,
+          stepStreamCard(live, { status: 'running' }),
+          { replyTo: card.replyToMessageId },
+        );
+        card.cardIds.push(card.messageId);
+        card.lastRenderAt = this.#stepPushClock.now();
+        return;
+      }
+      // Overflow: the accumulated blocks outgrew one card. Seal the current
+      // message (no status line), spill extra chunks, and keep the last one
+      // live. Chunk boundaries are stable because blocks only append.
+      if (chunks.length > card.chunkCount) {
+        await this.#patchStepCard(
+          card.messageId,
+          stepStreamCard(chunks[card.chunkCount - 1], { status: 'sealed' }),
+        );
+        for (let index = card.chunkCount; index < chunks.length; index += 1) {
+          const isLive = index === chunks.length - 1;
+          const id = await this.#sendCard(
+            chatId,
+            stepStreamCard(chunks[index], { status: isLive ? 'running' : 'sealed' }),
+            { replyTo: card.replyToMessageId },
+          );
+          card.cardIds.push(id);
+          if (isLive) card.messageId = id;
+        }
+        card.chunkCount = chunks.length;
+      } else {
+        await this.#patchStepCard(card.messageId, stepStreamCard(live, { status: 'running' }));
+      }
+      card.lastRenderAt = this.#stepPushClock.now();
+    } catch (error) {
+      card.broken = true;
+      this.#logger.warn?.(
+        '[dsh-feishu] step streaming card render failed; the turn continues without it:',
+        error?.message ?? String(error),
+      );
+    }
+  }
+
+  /**
+   * Seal the turn's card with a terminal status and the final answer. The
+   * streamed answer draft is rewritten in place with the delivery text; when
+   * no draft exists the answer is appended. Returns `{ ok, cardIds }` when
+   * the answer is visible on the cards, or null when the caller must fall
+   * back to the post ladder (absent/broken card, or the answer never reached
+   * a successful render). Safe to call twice.
+   */
+  async #finishStepCard(key, { stopped = false, answerText = null } = {}) {
+    const card = this.#stepCards.get(key);
+    this.#stepCards.delete(key);
+    if (!card) return null;
+    try {
+      await card.renderChain?.catch?.(() => {});
+    } catch { /* the seal below decides what the user sees */ }
+    if (card.broken) return null;
+    const status = stopped ? 'stopped' : 'completed';
+    const body = typeof answerText === 'string' ? answerText : '';
+    // Whether the answer was already visible from a streamed draft render —
+    // decided BEFORE the seal writes the final text.
+    const streamedDraft = card.answerStart !== null;
+    if (body.trim()) {
+      this.#writeStepCardAnswer(card, body);
+    }
+    const chunks = splitStepStreamCardBlocks(card.blocks);
+    const live = chunks[chunks.length - 1] ?? [];
+    try {
+      if (card.messageId === null) {
+        // A turn without any queued render (plain Q&A): open the cards
+        // directly with their terminal status; every overflow chunk before
+        // the last one is sealed. An empty turn still opens the status card.
+        const groups = chunks.length > 0 ? chunks : [[]];
+        for (let index = 0; index < groups.length; index += 1) {
+          const isLive = index === groups.length - 1;
+          const id = await this.#sendCard(
+            card.chatId,
+            stepStreamCard(groups[index], { status: isLive ? status : 'sealed' }),
+            { replyTo: card.replyToMessageId },
+          );
+          card.cardIds.push(id);
+        }
+        return { ok: true, cardIds: card.cardIds };
+      }
+      await this.#patchStepCard(card.messageId, stepStreamCard(live, { status }));
+      return { ok: true, cardIds: card.cardIds };
+    } catch (error) {
+      // A streamed draft already carried the answer in the last successful
+      // render; without a draft the answer never reached the card.
+      if (card.messageId !== null && streamedDraft && body.trim()) {
+        this.#logger.warn?.(
+          '[dsh-feishu] step streaming card seal failed; the streamed answer stays visible:',
+          error?.message ?? String(error),
+        );
+        return { ok: true, cardIds: card.cardIds };
+      }
+      this.#logger.warn?.(
+        '[dsh-feishu] step streaming card finish failed:',
+        error?.message ?? String(error),
+      );
+      return null;
+    }
+  }
+
+  #stepCardToolBlock(update) {
+    const summary = this.#stepIntentSummary(update.arguments);
+    const name = stepPushLine(update.name) || t('工具');
+    return { kind: 'tools', lines: [`✅ ${name}${summary ? ` — ${summary}` : ''}`], omitted: 0 };
+  }
+
+  /** Flag the in-flight streaming-card turn as user-stopped (seals 已停止). */
+  #markStepStopRequested(key) {
+    const flag = this.#stepStopFlags.get(key);
+    if (flag) flag.requested = true;
+  }
+
+  /**
+   * Freeze the live process card before an approval/question card renders;
+   * later steps stream into a fresh card below the interaction (mirrors the
+   * main streaming path's rotate). A failed seal never blocks the
+   * interaction — the old card keeps its last rendered state.
+   */
+  async #rotateStepCard(key) {
+    const card = this.#stepCards.get(key);
+    if (!card || card.broken) return;
+    await card.renderChain?.catch?.(() => {});
+    if (card.broken) return;
+    if (card.messageId === null) return;
+    try {
+      const chunks = splitStepStreamCardBlocks(card.blocks);
+      const live = chunks[chunks.length - 1] ?? [];
+      await this.#patchStepCard(card.messageId, stepStreamCard(live, { status: 'sealed' }));
+    } catch (error) {
+      this.#logger.warn?.(
+        '[dsh-feishu] step streaming card rotate seal failed:',
+        error?.message ?? String(error),
+      );
+    }
+    // Restart the stream on a fresh card below the interaction message.
+    card.blocks = [];
+    card.messageId = null;
+    card.chunkCount = 1;
+    card.answerStart = null;
+    card.answerEnd = null;
+    card.lastRenderAt = 0;
+  }
+
+  async #patchStepCard(messageId, cardJson) {
+    const response = await this.#client.im.v1.message.patch({
+      path: { message_id: messageId },
+      data: { content: cardJson },
+    });
+    if (response?.code && response.code !== 0) {
+      throw new Error(`Feishu step card patch failed: ${response.msg || response.code}`);
+    }
+  }
+
   /**
    * Rich-text (post) delivery for step messages. Degradation ladder:
    * post（限流重试 ×2）→ 同话题纯文本回复 → 主界面纯文本。Returns
@@ -3933,17 +4266,39 @@ export class FeishuHarnessBridge {
       count: 0,
       breakerLogged: false,
     });
+    // 流式卡片模式：每轮一张过程卡（原地 patch），过程与最终答案都进卡；
+    // post 模式维持逐条直推。先预建卡片状态，纯问答回合也能在收尾时开卡。
+    const streamingCard = this.#stepPushMode === FEISHU_STEP_PUSH_MODES.STREAMING_CARD;
+    if (streamingCard) {
+      if (this.#stepCards.has(key)) {
+        // 上一轮异常退出留下的「运行中」卡片先收尾，避免与本轮混淆。
+        await this.#finishStepCard(key);
+      }
+      this.#ensureStepCard(key, chatId, messageId);
+    }
+    // /stop 打标：回合进行中收到停止请求时，封存为「已停止」而非「已完成」。
+    const stepStopFlag = streamingCard ? { requested: false } : null;
+    if (streamingCard) this.#stepStopFlags.set(key, stepStopFlag);
+    const baseAskOptions = this.#interactionAskOptions(event, key, message.files);
 
     // 上下文注入动作在详细级别下也体现为一条步骤（注入细节可忽略）。
     // 不计入工具/助手消息的熔断计数（规格口径：熔断只管「工具 + 助手」）。
     if (contextEnhanced || content) {
-      await this.#sendStepMessage(
-        chatId, key,
-        [[{ tag: 'text', text: t('📎 已注入会话上下文') }]],
-        t('📎 已注入会话上下文'),
-        messageId,
-        { billable: false },
-      );
+      if (streamingCard) {
+        await this.#appendStepCardUpdate(
+          key, chatId, messageId,
+          { kind: 'message', text: t('📎 已注入会话上下文') },
+          { billable: false },
+        );
+      } else {
+        await this.#sendStepMessage(
+          chatId, key,
+          [[{ tag: 'text', text: t('📎 已注入会话上下文') }]],
+          t('📎 已注入会话上下文'),
+          messageId,
+          { billable: false },
+        );
+      }
     }
 
     // 缓冲-确认策略：每步定稿的助手文本先进缓冲；工具调用或更大 step 的定稿
@@ -3954,6 +4309,11 @@ export class FeishuHarnessBridge {
       if (!pendingStep) return;
       const note = pendingStep;
       pendingStep = null;
+      if (streamingCard) {
+        // 答案草稿被后续工具证实为过程说明：原位收进折叠的思考面板。
+        this.#morphStepCardAnswerToNote(key, note.text);
+        return;
+      }
       await this.#sendStepMessage(
         chatId, key,
         [[{ tag: 'md', text: `💬 ${note.text}` }]],
@@ -3961,6 +4321,7 @@ export class FeishuHarnessBridge {
         messageId,
       );
     };
+    let askError = null;
     const completed = await askInWorkspaceSession({
       deferredDelivery: () => ({ coordinator: this.#deferred, chatId, replyToMessageId: messageId }),
       harness: this.#harness,
@@ -3972,18 +4333,35 @@ export class FeishuHarnessBridge {
       createOptions: { signal: this.#signal },
       existsOptions: { signal: this.#signal },
       askOptions: {
-        ...this.#interactionAskOptions(event, key, message.files),
+        ...baseAskOptions,
         progressMode: 'all',
+        // 提问/审批卡弹出前先定格当前过程卡，答案随之流到交互消息之后
+        // 的新卡上（与主流式路径的 rotate 语义一致）。
+        ...(streamingCard ? {
+          onInteraction: async (interaction) => {
+            if (interaction?.kind === 'question' || interaction?.kind === 'approval') {
+              await this.#rotateStepCard(key);
+            }
+            await baseAskOptions.onInteraction?.(interaction);
+          },
+        } : {}),
         onUpdate: async (update) => {
           if (update.type === 'assistant-message') {
             if (pendingStep && Number(update.step) > Number(pendingStep.step)) {
               await flushPendingStep();
             }
             pendingStep = update;
+            if (streamingCard) {
+              this.#streamStepCardAnswer(key, chatId, messageId, update.text);
+            }
             return;
           }
           if (update.type === 'tool') {
             await flushPendingStep();
+            if (streamingCard) {
+              await this.#appendStepCardUpdate(key, chatId, messageId, this.#stepCardToolBlock(update));
+              return;
+            }
             const { paragraphs, fallbackText } = this.#formatStepToolPost(update);
             await this.#sendStepMessage(chatId, key, paragraphs, fallbackText, messageId);
             return;
@@ -3991,6 +4369,13 @@ export class FeishuHarnessBridge {
           if (update.type === 'status' && update.error) {
             const name = stepPushLine(update.toolName) || t('工具');
             const excerpt = stepPushLine(update.error).slice(0, STEP_PUSH_ERROR_MAX_CHARS);
+            if (streamingCard) {
+              await this.#appendStepCardUpdate(
+                key, chatId, messageId,
+                { kind: 'message', text: `⚠️ **${name}** — ${excerpt}` },
+              );
+              return;
+            }
             await this.#sendStepMessage(
               chatId, key,
               [[{ tag: 'md', text: `⚠️ **${name}** — ${excerpt}` }]],
@@ -4001,7 +4386,18 @@ export class FeishuHarnessBridge {
           // text / status（无错误）保持静默：详细级直推完全取代简略级进度行。
         },
       },
+    }).catch((error) => {
+      askError = error;
+      return null;
     });
+    if (askError !== null) {
+      // 流式卡异常收尾（已停止）；post 模式无卡片可收。
+      if (streamingCard) {
+        this.#stepStopFlags.delete(key);
+        await this.#finishStepCard(key, { stopped: true });
+      }
+      throw askError;
+    }
     markAskComplete();
     const finalStepText = pendingStep ? pendingStep.text : null;
     pendingStep = null;
@@ -4009,6 +4405,30 @@ export class FeishuHarnessBridge {
       ? finalStepText
       : completed.answer;
     const deliveryText = answerTextForDelivery(finalText, completed.artifacts ?? []);
+    // 流式卡模式：答案已随步骤流进过程卡，封存后直接以卡片作回执；
+    // 无卡/坏卡/封存失败时才回退到下方 post 阶梯。
+    if (streamingCard) {
+      const seal = await this.#finishStepCard(key, {
+        answerText: deliveryText,
+        stopped: stepStopFlag?.requested === true,
+      });
+      this.#stepStopFlags.delete(key);
+      if (seal?.ok) {
+        const cardReceipt = createDeliveryReceipt({
+          deliveryId: messageId,
+          presentation: 'feishu-step-push-card',
+          providerMessageIds: seal.cardIds,
+        });
+        this.#status.streamResponses = (this.#status.streamResponses ?? 0) + 1;
+        const delivery = await this.#deliverArtifacts(
+          chatId,
+          messageId,
+          completed.artifacts ?? [],
+          cardReceipt,
+        );
+        return { ...delivery, textDeliveryErrors: 0 };
+      }
+    }
     let textReceipt;
     let postDeliveryError = null;
     try {

@@ -22,6 +22,10 @@ import {
   normalizeFeishuGroupResponseMode,
 } from '../../../../src/channels/feishu/group-response-mode.mjs';
 import {
+  isFeishuStepPushMode,
+  normalizeFeishuStepPushMode,
+} from '../../../../src/channels/feishu/step-push-mode.mjs';
+import {
   FEISHU_ENDPOINTS as FEISHU_CLIENT_ENDPOINTS,
   FEISHU_RPC_CHANNEL,
 } from '../../../client/channels/feishu/api.js';
@@ -295,6 +299,7 @@ function publicBotEntry(entry) {
     groupResponseMode: normalizeFeishuGroupResponseMode(source.groupResponseMode),
     groupTopicReply: source.groupTopicReply === true,
     stepPush: source.stepPush === true,
+    stepPushMode: normalizeFeishuStepPushMode(source.stepPushMode),
     groupMessagePermissionGranted: source.groupMessagePermissionGranted === true,
     bot: publicBot(source.bot),
     health: publicHealth(source, connected),
@@ -465,6 +470,13 @@ function validPayload(endpoint, payload) {
       && typeof payload.stepPush === 'boolean'
       ? null
       : '请选择是否分步直推。';
+  }
+  if (endpoint === FEISHU_ENDPOINTS.setStepPushMode) {
+    return hasOnlyKeys(payload, new Set(['botId', 'stepPushMode']))
+      && safeOpaqueId(payload.botId)
+      && isFeishuStepPushMode(payload.stepPushMode)
+      ? null
+      : '请选择分步直推的呈现方式。';
   }
   return 'Unknown Feishu endpoint.';
 }
@@ -756,6 +768,14 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
         }
         value = await toPublicFeishuStatus(
           await controller.updateStepPush(payload.botId, payload.stepPush),
+          { encodeQr: cachedEncodeQr },
+        );
+      } else if (endpoint === FEISHU_ENDPOINTS.setStepPushMode) {
+        if (typeof controller.updateStepPushMode !== 'function') {
+          throw new Error('Step push mode update is unavailable');
+        }
+        value = await toPublicFeishuStatus(
+          await controller.updateStepPushMode(payload.botId, payload.stepPushMode),
           { encodeQr: cachedEncodeQr },
         );
       } else {
