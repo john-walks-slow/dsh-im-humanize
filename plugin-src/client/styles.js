@@ -217,6 +217,24 @@ const CSS = String.raw`
 .dim-panel .dim-presetStatus { grid-column: 2; grid-row: 1; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 12px; white-space: nowrap; }
 .dim-panel .dim-presetSelect { min-width: 0; max-width: 100%; grid-column: 1 / -1; grid-row: 2; height: 30px; padding: 0 8px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 7px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-layer-1, #fff); font: inherit; font-size: 12px; }
 .dim-panel .dim-presetSelect:disabled { cursor: not-allowed; opacity: .55; }
+.dim-panel .dim-modelSetting { display: block; padding: 8px 4px 4px; }
+.dim-modelSetting > .dim-presetHeader { padding: 0 6px 6px; }
+.dim-modelRow { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 40px; padding: 6px 10px; border: 0; border-radius: 10px; background: transparent; color: var(--dsw-alias-label-primary, #1f2329); font: inherit; font-size: 14px; line-height: 22px; text-align: left; cursor: pointer; }
+.dim-modelRowLabel { flex: none; }
+.dim-modelValue { flex: 1; min-width: 0; overflow: hidden; color: var(--dsw-alias-label-tertiary, #81858c); text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.dim-modelChevron { flex: none; color: var(--dsw-alias-label-tertiary, #81858c); }
+.dim-modelRow:hover:not(:disabled), .dim-modelOption:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, #eceef1); }
+.dim-modelRow:focus-visible, .dim-modelOption:focus-visible { outline: 2px solid var(--dsw-alias-border-l3, #1677ff); outline-offset: -2px; }
+.dim-modelRow:disabled, .dim-modelOption:disabled { opacity: .55; cursor: default; }
+/* In-flow lists avoid clipping by collapsed-card and settings scroll containers. */
+.dim-modelMenu { max-height: 280px; overflow-y: auto; margin: 4px; padding: 4px; border: 1px solid var(--dsw-alias-border-l2, #e5e6eb); border-radius: 12px; background: var(--dsw-specific-menu, var(--dsw-alias-bg-layer-3, #fff)); color: var(--dsw-alias-label-primary, #1f2329); scrollbar-width: thin; }
+.dim-modelGroupTitle { padding: 7px 8px 3px; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px; font-weight: 500; }
+.dim-modelOption { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 38px; padding: 6px 8px; border: 0; border-radius: 10px; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.dim-modelOptionCopy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.dim-modelOptionName { font-size: 14px; line-height: 20px; font-weight: 500; overflow-wrap: anywhere; }
+.dim-modelDescription { color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.dim-modelCheck { flex: 0 0 18px; text-align: center; }
+.dim-modelHint { margin: 4px 10px 6px; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 11px; line-height: 17px; }
 .dim-panel .dim-presetError { grid-column: 1 / -1; grid-row: 3; margin: 0; color: var(--dsw-alias-state-error-primary, #d54941); font-size: 12px; line-height: 1.4; }
 .dim-contextEntry { width: 100%; min-height: 40px; display: grid; grid-template-columns: 16px minmax(0, 1fr) max-content 16px; align-items: center; gap: 9px; margin: 10px 0; padding: 8px 11px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 8px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-module-platform, #f7f8fa); font: inherit; font-size: 13px; line-height: 20px; text-align: left; cursor: pointer; }
 .dim-contextEntry:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, #eef0f3); }

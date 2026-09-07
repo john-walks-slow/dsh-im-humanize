@@ -24,14 +24,16 @@ function message(messageId, content) {
   };
 }
 
-test('card model changes apply before the first prompt only to sessions created after /new', async (t) => {
+for (const [change, newModel] of [
+  ['model and effort', { provider: 'provider-two', model: 'model-new', reasoningEffort: 'max' }],
+  ['effort only', { provider: 'provider-one', model: 'model-old', reasoningEffort: 'max' }],
+]) test(`card ${change} changes apply before the first prompt only to sessions created after /new`, async (t) => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-im-model-lifecycle-')));
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const botId = 'bot-one';
   const conversationKey = 'direct:chat-one';
-  const oldModel = { provider: 'provider-one', model: 'model-old' };
-  const newModel = { provider: 'provider-two', model: 'model-new' };
+  const oldModel = { provider: 'provider-one', model: 'model-old', reasoningEffort: 'high' };
   const workspaces = await new BotWorkspaceStore(join(root, 'workspaces.json'), {
     defaultWorkspace: root,
   }).load();
@@ -105,4 +107,28 @@ test('card model changes apply before the first prompt only to sessions created 
     ['ask', 'session-c', 'use host default'],
   ]);
   assert.equal(timeline.filter(([kind]) => kind === 'select').length, 2);
+});
+
+test('new sessions require confirmation of an explicit effort but accept a resolved default', async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-im-effort-confirmation-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workspaces = await new BotWorkspaceStore(join(root, 'workspaces.json'), {
+    defaultWorkspace: root,
+  }).load();
+  await workspaces.ensure('bot-one');
+  const model = { provider: 'provider', model: 'model' };
+  let selected = { ...model, reasoningEffort: 'high' };
+  const harness = {
+    async createSession() { return 'session-one'; },
+    async selectSessionModel() { return { selected }; },
+  };
+  const scope = createBotWorkspaceScope(harness, { botId: 'bot-one', workspaces, state: {} });
+  await workspaces.setModel('bot-one', model);
+  assert.equal(await scope.harness.createSession(), 'session-one');
+  await workspaces.setModel('bot-one', { ...model, reasoningEffort: 'max' });
+  await assert.rejects(scope.harness.createSession(), { code: 'model-selection-mismatch' });
+  selected = { ...model };
+  await assert.rejects(scope.harness.createSession(), { code: 'model-selection-mismatch' });
+  selected = { ...model, reasoningEffort: 'max' };
+  assert.equal(await scope.harness.createSession(), 'session-one');
 });
