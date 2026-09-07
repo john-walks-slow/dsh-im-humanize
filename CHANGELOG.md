@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Added / 新增
+
+- 飞书群聊默认接收其他机器人明确 @ 当前机器人的消息，无需新增开关；仍遵守群聊白名单、命令权限与消息去重规则，未 @、自发和机器人私聊消息继续忽略。扫码新建应用与“补全权限”/`/repair` 流程同时申请接收机器人 @ 消息所需的飞书权限。
+  Feishu group chats accept explicit mentions from other bots by default, while preserving group allowlists, command permissions, and deduplication. Unaddressed messages, self-sent messages, and bot DMs remain ignored. New-app QR onboarding and Complete permissions / `/repair` request the required Feishu bot-mention scope.
+
 ## [4.14.0] - 2026-09-08
 
 ### Added / 新增

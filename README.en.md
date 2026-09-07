@@ -60,6 +60,8 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 Other IM platforms can be added through the same channel-adapter structure.
 
+Feishu group chats accept messages from other bots that explicitly mention the current bot by default, with no extra setting. Messages without that mention, mentions of only other members or everyone, self-sent messages, and bot DMs are still ignored, even in all-message mode. Group allowlists and command permissions still apply. The app needs the `im:message.group_at_msg.include_bot:readonly` tenant scope. New apps request it through the QR flow; existing or manually connected apps can use **Complete permissions** or `/repair` in a direct chat, scan the QR code, and complete any publication or approval required by Feishu. See the [Feishu message-event permissions](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive).
+
 All nine built-in channels can send JPEG, PNG, and WebP images, plus GIFs sent as image files, with optional captions to Harness. Each image is limited to 5 MB, and images in one message are limited to 20 MB in total. Downloading images or files from Feishu user messages requires the `im:message:readonly` tenant scope, shown on the confirmation page as **Read direct and group messages**; Feishu currently offers no narrower image-only scope for that download endpoint. Apps created through the built-in QR flow request it by default; for existing or manually connected apps, click **Complete permissions** on the IM Bot settings page and scan the QR code to incrementally add that scope, `im:resource` for uploading bot-sent images or files, `application:app_slash_command:read` / `write` for the native command panel, and the card callback.
 
 ### Results after a reply timeout
@@ -179,7 +181,7 @@ See the [Proactive Delivery Guide](PROACTIVE_DELIVERY.en.md) ([简体中文](PRO
 | `/batch` | Start batch input in a direct chat and collect up to 10 text messages. |
 | `/send` | Submit the collected messages, in order, as one input. |
 | `/cancel` | Cancel batch input and discard its collected messages. |
-| `/repair` | In a Feishu direct chat, incrementally repair the card callback and permissions required for media and the native Slash Command panel. |
+| `/repair` | In a Feishu direct chat, incrementally repair the card callback and permissions required for media, group bot mentions, and the native Slash Command panel. |
 | `/compact` | Immediately compact older context in the Session bound to the current chat. |
 | `/workspace <workspace index or absolute path>`, `/ws <workspace index or absolute path>` | Switch the current bot's Harness workspace by `/workspacelist` index or absolute path. |
 | `/workspacelist`, `/workspaces`, `/wsl` | List workspace absolute paths that still exist on the current Harness Host. |

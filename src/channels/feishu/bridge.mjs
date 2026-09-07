@@ -816,14 +816,21 @@ export class FeishuHarnessBridge {
   accept(event) {
     if (this.#signal?.aborted) return Promise.resolve();
     const messageId = nonEmptyString(event?.message?.message_id);
-    if (!messageId || isBotSender(event)) return Promise.resolve();
+    if (!messageId) return Promise.resolve();
+    const addressed = this.#isAddressed(event);
+    // Bot messages require a known, explicit group mention even in all-message mode.
+    if (isBotSender(event) && (
+      event?.message?.chat_type !== 'group'
+      || !this.#botOpenId
+      || !addressed
+      || senderOpenId(event) === this.#botOpenId
+    )) return Promise.resolve();
     if (!this.#accessPolicy && !isAllowedSender(event, this.#allowedSenderOpenIds)) {
       this.#status.messagesRejected += 1;
       this.#status.lastRejectedAt = new Date().toISOString();
       this.#logger.warn?.('[dsh-feishu] ignored a message from a sender outside the legacy allowlist');
       return Promise.resolve();
     }
-    const addressed = this.#isAddressed(event);
     if (event?.message?.chat_type !== 'p2p'
       && this.#groupResponseMode === FEISHU_GROUP_RESPONSE_MODES.MENTION
       && !addressed) {
@@ -1771,7 +1778,7 @@ export class FeishuHarnessBridge {
       : t('链接约 {minutes} 分钟后过期', { minutes: Math.max(1, Math.ceil(remaining / 60)) });
     await this.#send(chatId, [
       restarted ? t('旧授权链接已作废，已生成新的修复链接。') : t('🔧 准备补全权限与回调。'),
-      t('本次会增量添加当前缺少项：卡片回调 card.action.trigger；飞书显示为“获取单聊、群组消息”的租户权限 im:message:readonly（用于读取用户消息中的图片或文件）；im:resource（用于上传机器人发送的图片或文件）；以及原生命令面板所需的 application:app_slash_command:read / write。确认页只会显示当前缺少的项；若出现上述范围之外的配置，请取消。'),
+      t('本次会增量添加当前缺少项：卡片回调 card.action.trigger；飞书显示为“获取单聊、群组消息”的租户权限 im:message:readonly（用于读取用户消息中的图片或文件）；im:resource（用于上传机器人发送的图片或文件）；im:message.group_at_msg.include_bot:readonly（用于接收群内其他机器人 @ 当前机器人的消息）；以及原生命令面板所需的 application:app_slash_command:read / write。确认页只会显示当前缺少的项；若出现上述范围之外的配置，请取消。'),
       '',
       t('当前设备直接打开：'),
       url,
