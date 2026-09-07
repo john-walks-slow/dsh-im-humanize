@@ -9850,6 +9850,7 @@ test('thinking status: the heartbeat never counts toward the 200-message breaker
 test('thinking status: heartbeat update failure never breaks the turn', async () => {
   const fixture = stateFixture();
   const sent = [];
+  const recalls = [];
   let updateCalls = 0;
   const think = thinkingClock();
   const bridge = new FeishuHarnessBridge({
@@ -9871,7 +9872,7 @@ test('thinking status: heartbeat update failure never breaks the turn', async ()
         },
       } } },
     },
-    channel: stepPushChannel(),
+    channel: stepPushChannel({ recalls }),
     harness: stepPushHarness(async () => {
       think.advance(25_000);
       await new Promise((resolve) => setTimeout(resolve, 40));
@@ -9891,6 +9892,8 @@ test('thinking status: heartbeat update failure never breaks the turn', async ()
   await bridge.waitForIdle();
 
   assert.ok(updateCalls >= 1, 'the in-place refresh was attempted');
+  assert.deepEqual(recalls, [sent.find((entry) => entry.text.includes('⏳ 正在思考中…'))?.id],
+    'the heartbeat is still recalled at turn end despite the update failure');
   assert.deepEqual(sent.at(-1).text, '更新失败回合的答案。', 'the turn completes despite the update failure');
 });
 
@@ -9999,4 +10002,43 @@ test('thinking status: breaker-tripped events do not cause heartbeat churn', asy
   const heartbeats = sent.filter((entry) => entry.text.includes('⏳ 正在思考中…'));
   assert.equal(heartbeats.length, 0, 'breaker-tripped events must not churn heartbeats');
   assert.equal(sent.at(-1).text, '超限回合的答案。');
+});
+
+test('thinking status: two silence periods recall each heartbeat exactly once', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const recalls = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: stepPushChannel({ recalls }),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '两段思考的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_two', '两段思考'));
+  await bridge.waitForIdle();
+
+  const heartbeatIds = sent.filter((entry) => entry.text.includes('⏳ 正在思考中…')).map((entry) => entry.id);
+  assert.equal(heartbeatIds.length, 2, 'two heartbeats created across two silence periods');
+  assert.deepEqual([...recalls].sort(), [...heartbeatIds].sort(), 'each heartbeat recalled exactly once');
+  assert.equal(sent.at(-1).text, '两段思考的答案。');
 });

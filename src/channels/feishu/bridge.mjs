@@ -3758,12 +3758,13 @@ export class FeishuHarnessBridge {
       ?? { lastSentAt: 0, count: 0, breakerLogged: false };
     this.#stepPushSendState.set(key, state);
     // 真实事件到达：先撤回思考中心跳再推真实消息。
-    if (state.heartbeatMessageId) {
-      const heartbeatId = state.heartbeatMessageId;
-      state.heartbeatMessageId = null;
+    // pendingRecallIds 是唯一撤回清单（live 心跳创建时即入队），避免同一 id 双撤回。
+    for (const heartbeatId of state.pendingRecallIds ?? []) {
       try { await this.#channel?.recallMessage?.(heartbeatId); }
       catch (error) { this.#logger.warn?.('[dsh-feishu] heartbeat recall failed:', error.message); }
     }
+    state.pendingRecallIds = [];
+    state.heartbeatMessageId = null;
     if (billable && state.count >= STEP_PUSH_MAX_MESSAGES_PER_TURN) {
       if (!state.breakerLogged) {
         state.breakerLogged = true;
@@ -3936,9 +3937,8 @@ export class FeishuHarnessBridge {
                 this.#logger.warn?.('[dsh-feishu] heartbeat update failed:', response.msg || response.code);
               }
             } catch (error) {
-              // 更新失败：放弃该心跳（置空），下个静默周期重新创建；绝不影响回合。
+              // 更新失败：保留心跳（消息仍在会话中），留待真实事件/回合结束撤回。
               this.#logger.warn?.('[dsh-feishu] heartbeat update failed:', error.message);
-              state.heartbeatMessageId = null;
             }
             continue;
           }
@@ -3955,11 +3955,13 @@ export class FeishuHarnessBridge {
             if (result.ok && result.messageId) {
               await this.#channel?.recallMessage?.(result.messageId)
                 .catch((recallError) => this.#logger.warn?.('[dsh-feishu] late heartbeat recall failed:', recallError.message));
+              state.pendingRecallIds = (state.pendingRecallIds ?? []).filter((id) => id !== result.messageId);
             }
             return;
           }
           if (result.ok) {
             state.heartbeatMessageId = result.messageId ?? null;
+            state.pendingRecallIds = [...(state.pendingRecallIds ?? []), result.messageId];
             state.heartbeatShownAt = shownAt;
             state.heartbeatUpdatedAt = shownAt;
           } else {
@@ -3976,12 +3978,12 @@ export class FeishuHarnessBridge {
     return {
       stop: async () => {
         watchdog.stopped = true;
-        if (state.heartbeatMessageId) {
-          const heartbeatId = state.heartbeatMessageId;
-          state.heartbeatMessageId = null;
+        for (const heartbeatId of state.pendingRecallIds ?? []) {
           try { await this.#channel?.recallMessage?.(heartbeatId); }
           catch (error) { this.#logger.warn?.('[dsh-feishu] heartbeat recall failed:', error.message); }
         }
+        state.pendingRecallIds = [];
+        state.heartbeatMessageId = null;
       },
     };
   }
@@ -4031,6 +4033,7 @@ export class FeishuHarnessBridge {
       silenceSince: this.#stepPushClock.now(),
       turnStartedAt: this.#stepPushClock.now(),
       lastSentAt: priorState?.lastSentAt ?? 0,
+      pendingRecallIds: [],
       count: 0,
       breakerLogged: false,
     });
