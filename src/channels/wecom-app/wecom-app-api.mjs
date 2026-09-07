@@ -187,11 +187,10 @@ class WecomAppTokenCache {
   }
 
   async #fetchToken(signal) {
-    const query = new URLSearchParams({
-      corpid: this.#api.corpId,
-      corpsecret: this.#api.corpSecret,
+    const payload = await this.#api.request('/cgi-bin/gettoken', {
+      query: { corpid: this.#api.corpId, corpsecret: this.#api.corpSecret },
+      signal,
     });
-    const payload = await this.#api.request('/cgi-bin/gettoken', { query, signal });
     if (!payload.access_token) {
       throw new WecomAppError('token-missing', '企业微信没有返回 access_token', {
         providerCode: payload.errcode === undefined ? undefined : String(payload.errcode),
@@ -266,7 +265,10 @@ export class WecomAppApi {
 
   async request(pathname, { query, signal, retryOnToken = true } = {}) {
     const url = new URL(`${this.#base}${pathname}`);
-    for (const [key, value] of Object.entries(query ?? {})) {
+    // URLSearchParams instances carry no enumerable own properties, so
+    // Object.entries() would silently drop every parameter.
+    const pairs = typeof query?.entries === 'function' ? [...query.entries()] : Object.entries(query ?? {});
+    for (const [key, value] of pairs) {
       if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
     }
     const { payload } = await this.#fetchJson(url, { signal });
