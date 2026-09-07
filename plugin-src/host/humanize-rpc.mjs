@@ -41,22 +41,26 @@ export function installHumanizeRpc(ctx, { config = {}, logger = null } = {}) {
   const handler = createHumanizeRpcHandler({ store, logger: log });
 
   // Register RPC channel on the Host connection (matches inbound-ttl-rpc.mjs).
-  if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
-    throw new TypeError('DSH Host Connection RPC is required');
+  // If the connection RPC surface is unavailable (e.g. headless fixtures,
+  // reduced host contexts), degrade gracefully: skip registration, keep the
+  // file-backed store working for config merge at activation time.
+  if (ctx?.connection?.rpc && typeof ctx.connection.rpc.handle === 'function') {
+    ctx.connection.rpc.handle(
+      HUMANIZE_RPC_CHANNEL,
+      (endpoint, payload, signal) => {
+        if (!validHumanizePayload(endpoint, payload)) {
+          return Promise.resolve({
+            ok: false,
+            error: { code: 'bad-request', message: 'Invalid humanization request.' },
+          });
+        }
+        return handler(endpoint, payload, signal);
+      },
+      { authority: 'loopback' },
+    );
+  } else {
+    log.warn?.('[dsh-im] Host Connection RPC unavailable; humanization panel disabled');
   }
-  ctx.connection.rpc.handle(
-    HUMANIZE_RPC_CHANNEL,
-    (endpoint, payload, signal) => {
-      if (!validHumanizePayload(endpoint, payload)) {
-        return Promise.resolve({
-          ok: false,
-          error: { code: 'bad-request', message: 'Invalid humanization request.' },
-        });
-      }
-      return handler(endpoint, payload, signal);
-    },
-    { authority: 'loopback' },
-  );
 
   // Expose the store so the host can read settings at activation time
   return { store, settingsPath };
