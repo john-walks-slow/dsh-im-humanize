@@ -40,28 +40,23 @@ export function installHumanizeRpc(ctx, { config = {}, logger = null } = {}) {
   const store = new HumanizeSettingsStore(settingsPath);
   const handler = createHumanizeRpcHandler({ store, logger: log });
 
-  // Register RPC channel
-  if (typeof ctx?.rpc?.register === 'function') {
-    ctx.rpc.register(HUMANIZE_RPC_CHANNEL, (endpoint, payload, signal) => {
-      if (!validHumanizePayload(endpoint, payload)) {
-        return Promise.resolve({
-          ok: false,
-          error: { code: 'bad-request', message: 'Invalid humanization request.' },
-        });
-      }
-      return handler(endpoint, payload, signal);
-    });
-  } else if (typeof ctx?.handle === 'function') {
-    ctx.handle(HUMANIZE_RPC_CHANNEL, (endpoint, payload, signal) => {
-      if (!validHumanizePayload(endpoint, payload)) {
-        return Promise.resolve({
-          ok: false,
-          error: { code: 'bad-request', message: 'Invalid humanization request.' },
-        });
-      }
-      return handler(endpoint, payload, signal);
-    });
+  // Register RPC channel on the Host connection (matches inbound-ttl-rpc.mjs).
+  if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
+    throw new TypeError('DSH Host Connection RPC is required');
   }
+  ctx.connection.rpc.handle(
+    HUMANIZE_RPC_CHANNEL,
+    (endpoint, payload, signal) => {
+      if (!validHumanizePayload(endpoint, payload)) {
+        return Promise.resolve({
+          ok: false,
+          error: { code: 'bad-request', message: 'Invalid humanization request.' },
+        });
+      }
+      return handler(endpoint, payload, signal);
+    },
+    { authority: 'loopback' },
+  );
 
   // Expose the store so the host can read settings at activation time
   return { store, settingsPath };
