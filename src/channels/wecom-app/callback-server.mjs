@@ -239,7 +239,9 @@ export class WecomAppCallbackServer {
     const nonce = query.get('nonce') ?? '';
     const echostr = query.get('echostr') ?? '';
     const signature = query.get('msg_signature') ?? query.get('msgsignature') ?? query.get('signature') ?? '';
+    this.#logger.info?.('[dsh-im:wecom-app] URL verification attempt', route.botId, { timestamp, nonce });
     if (!timestamp || !nonce || !echostr || !signature) {
+      this.#logger.warn?.('[dsh-im:wecom-app] URL verification rejected: missing query params', route.botId);
       writeText(response, 400, 'missing query params');
       return;
     }
@@ -253,10 +255,12 @@ export class WecomAppCallbackServer {
     }
     try {
       if (!safeEqualHex(crypto.computeSignature(timestamp, nonce, echostr), signature)) {
+        this.#logger.warn?.('[dsh-im:wecom-app] URL verification signature mismatch', route.botId);
         writeText(response, 401, 'unauthorized');
         return;
       }
       const plaintext = crypto.decrypt(echostr);
+      this.#logger.info?.('[dsh-im:wecom-app] URL verification succeeded', route.botId);
       writeText(response, 200, plaintext);
     } catch (error) {
       this.#logger.warn?.('[dsh-im:wecom-app] URL verification failed:', error);
@@ -297,6 +301,7 @@ export class WecomAppCallbackServer {
       writeText(response, 400, 'missing encrypted payload');
       return;
     }
+    this.#logger.info?.('[dsh-im:wecom-app] callback POST received', route.botId, { format: envelope.format, bytes: body.raw.length });
     let crypto;
     try {
       crypto = route.cryptoFor();
@@ -308,6 +313,7 @@ export class WecomAppCallbackServer {
     let plaintext;
     try {
       if (!safeEqualHex(crypto.computeSignature(envelope.timestamp, envelope.nonce, envelope.encrypt), envelope.signature)) {
+        this.#logger.warn?.('[dsh-im:wecom-app] callback signature mismatch', route.botId);
         writeText(response, 401, 'unauthorized');
         return;
       }
@@ -322,6 +328,7 @@ export class WecomAppCallbackServer {
       writeText(response, 400, 'invalid message');
       return;
     }
+    this.#logger.info?.('[dsh-im:wecom-app] callback message accepted', route.botId, { msgtype: message.msgtype ?? null, msgid: message.msgid ?? null });
     this.#dispatch(route, message, envelope, response);
   }
 

@@ -56,7 +56,16 @@ export async function createProductionController(ctx, config = {}, internals = {
   const Runtime = internals.Runtime ?? WecomAppRuntime;
   const CallbackServer = internals.CallbackServer ?? WecomAppCallbackServer;
   const createSupervisor = internals.createConnectionSupervisor ?? createConnectionSupervisor;
-  const logger = typeof ctx.logger === 'function' ? ctx.logger('dsh-im:wecom-app') : (ctx.logger ?? console);
+  const baseLogger = typeof ctx.logger === 'function' ? ctx.logger('dsh-im:wecom-app') : (ctx.logger ?? console);
+  // The cordis logger never surfaces in the web profile journal; tee every
+  // level to the process console so callback verification attempts stay
+  // observable (journald captures the dsh web process stdout).
+  const logger = {
+    log: (...args) => { baseLogger.log?.(...args); console.log('[dsh-im:wecom-app]', ...args); },
+    info: (...args) => { baseLogger.info?.(...args); console.info('[dsh-im:wecom-app]', ...args); },
+    warn: (...args) => { baseLogger.warn?.(...args); console.warn('[dsh-im:wecom-app]', ...args); },
+    error: (...args) => { baseLogger.error?.(...args); console.error('[dsh-im:wecom-app]', ...args); },
+  };
   const agentPresetCatalog = () => listAgentPresetCatalog(ctx);
   const paths = pluginPaths(config);
   const configStore = await new ConfigStore(paths.config).load();
