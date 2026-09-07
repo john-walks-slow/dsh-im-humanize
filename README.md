@@ -66,6 +66,8 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 其他 IM 平台可继续按同一渠道适配器结构接入。
 
+飞书群聊默认接收其他机器人明确 @ 当前机器人的消息，无需额外开关；未 @、仅 @ 其他成员或全体、机器人自身发送的消息和机器人私聊消息仍会忽略，即使群聊响应方式设为“全部”。消息仍受群聊白名单与命令权限约束。飞书应用需要租户权限 `im:message.group_at_msg.include_bot:readonly`（“获取群组中其他机器人和用户@当前机器人的消息”）；扫码新建应用会默认申请，已有或手动绑定的应用可点击“补全权限”或私聊执行 `/repair`，扫码并完成飞书要求的发布审批后生效。详见[飞书接收消息权限说明](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive)。
+
 十个内置渠道均支持把 JPEG、PNG、WebP 图片，以及以图片文件方式发送的 GIF，连同可选文字说明发送给 Harness；单张图片上限为 5 MB，单条消息中的图片总大小上限为 20 MB。飞书下载用户消息中的图片或文件需要租户权限 `im:message:readonly`，确认页将其显示为“获取单聊、群组消息”；飞书目前没有为该下载接口提供仅限图片的更窄权限。扫码新建的应用会默认申请；已有或手动绑定的应用可私聊机器人执行 `/repair`，或在「IM机器人」设置页点击“补全权限”，扫码增量补全该权限、上传机器人图片或文件所需的 `im:resource`、原生命令面板所需的 `application:app_slash_command:read` / `write`，以及卡片回调。
 
 ### 超时后的结果补发
@@ -185,7 +187,7 @@ dsh web
 | `/batch` | 在私聊中开启批量输入，最多收集 10 条纯文字消息。 |
 | `/send` | 将已收集的消息按原顺序作为一次输入提交。 |
 | `/cancel` | 取消批量输入并丢弃已收集的消息。 |
-| `/repair` | 在飞书私聊中增量修复卡片回调，并补全媒体与原生 Slash Command 面板所需的权限。 |
+| `/repair` | 在飞书私聊中增量修复卡片回调，并补全媒体、群聊机器人 @ 消息与原生 Slash Command 面板所需的权限。 |
 | `/compact` | 立即压缩当前聊天绑定会话的较早上下文。 |
 | `/workspace <工作区序号或绝对路径>`、`/ws <工作区序号或绝对路径>` | 按 `/workspacelist` 序号或绝对路径切换当前机器人的 Harness 工作区。 |
 | `/workspacelist`、`/workspaces`、`/wsl` | 列出当前 Harness Host 上仍然存在的工作区绝对路径。 |
