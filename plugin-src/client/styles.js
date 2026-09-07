@@ -574,6 +574,24 @@ const CSS = String.raw`
 .dim-deliveryButton.dim-globalSweepConfirmButton:hover:not(:disabled) { border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #d54941) 82%, #000); background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #d54941) 88%, #000); }
 .dim-globalInline { flex: 1 0 100%; min-width: 0; margin: 2px 0 0; color: var(--dsw-alias-label-secondary, #646a73); font-size: 11px; line-height: 16px; overflow-wrap: anywhere; }
 .dim-globalInline[data-tone="error"] { color: var(--dsw-alias-state-error-primary, #d54941); }
+
+/* Humanization settings (this fork) — same visual language as the native panels */
+.dim-globalSettingsStack { min-width: 0; display: grid; gap: 16px; }
+.dim-humanizeSettings { min-width: 0; display: grid; align-content: start; gap: 12px; }
+.dim-humanizeSettings--loading p { margin: 0; color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; line-height: 18px; }
+.dim-humanizeDesc { margin: 2px 0 0; color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; line-height: 18px; }
+.dim-humanizeField { min-width: 0; display: grid; align-content: start; gap: 5px; margin-top: 12px; color: var(--dsw-alias-label-secondary, #646a73); font-size: 11px; line-height: 16px; }
+.dim-humanizeFieldRow { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.dim-humanizeFieldName { min-width: 0; color: var(--dsw-alias-label-primary, #1f2329); font-size: 13px; line-height: 20px; font-weight: 550; }
+.dim-humanizeFieldHint { margin: 0; color: var(--dsw-alias-label-secondary, #646a73); font-size: 11px; line-height: 17px; overflow-wrap: anywhere; }
+.dim-humanizeField input[type="checkbox"] { flex: none; width: 14px; height: 14px; margin: 0; accent-color: var(--dsw-alias-state-business-primary, #3370ff); cursor: pointer; }
+.dim-humanizeField input[type="checkbox"]:disabled { opacity: .55; cursor: not-allowed; }
+.dim-humanizeField select { width: 100%; min-width: 0; max-width: 360px; height: 34px; padding: 0 9px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 7px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-layer-1, #fff); font: inherit; font-size: 12px; cursor: pointer; }
+.dim-humanizeField select:focus { outline: 2px solid color-mix(in srgb, var(--dsw-alias-state-business-primary, #3370ff) 28%, transparent); border-color: var(--dsw-alias-state-business-primary, #3370ff); }
+.dim-humanizeActions { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+.dim-humanizeStatus { min-width: 0; margin: 0; color: var(--dsw-alias-label-secondary, #646a73); font-size: 11px; line-height: 16px; overflow-wrap: anywhere; }
+.dim-humanizeStatus[data-tone="success"] { color: var(--dsw-alias-state-success-primary, #20a162); }
+.dim-humanizeStatus[data-tone="error"] { color: var(--dsw-alias-state-error-primary, #d54941); }
 .dim-panel .dim-botCard .dim-cardFooter { margin-top: 0; }
 .dim-panel .ddt-headingCopy { display: none; }
 .dim-panel .ddt-qrFrame, .dim-panel .ddt-countdown { width: min(270px, 100%); }

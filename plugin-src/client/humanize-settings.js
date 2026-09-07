@@ -109,91 +109,92 @@ export function HumanizeSettingsPanel({ rpcCall }) {
   };
 
   if (phase === 'loading') {
-    return h('div', { className: 'dim-humanizeSettings dim-humanizeSettings--loading' },
+    return h('div', { className: 'dim-globalSection dim-humanizeSettings--loading' },
       h('p', null, '正在加载…'));
   }
 
   if (phase === 'error') {
-    return h('div', { className: 'dim-humanizeSettings dim-humanizeSettings--error' },
-      h('p', { role: 'alert' }, loadError),
-      h('button', {
-        type: 'button',
-        className: 'dim-humanizeRetry',
-        onClick: () => void loadSettings(),
-      }, '重试'));
+    return h('div', { className: 'dim-globalSection' },
+      h('p', { className: 'dim-humanizeStatus', 'data-tone': 'error', role: 'alert' }, loadError),
+      h('div', { className: 'dim-humanizeActions' },
+        h('button', {
+          type: 'button',
+          className: 'dim-deliveryButton',
+          onClick: () => void loadSettings(),
+        }, '重试')));
   }
 
   if (!settings) {
-    return h('div', { className: 'dim-humanizeSettings' },
-      h('p', null, '暂无可用设置。'));
+    return h('div', { className: 'dim-globalSection' },
+      h('p', { className: 'dim-humanizeStatus' }, '暂无可用设置。'));
   }
 
   const messageBreakLocked = settings.messageBreak === true;
 
-  return h('section', { className: 'dim-humanizeSettings' },
-    h('h3', null, '拟人化设置'),
-    h('p', { className: 'dim-humanizeSettings__desc' },
-      '控制 AI 回复的发送方式，让对话更像真人交流。'),
+  return h('section', { className: 'dim-generalSettingsPage dim-humanizeSettings' },
+    h('header', { className: 'dim-generalSettingsHeader' },
+      h('h2', null, '拟人化设置')),
+    h('section', { className: 'dim-globalSection' },
+      h('p', { className: 'dim-humanizeDesc' },
+        '控制 AI 回复的发送方式，让对话更像真人交流。'),
 
     // Streaming toggle
-    h('div', { className: 'dim-humanizeField' },
-      h('label', { className: 'dim-humanizeField__label' },
+    h('label', { className: 'dim-humanizeField' },
+      h('span', { className: 'dim-humanizeFieldRow' },
         h('input', {
           type: 'checkbox',
           checked: settings.streaming,
           disabled: messageBreakLocked,
           onChange: (e) => updateField('streaming', e.target.checked),
         }),
-        h('span', null, '流式回复'),
-        h('span', { className: 'dim-humanizeField__hint' },
-          '开启后 AI 回复逐字显示。关闭后一次性发送完整回复，更有沉浸感。'),
-      ),
+        h('span', { className: 'dim-humanizeFieldName' }, '流式回复')),
+      h('span', { className: 'dim-humanizeFieldHint' },
+        '开启后 AI 回复逐字显示。关闭后一次性发送完整回复，更有沉浸感。'),
     ),
 
     // Message break toggle
-    h('div', { className: 'dim-humanizeField' },
-      h('label', { className: 'dim-humanizeField__label' },
+    h('label', { className: 'dim-humanizeField' },
+      h('span', { className: 'dim-humanizeFieldRow' },
         h('input', {
           type: 'checkbox',
           checked: settings.messageBreak,
           onChange: (e) => updateField('messageBreak', e.target.checked),
         }),
-        h('span', null, '分步消息 (message_break)'),
-        h('span', { className: 'dim-humanizeField__hint' },
-          'AI 调用 message_break 工具在回复中插入断点，每个分段作为独立消息发送。开启后自动关闭流式回复。'),
-      ),
+        h('span', { className: 'dim-humanizeFieldName' }, '分步消息 (message_break)')),
+      h('span', { className: 'dim-humanizeFieldHint' },
+        'AI 调用 message_break 工具在回复中插入断点，每个分段作为独立消息发送。开启后自动关闭流式回复。'),
     ),
 
     // onNewMessage dropdown
-    h('div', { className: 'dim-humanizeField' },
-      h('label', { className: 'dim-humanizeField__label' },
-        h('span', null, '新消息行为'),
-        h('select', {
-          value: settings.onNewMessage,
-          onChange: (e) => updateField('onNewMessage', e.target.value),
-        },
-        ON_NEW_MESSAGE_OPTIONS.map((opt) =>
-          h('option', { key: opt.value, value: opt.value }, opt.label),
-        )),
-        h('span', { className: 'dim-humanizeField__hint' },
-          '生成中收到新消息时的处理方式：打断重发、排队等待、或注入为纠偏指令。交互等待时一律排队。'),
-      ),
+    h('label', { className: 'dim-humanizeField' },
+      h('span', { className: 'dim-humanizeFieldName' }, '新消息行为'),
+      h('select', {
+        value: settings.onNewMessage,
+        onChange: (e) => updateField('onNewMessage', e.target.value),
+      },
+      ON_NEW_MESSAGE_OPTIONS.map((opt) =>
+        h('option', { key: opt.value, value: opt.value }, opt.label),
+      )),
+      h('span', { className: 'dim-humanizeFieldHint' },
+        '生成中收到新消息时的处理方式：打断重发、排队等待、或注入为纠偏指令。交互等待时一律排队。'),
     ),
 
     // Save button
     h('div', { className: 'dim-humanizeActions' },
       h('button', {
         type: 'button',
-        className: 'dim-humanizeSave',
+        className: 'dim-deliveryButton dim-humanizeSave',
+        'data-kind': 'primary',
         disabled: isSaving,
         onClick: () => void save(),
       }, isSaving ? '保存中…' : '保存'),
       saveSucceeded
-        ? h('span', { className: 'dim-humanizeSuccess', role: 'status' }, '已保存')
+        ? h('span', { className: 'dim-humanizeStatus', 'data-tone': 'success', role: 'status' }, '已保存')
         : null,
       saveError
-        ? h('span', { className: 'dim-humanizeError', role: 'alert' }, saveError)
+        ? h('span', { className: 'dim-humanizeStatus', 'data-tone': 'error', role: 'alert' }, saveError)
         : null,
+    ),
     ),
   );
 }
