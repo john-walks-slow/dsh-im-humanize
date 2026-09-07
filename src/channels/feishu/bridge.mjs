@@ -172,6 +172,9 @@ const STEP_PUSH_HEARTBEAT_AFTER_MS = 20_000;
 const STEP_PUSH_HEARTBEAT_REFRESH_MS = 30_000;
 /** One turn never refreshes the thinking heartbeat more than this. */
 const STEP_PUSH_HEARTBEAT_MAX_UPDATES = 30;
+/** One pending heartbeat id is retried at most this many times across
+ *  recall boundaries before it is abandoned (with a warning). */
+const STEP_PUSH_HEARTBEAT_RECALL_ATTEMPTS = 3;
 /** One post message carries at most this many UTF-8 bytes after its rich-text
  *  content has been JSON encoded (Feishu caps rich-text requests at 30KB). */
 const STEP_PUSH_POST_CHUNK_MAX_BYTES = 24_000;
@@ -3778,13 +3781,9 @@ export class FeishuHarnessBridge {
       ?? { lastSentAt: 0, count: 0, breakerLogged: false };
     this.#stepPushSendState.set(key, state);
     // 真实事件到达：先撤回思考中心跳再推真实消息。
-    // pendingRecallIds 是唯一撤回清单（live 心跳创建时即入队），避免同一 id 双撤回。
-    for (const heartbeatId of state.pendingRecallIds ?? []) {
-      try { await this.#channel?.recallMessage?.(heartbeatId); }
-      catch (error) { this.#logger.warn?.('[dsh-feishu] heartbeat recall failed:', error.message); }
-    }
-    state.pendingRecallIds = [];
-    state.heartbeatMessageId = null;
+    // pendingRecallIds 是唯一撤回清单（live 心跳创建时即入队），避免同一 id 双撤回；
+    // 撤回失败的 id 留在队列里待下个边界重试，不能在这里无条件清空。
+    await this.#recallPendingHeartbeats(state);
     if (billable && state.count >= STEP_PUSH_MAX_MESSAGES_PER_TURN) {
       if (!state.breakerLogged) {
         state.breakerLogged = true;
@@ -3793,8 +3792,10 @@ export class FeishuHarnessBridge {
         );
       }
       // 熔断静默期内同样刷新 silenceSince：用户仍在活动，静默窗口重新计时，
-      // 避免看门狗在每个被拦截的事件后重建/撤回心跳。
+      // 避免看门狗在每个被拦截的事件后重建/撤回心跳。activitySeq 单调递增，
+      // 供心跳创建返回后识别「创建在途期间出现了真实活动」（同毫秒事件也能识别）。
       state.silenceSince = this.#stepPushClock.now();
+      state.activitySeq = (state.activitySeq ?? 0) + 1;
       return;
     }
     this.#signal?.throwIfAborted();
@@ -3805,6 +3806,7 @@ export class FeishuHarnessBridge {
     this.#signal?.throwIfAborted();
     state.lastSentAt = this.#stepPushClock.now();
     state.silenceSince = state.lastSentAt;
+    state.activitySeq = (state.activitySeq ?? 0) + 1;
     if (billable) state.count += 1;
     this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
     await this.#sendStepPost(chatId, replyToMessageId, paragraphs, fallbackText);
@@ -3913,6 +3915,51 @@ export class FeishuHarnessBridge {
   }
 
   /**
+   * 撤回待撤回心跳清单：撤回成功（recallMessage 返回 true）的 id 移出队列；
+   * 失败的保留，待下个真实事件/回合结束边界重试，单条最多尝试
+   * STEP_PUSH_HEARTBEAT_RECALL_ATTEMPTS 次后放弃并告警（消息可能已被手动
+   * 删除或接口持续受限，避免队列无限增长）。live 心跳撤回失败且仍在队列时
+   * 保留 heartbeatMessageId：消息仍在会话里，看门狗继续原地刷新同一条，
+   * 而不是另建一条造成重复。
+   */
+  async #recallPendingHeartbeats(state) {
+    const remaining = [];
+    for (const entry of state.pendingRecallIds ?? []) {
+      let recalled = false;
+      try {
+        recalled = (await this.#channel?.recallMessage?.(entry.id)) === true;
+      } catch (error) {
+        this.#logger.warn?.('[dsh-feishu] heartbeat recall failed:', error?.message ?? String(error));
+      }
+      if (recalled) continue;
+      const attempts = (entry.attempts ?? 0) + 1;
+      if (attempts >= STEP_PUSH_HEARTBEAT_RECALL_ATTEMPTS) {
+        this.#logger.warn?.(`[dsh-feishu] heartbeat recall gave up after ${attempts} attempts: ${entry.id}`);
+        continue;
+      }
+      remaining.push({ id: entry.id, attempts });
+    }
+    state.pendingRecallIds = remaining;
+    const liveId = state.heartbeatMessageId;
+    if (liveId && !remaining.some((entry) => entry.id === liveId)) state.heartbeatMessageId = null;
+  }
+
+  /**
+   * 撤回一条刚创建、但创建返回时已过时（回合已结束或创建在途期间出现了
+   * 真实活动）的心跳：成功即丢弃；失败则按失败保留策略入队，待下个边界重试。
+   */
+  async #recallLateHeartbeat(state, messageId) {
+    let recalled = false;
+    try {
+      recalled = (await this.#channel?.recallMessage?.(messageId)) === true;
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] late heartbeat recall failed:', error?.message ?? String(error));
+    }
+    if (recalled) return;
+    state.pendingRecallIds = [...(state.pendingRecallIds ?? []), { id: messageId, attempts: 1 }];
+  }
+
+  /**
    * 思考中状态看门狗：直推回合内静默满阈值时推送/原地刷新一条「⏳ 正在思考中…」
    * 心跳 post；真实事件或回合结束时撤回。轮询检查可注入 stepPushClock（测试
    * 手动推进时钟），生命周期归属当前回合（stop 后循环退出）。
@@ -3964,6 +4011,10 @@ export class FeishuHarnessBridge {
           }
           if (now < (state.heartbeatNextAttemptAt ?? 0)) continue;
           if (silentFor < STEP_PUSH_HEARTBEAT_AFTER_MS) continue;
+          // 记录发起创建时的活动序号：创建请求在途期间若出现真实活动
+          // （真实推送或熔断分支都会推进 activitySeq），这条心跳返回时
+          // 已过时，必须立即撤回而不是登记为当前状态。
+          const activitySeqAtDispatch = state.activitySeq ?? 0;
           const shownAt = now;
           const result = await this.#sendStepPost(
             chatId, replyToMessageId,
@@ -3972,16 +4023,18 @@ export class FeishuHarnessBridge {
           );
           if (watchdog.stopped || this.#signal?.aborted) {
             // 创建期间回合已结束：立即撤回刚发出的心跳，避免残留。
-            if (result.ok && result.messageId) {
-              await this.#channel?.recallMessage?.(result.messageId)
-                .catch((recallError) => this.#logger.warn?.('[dsh-feishu] late heartbeat recall failed:', recallError.message));
-              state.pendingRecallIds = (state.pendingRecallIds ?? []).filter((id) => id !== result.messageId);
-            }
+            if (result.ok && result.messageId) await this.#recallLateHeartbeat(state, result.messageId);
             return;
+          }
+          if ((state.activitySeq ?? 0) !== activitySeqAtDispatch) {
+            // 创建期间出现真实活动：这条「正在思考中」会排在真实步骤之后，
+            // 立即撤回且不登记（不进入原地刷新，也不作为 live 心跳）。
+            if (result.ok && result.messageId) await this.#recallLateHeartbeat(state, result.messageId);
+            continue;
           }
           if (result.ok) {
             state.heartbeatMessageId = result.messageId ?? null;
-            state.pendingRecallIds = [...(state.pendingRecallIds ?? []), result.messageId];
+            state.pendingRecallIds = [...(state.pendingRecallIds ?? []), { id: result.messageId, attempts: 0 }];
             state.heartbeatShownAt = shownAt;
             state.heartbeatUpdatedAt = shownAt;
           } else {
@@ -3998,12 +4051,8 @@ export class FeishuHarnessBridge {
     return {
       stop: async () => {
         watchdog.stopped = true;
-        for (const heartbeatId of state.pendingRecallIds ?? []) {
-          try { await this.#channel?.recallMessage?.(heartbeatId); }
-          catch (error) { this.#logger.warn?.('[dsh-feishu] heartbeat recall failed:', error.message); }
-        }
-        state.pendingRecallIds = [];
-        state.heartbeatMessageId = null;
+        // 回合结束撤回：失败项保留在队列里（跨回合携带），待下个边界重试。
+        await this.#recallPendingHeartbeats(state);
       },
     };
   }
@@ -4053,7 +4102,10 @@ export class FeishuHarnessBridge {
       silenceSince: this.#stepPushClock.now(),
       turnStartedAt: this.#stepPushClock.now(),
       lastSentAt: priorState?.lastSentAt ?? 0,
-      pendingRecallIds: [],
+      // 撤回失败的心跳跨回合携带：回合边界没撤掉的「正在思考中」在下个
+      // 回合的真实事件/结束时继续重试，而不是被 reopen 静默丢弃。
+      pendingRecallIds: priorState?.pendingRecallIds ?? [],
+      activitySeq: 0,
       count: 0,
       breakerLogged: false,
     });

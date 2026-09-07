@@ -8580,7 +8580,7 @@ function stepPushClockFixture() {
   };
 }
 
-function stepPushChannel({ cardWrites, streamCalls, streamError = null, recalls = [] } = {}) {
+function stepPushChannel({ cardWrites, streamCalls, streamError = null, recalls = [], recallFailure = null } = {}) {
   const writes = cardWrites ?? [];
   const calls = streamCalls ?? [];
   return {
@@ -8590,7 +8590,12 @@ function stepPushChannel({ cardWrites, streamCalls, streamError = null, recalls 
       await markdown({ setContent: async (content) => writes.push(content) });
       return { messageId: 'om_step_card' };
     },
-    recallMessage: async (messageId) => { recalls.push(messageId); },
+    // recallMessage 契约：成功返回 true、失败返回 false（bridge 据此保留重试）。
+    recallMessage: async (messageId) => {
+      if (recallFailure?.(messageId)) return false;
+      recalls.push(messageId);
+      return true;
+    },
   };
 }
 
@@ -9911,6 +9916,7 @@ test('step push: silence over the threshold surfaces a thinking heartbeat, recal
       recallMessage: async (messageId) => {
         order.push({ kind: 'recall', id: messageId });
         recalls.push(messageId);
+        return true;
       },
     },
     harness: stepPushHarness(async () => {
@@ -9995,7 +10001,7 @@ test('step push: a real event recalls the heartbeat before pushing the step', as
     }),
     channel: {
       stream: async () => { throw new Error('not used'); },
-      recallMessage: async (messageId) => { order.push({ kind: 'recall', id: messageId }); recalls.push(messageId); },
+      recallMessage: async (messageId) => { order.push({ kind: 'recall', id: messageId }); recalls.push(messageId); return true; },
     },
     harness: stepPushHarness(async (_sessionId, _text, options) => {
       clock.now += 25_000;
@@ -10301,4 +10307,172 @@ test('thinking status: two silence periods recall each heartbeat exactly once', 
   assert.equal(heartbeatIds.length, 2, 'two heartbeats created across two silence periods');
   assert.deepEqual([...recalls].sort(), [...heartbeatIds].sort(), 'each heartbeat recalled exactly once');
   assert.equal(sent.at(-1).text, '两段思考的答案。');
+});
+
+test('thinking status: a failed recall is retried at the next boundary without duplicating the heartbeat', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const updates = [];
+  const recalls = [];
+  const recallAttempts = [];
+  const stuckId = { current: null };
+  let failedOnce = false;
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: (request) => updates.push({ messageId: request.path.message_id, text: stepPushMessageText(request) }),
+    }),
+    channel: stepPushChannel({
+      recalls,
+      recallFailure: (messageId) => {
+        recallAttempts.push(messageId);
+        if (failedOnce) return false;
+        failedOnce = true;
+        stuckId.current = messageId;
+        return true;
+      },
+    }),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      // 真实事件边界：第一次撤回失败——id 必须保留重试，而不是被清空。
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      clock.now += 30_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '重试撤回的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_retry', '撤回重试'));
+  await bridge.waitForIdle();
+
+  const heartbeat = sent.find((entry) => entry.text.includes('⏳ 正在思考中…'));
+  assert.ok(heartbeat, 'the heartbeat appears');
+  assert.equal(stuckId.current, heartbeat.id, 'the first recall attempt failed for the live heartbeat');
+  assert.deepEqual(recallAttempts, [heartbeat.id, heartbeat.id], 'the failed id is retried at the next boundary (turn end)');
+  assert.deepEqual(recalls, [heartbeat.id], 'the retry succeeds exactly once — no double recall');
+  assert.equal(updates.length, 1, 'while the recall was stuck the watchdog kept refreshing instead of recreating');
+  assert.equal(updates[0].messageId, heartbeat.id, 'the refresh must stay on the same stuck heartbeat');
+  assert.equal(sent.filter((entry) => entry.text.includes('⏳ 正在思考中…')).length, 1, 'no duplicate heartbeat was created');
+  assert.equal(sent.at(-1).text, '重试撤回的答案。');
+});
+
+test('thinking status: a permanently failing recall is retried at most three times', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const recalls = [];
+  const recallAttempts = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: stepPushChannel({
+      recalls,
+      recallFailure: (messageId) => { recallAttempts.push(messageId); return true; },
+    }),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"pwd"}' });
+      return '放弃重试的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_giveup', '撤回放弃'));
+  await bridge.waitForIdle();
+
+  assert.equal(recallAttempts.length, 3, 'exactly three attempts: two real events plus turn end');
+  assert.equal(new Set(recallAttempts).size, 1, 'all attempts target the same stuck heartbeat');
+  assert.deepEqual(recalls, [], 'a permanently failing recall never reports success');
+  assert.ok(sent.some((entry) => entry.text.includes('⏳ 正在思考中…')), 'the heartbeat was created');
+});
+
+test('thinking status: a heartbeat created while a real step pushes is recalled late, not registered', async () => {
+  const fixture = stateFixture();
+  const updates = [];
+  const order = [];
+  const recalls = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  let releaseHeartbeat;
+  const heartbeatInFlight = new Promise((resolve) => { releaseHeartbeat = resolve; });
+  let replyCalls = 0;
+  const bridge = new FeishuHarnessBridge({
+    client: { im: { v1: { message: {
+      reply: async (request) => {
+        replyCalls += 1;
+        const text = stepPushMessageText(request);
+        const id = `om_post_${replyCalls}`;
+        order.push({ kind: 'post', id, text });
+        if (text.includes('⏳ 正在思考中…')) await heartbeatInFlight;
+        return { code: 0, data: { message_id: id } };
+      },
+      update: async (request) => {
+        updates.push(request.path.message_id);
+        return { code: 0 };
+      },
+    } } } },
+    channel: {
+      stream: async () => { throw new Error('not used'); },
+      recallMessage: async (messageId) => {
+        order.push({ kind: 'recall', id: messageId });
+        recalls.push(messageId);
+        return true;
+      },
+    },
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      clock.now += 25_000;
+      // 心跳创建请求已在途并阻塞；此时真实工具步骤到达并直推。
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      releaseHeartbeat();
+      // 留出真实时间让看门狗处理迟到的心跳创建返回。
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return '并发回合的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_late', '并发心跳'));
+  await bridge.waitForIdle();
+
+  const heartbeatId = order.find((entry) => entry.text.includes('⏳ 正在思考中…'))?.id;
+  assert.ok(heartbeatId, 'the heartbeat post was dispatched');
+  const recallEntries = order.filter((entry) => entry.kind === 'recall' && entry.id === heartbeatId);
+  assert.equal(recallEntries.length, 1, 'the late heartbeat is recalled exactly once');
+  assert.deepEqual(recalls, [heartbeatId], 'the late recall went through the channel');
+  const finalOrder = order.findIndex((entry) => entry.text === '并发回合的答案。');
+  assert.ok(order.findIndex((entry) => entry.kind === 'recall') < finalOrder, 'the late recall precedes the final answer');
+  assert.deepEqual(updates, [], 'the late heartbeat must never be registered for in-place refresh');
+  assert.deepEqual(recalls, [...new Set(recalls)], 'the late heartbeat is not recalled again at turn end');
+  assert.equal(order.at(-1).text, '并发回合的答案。');
 });

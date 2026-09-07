@@ -513,8 +513,10 @@ export class VerifiedFeishuChannel {
         path: { message_id: messageId },
       });
       assertApiSuccess('Feishu message delete', response);
+      return true;
     } catch (error) {
       console.warn(`[bridge] unable to recall ${label}:`, error.message);
+      return false;
     }
   }
 
@@ -530,7 +532,7 @@ export class VerifiedFeishuChannel {
 
   /** Delete one previously sent message (step-push heartbeat cleanup). */
   async recallMessage(messageId) {
-    await this.#recall(messageId, 'thinking status heartbeat');
+    return this.#recall(messageId, 'thinking status heartbeat');
   }
 
   async removeReaction(messageId, reactionId) {
