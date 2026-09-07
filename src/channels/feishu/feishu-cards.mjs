@@ -954,13 +954,21 @@ export function answeredQuestionCard({ interactionId, header, question, detail, 
   if (detail) elements.push({ tag: 'div', text: markdown(String(detail)) });
   if (Array.isArray(options) && options.length > 0) {
     elements.push({ tag: 'hr' });
+    let chosenShown = false;
     for (const option of options) {
       const label = typeof option?.label === 'string' ? option.label : '';
       if (!label) continue;
+      if (label === chosen) chosenShown = true;
       elements.push({ tag: 'div', text: markdown(label === chosen
         ? t('✅ 已选择：{label}', { label })
         : label) });
     }
+    // 自定义文本答案不在预设选项里——单独一行展示所选内容。
+    if (!chosenShown && typeof chosen === 'string' && chosen.trim()) {
+      elements.push({ tag: 'div', text: markdown(t('✅ 已选择：{label}', { label: chosen })) });
+    }
+  } else if (typeof chosen === 'string' && chosen.trim()) {
+    elements.push({ tag: 'div', text: markdown(t('✅ 已选择：{label}', { label: chosen })) });
   }
   elements.push({ tag: 'hr' });
   elements.push({ tag: 'div', text: markdown(t('回答已提交，对话将继续。')) });

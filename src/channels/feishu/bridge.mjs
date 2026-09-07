@@ -87,6 +87,7 @@ import {
   menuHelpText,
   modelCard,
   presetCard,
+  answeredQuestionCard,
   questionCard,
   sessionListCard,
   statusCard,
@@ -2185,7 +2186,7 @@ export class FeishuHarnessBridge {
         if (pending && pending.kind === 'question' && !pending.submitting
           && pending.actor === actor
           && Number(indexText) === pending.index) {
-          await this.#submitQuestionAnswer(pending, optionLabel, { chatId });
+          await this.#submitQuestionAnswer(pending, optionLabel, { chatId, questionMessageId: messageId });
         } else {
           await reply(INTERACTION_RESOLVED_TEXT()).catch(() => undefined);
         }
@@ -2595,6 +2596,27 @@ export class FeishuHarnessBridge {
     if (this.#cardKeys.size > 200) {
       const oldest = this.#cardKeys.keys().next().value;
       if (oldest !== undefined) this.#cardKeys.delete(oldest);
+    }
+  }
+
+  /**
+   * issue #162：已答状态卡的原地替换。patch 失败仅记录警告并明确降级——
+   * 回执缺失不应影响答案提交，也不得像 #sendCard 那样回退成发送新卡。
+   */
+  async #patchCardMessage(chatId, messageId, cardJson) {
+    if (!messageId) return null;
+    try {
+      const response = await this.#client.im.v1.message.patch({
+        path: { message_id: messageId },
+        data: { content: cardJson },
+      });
+      if (response?.code && response.code !== 0) {
+        throw new Error(`Feishu card update failed: ${response.msg || response.code}`);
+      }
+      return messageId;
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] answered-state card patch failed:', error?.message ?? error);
+      return null;
     }
   }
 
@@ -4402,13 +4424,30 @@ export class FeishuHarnessBridge {
     await this.#submitQuestionAnswer(pending, text, {
       chatId: event.message.chat_id,
       messageId,
+      questionMessageId: pending.questionCardMessageId,
     });
   }
 
-  async #submitQuestionAnswer(pending, answerText, { chatId, messageId } = {}) {
+  async #submitQuestionAnswer(pending, answerText, { chatId, messageId, questionMessageId } = {}) {
     const question = pending.questions[pending.index];
     if (!question) return;
     pending.chatId = chatId ?? pending.chatId;
+
+    // issue #162：已答状态卡以推进前的题号渲染，并整卡替换原提问卡。
+    const answeredIndex = pending.index;
+    const answeredCardJson = answeredQuestionCard({
+      interactionId: pending.interactionId,
+      question,
+      options: Array.isArray(question?.options) ? question.options : [],
+      chosen: answerText,
+      index: answeredIndex,
+      total: pending.questions.length,
+    });
+    const patchAnsweredCard = () => this.#patchCardMessage(
+      pending.chatId,
+      questionMessageId ?? pending.questionCardMessageId,
+      answeredCardJson,
+    );
 
     pending.answers.push(harnessAnswerForQuestion(question, answerText));
     pending.index += 1;
@@ -4417,6 +4456,7 @@ export class FeishuHarnessBridge {
         pending.claimedReplyMessageId = null;
       }
       pending.needsPresentation = true;
+      await patchAnsweredCard();
       try {
         await this.#presentInteraction(pending);
       } catch {
@@ -4437,6 +4477,7 @@ export class FeishuHarnessBridge {
           answer: { answers: pending.answers },
         },
       });
+      await patchAnsweredCard();
       this.#rememberResolvedInteraction(key, pending);
       this.#clearPendingInteraction(key, pending.interactionId);
       this.#status.lastError = null;
@@ -4573,6 +4614,7 @@ export class FeishuHarnessBridge {
       submitting: false,
       needsPresentation: true,
       questionMessageIds: new Set(),
+      questionCardMessageId: null,
       inactive: false,
     };
     this.#pendingInteractions.set(key, pending);
@@ -4602,6 +4644,7 @@ export class FeishuHarnessBridge {
       && options.length > 0
       && question.multiSelect !== true;
     let messageId;
+    let presentedAsCard = false;
     if (interactive) {
       // Single-choice question with options: render each option as a button.
       messageId = await this.#sendCard(
@@ -4616,7 +4659,10 @@ export class FeishuHarnessBridge {
           total: pending.questions.length,
         }),
         { key: pending.key, replyTo: pending.replyToMessageId },
-      ).catch(async () => {
+      ).then((sent) => {
+        presentedAsCard = true;
+        return sent;
+      }).catch(async () => {
         // Fall back to the plain-text question if the card cannot be sent.
         // If the text send also fails, let the error propagate so the pending
         // question is not marked as presented and the existing retry logic runs.
@@ -4643,6 +4689,8 @@ export class FeishuHarnessBridge {
     }
     if (messageId) {
       pending.questionMessageIds.add(messageId);
+      // issue #162：仅卡片路径成功时记录——文本回退产生的消息 id 不参与已答回写。
+      if (presentedAsCard) pending.questionCardMessageId = messageId;
       if (pending.inactive) this.#rememberResolvedInteraction(pending.key, pending);
     }
     pending.needsPresentation = false;
