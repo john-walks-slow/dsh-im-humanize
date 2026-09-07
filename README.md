@@ -41,6 +41,21 @@
 
 Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest, or entering existing bot credentials, and let the local Harness connect outward to a public AI Office. One plugin and one settings entry manage nine multi-bot IM channels and the AI Office Connector.
 
+## 本 Fork 的改动（拟人化）
+
+本仓库是从 `xmanrui/dsh-im` fork 出来的"拟人化"分支，在保留上游全部功能的基础上，新增三项面向角色扮演沉浸体验的设置，全部在「设置 → IM机器人 → 通用设置」的**拟人化设置**面板中配置，对所有已接入渠道与机器人全局生效：
+
+- **流式回复（streaming，默认开启）**：关闭后不再逐字推送模型输出，而是等回合结束后一次性发送完整回复，更接近真人回复节奏。与 message_break 互斥，开启分步消息会自动关闭流式回复。
+- **分步消息（message_break，默认关闭）**：插件会注册一个名为 `message_break` 的 **no-op 工具**（不执行任何操作，仅作为回复中的断点标记）。模型在长回复中主动调用它来"换气"时，插件会把断点之前的文本作为一条独立消息发送，随后继续发送后续分段，整段回答因此变成多条消息，读起来更像真人逐条输入。三个分隔点（思考/工具进度与最终回答之间、长回答的段落之间、前后文切换处）最自然；单回合最多拆分 20 段，纯空白分段会被跳过。
+- **新消息行为（onNewMessage，默认 interrupt）**：模型生成过程中用户又发来新消息时的处理方式：
+  - **打断重发（interrupt）**：取消当前回合并立即用新消息重新提问；
+  - **排队等待（queue）**：等当前回合结束后再处理新消息（上游默认行为）；
+  - **注入纠偏（steer）**：不中断生成，把新消息文本注入为当前回合的纠偏指令，模型在回答末尾顺势回应。
+
+  当回合正在等待用户交互（提问/审批等待、验证码等）时，一律按排队处理，保证交互流程不被新消息打乱。
+
+> 上游同步说明：本分支为长期维护的 fork，会持续合并 `xmanrui/dsh-im` 上游更新；上游修复与功能在合并时保持完全兼容。**消息分段（message_break）与流式开关（streaming）依赖本 fork 对 Harness 回复追踪（HarnessReplyTracker）的扩展**，在上游仓库中不可用。
+
 ## 界面
 
 ![IM 机器人页面](docs/images/imbot.png)

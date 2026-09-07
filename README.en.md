@@ -38,6 +38,21 @@
 
 Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest, or entering existing bot credentials, and let the local Harness connect outward to a public AI Office. One plugin and one settings entry manage nine multi-bot IM channels and the AI Office Connector.
 
+## This fork: humanized messaging
+
+This repository is a fork of `xmanrui/dsh-im` focused on **humanized messaging** for role-play immersion. It keeps every upstream feature and adds three settings, all configured in the **Humanization settings** section under **Settings → IM bots → General settings** and applied globally to every channel and bot:
+
+- **Streaming replies (streaming, on by default)**: when disabled, model output is no longer pushed progressively; the complete reply is sent at once when the turn finishes, closer to real human reply pacing. Mutually exclusive with message breaks (enabling message_break turns streaming off automatically).
+- **Message breaks (message_break, off by default)**: the plugin registers a **no-op tool** named `message_break` (it executes nothing; it only marks a break point inside the reply). When the model calls it deliberately in a long reply to "take a breath", the plugin sends the text accumulated before the break as a separate message and then continues with the following segments, so one answer becomes several messages that read like someone typing line by line. Natural spots are between the thinking/tool progress and the final answer, between paragraphs of long answers, and at topic transitions; at most 20 segments per turn, and whitespace-only segments are skipped.
+- **New message behavior (onNewMessage, interrupt by default)**: what happens when the user sends a new message while the model is still generating:
+  - **Interrupt & resend (interrupt)**: cancels the current turn and immediately re-asks with the new message;
+  - **Queue & wait (queue)**: processes the new message after the current turn finishes (upstream default);
+  - **Inject as steering (steer)**: does not interrupt the generation; the new message text is injected as a steering instruction for the current turn, and the model weaves it into the tail of its answer.
+
+  When the turn is waiting for user interaction (question/approval pending, verification, etc.), the message is always queued so the interaction flow is never disturbed by new input.
+
+> Upstream sync note: this branch is a long-lived fork and keeps merging updates from `xmanrui/dsh-im` upstream, staying fully compatible when features get merged. **Message breaks and the streaming toggle depend on this fork's extension of the Harness reply tracker (HarnessReplyTracker)** and are not available in the upstream repository.
+
 ## Interface
 
 ![IM bot settings page](docs/images/imbot_en.png)
