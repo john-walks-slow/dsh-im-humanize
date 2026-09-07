@@ -112,7 +112,7 @@ export class WecomAppCallbackServer {
     for (const [streamId, stream] of this.#streams.entries()) {
       if (stream.botId === botId) {
         this.#streams.delete(streamId);
-        if (stream.msgid) this.#streamByMsgId.delete(stream.msgid);
+        if (stream.msgid) this.#streamByMsgId.delete(this.#msgKey(stream.botId, stream.msgid));
       }
     }
     return this;
@@ -159,13 +159,23 @@ export class WecomAppCallbackServer {
     });
   }
 
+  routeCount() {
+    return this.#routes.size;
+  }
+
+  // Stream dedup and lookup are scoped per bot: two self-built apps can share
+  // a MsgId, and a refresh signed by app B must never read app A's stream.
+  #msgKey(botId, msgid) {
+    return botId + ':' + msgid;
+  }
+
   createStream({ botId, msgid }) {
     this.#pruneStreams();
     if (this.#streams.size >= this.#maxStreams) {
       const oldest = this.#streams.keys().next().value;
       const evicted = this.#streams.get(oldest);
       this.#streams.delete(oldest);
-      if (evicted?.msgid) this.#streamByMsgId.delete(evicted.msgid);
+      if (evicted?.msgid) this.#streamByMsgId.delete(this.#msgKey(evicted.botId, evicted.msgid));
     }
     const streamId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     const state = {
@@ -180,7 +190,7 @@ export class WecomAppCallbackServer {
       updatedAt: Date.now(),
     };
     this.#streams.set(streamId, state);
-    if (msgid) this.#streamByMsgId.set(msgid, streamId);
+    if (msgid) this.#streamByMsgId.set(this.#msgKey(botId, msgid), streamId);
     return state;
   }
 
@@ -367,16 +377,14 @@ export class WecomAppCallbackServer {
     const isStreamRefresh = message.msgtype === 'stream' || message.event === 'stream_refresh';
     if (isStreamRefresh) {
       const streamId = message.stream?.id ?? null;
-      const snapshot = streamId ? this.streamSnapshot(streamId) : null;
+      const stream = streamId ? this.#streams.get(streamId) : null;
+      const snapshot = stream && stream.botId === route.botId ? this.streamSnapshot(streamId) : null;
       if (!snapshot) {
         writeEmpty(response);
         return;
       }
-      const stream = this.#streams.get(streamId);
-      if (stream) {
-        stream.refreshes += 1;
-        stream.updatedAt = Date.now();
-      }
+      stream.refreshes += 1;
+      stream.updatedAt = Date.now();
       this.#replyEncrypted(route, envelope, response, {
         msgtype: 'stream',
         stream: snapshot,
@@ -386,8 +394,9 @@ export class WecomAppCallbackServer {
     // WeCom retries an unanswered POST with the same MsgId; reply with the
     // current stream snapshot (including the final frame) so a client that
     // lost an earlier response can still settle on the finished content.
-    if (msgid && this.#streamByMsgId.has(msgid)) {
-      const snapshot = this.streamSnapshot(this.#streamByMsgId.get(msgid));
+    const retryStreamId = msgid ? this.#streamByMsgId.get(this.#msgKey(route.botId, msgid)) : null;
+    if (retryStreamId) {
+      const snapshot = this.streamSnapshot(retryStreamId);
       if (snapshot) {
         this.#replyEncrypted(route, envelope, response, { msgtype: 'stream', stream: snapshot });
         return;
@@ -455,7 +464,7 @@ export class WecomAppCallbackServer {
     for (const [streamId, stream] of this.#streams.entries()) {
       if (stream.updatedAt < cutoff) {
         this.#streams.delete(streamId);
-        if (stream.msgid) this.#streamByMsgId.delete(stream.msgid);
+        if (stream.msgid) this.#streamByMsgId.delete(this.#msgKey(stream.botId, stream.msgid));
       }
     }
   }

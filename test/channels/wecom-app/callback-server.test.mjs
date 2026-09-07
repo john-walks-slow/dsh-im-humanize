@@ -192,3 +192,80 @@ test('forged callbacks are rejected before reaching the bridge', async () => {
     await server.stop();
   }
 });
+
+function envelopeWithCrypto(crypto, plaintext) {
+  const stamp = String(Math.floor(Date.now() / 1000));
+  const nonce = 'n-' + Math.random().toString(36).slice(2, 8);
+  const { encrypt, signature } = crypto.encrypt(
+    typeof plaintext === 'string' ? plaintext : JSON.stringify(plaintext), stamp, nonce);
+  return ['<xml>',
+    '<Encrypt><![CDATA[' + encrypt + ']]></Encrypt>',
+    '<MsgSignature><![CDATA[' + signature + ']]></MsgSignature>',
+    '<TimeStamp>' + stamp + '</TimeStamp>',
+    '<Nonce><![CDATA[' + nonce + ']]></Nonce>',
+    '</xml>'].join('');
+}
+
+test('streams are isolated per app across shared MsgId and cross-app refresh', async () => {
+  const server = await startServer();
+  try {
+    const inboundB = [];
+    const cryptoB = createUserCrypto({
+      token: 'unit-test-token-b',
+      encodingAESKey: 'ZYXWVUTSRQPONMLKJIHGFEDCBAzyxwvutsrqponmlkjihg'.slice(0, 43),
+      corpId: CORP_ID + '-b',
+    });
+    server.registerRoute({
+      botId: 'wecomapp_a', callbackSecret: 'a'.repeat(32),
+      cryptoFor, streamEnabled: () => true,
+      onInbound: async () => {},
+    });
+    server.registerRoute({
+      botId: 'wecomapp_b', callbackSecret: 'b'.repeat(32),
+      cryptoFor: () => cryptoB, streamEnabled: () => true,
+      onInbound: async (event) => inboundB.push(event),
+    });
+    const pathA = server.routePath({ botId: 'wecomapp_a', callbackSecret: 'a'.repeat(32) });
+    const pathB = server.routePath({ botId: 'wecomapp_b', callbackSecret: 'b'.repeat(32) });
+    const first = await post(server, pathA, encryptedEnvelope({
+      msgid: 'shared-1', msgtype: 'text',
+      from: { userid: 'user-a' },
+      text: { content: 'A 的消息' },
+    }));
+    assert.equal(first.status, 200);
+    const streamIdA = JSON.parse(cryptoFor().decrypt(
+      extractField(await first.text(), 'Encrypt'))).stream.id;
+    assert.equal(typeof streamIdA, 'string');
+    const second = await post(server, pathB, envelopeWithCrypto(cryptoB, {
+      msgid: 'shared-1', msgtype: 'text',
+      from: { userid: 'user-b' },
+      text: { content: 'B 的消息' },
+    }));
+    assert.equal(second.status, 200);
+    const replyB = JSON.parse(cryptoB.decrypt(extractField(await second.text(), 'Encrypt')));
+    assert.equal(replyB.stream.id !== streamIdA, true);
+    for (let i = 0; i < 40 && inboundB.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(inboundB.length, 1);
+    assert.equal(inboundB[0].message.text.content, 'B 的消息');
+    const stamp = String(Math.floor(Date.now() / 1000));
+    const nonce = 'cross-refresh';
+    const { encrypt, signature } = cryptoB.encrypt(JSON.stringify({
+      msgid: 'refresh-x', msgtype: 'stream',
+      stream: { id: streamIdA },
+    }), stamp, nonce);
+    const refresh = await post(server, pathB, [
+      '<xml>',
+      '<Encrypt><![CDATA[' + encrypt + ']]></Encrypt>',
+      '<MsgSignature><![CDATA[' + signature + ']]></MsgSignature>',
+      '<TimeStamp>' + stamp + '</TimeStamp>',
+      '<Nonce><![CDATA[' + nonce + ']]></Nonce>',
+      '</xml>',
+    ].join(''));
+    assert.equal(refresh.status, 200);
+    assert.equal(await refresh.text(), '');
+  } finally {
+    await server.stop();
+  }
+});
