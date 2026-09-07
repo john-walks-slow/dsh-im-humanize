@@ -136,9 +136,9 @@ export function createWecomAppRpcHandler(controller) {
     }
   }
   return async (endpoint, payload, signal) => {
-    if (signal?.aborted) return { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } };
+    if (signal?.aborted) return { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.', details: {} } };
     if (!WECOM_APP_RPC_ENDPOINTS.includes(endpoint)) {
-      return { ok: false, error: { code: 'bad-request', message: 'Unknown Enterprise WeChat app endpoint.' } };
+      return { ok: false, error: { code: 'bad-request', message: 'Unknown Enterprise WeChat app endpoint.', details: {} } };
     }
     const invalid = payloadFailure(endpoint, payload);
     if (invalid) return { ok: false, error: { code: 'bad-request', message: invalid } };
@@ -158,7 +158,7 @@ export function createWecomAppRpcHandler(controller) {
       } else if (endpoint === WECOM_APP_ENDPOINTS.reconnectBot) {
         const snapshot = await controller.reconnectBot(payload.botId);
         if (signal?.aborted) {
-          return { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } };
+          return { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.', details: {} } };
         }
         let testMessage;
         if (payload.sendTest === true) {
@@ -200,14 +200,15 @@ export function createWecomAppRpcHandler(controller) {
         value = await publicStatus(await controller.deleteBot(payload.botId));
       }
       return signal?.aborted
-        ? { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } }
+        ? { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.', details: {} } }
         : { ok: true, value };
     } catch (error) {
       const workspaceError = publicWorkspaceError(error);
       return signal?.aborted
-        ? { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } }
+        ? { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.', details: {} } }
         : { ok: false, error: workspaceError
-          ?? { code: 'wecom-app-operation-failed', message: '企业微信应用操作失败，请稍后重试。' } };
+          ? { ...workspaceError, details: {} }
+          : { code: 'wecom-app-operation-failed', message: '企业微信应用操作失败，请稍后重试。', details: {} } };
     }
   };
 }
