@@ -207,6 +207,15 @@ export class VerifiedFeishuChannel {
     const cards = [];
     let activeCard = null;
     let rotating = false;
+    let awaitingPresentation = false;
+    // issue #163：过程写卡与换卡定格共用一条写队列串行化——在途写必然先于
+    // 定格完成，消除「写飞越定格」竞态；前序失败不阻塞后续写入。
+    let writeQueue = Promise.resolve();
+    const enqueue = (job) => {
+      const run = writeQueue.then(job, job);
+      writeQueue = run.catch(() => undefined);
+      return run;
+    };
     try {
       activeCard = await this.#createStreamCard(chatId, options);
       cards.push(activeCard);
@@ -215,6 +224,9 @@ export class VerifiedFeishuChannel {
       // 回写旧卡。rotate() 把旧卡定格为「过程记录 + 指引行」并标记换卡态；
       // 下一次 setContent（过程更新或最终答案）才创建新卡——新卡必然创建于
       // 交互消息之后。旧卡纳入 cards，参与 recall 与 providerMessageIds。
+      // issue #163：定格后进入换卡挂起（awaitingPresentation），挂起期内
+      // setContent 只推进快照、不建卡不写卡；bridge 呈现交互消息后调用
+      // interactionPresented() 解除挂起，此后建的新卡必然位于交互消息下方。
       const ensureActiveCard = async () => {
         if (!rotating) return activeCard;
         activeCard = await this.#createStreamCard(chatId, options);
@@ -226,9 +238,13 @@ export class VerifiedFeishuChannel {
         get messageId() {
           return activeCard.messageId;
         },
-        rotate: async () => {
+        interactionPresented: () => {
+          awaitingPresentation = false;
+        },
+        rotate: () => enqueue(async () => {
           if (rotating) return;
           rotating = true;
+          awaitingPresentation = true;
           try {
             await this.#updateStreamCard(
               activeCard,
@@ -239,27 +255,31 @@ export class VerifiedFeishuChannel {
             // 明确降级：定格失败不阻塞交互呈现，旧卡保留原内容。
             console.warn('[dsh-feishu] unable to finalize the superseded stream card:', error.message);
           }
-        },
-        setContent: async (content) => {
+        }),
+        setContent: (content) => enqueue(async () => {
           const next = String(content ?? '') || '…';
+          // 快照推进先于写卡：并发定格读取的是最新值。
+          lastContent = next;
+          if (awaitingPresentation) return; // 换卡挂起：只挂起卡片写入
           const card = await ensureActiveCard();
           await this.#updateStreamCard(card, streamPreview(next));
-          // Updates are replaceable snapshots, including progress/tool text.
-          // Retain the full latest snapshot even when its preview is unchanged.
-          lastContent = next;
-        },
+        }),
       };
 
       await input.markdown(controller);
-      const chunks = splitStreamContent(lastContent);
-      for (const [index, chunk] of chunks.entries()) {
-        const card = index === 0
-          ? await ensureActiveCard()
-          : await this.#createStreamCard(chatId, options);
-        if (index > 0) cards.push(card);
-        await this.#updateStreamCard(card, chunk);
-        await this.#finishStreamCard(card);
-      }
+      await enqueue(async () => {
+        // 终稿强制解除挂起：异常路径下呈现通知缺失时仍可收尾。
+        awaitingPresentation = false;
+        const chunks = splitStreamContent(lastContent);
+        for (const [index, chunk] of chunks.entries()) {
+          const card = index === 0
+            ? await ensureActiveCard()
+            : await this.#createStreamCard(chatId, options);
+          if (index > 0) cards.push(card);
+          await this.#updateStreamCard(card, chunk);
+          await this.#finishStreamCard(card);
+        }
+      });
       return {
         messageId: cards[0].messageId,
         providerMessageIds: cards.map((card) => card.messageId),

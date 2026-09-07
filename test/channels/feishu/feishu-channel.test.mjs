@@ -847,3 +847,65 @@ test('VerifiedFeishuChannel sends artifacts into a topic via reply_in_thread and
   assert.equal(calls.replies[0].data.msg_type, 'file');
   assert.deepEqual(threadIds, ['omt_file']);
 });
+
+test('issue #163: setContent 的在途写不会飞越 rotate() 的定格（定格基于最新快照且定格后零写回）', async () => {
+  let releaseFirstWrite;
+  const gate = new Promise((resolve) => { releaseFirstWrite = resolve; });
+  const { client, calls } = fakeClient({
+    updateContent: async (request) => {
+      calls.updates.push(request);
+      if (calls.updates.length === 1) await gate; // 第一条卡写挂在未决状态
+      return { code: 0 };
+    },
+  });
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+  await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      const firstWrite = controller.setContent('第一步进行中'); // 在途
+      const rotation = controller.rotate();                     // 并发换卡
+      releaseFirstWrite();
+      await firstWrite;
+      await rotation;
+    },
+  });
+  const oldCardWrites = calls.updates.filter((u) => u.path.card_id === 'card-test');
+  // 修复后 lastContent 在 await 写卡之前推进，定格内容必须基于「第一步进行中」；
+  // 修复前定格读到的是 initialText「正在思考…」。
+  assert.ok(oldCardWrites.at(-1).data.content.startsWith('第一步进行中'),
+    '定格内容必须基于最新快照');
+  assert.ok(oldCardWrites.at(-1).data.content.includes('最终结果见下方'),
+    '旧卡的最后一次写必须是定格内容（定格后零写回）');
+});
+
+test('issue #163: interactionPresented() 之前 setContent 不建新卡，之后才建', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+  await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent('第一步进行中');
+      await controller.rotate();
+      await controller.setContent('挂起期快照'); // 挂起：不得建卡
+      controller.interactionPresented();          // 模拟 bridge 呈现提问卡后通知
+      await controller.setContent('恢复后的更新');
+    },
+  });
+  assert.equal(calls.cards.length, 2, '挂起期不得建新卡，呈现后只建一张');
+  const newCardWrites = calls.updates.filter((u) => u.path.card_id === 'card-test-2');
+  assert.ok(newCardWrites.at(-1).data.content.includes('恢复后的更新'));
+});
+
+test('issue #163: interactionPresented() 幂等且未换卡时调用无害', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+  await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      controller.interactionPresented();              // 未换卡
+      await controller.setContent('普通更新');
+      await controller.rotate();
+      controller.interactionPresented();
+      controller.interactionPresented();              // 重复
+      await controller.setContent('最终回答');
+    },
+  });
+  assert.equal(calls.cards.length, 2);
+});
