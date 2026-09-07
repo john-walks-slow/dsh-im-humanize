@@ -127,7 +127,7 @@ export class WecomAppRuntime {
       signal: this.#signal(),
       streamRegistry: this.#callbackServer,
     });
-    this.#callbackServer.registerRoute({
+    await this.#callbackServer.registerRoute({
       botId: this.#config.botId,
       callbackSecret: this.#config.callbackSecret,
       cryptoFor: () => createUserCrypto({

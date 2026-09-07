@@ -87,9 +87,20 @@ export async function createProductionController(ctx, config = {}, internals = {
     port: config.callbackListenPort ?? 30987,
     logger,
   });
-  if (callbackServer.listening !== true && internals.callbackServer === undefined) {
-    await callbackServer.start();
-  }
+  // The callback listener starts on demand with the first bound app and
+  // stops once the last app is removed, so hosts that never use this channel
+  // do not keep port 30987 occupied.
+  const ensureCallbackListener = async () => {
+    if (callbackServer.listening !== true) await callbackServer.start();
+    return callbackServer;
+  };
+  const baseRegisterRoute = callbackServer.registerRoute.bind(callbackServer);
+  callbackServer.registerRoute = (route) => ensureCallbackListener().then(() => baseRegisterRoute(route));
+  const baseUnregisterRoute = callbackServer.unregisterRoute.bind(callbackServer);
+  callbackServer.unregisterRoute = (botId) => {
+    baseUnregisterRoute(botId);
+    if (callbackServer.routeCount() === 0 && callbackServer.listening) return callbackServer.stop();
+  };
   const publicOrigin = normalizeOrigin(config.callbackBaseUrl);
   const buildCallbackUrl = (bot) => {
     const origin = normalizeOrigin(bot?.callbackBaseUrl) ?? publicOrigin;
