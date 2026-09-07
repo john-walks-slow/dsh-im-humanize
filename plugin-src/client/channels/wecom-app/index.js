@@ -228,7 +228,7 @@ function AppSettingsEditor({ bot, busy, onSave }) {
 
 function RemoveConfirmation({ account, busy, onConfirm, onCancel }) {
   return h('div', { className: 'ddt-confirm dim-confirm', role: 'alertdialog' },
-    h('strong', null, `从 DeepSeek Harness 移除「${account.bot.name}」？`),
+    h('strong', null, `从 DeepSeek Harness 移除“${account.bot.name}”？`),
     h('p', null, '这会删除本机保存的应用凭据、回调配置及会话映射。企业微信后台的应用不会被删除。'),
     h('div', { className: 'ddt-actions dim-viewActions' },
       h(Button, { onClick: onCancel, disabled: busy }, '保留应用'),

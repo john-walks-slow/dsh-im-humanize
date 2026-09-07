@@ -34,6 +34,7 @@ import {
   AccountCard as WecomAccountCard,
   WecomSettingsTab,
 } from '../plugin-src/client/channels/wecom/index.js';
+import { WecomAppSettingsTab } from '../plugin-src/client/channels/wecom-app/index.js';
 import {
   AccountCard as QqAccountCard,
   QqSettingsTab,
@@ -181,7 +182,7 @@ test('removing the first account preserves collapse styles and toggling for rema
   }
 });
 
-test('IM settings renders nine IM channels plus the AI Office connector', async () => {
+test('IM settings renders ten IM channels plus the AI Office connector', async () => {
   const { default: packageMetadata } = await import('../package.json', {
     with: { type: 'json' },
   });
@@ -192,6 +193,7 @@ test('IM settings renders nine IM channels plus the AI Office connector', async 
     weixinRpcCall: async () => ({ ok: true, value: {} }),
     dingtalkRpcCall: async () => ({ ok: true, value: {} }),
     wecomRpcCall: async () => ({ ok: true, value: {} }),
+    wecomAppRpcCall: async () => ({ ok: true, value: {} }),
     qqRpcCall: async () => ({ ok: true, value: {} }),
     slackRpcCall: async () => ({ ok: true, value: {} }),
     telegramRpcCall: async () => ({ ok: true, value: {} }),
@@ -253,6 +255,7 @@ test('IM settings renders nine IM channels plus the AI Office connector', async 
   assert.match(markup, />飞书</);
   assert.match(markup, />钉钉</);
   assert.match(markup, />企业微信</);
+  assert.match(markup, />企业微信应用</);
   assert.match(markup, />QQ</);
   assert.match(markup, />Slack</);
   assert.match(markup, />Telegram</);
@@ -270,7 +273,7 @@ test('IM settings renders nine IM channels plus the AI Office connector', async 
   assert.match(markup, /dim-logoWhatsapp/);
   assert.match(markup, /dim-logoOffice/);
   assert.match(styles, /\.dim-logoFeishu svg \{ width: 28px; height: 28px; \}/);
-  assert.equal((markup.match(/role="tab"/g) ?? []).length, 10);
+  assert.equal((markup.match(/role="tab"/g) ?? []).length, 11);
   assert.equal((markup.match(/aria-selected="true"/g) ?? []).length, 1);
   assert.doesNotMatch(markup, /role="switch"|type="checkbox"/);
   assert.doesNotMatch(markup, /dim-chevron|扫码绑定<\/small>|扫码接入<\/small>/);
@@ -1327,6 +1330,7 @@ test('all nine channel settings and connected cards render English copy', () => 
       FeishuSettingsTab,
       DingtalkSettingsTab,
       WecomSettingsTab,
+      WecomAppSettingsTab,
       QqSettingsTab,
       SlackSettingsTab,
       TelegramSettingsTab,
@@ -1341,6 +1345,7 @@ test('all nine channel settings and connected cards render English copy', () => 
     assert.match(pageMarkup, /Loading Feishu bots/);
     assert.match(pageMarkup, /Loading DingTalk connection status/);
     assert.match(pageMarkup, /Loading WeCom bot status/);
+    assert.match(pageMarkup, /Loading WeCom app status/);
     assert.match(pageMarkup, /Loading QQ bot status/);
     assert.match(pageMarkup, /Loading Slack bot status/);
     assert.match(pageMarkup, /Loading Telegram bot status/);
