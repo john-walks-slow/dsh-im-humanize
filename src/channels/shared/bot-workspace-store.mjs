@@ -24,7 +24,8 @@ import {
   validateContextEnhancementConfig,
 } from './context-enhancement.mjs';
 import {
-  modelCatalogHas,
+  confirmsModelSelection,
+  modelCatalogEntry,
   normalizeModelCatalog,
   sameModelSelection,
   validateModelSelection,
@@ -1372,7 +1373,7 @@ export function createBotWorkspaceScope(
               model,
               options.signal ? { signal: options.signal } : {},
             );
-            if (!sameModelSelection(selected?.selected, model)) {
+            if (!confirmsModelSelection(selected?.selected, model)) {
               const error = new Error('Harness did not confirm the selected model');
               error.code = 'model-selection-mismatch';
               throw error;
@@ -1625,8 +1626,15 @@ export function createWorkspaceAwareController(controller, {
       const catalog = model && modelCatalog
         ? await resolveModelCatalog(modelCatalog)
         : null;
-      if (model && (!modelCatalog || !modelCatalogHas(catalog, model))) {
+      const entry = modelCatalogEntry(catalog, model);
+      if (model && (!modelCatalog || !entry)) {
         throw unavailableModel();
+      }
+      if (model?.reasoningEffort !== undefined
+        && !entry.reasoning?.efforts.some((effort) => effort.id === model.reasoningEffort)) {
+        const error = new Error('当前模型不支持所选思考强度，请重新选择。');
+        error.code = 'model-reasoning-unavailable';
+        throw error;
       }
       await workspaces.setModel(botId, model, { incarnation });
       return decorateResult(
