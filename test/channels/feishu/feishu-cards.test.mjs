@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  answeredQuestionCard,
   cardActionProbeCard,
   completionCard,
   customSteerCard,
@@ -9,6 +10,7 @@ import {
   menuHelpText,
   modelCard,
   presetCard,
+  questionCard,
   sessionListCard,
   statusCard,
   steerCard,
@@ -264,4 +266,25 @@ test('reachable Feishu cards contain no Chinese literals in English mode', () =>
   for (const output of rendered) {
     assert.doesNotMatch(output, /[\u3400-\u9fff]/u);
   }
+});
+
+test('issue #162: questionCard 渲染「✏️ 其他答案…」自定义入口按钮', () => {
+  const card = questionCard({
+    interactionId: 'i-1', header: 'H', question: 'Q?',
+    options: [{ label: 'A', description: 'a' }, { label: 'B' }], index: 0, total: 1,
+  });
+  const actions = String(card);
+  assert.ok(actions.includes('answerCustom:i-1:0'), '必须包含自定义入口 action');
+  assert.ok(actions.includes('其他答案'));
+});
+
+test('issue #162: answeredQuestionCard 无任何按钮且标注已选项', () => {
+  const card = answeredQuestionCard({
+    interactionId: 'i-1', header: 'H', question: 'Q?',
+    options: [{ label: 'A' }, { label: 'B' }], chosen: 'B', index: 0, total: 2,
+  });
+  const json = String(card);
+  assert.ok(!json.includes('"tag":"button"'), '已答状态卡不得含可点按钮');
+  assert.ok(json.includes('已回答') && json.includes('✅ 已选择：B'));
+  assert.ok(json.includes('A') && json.includes('B'), '选项列表保留');
 });

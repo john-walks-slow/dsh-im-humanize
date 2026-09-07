@@ -933,6 +933,36 @@ export function questionCard({ interactionId, header, question, detail, options,
       // question cannot be applied to the current one: answer:<interactionId>:<index>:<label>
       elements.push(button(buttonText, `answer:${interactionId}:${index}:${label}`));
     }
+    // issue #162：自定义答案入口与 menuCard/steerCard 的「✏️ 更多 / 自定义…」
+    // 对齐——文字流本就支持 custom 答案，卡片补上引导入口。
+    elements.push(button(t('✏️ 其他答案…'), `answerCustom:${interactionId}:${index}`));
   }
   return cardWith(t('❓ 请补充信息{progress}', { progress }), elements);
+}
+
+/**
+ * issue #162：提问卡被回答后的已答状态卡——原卡整卡替换为该回执样式：
+ * 保留问题与选项文本、标注已选项、不渲染任何按钮（重复点击从根源消失）。
+ * 与 questionCard 一样返回 JSON 字符串，调用方直接作为卡 content 使用。
+ */
+export function answeredQuestionCard({ interactionId, header, question, detail, options, chosen, index, total }) {
+  const elements = [];
+  const progress = total > 1 ? `（${index + 1}/${total}）` : '';
+  if (header) elements.push({ tag: 'div', text: markdown(String(header)) });
+  const qText = typeof question === 'string' && question.trim() ? question : t('请输入你的回答。');
+  elements.push({ tag: 'div', text: markdown(String(qText)) });
+  if (detail) elements.push({ tag: 'div', text: markdown(String(detail)) });
+  if (Array.isArray(options) && options.length > 0) {
+    elements.push({ tag: 'hr' });
+    for (const option of options) {
+      const label = typeof option?.label === 'string' ? option.label : '';
+      if (!label) continue;
+      elements.push({ tag: 'div', text: markdown(label === chosen
+        ? t('✅ 已选择：{label}', { label })
+        : label) });
+    }
+  }
+  elements.push({ tag: 'hr' });
+  elements.push({ tag: 'div', text: markdown(t('回答已提交，对话将继续。')) });
+  return cardWith(t('✅ 已回答{progress}', { progress }), elements);
 }

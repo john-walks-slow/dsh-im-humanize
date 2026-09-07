@@ -375,4 +375,9 @@ export default {
   '任务失败': 'Failed',
   // feishu/bridge.mjs — step push context injection
   '📎 已注入会话上下文': '📎 Context injected',
+  // feishu/feishu-cards.mjs — question card answered state + custom entry (issue #162)
+  '✏️ 其他答案…': '✏️ Other answer…',
+  '✅ 已回答{progress}': '✅ Answered{progress}',
+  '✅ 已选择：{label}': '✅ Selected: {label}',
+  '回答已提交，对话将继续。': 'Answer submitted. The conversation will continue.',
 };
