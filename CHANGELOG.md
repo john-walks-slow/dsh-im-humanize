@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Added / 新增
+
+- 新增企业微信自建应用渠道（wecom-app）：在企业微信管理后台创建自建应用并完成回调配置后，成员的微信关注该企业的微信插件，即可在微信中直接对话；私聊支持流式回复（微信端自动改为整段发送）、图片输入与结果文件回传。接入步骤和公网回调基址、代理地址、企业可信 IP 的配置说明见 `docs/企业微信自建应用接入.md`。
+  Adds the WeCom self-built app channel (wecom-app). After creating the app in the WeCom console and finishing the callback setup, members can chat from WeChat directly by following the enterprise's WeChat plugin. Private chats support streaming replies (falling back to full messages on WeChat), image input, and result file delivery. See `docs/企业微信自建应用接入.en.md` for setup details, including the callback base URL, API proxy, and trusted IP.
+
 ### Fixed / 修复
 
 - `dsh_im_return_file` 在新版 DSH Session 使用 `snapshotEvents()` 时，现在可以再次识别当前 Turn 并回传文件；同时保留旧 `session.events` 路径。
