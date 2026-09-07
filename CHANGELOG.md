@@ -6,19 +6,23 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.15.0] - 2026-09-08
+
 ### Added / 新增
 
-- IM 与 AI Office 会话自动追加渠道前缀（如「微信 · 标题」），保留自动标题的来源与后续生成能力；不会调用手动重命名接口锁定标题，重复生成和重启不会叠加前缀。已有会话在加载时补齐。
-  IM and AI Office Sessions automatically receive channel prefixes such as “WeChat · Title”, preserving automatic title provenance and later generation. Prefixes do not use manual rename or pin titles, and do not stack across regeneration or restarts. Existing Sessions are decorated when loaded.
+- 本机 Host 的九个 IM 渠道与 AI Office 会话自动追加渠道前缀（如「微信 · 标题」），保留自动标题的来源与后续生成能力；不会调用手动重命名接口锁定标题，重复生成和重启不会叠加前缀。已有会话在加载时补齐；显式连接远程 `harnessBaseUrl` 时需在目标 Host 上安装插件。
+  Sessions from all nine IM channels and AI Office on the local Host automatically receive channel prefixes such as “WeChat · Title”, preserving automatic title provenance and later generation. Prefixes do not use manual rename or pin titles, and do not stack across regeneration or restarts. Existing Sessions are decorated when loaded; explicit remote `harnessBaseUrl` connections require the plugin on the destination Host.
 
 - Web 会话列表和搜索结果将渠道文字前缀显示为现有渠道 Logo，无需修改 DSH。浏览器适配保留原始文字节点、读屏信息和行操作；不兼容的页面结构或图标加载失败时保留文字前缀，插件卸载后恢复原始显示。
   Web Session lists and search results show existing channel logos in place of textual prefixes, without modifying DSH. The browser adapter preserves original text nodes, accessible names, and row actions, keeps text on incompatible page structures or image-load failures, and restores the original display on unload.
 
-- 修正渠道标题监听器的 Host 启动回调返回值，避免 DSH 将其判为无效 effect 并卸载监听器，导致真实飞书等会话不显示渠道标识；回归验证覆盖完整插件启动流程及先命名、后接收 IM 消息的会话。
-  Correct the channel-title observer's Host startup return value so DSH does not reject it as an invalid effect and unload the observer. Regression checks cover full plugin activation and Sessions titled before their first IM message.
-
 - 飞书群聊默认接收其他机器人明确 @ 当前机器人的消息，无需新增开关；仍遵守群聊白名单、命令权限与消息去重规则，未 @、自发和机器人私聊消息继续忽略。扫码新建应用与“补全权限”/`/repair` 流程同时申请接收机器人 @ 消息所需的飞书权限。
   Feishu group chats accept explicit mentions from other bots by default, while preserving group allowlists, command permissions, and deduplication. Unaddressed messages, self-sent messages, and bot DMs remain ignored. New-app QR onboarding and Complete permissions / `/repair` request the required Feishu bot-mention scope.
+
+### Fixed / 修复
+
+- 修正渠道标题监听器的 Host 启动回调返回值，避免 DSH 将其判为无效 effect 并卸载监听器，导致真实飞书等会话不显示渠道标识；回归验证覆盖完整插件启动流程及先命名、后接收 IM 消息的会话。
+  Correct the channel-title observer's Host startup return value so DSH does not reject it as an invalid effect and unload the observer. Regression checks cover full plugin activation and Sessions titled before their first IM message.
 
 ## [4.14.0] - 2026-09-08
 
@@ -771,7 +775,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.14.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.15.0...HEAD
+[4.15.0]: https://github.com/xmanrui/dsh-im/compare/v4.14.0...v4.15.0
 [4.14.0]: https://github.com/xmanrui/dsh-im/compare/v4.13.0...v4.14.0
 [4.13.0]: https://github.com/xmanrui/dsh-im/compare/v4.12.0...v4.13.0
 [4.12.0]: https://github.com/xmanrui/dsh-im/compare/v4.11.0...v4.12.0
