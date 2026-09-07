@@ -893,6 +893,7 @@ const EN = Object.freeze({
   '正在清理…': 'Cleaning up…',
   '正在读取企业微信应用状态…': 'Loading WeCom app status…',
   '添加企业微信应用': 'Add WeCom app',
+  '收起表单': 'Collapse form',
   '添加企业微信自建应用': 'Add a WeCom self-built app',
   '正在填写': 'Filling in details',
   '尚未绑定企业微信应用': 'No WeCom app connected yet',
