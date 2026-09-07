@@ -24,7 +24,8 @@ import {
   validateContextEnhancementConfig,
 } from './context-enhancement.mjs';
 import {
-  modelCatalogHas,
+  confirmsModelSelection,
+  modelCatalogEntry,
   normalizeModelCatalog,
   sameModelSelection,
   validateModelSelection,
@@ -161,7 +162,20 @@ function normalizeDeliveryTargets(value, { version } = {}) {
       if (!targets || typeof targets !== 'object' || Array.isArray(targets)) return null;
       const normalizedTargets = Object.create(null);
       for (const [targetId, target] of Object.entries(targets)) {
-        const normalized = normalizeDeliveryTarget(target, {
+        // Backward compatibility: some released builds persisted the target id
+        // inside the stored object as well. Accept a redundant targetId that
+        // matches the map key when loading a stored document; a mismatch stays
+        // invalid so a corrupted file still fails closed.
+        let candidate = target;
+        if (target && typeof target === 'object' && !Array.isArray(target)
+          && target.targetId !== undefined) {
+          if (target.targetId !== targetId) {
+            throw deliveryTargetError('invalid-target', 'Invalid target id');
+          }
+          const { targetId: _legacyTargetId, ...withoutLegacyId } = target;
+          candidate = withoutLegacyId;
+        }
+        const normalized = normalizeDeliveryTarget(candidate, {
           targetId,
           allowSessionSync: version >= CURRENT_DOCUMENT_VERSION,
         });
@@ -1359,7 +1373,7 @@ export function createBotWorkspaceScope(
               model,
               options.signal ? { signal: options.signal } : {},
             );
-            if (!sameModelSelection(selected?.selected, model)) {
+            if (!confirmsModelSelection(selected?.selected, model)) {
               const error = new Error('Harness did not confirm the selected model');
               error.code = 'model-selection-mismatch';
               throw error;
@@ -1612,8 +1626,15 @@ export function createWorkspaceAwareController(controller, {
       const catalog = model && modelCatalog
         ? await resolveModelCatalog(modelCatalog)
         : null;
-      if (model && (!modelCatalog || !modelCatalogHas(catalog, model))) {
+      const entry = modelCatalogEntry(catalog, model);
+      if (model && (!modelCatalog || !entry)) {
         throw unavailableModel();
+      }
+      if (model?.reasoningEffort !== undefined
+        && !entry.reasoning?.efforts.some((effort) => effort.id === model.reasoningEffort)) {
+        const error = new Error('当前模型不支持所选思考强度，请重新选择。');
+        error.code = 'model-reasoning-unavailable';
+        throw error;
       }
       await workspaces.setModel(botId, model, { incarnation });
       return decorateResult(

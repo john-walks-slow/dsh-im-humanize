@@ -59,6 +59,7 @@ import {
   replacePageLocation,
 } from './loopback-recovery.js';
 import { installImStyles } from './styles.js';
+import { installSessionChannelLogos } from './session-channel-logos.js';
 import { UpdatePanel, UPDATE_RPC_CHANNEL } from './update-panel.js';
 import { WorkspaceDirectoryPickerContext } from './workspace-editor.js';
 
@@ -365,6 +366,8 @@ export function apply(ctx) {
   );
   const t = ctx.locale.bind(IM_LOCALE_NAMESPACE);
   setImTranslator(t);
+
+  ctx.effect(() => installSessionChannelLogos(), 'im-settings: Session channel logos');
 
   ctx.effect(() => {
     const disposers = [

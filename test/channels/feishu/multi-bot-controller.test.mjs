@@ -186,6 +186,7 @@ test('QR registration separates events from card callbacks', async () => {
   assert.deepEqual(run.options.addons.events.items.tenant, ['im.message.receive_v1']);
   assert.deepEqual(run.options.addons.callbacks.items, ['card.action.trigger']);
   assert.ok(run.options.addons.scopes.tenant.includes('im:resource'));
+  assert.ok(run.options.addons.scopes.tenant.includes('im:message.group_at_msg.include_bot:readonly'));
   assert.equal(run.options.addons.scopes.tenant.includes('im:resource:upload'), false);
   assert.ok(run.options.addons.scopes.tenant.includes('application:app_slash_command:read'));
   assert.ok(run.options.addons.scopes.tenant.includes('application:app_slash_command:write'));
@@ -402,6 +403,7 @@ test('callback repair is deduplicated per bot, updates only its secret, and prov
       tenant: [
         'im:message:readonly',
         'im:resource',
+        'im:message.group_at_msg.include_bot:readonly',
         'application:app_slash_command:read',
         'application:app_slash_command:write',
       ],

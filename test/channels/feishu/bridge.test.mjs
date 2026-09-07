@@ -75,6 +75,12 @@ function stateFixture(initialSessions = []) {
   };
 }
 
+function botEvent(messageId, text, overrides = {}) {
+  const result = event(messageId, text, { senderOpenId: 'ou_peer_bot', ...overrides });
+  result.sender.sender_type = 'bot';
+  return result;
+}
+
 function bridgeStatus() {
   return {
     messagesReceived: 0,
@@ -832,6 +838,151 @@ test('mention response mode ignores unaddressed groups and only accepts this bot
     chat_type: 'group', chat_id: 'oc_group_mentions',
   }));
   assert.deepEqual(asked, ['你好', '无需提及']);
+});
+
+for (const groupResponseMode of ['mention', 'all']) {
+  test(`bot group mentions are accepted by default and deduplicated in ${groupResponseMode} mode`, async () => {
+    const fixture = stateFixture([['group:oc_bot_group', 'session-bot-group']]);
+    const asked = [];
+    const sent = [];
+    const status = bridgeStatus();
+    const bridge = new FeishuHarnessBridge({
+      client: textClient(async ({ text }) => sent.push(text)),
+      channel: {},
+      harness: {
+        sessionExists: async () => true,
+        ask: async (sessionId, text) => {
+          asked.push({ sessionId, text });
+          return '收到';
+        },
+      },
+      state: fixture.state,
+      status,
+      allowedSenderOpenIds: new Set(['ou_peer_bot']),
+      botOpenId: 'ou_bot',
+      groupResponseMode,
+    });
+
+    const message = botEvent('bot-mention', '@_bot 帮忙检查', {
+      chat_type: 'group', chat_id: 'oc_bot_group',
+      mentions: [{ key: '@_bot', id: { open_id: 'ou_bot' } }],
+    });
+    await Promise.all([bridge.accept(message), bridge.accept(message)]);
+    await bridge.accept(message);
+    assert.deepEqual(asked, [{ sessionId: 'session-bot-group', text: '帮忙检查' }]);
+    assert.deepEqual(sent, ['收到']);
+    assert.equal(status.messagesReceived, 1);
+    assert.equal(status.messagesReplied, 1);
+
+    await bridge.accept(botEvent('bot-mention-flat-id', '@_bot 再检查一次', {
+      chat_type: 'group', chat_id: 'oc_bot_group',
+      mentions: [{ key: '@_bot', open_id: 'ou_bot' }],
+    }));
+    assert.equal(asked.at(-1).text, '再检查一次');
+    assert.equal(status.messagesReceived, 2);
+  });
+
+  test(`bot messages without an explicit mention of this bot are ignored in ${groupResponseMode} mode`, async () => {
+    for (const { name, overrides, botOpenId = 'ou_bot' } of [
+      { name: 'no mentions', overrides: { mentions: [] } },
+      { name: 'another bot', overrides: { mentions: [{ id: { open_id: 'ou_other_bot' } }] } },
+      { name: 'mention everyone', overrides: { mentions: [{ id: { open_id: 'all' } }] } },
+      { name: 'malformed mentions', overrides: { mentions: { open_id: 'ou_bot' } } },
+      { name: 'missing mention id', overrides: { mentions: [{ name: 'This Bot' }, null] } },
+      { name: 'unknown bot identity', botOpenId: null },
+      { name: 'self message', overrides: { senderOpenId: 'ou_bot' } },
+      { name: 'direct message', overrides: { chat_type: 'p2p' } },
+      { name: 'unknown chat type', overrides: { chat_type: 'unknown' } },
+      { name: 'missing message id', overrides: { message_id: '' } },
+      { name: 'reply without mention', overrides: { mentions: [], parent_id: 'om_bot_reply' } },
+    ]) {
+      const fixture = stateFixture();
+      const status = bridgeStatus();
+      const bridge = new FeishuHarnessBridge({
+        client: textClient(async () => assert.fail(`unexpected reply: ${name}`)),
+        channel: {},
+        harness: { ensureRunning: async () => assert.fail(`unexpected Harness work: ${name}`) },
+        state: fixture.state,
+        status,
+        allowedSenderOpenIds: new Set(['*']),
+        botOpenId,
+        groupResponseMode,
+      });
+      await bridge.accept(botEvent(name, '@_bot 你好', {
+        chat_type: 'group', chat_id: 'oc_bot_group',
+        mentions: [{ key: '@_bot', id: { open_id: 'ou_bot' } }],
+        ...overrides,
+      }));
+      assert.equal(status.messagesReceived, 0, name);
+      assert.equal(fixture.seen.size, 0, name);
+      assert.equal(fixture.sessions.size, 0, name);
+    }
+  });
+}
+
+test('bot group mentions still obey the group allowlist and command permissions', async () => {
+  const fixture = stateFixture([['group:oc_bot_group', 'session-bot-group']]);
+  const accessPolicy = directAccessPolicy();
+  const settings = accessPolicy.getSettings();
+  const asked = [];
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, text) => {
+        asked.push(text);
+        return '收到';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    accessPolicy,
+    botOpenId: 'ou_bot',
+  });
+  const group = {
+    chat_type: 'group', chat_id: 'oc_bot_group',
+    mentions: [{ key: '@_bot', id: { open_id: 'ou_bot' } }],
+  };
+
+  await bridge.accept(botEvent('bot-not-allowed', '@_bot 帮忙检查', group));
+  assert.deepEqual(asked, []);
+  assert.deepEqual(sent, []);
+
+  settings.group.allowlist.users.push({ id: 'ou_peer_bot', canExecuteCommands: false });
+  await bridge.accept(botEvent('bot-allowed', '@_bot 帮忙检查', group));
+  assert.deepEqual(asked, ['帮忙检查']);
+  assert.deepEqual(sent, ['收到']);
+
+  await bridge.accept(botEvent('bot-command-denied', '@_bot /new', group));
+  assert.equal(sent.at(-1), COMMAND_PERMISSION_DENIED_MESSAGE);
+  assert.equal(fixture.sessions.get('group:oc_bot_group'), 'session-bot-group');
+  assert.deepEqual(asked, ['帮忙检查']);
+
+  settings.group.allowlist.users[0].canExecuteCommands = true;
+  await bridge.accept(botEvent('bot-command-allowed', '@_bot /new', group));
+  assert.equal(fixture.sessions.has('group:oc_bot_group'), false);
+});
+
+test('bot group mentions still obey the legacy sender allowlist', async () => {
+  const status = bridgeStatus();
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async () => assert.fail('unexpected reply')),
+    channel: {},
+    harness: {},
+    state: stateFixture().state,
+    status,
+    allowedSenderOpenIds: new Set(['ou_owner']),
+    botOpenId: 'ou_bot',
+    logger: { warn() {} },
+  });
+  await bridge.accept(botEvent('bot-legacy-rejected', '@_bot 你好', {
+    chat_type: 'group', chat_id: 'oc_bot_group',
+    mentions: [{ key: '@_bot', id: { open_id: 'ou_bot' } }],
+  }));
+  assert.equal(status.messagesReceived, 0);
+  assert.equal(status.messagesRejected, 1);
 });
 
 test('bridge downloads an inbound Feishu image once and submits structured Harness content', async () => {
@@ -9346,7 +9497,8 @@ test('step push on: a long CJK answer splits into byte-budgeted posts', async ()
       'each post chunk must stay within the UTF-8 byte budget',
     );
   }
-  assert.equal(sent.at(-1), '尾部内容。');
+  assert.equal(sent.join(''), longAnswer, 'splitting preserves the complete answer in order');
+  assert.ok(sent.at(-1).endsWith('尾部内容。'), 'the final paragraph stays at the end');
 });
 
 test('step push on: a rate-limited post retries instead of leaking to plain text', async () => {
@@ -9541,6 +9693,114 @@ test('step push: rate-limit retries read structured codes, not just message text
   );
   assert.equal(creates.length, 0, 'no message may leak to the main chat');
   assert.deepEqual(sent, ['✅ bash — ls\n{"command":"ls"}', '重试成功。']);
+});
+
+test('step push: a failed middle answer chunk retries only the undelivered suffix', async () => {
+  const fixture = stateFixture();
+  const delivered = [];
+  const { stepPushClock } = stepPushClockFixture();
+  const longAnswer = [
+    '甲'.repeat(7_000),
+    '乙'.repeat(7_000),
+    '丙'.repeat(7_000),
+  ].join('\n\n');
+  let replyCalls = 0;
+  const bridge = new FeishuHarnessBridge({
+    client: { im: { v1: { message: {
+      reply: async (request) => {
+        replyCalls += 1;
+        // First post succeeds. The second post and its in-reply text fallback
+        // fail, then the outer final-answer fallback succeeds from that chunk.
+        if (replyCalls === 2 || replyCalls === 3) {
+          throw new Error('second chunk unavailable');
+        }
+        delivered.push(stepPushMessageText(request));
+        return { code: 0, data: { message_id: `om_partial_${replyCalls}` } };
+      },
+      create: async () => { throw new Error('main chat unavailable'); },
+    } } } },
+    channel: stepPushChannel(),
+    harness: stepPushHarness(async () => longAnswer),
+    state: fixture.state,
+    status: bridgeStatus(),
+    logger: { debug() {}, error() {}, warn() {} },
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_step_partial_chunk', '长答案局部失败'));
+  await bridge.waitForIdle();
+
+  assert.equal(
+    delivered.filter((text) => text.startsWith('甲')).length,
+    1,
+    'the successful prefix must not be sent again',
+  );
+  assert.deepEqual(
+    delivered.map((text) => text[0]),
+    ['甲', '乙', '丙'],
+    'the fallback resumes at the failed chunk and preserves order',
+  );
+});
+
+test('step push: long-answer chunks never split an emoji surrogate pair', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const { stepPushClock } = stepPushClockFixture();
+  const longAnswer = `${'a'.repeat(23_949)}😀Z`;
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushTextClient(async (text) => sent.push(text)),
+    channel: stepPushChannel(),
+    harness: stepPushHarness(async () => longAnswer),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_step_emoji_boundary', 'emoji 边界'));
+  await bridge.waitForIdle();
+
+  assert.equal(sent.join(''), longAnswer, 'all source text is preserved');
+  assert.ok(sent.length > 1, 'the fixture crosses the encoded post budget');
+  assert.ok(sent.every((chunk) => (
+    !/[\uD800-\uDBFF]$/u.test(chunk) && !/^[\uDC00-\uDFFF]/u.test(chunk)
+  )), 'no message boundary may bisect a surrogate pair');
+});
+
+test('step push: post chunks include JSON escape expansion in the byte budget', async () => {
+  const fixture = stateFixture();
+  const requestSizes = [];
+  const { stepPushClock } = stepPushClockFixture();
+  const longAnswer = '\\'.repeat(24_010);
+  const bridge = new FeishuHarnessBridge({
+    client: {
+      im: { v1: { message: {
+        reply: async (request) => {
+          requestSizes.push(Buffer.byteLength(request.data.content, 'utf8'));
+          return { code: 0, data: { message_id: `om_encoded_${requestSizes.length}` } };
+        },
+      } } },
+    },
+    channel: stepPushChannel(),
+    harness: stepPushHarness(async () => longAnswer),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_step_json_bytes', 'JSON 转义边界'));
+  await bridge.waitForIdle();
+
+  assert.ok(requestSizes.length > 1, 'escape-heavy text must be split');
+  assert.ok(
+    requestSizes.every((size) => size <= 24_000),
+    `encoded post contents exceeded the byte budget: ${requestSizes.join(', ')}`,
+  );
 });
 
 test('step push: manual topics stay threaded even with the group-topic switch off', async () => {
