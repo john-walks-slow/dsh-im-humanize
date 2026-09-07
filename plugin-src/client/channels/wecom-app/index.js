@@ -117,6 +117,7 @@ function BindForm({ busy, error, onSubmit, onCancel }) {
   const [callbackBaseUrl, setCallbackBaseUrl] = React.useState('');
   const [streamEnabled, setStreamEnabled] = React.useState(true);
   const headingId = React.useId();
+  const formRef = React.useRef(null);
 
   const submit = (event) => {
     event.preventDefault();
@@ -138,7 +139,7 @@ function BindForm({ busy, error, onSubmit, onCancel }) {
     'aria-labelledby': headingId,
   },
   h('h3', { id: headingId, className: 'dim-credentialTitle' }, '绑定企业微信自建应用'),
-  h('form', { className: 'dim-credentialForm', onSubmit: submit },
+  h('form', { ref: formRef, className: 'dim-credentialForm', onSubmit: submit },
     h('div', { className: 'dim-appFieldGrid' },
       h(Field, { label: '企业 ID（CorpID）', value: corpId, onChange: setCorpId, placeholder: '例如 wwd9c0128d127xxxxx', busy, required: true }),
       h(Field, { label: '应用 AgentId', value: agentId, onChange: setAgentId, placeholder: '例如 1000002', busy, required: true }),
@@ -159,7 +160,7 @@ function BindForm({ busy, error, onSubmit, onCancel }) {
         h('span', { className: 'dim-switchHint' }, '企业微信客户端实时出字；微信端不支持时自动改为整段发送'))),
     error ? h('div', { className: 'ddt-inlineError dim-inlineError', role: 'alert' }, h('p', null, error.message)) : null,
     h('div', { className: 'ddt-actions dim-viewActions' },
-      h(Button, { kind: 'primary', type: 'submit', disabled: busy }, busy ? '正在绑定…' : '保存并连接'),
+      h(Button, { kind: 'primary', onClick: () => formRef.current?.requestSubmit(), disabled: busy }, busy ? '正在绑定…' : '保存并连接'),
       h(Button, { kind: 'quiet', onClick: onCancel, disabled: busy }, '取消'))));
 }
 
@@ -194,6 +195,7 @@ function AppSettingsEditor({ bot, busy, onSave }) {
   const [callbackBaseUrl, setCallbackBaseUrl] = React.useState(bot.callbackBaseUrl ?? '');
   const [streamEnabled, setStreamEnabled] = React.useState(bot.streamEnabled !== false);
   const [dirty, setDirty] = React.useState(false);
+  const formRef = React.useRef(null);
   React.useEffect(() => {
     setApiBaseUrl(bot.apiBaseUrl ?? '');
     setCallbackBaseUrl(bot.callbackBaseUrl ?? '');
@@ -211,7 +213,7 @@ function AppSettingsEditor({ bot, busy, onSave }) {
     });
     setDirty(false);
   };
-  return h('form', { className: 'dim-appFieldGrid', onSubmit: save },
+  return h('form', { ref: formRef, className: 'dim-appFieldGrid', onSubmit: save },
     h(Field, { label: '代理地址（可选）', value: apiBaseUrl, onChange: (value) => { setApiBaseUrl(value); touch(); }, placeholder: '留空直连 qyapi.weixin.qq.com', busy }),
     h(Field, { label: '公网回调基址（可选）', value: callbackBaseUrl, onChange: (value) => { setCallbackBaseUrl(value); touch(); }, placeholder: '例如 https://dsh.curi.cc', busy }),
     h('div', { className: 'dim-appSwitchRow' },
@@ -223,7 +225,7 @@ function AppSettingsEditor({ bot, busy, onSave }) {
         disabled: busy,
       }, streamEnabled ? '流式回复：开' : '流式回复：关')),
     h('div', { className: 'ddt-actions dim-viewActions' },
-      h(Button, { type: 'submit', disabled: busy || !dirty }, busy ? '保存中…' : '保存设置')));
+      h(Button, { onClick: () => formRef.current?.requestSubmit(), disabled: busy || !dirty }, busy ? '保存中…' : '保存设置')));
 }
 
 function RemoveConfirmation({ account, busy, onConfirm, onCancel }) {
