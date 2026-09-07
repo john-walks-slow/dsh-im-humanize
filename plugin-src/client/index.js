@@ -84,12 +84,12 @@ const CHANNELS = Object.freeze([
   { id: 'feishu', label: '飞书' },
   { id: 'dingtalk', label: '钉钉' },
   { id: 'wecom', label: '企业微信' },
-  { id: 'wecomApp', label: '企业微信应用' },
   { id: 'qq', label: 'QQ' },
   { id: 'slack', label: 'Slack' },
   { id: 'telegram', label: 'Telegram' },
   { id: 'discord', label: 'Discord' },
   { id: 'whatsapp', label: 'WhatsApp' },
+  { id: 'wecomApp', label: '企业微信应用', note: '（实验功能）' },
   { id: 'office', label: 'AI Office', note: '（实验功能）' },
 ]);
 
