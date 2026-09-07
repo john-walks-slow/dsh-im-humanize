@@ -6,10 +6,26 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.14.0] - 2026-09-08
+
+### Added / 新增
+
+- 飞书机器人新增默认关闭的「分步直推」设置，支持按机器人独立开启并即时应用，无需重连。开启后，以独立富文本消息逐步推送工具调用及参数摘要、过程说明和已完成的助手消息，最终回答以支持 Markdown 的富文本投递；包含发送节流与单轮过程消息上限，达到上限仍会投递最终回答，关闭时保留原有流式卡片体验。
+  Feishu bots gain an opt-in Step Push setting that applies per bot without reconnecting. It delivers tool calls with argument excerpts, progress notes, and completed assistant messages as separate rich-text posts, followed by a Markdown-capable final answer. Throttling and a per-turn progress-message cap limit traffic without suppressing the final answer; disabling the setting preserves the existing streaming-card experience.
+
 ### Fixed / 修复
+
+- 飞书分步直推的长回答按富文本 JSON 编码后的字节数分段，兼顾中文、转义字符与 emoji 边界；中途投递失败时仅从失败分段恢复，避免重复已成功发送的内容。补齐限流重试、富文本到文字的降级和失败状态记录，防止最终回答未送达却被标记为成功。
+  Feishu Step Push splits long answers by encoded rich-text JSON bytes, accounting for CJK text, escaped characters, and emoji boundaries. Delivery resumes at a failed chunk without repeating the successful prefix. Rate-limit retries, rich-text-to-text fallbacks, and failure reporting prevent undelivered final answers from being marked successful.
+
+- 飞书已有话题内的回复现在按实际会话结构留在原话题，不再受「群聊以话题方式回复」开关影响；该开关仅控制是否为普通群聊消息自动创建话题。
+  Replies in existing Feishu topics now stay in their original thread based on the conversation structure, regardless of the group-topic reply switch. That switch only controls automatic topic creation for ordinary group messages.
 
 - `dsh_im_return_file` 在新版 DSH Session 使用 `snapshotEvents()` 时，现在可以再次识别当前 Turn 并回传文件；同时保留旧 `session.events` 路径。
   `dsh_im_return_file` once again recognizes the current turn and returns files when running against modern DSH Sessions that expose `snapshotEvents()`, while retaining the legacy `session.events` path.
+
+- 兼容旧版持久化投递目标中重复保存的 `targetId`，修复微信等渠道旧配置的加载；仅在该字段与目标映射键一致时归一化，标识不一致的损坏记录仍会被拒绝。
+  Legacy delivery targets with a redundantly stored `targetId` now load correctly for WeChat and other channels. Normalization is limited to IDs matching the target map key; inconsistent or corrupted records remain rejected.
 
 ## [4.13.0] - 2026-09-06
 
@@ -741,7 +757,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.13.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.14.0...HEAD
+[4.14.0]: https://github.com/xmanrui/dsh-im/compare/v4.13.0...v4.14.0
 [4.13.0]: https://github.com/xmanrui/dsh-im/compare/v4.12.0...v4.13.0
 [4.12.0]: https://github.com/xmanrui/dsh-im/compare/v4.11.0...v4.12.0
 [4.11.0]: https://github.com/xmanrui/dsh-im/compare/v4.10.0...v4.11.0
