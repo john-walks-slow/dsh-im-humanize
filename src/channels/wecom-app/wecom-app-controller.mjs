@@ -176,11 +176,11 @@ export class WecomAppController {
       const patch = {};
       if (apiBaseUrl !== undefined) {
         if (!validApiBaseUrl(apiBaseUrl)) throw new TypeError(t('代理地址必须是 http(s) 地址。'));
-        patch.apiBaseUrl = cleanString(apiBaseUrl) ?? undefined;
+        patch.apiBaseUrl = cleanString(apiBaseUrl) ?? null;
       }
       if (callbackBaseUrl !== undefined) {
         if (!validApiBaseUrl(callbackBaseUrl)) throw new TypeError(t('回调基址必须是 http(s) 地址。'));
-        patch.callbackBaseUrl = cleanString(callbackBaseUrl) ?? undefined;
+        patch.callbackBaseUrl = cleanString(callbackBaseUrl) ?? null;
       }
       if (streamEnabled !== undefined) patch.streamEnabled = streamEnabled === true;
       if (Object.keys(patch).length === 0) return;

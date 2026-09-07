@@ -87,3 +87,21 @@ test('config store rejects bots with invalid data', async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('updating with null clears the optional base URLs', async () => {
+  const root = await mkdtemp(join(tmpdir(), "dsh-wecomapp-config-clear-"));
+  try {
+    const store = await new WecomAppConfigStore(join(root, "config.json")).load();
+    const bot = botFixture({ apiBaseUrl: "https://proxy.example.com", callbackBaseUrl: "https://cb.example.com" });
+    await store.save(bot);
+    await store.update(bot.botId, { apiBaseUrl: null, callbackBaseUrl: null });
+    const updated = store.get(bot.botId);
+    assert.equal(updated.apiBaseUrl, undefined);
+    assert.equal(updated.callbackBaseUrl, undefined);
+    const reloaded = await new WecomAppConfigStore(join(root, "config.json")).load();
+    assert.equal(reloaded.get(bot.botId).apiBaseUrl, undefined);
+    assert.equal(reloaded.get(bot.botId).callbackBaseUrl, undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -171,13 +171,13 @@ export class WecomAppConfigStore {
     if (!existing) throw new Error('Unknown Enterprise WeChat app bot');
     const merged = { ...existing };
     if (patch.apiBaseUrl !== undefined) {
-      merged.apiBaseUrl = cleanString(patch.apiBaseUrl) ?? undefined;
+      merged.apiBaseUrl = cleanString(patch.apiBaseUrl) ?? null;
       if (!validApiBaseUrl(merged.apiBaseUrl ?? undefined)) {
         throw new Error('代理地址必须是 http(s) 地址');
       }
     }
     if (patch.callbackBaseUrl !== undefined) {
-      merged.callbackBaseUrl = cleanString(patch.callbackBaseUrl) ?? undefined;
+      merged.callbackBaseUrl = cleanString(patch.callbackBaseUrl) ?? null;
       if (!validApiBaseUrl(merged.callbackBaseUrl ?? undefined)) {
         throw new Error('回调基址必须是 http(s) 地址');
       }
