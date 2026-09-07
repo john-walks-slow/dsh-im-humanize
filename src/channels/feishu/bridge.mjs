@@ -4196,11 +4196,17 @@ export class FeishuHarnessBridge {
             // issue #86：独立交互消息（提问/审批）会落在占位卡下方，呈现前
             // 先换卡，让最终答案落在交互消息之后的新流式卡上。
             onInteraction: async (interaction) => {
-              if ((interaction?.kind === 'question' || interaction?.kind === 'approval')
-                && typeof controller?.rotate === 'function') {
-                await controller.rotate();
+              try {
+                if ((interaction?.kind === 'question' || interaction?.kind === 'approval')
+                  && typeof controller?.rotate === 'function') {
+                  await controller.rotate();
+                }
+                await baseAskOptions.onInteraction(interaction);
+              } finally {
+                // issue #163：呈现完成（或失败）即解除换卡挂起，此后建的新卡
+                // 必然位于交互消息下方；interactionPresented 不存在时静默跳过。
+                controller?.interactionPresented?.();
               }
-              await baseAskOptions.onInteraction(interaction);
             },
             onUpdate: async (update) => {
               await controller.setContent(this.#progressText(update));

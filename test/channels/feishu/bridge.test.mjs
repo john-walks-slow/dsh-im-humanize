@@ -4460,6 +4460,51 @@ test('issue #86: a failure after rotation still falls back to plain text', async
   );
 });
 
+test('issue #163: 换卡挂起期的并发进度更新，其落卡必须晚于提问呈现', async () => {
+  const context = issue86RotationFixture({
+    onInteractionOverride: async (sessionId, options) => {
+      const interaction = {
+        kind: 'question',
+        interactionId: 'question-86',
+        rpcId: 'question-86',
+        sessionId,
+        payload: {
+          type: 'question/requested',
+          sessionId,
+          questions: [{
+            id: 'environment',
+            header: '测试环境',
+            question: '请选择测试环境',
+            options: [{ label: '测试环境' }, { label: '生产环境' }],
+          }],
+        },
+        respond: async (result) => {
+          context.submitStarted.resolve(result);
+          await context.answerAccepted.promise;
+          return { accepted: true };
+        },
+      };
+      // 先启动呈现（内部先 rotate 定格再发提问），随后并发到达的进度更新
+      // 处于换卡挂起期：不得在提问呈现完成前建新卡。
+      const presentation = options.onInteraction(interaction);
+      const progress = options.onUpdate({ type: 'tool', name: 'read_file' });
+      await presentation;
+      await progress;
+    },
+  });
+  const { receipt } = await bridge_accept_and_answer(context);
+  const entries = context.timeline;
+  const questionIndex = entries.findIndex((entry) => entry.kind === 'text-message'
+    && entry.text.includes('请选择测试环境'));
+  assert.ok(questionIndex > -1, '提问文本消息必须存在');
+  const newCardCreatedIndex = entries.findIndex((entry) => entry.kind === 'card-created'
+    && entry.cardId === 'card-86-2');
+  assert.ok(newCardCreatedIndex > questionIndex, '换卡后的新卡必须创建在提问呈现之后');
+  const oldCardWrites = entries.filter((e) => e.kind === 'card-content' && e.cardId === 'card-86-1');
+  assert.ok(oldCardWrites.at(-1).content.includes('最终结果见下方'), '旧卡定格后零写回');
+  assert.deepEqual(receipt.providerMessageIds, ['om-86-1', 'om-86-3'], 'receipt 契约不变');
+});
+
 test('issue #86: finalize failure degrades without blocking the interaction', async () => {
   const context = issue86RotationFixture({ failFinalize: true });
   await bridge_accept_and_answer(context);
