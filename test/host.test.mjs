@@ -186,6 +186,59 @@ test('Host waits for apiProxy on legacy Harness and Controllers on modern Harnes
   }
 });
 
+test('Host installs channel prefixes through the real Cordis sessions dependency', async (t) => {
+  const ctx = new Context();
+  ctx.provide('connection', { rpc: { handle: () => () => {} } });
+  ctx.provide('credentials', {});
+  ctx.provide('typertGateway', { stream() {} });
+  ctx.provide('sessionController', {});
+  ctx.provide('workspaceController', {});
+  const data = { title: '自动标题', messageSeqs: [0], source: { kind: 'fallback' } };
+  const events = [{ type: 'session/title', seq: 1, data }];
+  const session = {
+    id: 'weixin-old-session',
+    snapshotEvents: () => events.slice(),
+    append(type, value) { events.push({ type, data: value, seq: events.length + 1 }); },
+  };
+  ctx.provide('sessions', { get: () => session, list: () => [session] });
+  const internals = Object.fromEntries(CHANNELS.map(([, applyName]) => [applyName, async () => {}]));
+  Object.assign(internals, {
+    installUpdateRpc: () => {}, installInboundTtlRpc: () => {},
+    installDeliveryRpc: () => {}, installSessionSyncCoordinator: () => {},
+  });
+  const host = ctx.plugin(createImHostPlugin(internals));
+  t.after(() => host.dispose());
+  await host.await();
+  await new Promise((done) => setTimeout(done, 0));
+  assert.deepEqual(events.at(-1).data, { ...data, title: '微信 · 自动标题' });
+  assert.equal(events.length, 2);
+});
+
+test('Session title injection returns a valid Cordis startup effect', async () => {
+  const effects = [];
+  let installed = false;
+  const ctx = {
+    credentials: {}, typertGateway: { stream() {} },
+    sessions: { get: () => undefined, list: () => [] },
+    on: () => () => {},
+    effect: (run) => { effects.push(run()); },
+    inject(dependencies, callback) {
+      if (dependencies.includes('sessions')) {
+        const result = callback(ctx);
+        assert.equal(result, undefined, 'a controller object makes Cordis unload the title observer');
+        installed = true;
+        return;
+      }
+      if (dependencies.includes('sessionController')) return callback(ctx);
+    },
+  };
+  const internals = Object.fromEntries(CHANNELS.map(([, applyName]) => [applyName, async () => {}]));
+  Object.assign(internals, { installSessionSyncCoordinator: () => {} });
+  await createImHostPlugin(internals).apply(ctx);
+  assert.equal(installed, true);
+  for (const dispose of effects.reverse()) dispose?.();
+});
+
 const CHANNELS = [
   ['feishu', 'applyFeishu'],
   ['weixin', 'applyWeixin'],

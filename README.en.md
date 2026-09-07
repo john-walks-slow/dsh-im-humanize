@@ -134,6 +134,11 @@ Use the proxy URL required by your network and restart the Host after changing i
 | Model | Every bot in all nine IM channels can choose a model directly below its workspace, or follow the Host default. A change applies only to later new Sessions; send `/new` and then an ordinary message in the current chat to use it. |
 | Agent Preset | Each bot can choose an Agent Preset on its settings card. When none is chosen, new Sessions follow the Host's `agent-presets.default`. A channel-level `config.agentPreset` is only the default for later new bots on that channel. Changing the preset never modifies or clears existing Sessions; if the current chat already has a Session, send `/new` and then a regular message to create one with the new selection. |
 | Context enhancement | Open settings from a bot card to enable groups and DMs independently. Both switches default to off, including for existing bots after an upgrade. |
+| Session channel identity | Sessions from all nine IM channels and AI Office on the local Host are marked with their source. The Web Session list and search results display channel logos in place of prefixes such as “WeChat ·”, preserving DSH's automatic title generation and updates. Existing Sessions receive the prefix when next loaded. |
+
+Channel prefixes are appended after DSH produces a title, preserving its complete text and automatic/manual source without pinning automatic titles or making additional model calls. Regeneration, refresh, and restarts do not stack prefixes; actual manual renames retain DSH's normal pinning behavior. This feature uses the current Host's Session events; an explicit remote `harnessBaseUrl` requires the plugin on the destination Host.
+
+Logos are a dsh-im browser enhancement and require no changes to DSH. The adapter preserves original text nodes, clicks, menus, and dragging; copied titles, screen readers, and other surfaces retain the textual channel name. Unrecognized DSH page structures, unsupported browsers, or image-loading failures keep the text prefix. Unloading the plugin restores the original display.
 
 ### Proactive delivery
 
