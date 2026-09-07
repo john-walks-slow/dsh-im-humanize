@@ -83,6 +83,9 @@ function normalizeRoute(channel, kind, route) {
     case 'wecom':
       oneOf(kind, ['user', 'group']);
       return routeWithStrings(route, ['chatId']);
+    case 'wecom-app':
+      oneOf(kind, ['user']);
+      return routeWithStrings(route, ['chatId']);
     case 'qq':
       oneOf(kind, ['user', 'group']);
       return routeWithStrings(route, kind === 'user' ? ['userOpenId'] : ['groupOpenId']);
