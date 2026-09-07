@@ -11,7 +11,7 @@ export default {
   '企业微信应用当前离线': 'The WeCom app is currently offline',
   '企业微信应用回调通道就绪': 'The WeCom app callback channel is ready',
   '企业微信应用（{corpId}）': 'WeCom app ({corpId})',
-  '请输入正确的企业 ID（例如 wwd9c0128d127xxxxx）。': 'Enter a valid corp ID (for example wwd9c0128d127xxxxx).',
+  '请输入正确的企业 ID（例如 ww1234567890abcdef）。': 'Enter a valid corp ID (for example ww1234567890abcdef).',
   '请输入正确的应用 AgentId（纯数字）。': 'Enter a valid AgentId (digits only).',
   '应用 Secret 格式不正确。': 'The app Secret format is invalid.',
   '回调 Token 格式不正确。': 'The callback Token format is invalid.',

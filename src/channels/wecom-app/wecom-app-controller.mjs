@@ -114,7 +114,7 @@ export class WecomAppController {
     const normalizedSecret = cleanString(secret);
     const normalizedToken = cleanString(token);
     const normalizedAesKey = cleanString(encodingAESKey);
-    if (!validCorpId(normalizedCorpId)) throw new TypeError(t('请输入正确的企业 ID（例如 wwd9c0128d127xxxxx）。'));
+    if (!validCorpId(normalizedCorpId)) throw new TypeError(t('请输入正确的企业 ID（例如 ww1234567890abcdef）。'));
     if (!validAgentId(normalizedAgentId)) throw new TypeError(t('请输入正确的应用 AgentId（纯数字）。'));
     if (!validSecret(normalizedSecret)) throw new TypeError(t('应用 Secret 格式不正确。'));
     if (!validCallbackToken(normalizedToken)) throw new TypeError(t('回调 Token 格式不正确。'));

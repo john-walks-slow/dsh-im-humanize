@@ -10,7 +10,7 @@ import {
   WecomAppConfigStore,
 } from '../../../src/channels/wecom-app/config-store.mjs';
 
-const CORP_ID = 'wwd9c0128d127abcdef';
+const CORP_ID = 'ww1234567890abcdef';
 const AGENT_ID = '1000002';
 
 function botFixture(overrides = {}) {

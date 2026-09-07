@@ -6,7 +6,7 @@ import { createUserCrypto } from '../../../src/channels/wecom-app/wecom-app-api.
 
 const TOKEN = 'unit-test-token';
 const AES_KEY = 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJK'.slice(0, 43);
-const CORP_ID = 'wwd9c0128d127abcdef';
+const CORP_ID = 'ww1234567890abcdef';
 
 function crypto() {
   return createUserCrypto({ token: TOKEN, encodingAESKey: AES_KEY, corpId: CORP_ID });

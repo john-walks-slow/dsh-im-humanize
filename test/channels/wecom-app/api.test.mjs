@@ -16,7 +16,7 @@ import {
 
 const TOKEN = 'unit-test-token';
 const AES_KEY = 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJK'.slice(0, 43);
-const CORP_ID = 'wwd9c0128d127abcdef';
+const CORP_ID = 'ww1234567890abcdef';
 
 test('splitUtf8ByBytes respects the 2048-byte WeCom text limit', () => {
   assert.deepEqual(splitUtf8ByBytes(''), ['']);

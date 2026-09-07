@@ -141,14 +141,14 @@ function BindForm({ busy, error, onSubmit, onCancel }) {
   h('h3', { id: headingId, className: 'dim-credentialTitle' }, '绑定企业微信自建应用'),
   h('form', { ref: formRef, className: 'dim-credentialForm', onSubmit: submit },
     h('div', { className: 'dim-appFieldGrid' },
-      h(Field, { label: '企业 ID（CorpID）', value: corpId, onChange: setCorpId, placeholder: '例如 wwd9c0128d127xxxxx', busy, required: true }),
+      h(Field, { label: '企业 ID（CorpID）', value: corpId, onChange: setCorpId, placeholder: '例如 ww1234567890abcdef', busy, required: true }),
       h(Field, { label: '应用 AgentId', value: agentId, onChange: setAgentId, placeholder: '例如 1000002', busy, required: true }),
       h(Field, { label: '应用 Secret', value: secret, onChange: setSecret, placeholder: '应用详情页的 Secret', busy, required: true, type: 'password' }),
       h(Field, { label: '回调 Token', value: token, onChange: setToken, placeholder: '接收消息 → API 接收中的 Token', busy, required: true, type: 'password' }),
       h(Field, { label: 'EncodingAESKey', value: aesKey, onChange: setAesKey, placeholder: '43 位字母或数字', busy, required: true, type: 'password' }),
       h(Field, { label: '代理地址（可选）', value: apiBaseUrl, onChange: setApiBaseUrl, placeholder: '留空直连 qyapi.weixin.qq.com', busy })),
     h('div', { className: 'dim-appFieldGrid' },
-      h(Field, { label: '公网回调基址（可选）', value: callbackBaseUrl, onChange: setCallbackBaseUrl, placeholder: '例如 https://dsh.curi.cc，用于展示完整回调 URL', busy }),
+      h(Field, { label: '公网回调基址（可选）', value: callbackBaseUrl, onChange: setCallbackBaseUrl, placeholder: '例如 https://im.example.com', busy }),
       h('div', { className: 'dim-appSwitchRow' },
         h('button', {
           type: 'button',
@@ -215,7 +215,7 @@ function AppSettingsEditor({ bot, busy, onSave }) {
   };
   return h('form', { ref: formRef, className: 'dim-appFieldGrid', onSubmit: save },
     h(Field, { label: '代理地址（可选）', value: apiBaseUrl, onChange: (value) => { setApiBaseUrl(value); touch(); }, placeholder: '留空直连 qyapi.weixin.qq.com', busy }),
-    h(Field, { label: '公网回调基址（可选）', value: callbackBaseUrl, onChange: (value) => { setCallbackBaseUrl(value); touch(); }, placeholder: '例如 https://dsh.curi.cc', busy }),
+    h(Field, { label: '公网回调基址（可选）', value: callbackBaseUrl, onChange: (value) => { setCallbackBaseUrl(value); touch(); }, placeholder: '例如 https://im.example.com', busy }),
     h('div', { className: 'dim-appSwitchRow' },
       h('button', {
         type: 'button',
