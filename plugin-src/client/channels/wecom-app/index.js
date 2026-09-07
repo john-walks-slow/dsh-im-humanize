@@ -63,7 +63,7 @@ function Heading({ totals, adding, busy, onAdd, addButtonRef }) {
           disabled: adding || busy,
           ref: addButtonRef,
           'aria-label': '添加企业微信自建应用',
-        }, adding ? '正在填写' : '添加企业微信应用')),
+        }, adding ? '收起表单' : '添加企业微信应用')),
       totals.configured > 0
         ? h('div', { className: 'ddt-badge dim-onlineBadge' },
             h('span', null, `${totals.connected} / ${totals.configured} 在线`))

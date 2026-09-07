@@ -90,7 +90,10 @@ export class WecomAppCallbackServer {
   }
 
   routePath({ botId, callbackSecret }) {
-    return `/wecom-app/${botId}/${callbackSecret}`;
+    // Keep the callback prefix distinct from the GUI RPC channel path
+    // (/wecom-app/...): the reverse-proxy location must forward ONLY the
+    // callback prefix to this listener and leave RPC traffic to dsh web.
+    return `/wecom-app-callback/${botId}/${callbackSecret}`;
   }
 
   registerRoute(route) {

@@ -9,6 +9,7 @@ const CHANNELS = new Set([
   'feishu',
   'dingtalk',
   'wecom',
+  'wecom-app',
   'qq',
   'slack',
   'telegram',
