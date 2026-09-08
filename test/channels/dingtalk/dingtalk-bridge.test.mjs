@@ -1629,6 +1629,113 @@ test('bridge falls back to final text with group sender mentions when AI Card cr
   }
 });
 
+test('bridge delivers text after an active AI Card fails during progress or finalization', async (t) => {
+  for (const stage of ['update', 'finish']) {
+    for (const modelFails of [false, true]) {
+      for (const conversationType of ['1', '2']) {
+        await t.test(`${stage}, modelFails=${modelFails}, conversationType=${conversationType}`, async () => {
+          const fixture = stateFixture();
+          const sent = [];
+          const closed = [];
+          const finished = [];
+          const bridge = new DingtalkHarnessBridge({
+            api: {
+              createAiCard: async () => ({ cardInstanceId: 'card-one' }),
+              updateAiCard: async () => { throw new Error('card update rejected'); },
+              finishAiCard: async (request) => {
+                finished.push(request);
+                throw new Error('card final frame rejected');
+              },
+              failAiCard: async (request) => closed.push(request),
+              sendText: async (request) => {
+                sent.push(request);
+                return { messageId: 'fallback-message' };
+              },
+            },
+            clientId: 'ding-client',
+            clientSecret: 'host-secret',
+            harness: {
+              sessionExists: async () => false,
+              createSession: async () => 'session-card-failure',
+              ask: async (_sessionId, _text, options) => {
+                if (stage === 'update') {
+                  options.onUpdate({ type: 'text', text: '生成中的进度' });
+                  await eventually(() => closed.length === 1, 'failed progress must close the card');
+                }
+                if (modelFails) throw new Error('private model failure');
+                return '最终完整回答';
+              },
+            },
+            state: fixture.state,
+            logger: { error() {}, warn() {} },
+          });
+
+          await bridge.accept(message('active-card-failure', '请回答', {
+            conversationType,
+            isInAtList: true,
+          }));
+
+          assert.equal(closed.length, 1);
+          assert.equal(closed[0].text, '卡片已结束，请查看后续消息。');
+          assert.equal(finished.length, stage === 'finish' ? 1 : 0);
+          assert.equal(sent.length, 1);
+          assert.deepEqual(sent[0].at, conversationType === '2'
+            ? { atUserIds: ['staff-approved'] }
+            : undefined);
+          if (modelFails) {
+            assert.match(sent[0].text, /参考号：MF-[A-F0-9]{8}/);
+            assert.doesNotMatch(sent[0].text, /private model failure|host-secret/);
+            assert.equal(bridge.status.messagesReplied, 0);
+            assert.equal(fixture.outbound.length, 0);
+          } else {
+            assert.equal(sent[0].text, '最终完整回答');
+            assert.equal(bridge.status.messagesReplied, 1);
+            assert.equal(bridge.status.lastError, null);
+            assert.equal(fixture.outbound.length, 1);
+            assert.equal(fixture.outbound[0].text, '最终完整回答');
+            assert.deepEqual(fixture.outbound[0].providerMessageIds, ['fallback-message']);
+          }
+        });
+      }
+    }
+  }
+});
+
+test('bridge does not record a delivered answer when both the AI Card and text fallback fail', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      createAiCard: async () => ({ cardInstanceId: 'card-one' }),
+      updateAiCard: async () => {},
+      finishAiCard: async () => { throw new Error('card rejected'); },
+      failAiCard: async () => {},
+      sendText: async (request) => {
+        sent.push(request);
+        throw new Error('text rejected');
+      },
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => false,
+      createSession: async () => 'session-no-delivery',
+      ask: async () => '最终完整回答',
+    },
+    state: fixture.state,
+    logger: { error() {}, warn() {} },
+  });
+
+  await bridge.accept(message('no-delivery', '请回答'));
+
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0].text, '最终完整回答');
+  assert.match(sent[1].text, /参考号：MF-[A-F0-9]{8}/);
+  assert.equal(bridge.status.messagesReplied, 0);
+  assert.ok(bridge.status.lastError);
+  assert.equal(fixture.outbound.length, 0);
+});
+
 test('commands stay local and unsafe session webhooks are rejected before Harness', async () => {
   const fixture = stateFixture();
   fixture.sessions.set('p2p:staff-approved', 'old-session');
