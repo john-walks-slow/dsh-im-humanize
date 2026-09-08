@@ -33,6 +33,12 @@ export const ACCESS_CHANNEL_DEFINITIONS = Object.freeze({
     groupUserLabel: '群成员用户 ID',
     groupPlaceholder: '填写 userid',
   }),
+  wecomApp: Object.freeze({
+    directUserLabel: '企业微信用户 ID',
+    directPlaceholder: '填写 userid',
+    groupUserLabel: '群成员用户 ID',
+    groupPlaceholder: '填写 userid',
+  }),
   qq: Object.freeze({
     directUserLabel: 'QQ User Open ID',
     directPlaceholder: '填写 user_openid',

@@ -101,7 +101,7 @@ const connectedAccount = Object.freeze({
   }),
 });
 
-test('delivery settings define only the nine supported IM channel routes', () => {
+test('delivery settings define only the ten supported IM channel routes', () => {
   assert.deepEqual(BOT_SETTINGS_TABS, [
     { id: 'delivery', label: '投递设置' },
     { id: 'access', label: '访问设置' },
@@ -116,7 +116,7 @@ test('delivery settings define only the nine supported IM channel routes', () =>
   assert.equal(botSettingsTabsForChannel('feishu'), FEISHU_BOT_SETTINGS_TABS);
   assert.equal(DELIVERY_RPC_CHANNEL, '/dsh-im-delivery');
   assert.deepEqual(Object.keys(DELIVERY_CHANNEL_DEFINITIONS), [
-    'weixin', 'feishu', 'dingtalk', 'wecom', 'qq',
+    'weixin', 'feishu', 'dingtalk', 'wecom', 'wecomApp', 'qq',
     'slack', 'telegram', 'discord', 'whatsapp',
   ]);
   assert.deepEqual(
