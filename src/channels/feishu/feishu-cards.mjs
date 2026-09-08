@@ -916,9 +916,66 @@ export const STEP_STREAM_CARD_MAX_BYTES = 24_000;
  *   { kind: 'tools', lines: string[] } — tool-call summary panel
  * `status`: 'running' keeps panels expanded and ends with an italic status
  * line; 'completed' / 'stopped' collapse the panels and swap the status text;
- * 'sealed' is an overflow spill chunk with no status line at all.
+ * 'sealed' is an overflow spill chunk with no status line at all. Finished
+ * turns (and sealed spill chunks) merge every tool/thinking panel into one
+ * collapsed "process details" panel so the sealed card stays compact.
  */
-export function stepStreamCard(blocks, { status = 'running' } = {}) {
+
+/**
+ * Merge every tool/thinking block into one `merged` block for finished turns:
+ * tool lines come first, then thinking notes, preserving the per-kind order.
+ * Byte counts and per-kind `omitted` tallies are preserved so the collapsed
+ * panel title can report accurate totals.
+ */
+function mergeProcessBlocks(rawBlocks) {
+  const list = Array.isArray(rawBlocks) ? rawBlocks.filter(Boolean) : [];
+  const hasPanel = list.some((block) => block?.kind === 'tools' || block?.kind === 'notes');
+  if (!hasPanel) return list;
+  const toolsLines = [];
+  const notesLines = [];
+  let toolsOmitted = 0;
+  let notesOmitted = 0;
+  for (const block of list) {
+    if (block?.kind !== 'tools' && block?.kind !== 'notes') continue;
+    const lines = (Array.isArray(block.lines) ? block.lines : [])
+      .filter((line) => typeof line === 'string' && line.trim());
+    const omitted = Number(block.omitted) || 0;
+    if (block.kind === 'tools') {
+      toolsLines.push(...lines);
+      toolsOmitted += omitted;
+    } else {
+      notesLines.push(...lines);
+      notesOmitted += omitted;
+    }
+  }
+  const merged = {
+    kind: 'merged',
+    toolsLines,
+    notesLines,
+    toolsCount: toolsLines.length + toolsOmitted,
+    notesCount: notesLines.length + notesOmitted,
+  };
+  // Non-panel blocks (interim markdown notes) stay in their original slots;
+  // panel blocks collapse into the single merged panel at the first panel slot.
+  const output = [];
+  let mergedPlaced = false;
+  for (const block of list) {
+    if (block?.kind === 'tools' || block?.kind === 'notes') {
+      if (!mergedPlaced) {
+        output.push(merged);
+        mergedPlaced = true;
+      }
+      continue;
+    }
+    output.push(block);
+  }
+  if (!mergedPlaced) output.push(merged);
+  return output;
+}
+
+export function stepStreamCard(rawBlocks, { status = 'running' } = {}) {
+  const running = status === 'running';
+  const blocks = running ? rawBlocks : mergeProcessBlocks(rawBlocks);
   const elements = [];
   for (const block of Array.isArray(blocks) ? blocks : []) {
     if (block?.kind === 'tools' || block?.kind === 'notes') {
@@ -932,7 +989,24 @@ export function stepStreamCard(blocks, { status = 'running' } = {}) {
           : t('💭 思考过程（{count}）', { count }),
         // Tool summaries stay visible while the turn runs; thinking notes
         // remain folded at all times.
-        expanded: block.kind === 'tools' && status === 'running',
+        expanded: block.kind === 'tools' && running,
+      }));
+      continue;
+    }
+    if (block?.kind === 'merged') {
+      // Finished turns: one folded panel holding both sections.
+      const toolLines = (block.toolsLines ?? []).filter((line) => typeof line === 'string' && line.trim());
+      const noteLines = (block.notesLines ?? []).filter((line) => typeof line === 'string' && line.trim());
+      const sections = [];
+      if (toolLines.length > 0) sections.push(`**${t('🛠️ 工具')}**`, ...toolLines);
+      if (noteLines.length > 0) sections.push(`**${t('💭 思考')}**`, ...noteLines);
+      if (sections.length === 0) continue;
+      elements.push(stepPanel(sections, {
+        title: t('📋 过程详情（工具 {tools} · 思考 {notes}）', {
+          tools: block.toolsCount ?? 0,
+          notes: block.notesCount ?? 0,
+        }),
+        expanded: false,
       }));
       continue;
     }

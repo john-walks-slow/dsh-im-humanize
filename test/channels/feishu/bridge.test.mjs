@@ -8764,8 +8764,9 @@ test('step push streaming_card mode: one process card patched in place, answer s
 
   assert.ok(interactiveCreates.length >= 1, 'the process card is created');
   const serialized = JSON.stringify(patches.at(-1)?.content ?? {});
-  assert.ok(serialized.includes('collapsible_panel'), 'the tool summary panel is rendered');
-  assert.ok(serialized.includes('💭 思考过程'), 'the thinking panel is rendered');
+  assert.ok(serialized.includes('collapsible_panel'), 'the process panel is rendered');
+  assert.ok(serialized.includes('📋 过程详情'), 'the finished turn merges panels into one process-details panel');
+  assert.ok(serialized.includes('💭 思考'), 'the thinking section keeps its header inside the merged panel');
   assert.ok(serialized.includes('正在整理'), 'the interim note morphed from the answer draft');
   assert.ok(serialized.includes('ls'), 'tool summaries land in the panel');
   assert.ok(serialized.includes('最终答案'), 'the final answer is sealed inside the card');
@@ -8868,7 +8869,8 @@ test('step push streaming_card mode: the answer draft streams live and interim s
   await bridge.waitForIdle();
 
   const sealed = JSON.stringify(patches.at(-1)?.content ?? {});
-  assert.ok(sealed.includes('💭 思考过程'), 'the superseded draft folded into the thinking panel');
+  assert.ok(sealed.includes('📋 过程详情'), 'the finished turn merges panels into one process-details panel');
+  assert.ok(sealed.includes('💭 思考'), 'the superseded draft keeps its thinking section header');
   assert.ok(sealed.includes('我先看看'), 'the interim note text survives the fold');
   assert.ok(sealed.includes('结论如下'), 'the last step sealed as the answer');
   assert.ok(sealed.includes('已完成'), 'the card seals completed');
@@ -9006,7 +9008,7 @@ test('step push streaming_card mode: an oversized tool panel sheds its oldest li
   await bridge.waitForIdle();
 
   const sealed = JSON.stringify(patches.at(-1)?.content ?? {});
-  assert.ok(sealed.includes('工具摘要（150）'), 'the panel header keeps the full tool count');
+  assert.ok(sealed.includes('📋 过程详情（工具 150'), 'the merged panel header keeps the full tool count');
   assert.ok(sealed.includes('面板压测完成'), 'the answer still seals inside the card');
   for (const patch of patches) {
     assert.ok(
