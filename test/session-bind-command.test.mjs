@@ -211,7 +211,12 @@ test('all nine channel bridges advertise /session and pass their current convers
   ];
   for (const [file, key] of bridgeFamilies) {
     const source = await readFile(new URL(file, import.meta.url), 'utf8');
-    assert.match(source, /\/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话/);
+    if (file.endsWith('/shared/text-harness-bridge.mjs')) {
+      // Full rendered help for all four consumers is covered by command-help.test.mjs.
+      assert.match(source, /commandHelpLines\(this\.#descriptor\.key\)/);
+    } else {
+      assert.match(source, /\/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话/);
+    }
     assert.ok(
       source.includes(`runWorkspaceCommand(text, this.#harness, ${key})`),
       `${file} must pass ${key} to the shared command`,

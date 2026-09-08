@@ -422,7 +422,7 @@ const CSS = String.raw`
 .dim-feishuGroupSettings { min-width: 0; display: grid; gap: 14px; }
 .dim-feishuGroupControls { min-width: 0; display: grid; gap: 12px; }
 .dim-feishuGroupControl { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 16px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 12px; background: var(--dsw-alias-bg-layer-3, #fff); }
-.dim-feishuGroupControlHeader { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dim-feishuGroupControlHeader { position: relative; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .dim-feishuGroupControlHeader h3 { min-width: 0; margin: 0; color: var(--dsw-alias-label-primary, #1f2329); font-size: 14px; line-height: 21px; font-weight: 650; }
 .dim-feishuGroupControlStatus { flex: none; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 11px; line-height: 17px; }
 .dim-feishuGroupSelect { min-width: 0; width: 100%; height: 38px; padding: 0 34px 0 11px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 8px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-layer-1, #fff); font: inherit; font-size: 13px; line-height: 38px; cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease; }
