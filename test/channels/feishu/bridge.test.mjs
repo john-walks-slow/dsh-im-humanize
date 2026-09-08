@@ -4395,6 +4395,9 @@ function issue86RotationFixture({
   failFinalize = false,
   failFinishCardId = null,
   skipInteraction = false,
+  interactionCards = false,
+  questions: questionsOverride = null,
+  patchFails = false,
 } = {}) {
   const fixture = stateFixture([['p2p:ou_user', 'session-issue-86']]);
   const timeline = [];
@@ -4435,15 +4438,33 @@ function issue86RotationFixture({
   client.im.v1.message.reply = async (request) => {
     replySequence += 1;
     const messageId = `om-86-${replySequence}`;
-    const content = JSON.parse(request.data.content);
+    let parsedText = '';
+    let card;
+    try {
+      const content = JSON.parse(request.data.content);
+      parsedText = typeof content.text === 'string' ? content.text : '';
+      if (request.data.msg_type === 'interactive') card = content;
+    } catch {
+      // 保持默认空文本
+    }
     timeline.push({
       kind: request.data.msg_type === 'text' ? 'text-message' : 'card-message',
       messageId,
-      text: typeof content.text === 'string' ? content.text : '',
+      text: parsedText,
+      ...(card ? { card } : {}),
     });
     return { code: 0, data: { message_id: messageId } };
   };
   client.im.v1.message.delete = async () => ({ code: 0 });
+  client.im.v1.message.patch = async (request) => {
+    timeline.push({
+      kind: 'card-patch',
+      messageId: request.path.message_id,
+      content: request.data.content,
+    });
+    if (patchFails) throw new Error('patch failed');
+    return { code: 0 };
+  };
   client.im.v1.messageReaction = {
     create: async () => ({ code: 0, data: { reaction_id: 'reaction-86' } }),
     delete: async () => ({ code: 0 }),
@@ -4455,7 +4476,7 @@ function issue86RotationFixture({
     // issue #86 rotation tests assert the streaming-card flow with the
     // plain-text question reply; the interaction card path is tested
     // separately, so pin the text presentation here.
-    interactionCards: false,
+    interactionCards,
     harness: {
       sessionExists: async () => true,
       currentWorkspace: () => null,
@@ -4478,7 +4499,7 @@ function issue86RotationFixture({
             payload: {
               type: 'question/requested',
               sessionId,
-              questions: [{
+              questions: questionsOverride ?? [{
                 id: 'environment',
                 header: '测试环境',
                 question: '请选择测试环境',
@@ -4532,6 +4553,84 @@ async function bridge_accept_and_answer({ bridge, timeline, submitStarted, answe
   const receipt = await turn;
   await bridge.waitForIdle();
   return { receipt, questionIndex };
+}
+
+function bridge_ask(context) {
+  if (!context.turn) context.turn = context.bridge.accept(event('om-86-prompt', '请先调用 ask_user_question'));
+  return context.turn;
+}
+
+function questionCardEntries(timeline) {
+  return timeline.filter((entry) => entry.kind === 'card-message'
+    && entry.card && JSON.stringify(entry.card).includes('请补充信息'));
+}
+
+async function waitQuestionCard(context) {
+  bridge_ask(context);
+  await eventually(
+    () => questionCardEntries(context.timeline).length > 0,
+    'the question card was not presented',
+  );
+  return questionCardEntries(context.timeline).at(-1);
+}
+
+async function settleAnswer(context, { waitFinal = true } = {}) {
+  if (!waitFinal) return;
+  await Promise.race([
+    context.submitStarted.promise,
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error('the card answer never reached the Harness interaction')),
+      1_000,
+    )),
+  ]);
+  context.answerAccepted.resolve();
+  await context.turn;
+  await context.bridge.waitForIdle();
+}
+
+async function bridge_click_option(context, label, { waitFinal = true, index = 0 } = {}) {
+  const entry = await waitQuestionCard(context);
+  const clicked = context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, `answer:question-86:${index}:${label}`, 'ou_user'),
+  );
+  await settleAnswer(context, { waitFinal });
+  await clicked;
+  const patches = context.timeline.filter((e) => e.kind === 'card-patch');
+  return { timeline: context.timeline, cardPatch: patches.at(-1) ?? null, cardPatchCount: patches.length };
+}
+
+async function bridge_click_custom(context, { waitFinal = true, index = 0 } = {}) {
+  const entry = await waitQuestionCard(context);
+  const clicked = context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, `answerCustom:question-86:${index}`, 'ou_user'),
+  );
+  await settleAnswer(context, { waitFinal });
+  await clicked;
+  return {
+    timeline: context.timeline,
+    replyText: context.timeline.filter((e) => e.kind === 'text-message').at(-1)?.text ?? '',
+  };
+}
+
+async function bridge_answer_by_text(context, text) {
+  const entry = await waitQuestionCard(context);
+  const turn = context.bridge.accept(event('om-86-text-answer', text, {
+    root_id: 'om-86-prompt',
+    parent_id: entry.messageId,
+    thread_id: 'omt-86',
+  }));
+  await Promise.race([
+    context.submitStarted.promise,
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error('the text answer never reached the Harness interaction')),
+      1_000,
+    )),
+  ]);
+  context.answerAccepted.resolve();
+  await turn;
+  await context.bridge.waitForIdle();
+  const patches = context.timeline.filter((e) => e.kind === 'card-patch');
+  return { timeline: context.timeline, cardPatch: patches.at(-1) ?? null };
 }
 
 test('issue #86: post-interaction progress and the final answer land on the rotated card', async () => {
@@ -4609,6 +4708,188 @@ test('issue #86: a failure after rotation still falls back to plain text', async
     ),
     'the final answer must be delivered as fallback text',
   );
+});
+
+test('issue #163: 换卡挂起期的并发进度更新，其落卡必须晚于提问呈现', async () => {
+  const context = issue86RotationFixture({
+    onInteractionOverride: async (sessionId, options) => {
+      const interaction = {
+        kind: 'question',
+        interactionId: 'question-86',
+        rpcId: 'question-86',
+        sessionId,
+        payload: {
+          type: 'question/requested',
+          sessionId,
+          questions: [{
+            id: 'environment',
+            header: '测试环境',
+            question: '请选择测试环境',
+            options: [{ label: '测试环境' }, { label: '生产环境' }],
+          }],
+        },
+        respond: async (result) => {
+          context.submitStarted.resolve(result);
+          await context.answerAccepted.promise;
+          return { accepted: true };
+        },
+      };
+      // 先启动呈现（内部先 rotate 定格再发提问），随后并发到达的进度更新
+      // 处于换卡挂起期：不得在提问呈现完成前建新卡。
+      const presentation = options.onInteraction(interaction);
+      const progress = options.onUpdate({ type: 'tool', name: 'read_file' });
+      await presentation;
+      await progress;
+    },
+  });
+  const { receipt } = await bridge_accept_and_answer(context);
+  const entries = context.timeline;
+  const questionIndex = entries.findIndex((entry) => entry.kind === 'text-message'
+    && entry.text.includes('请选择测试环境'));
+  assert.ok(questionIndex > -1, '提问文本消息必须存在');
+  const newCardCreatedIndex = entries.findIndex((entry) => entry.kind === 'card-created'
+    && entry.cardId === 'card-86-2');
+  assert.ok(newCardCreatedIndex > questionIndex, '换卡后的新卡必须创建在提问呈现之后');
+  const oldCardWrites = entries.filter((e) => e.kind === 'card-content' && e.cardId === 'card-86-1');
+  assert.ok(oldCardWrites.at(-1).content.includes('最终结果见下方'), '旧卡定格后零写回');
+  assert.deepEqual(receipt.providerMessageIds, ['om-86-1', 'om-86-3'], 'receipt 契约不变');
+});
+
+test('issue #162: 点选后原提问卡被 patch 为已答状态卡（内容为卡 JSON 字符串，不双重编码）', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const cardPatch = context.timeline.filter((e) => e.kind === 'card-patch').at(-1);
+  assert.ok(cardPatch, '必须发生已答卡回写');
+  const questionCardEntry = questionCardEntries(context.timeline)[0];
+  assert.equal(cardPatch.messageId, questionCardEntry.messageId, '必须 patch 原提问卡消息');
+  assert.ok(!cardPatch.content.startsWith('"'), 'content 不得是二次序列化的字符串');
+  const card = JSON.parse(cardPatch.content);
+  const json = JSON.stringify(card);
+  assert.ok(json.includes('✅ 已回答') && json.includes('✅ 已选择：生产环境'));
+  assert.ok(!json.includes('"tag":"button"'), '已答卡不得再含按钮');
+});
+
+test('issue #162: 多问题交互第 1 题卡先回写已答，再呈现第 2 题', async () => {
+  const questions = [
+    { id: 'environment', header: '测试环境', question: '请选择测试环境', options: [{ label: '测试环境' }, { label: '生产环境' }] },
+    { id: 'scope', header: '改动范围', question: '请选择改动范围', options: [{ label: '前端' }, { label: '后端' }] },
+  ];
+  const context = issue86RotationFixture({ interactionCards: true, questions });
+  await bridge_click_option(context, '生产环境', { waitFinal: false });
+  await eventually(
+    () => questionCardEntries(context.timeline).length >= 2,
+    '第 2 题提问卡未呈现',
+  );
+  const entries = context.timeline;
+  const cardPatchIndex = entries.findIndex((e) => e.kind === 'card-patch');
+  const nextQuestionIndex = entries.findIndex((e) => e.kind === 'card-message'
+    && e.card && JSON.stringify(e.card).includes('2/2'));
+  assert.ok(cardPatchIndex > -1 && nextQuestionIndex > -1, '回写与第 2 题都必须发生');
+  assert.ok(nextQuestionIndex > cardPatchIndex, '必须先回写第 1 题卡，再呈现第 2 题');
+  await bridge_click_option(context, '前端', { index: 1 });
+});
+
+test('issue #162: 文本答案提交后提问卡同样回写', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  const { cardPatch } = await bridge_answer_by_text(context, '自定义文字回答');
+  assert.ok(cardPatch, '文本路径必须同样回写');
+  assert.ok(JSON.stringify(JSON.parse(cardPatch.content)).includes('✅ 已选择：自定义文字回答'));
+});
+
+test('issue #162: patch 失败时降级为 warn，答案提交不受影响', async () => {
+  const context = issue86RotationFixture({ interactionCards: true, patchFails: true });
+  const { cardPatchCount } = await bridge_click_option(context, '生产环境');
+  assert.equal(cardPatchCount, 1, '仅一次 patch 尝试');
+  assert.ok(context.answerAccepted, 'respond 必须照常成功');
+  assert.ok(
+    !context.timeline.some((e) => e.kind === 'text-message' && e.text.includes('回答提交失败')),
+    '不得误报提交失败',
+  );
+});
+
+test('issue #162: 已答 interaction 的陈旧点击回复「已经回答过了」', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const entry = questionCardEntries(context.timeline)[0];
+  const textCount = context.timeline.filter((e) => e.kind === 'text-message').length;
+  await context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, 'answer:question-86:0:测试环境', 'ou_user'),
+  );
+  await context.bridge.waitForIdle();
+  const textsAfter = context.timeline.filter((e) => e.kind === 'text-message').slice(textCount);
+  assert.ok(textsAfter.some((e) => e.text.includes('已经回答过了')), '必须提示已回答过');
+  assert.ok(textsAfter.every((e) => !e.text.includes('其他客户端')), '不得再弹误导提示');
+});
+
+test('issue #162: answerCustom 校验通过回复引导文本', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  const { replyText } = await bridge_click_custom(context, { waitFinal: false });
+  assert.ok(replyText.includes('直接发送文字'), '引导文案必须与 canClaimInteractionReply 语义一致');
+});
+
+test('issue #162: 已答卡上的 answerCustom 陈旧点击走提示逻辑', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const entry = questionCardEntries(context.timeline)[0];
+  const textCount = context.timeline.filter((e) => e.kind === 'text-message').length;
+  await context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, 'answerCustom:question-86:0', 'ou_user'),
+  );
+  await context.bridge.waitForIdle();
+  const textsAfter = context.timeline.filter((e) => e.kind === 'text-message').slice(textCount);
+  assert.ok(textsAfter.some((e) => e.text.includes('已经回答过了')));
+});
+
+test('issue #162: 未答过的陈旧 interaction 点击保持现有「其他客户端」提示（回归锚）', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  const entry = await waitQuestionCard(context);
+  const textCount = context.timeline.filter((e) => e.kind === 'text-message').length;
+  await context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, 'answer:unknown-86:0:测试环境', 'ou_user'),
+  );
+  const textsAfter = context.timeline.filter((e) => e.kind === 'text-message').slice(textCount);
+  assert.ok(textsAfter.some((e) => e.text.includes('其他客户端')), '未答过的 id 保持现有提示');
+});
+
+test('issue #162: 卡片题后的文本题不再回写前一张卡', async () => {
+  const questions = [
+    { id: 'environment', header: '测试环境', question: '请选择测试环境', options: [{ label: '测试环境' }, { label: '生产环境' }] },
+    { id: 'scope', header: '改动范围', question: '请用文字描述改动范围' },
+  ];
+  const context = issue86RotationFixture({ interactionCards: true, questions });
+  await bridge_click_option(context, '生产环境', { waitFinal: false });
+  await eventually(
+    () => context.timeline.some((e) => e.kind === 'text-message' && e.text.includes('请用文字描述改动范围')),
+    '第 2 题（文本题）未呈现',
+  );
+  const textQuestion = context.timeline.filter(
+    (e) => e.kind === 'text-message' && e.text.includes('请用文字描述改动范围'),
+  ).at(-1);
+  const turn = context.bridge.accept(event('om-86-scope-answer', '后端模块', {
+    root_id: 'om-86-prompt',
+    parent_id: textQuestion.messageId,
+    thread_id: 'omt-86',
+  }));
+  await Promise.race([
+    context.submitStarted.promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('text answer never reached')), 1_000)),
+  ]);
+  context.answerAccepted.resolve();
+  await turn;
+  await context.bridge.waitForIdle();
+  const patches = context.timeline.filter((e) => e.kind === 'card-patch');
+  assert.equal(patches.length, 1, '文本题不得回写任何卡');
+  assert.ok(JSON.stringify(JSON.parse(patches[0].content)).includes('✅ 已选择：生产环境'),
+    '唯一的回执必须是第 1 题的答案');
+});
+
+test('issue #162: 已答回执保留原题文本、标题与说明', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const cardPatch = context.timeline.filter((e) => e.kind === 'card-patch').at(-1);
+  const json = JSON.stringify(JSON.parse(cardPatch.content));
+  assert.ok(json.includes('请选择测试环境'), '原题文本必须保留（不得退化为「请输入你的回答。」）');
+  assert.ok(json.includes('测试环境'), '题头必须保留');
 });
 
 test('issue #86: finalize failure degrades without blocking the interaction', async () => {

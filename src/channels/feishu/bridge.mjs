@@ -87,6 +87,7 @@ import {
   menuHelpText,
   modelCard,
   presetCard,
+  answeredQuestionCard,
   questionCard,
   sessionListCard,
   statusCard,
@@ -538,6 +539,9 @@ export class FeishuHarnessBridge {
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
   #resolvedQuestionReplies = new Map();
+  // issue #162：已提交答案的 interactionId → 过期时间（TTL-only，惰性清理，
+  // 与 #resolvedQuestionReplies 同风格）。陈旧点击据此给出「已回答」提示。
+  #answeredInteractionIds = new Map();
   // Keep the accepted configuration through the existing queue/reply lifecycle.
   #acceptedMessageIds = new Map();
   #interactionTasks = new Set();
@@ -2201,7 +2205,35 @@ export class FeishuHarnessBridge {
         if (pending && pending.kind === 'question' && !pending.submitting
           && pending.actor === actor
           && Number(indexText) === pending.index) {
-          await this.#submitQuestionAnswer(pending, optionLabel, { chatId });
+          await this.#submitQuestionAnswer(pending, optionLabel, { chatId, questionMessageId: messageId });
+        } else {
+          // issue #162：pending 已清除时区分「已答过」与「其他客户端处理」，
+          // 避免对同一张提问卡的重复点击弹出误导提示。
+          const staleNotice = pending
+            ? INTERACTION_RESOLVED_TEXT()
+            : this.#isAnsweredInteraction(interactionId)
+              ? t('这个问题已经回答过了。')
+              : INTERACTION_RESOLVED_TEXT();
+          await reply(staleNotice).catch(() => undefined);
+        }
+      }
+      return;
+    }
+    // issue #162：自定义答案入口——与 answer: 同构校验；通过后引导用户直接
+    // 发送文字消息（canClaimInteractionReply 语义：同 actor 的文本即答案）。
+    if (action.startsWith('answerCustom:')) {
+      const rest = action.slice('answerCustom:'.length);
+      const sep = rest.indexOf(':');
+      if (sep !== -1) {
+        const interactionId = rest.slice(0, sep);
+        const indexText = rest.slice(sep + 1);
+        const qKey = this.#interactionKeys.get(interactionId);
+        const pending = qKey ? this.#pendingInteractions.get(qKey) : null;
+        if (pending && pending.kind === 'question' && !pending.submitting
+          && pending.actor === actor && Number(indexText) === pending.index) {
+          await reply(t('想自定义答案？直接发送文字消息即可，将作为本题答案提交。')).catch(() => undefined);
+        } else if (!pending && this.#isAnsweredInteraction(interactionId)) {
+          await reply(t('这个问题已经回答过了。')).catch(() => undefined);
         } else {
           await reply(INTERACTION_RESOLVED_TEXT()).catch(() => undefined);
         }
@@ -2611,6 +2643,27 @@ export class FeishuHarnessBridge {
     if (this.#cardKeys.size > 200) {
       const oldest = this.#cardKeys.keys().next().value;
       if (oldest !== undefined) this.#cardKeys.delete(oldest);
+    }
+  }
+
+  /**
+   * issue #162：已答状态卡的原地替换。patch 失败仅记录警告并明确降级——
+   * 回执缺失不应影响答案提交，也不得像 #sendCard 那样回退成发送新卡。
+   */
+  async #patchCardMessage(chatId, messageId, cardJson) {
+    if (!messageId) return null;
+    try {
+      const response = await this.#client.im.v1.message.patch({
+        path: { message_id: messageId },
+        data: { content: cardJson },
+      });
+      if (response?.code && response.code !== 0) {
+        throw new Error(`Feishu card update failed: ${response.msg || response.code}`);
+      }
+      return messageId;
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] answered-state card patch failed:', error?.message ?? error);
+      return null;
     }
   }
 
@@ -4386,11 +4439,17 @@ export class FeishuHarnessBridge {
             // issue #86：独立交互消息（提问/审批）会落在占位卡下方，呈现前
             // 先换卡，让最终答案落在交互消息之后的新流式卡上。
             onInteraction: async (interaction) => {
-              if ((interaction?.kind === 'question' || interaction?.kind === 'approval')
-                && typeof controller?.rotate === 'function') {
-                await controller.rotate();
+              try {
+                if ((interaction?.kind === 'question' || interaction?.kind === 'approval')
+                  && typeof controller?.rotate === 'function') {
+                  await controller.rotate();
+                }
+                await baseAskOptions.onInteraction(interaction);
+              } finally {
+                // issue #163：呈现完成（或失败）即解除换卡挂起，此后建的新卡
+                // 必然位于交互消息下方；interactionPresented 不存在时静默跳过。
+                controller?.interactionPresented?.();
               }
-              await baseAskOptions.onInteraction(interaction);
             },
             onUpdate: async (update) => {
               await controller.setContent(this.#progressText(update));
@@ -4586,13 +4645,34 @@ export class FeishuHarnessBridge {
     await this.#submitQuestionAnswer(pending, text, {
       chatId: event.message.chat_id,
       messageId,
+      questionMessageId: pending.questionCardMessageId,
     });
   }
 
-  async #submitQuestionAnswer(pending, answerText, { chatId, messageId } = {}) {
+  async #submitQuestionAnswer(pending, answerText, { chatId, messageId, questionMessageId } = {}) {
     const question = pending.questions[pending.index];
     if (!question) return;
     pending.chatId = chatId ?? pending.chatId;
+
+    // issue #162：已答状态卡以推进前的题号渲染，并整卡替换原提问卡。
+    const answeredIndex = pending.index;
+    const answeredCardJson = answeredQuestionCard({
+      interactionId: pending.interactionId,
+      // 评审补充（#162）：与呈现提问卡保持一致，传入原题的文本/标题/说明，
+      // 否则回执会退化为「请输入你的回答。」。
+      question: question.question,
+      header: question.header,
+      detail: question.detail,
+      options: Array.isArray(question?.options) ? question.options : [],
+      chosen: answerText,
+      index: answeredIndex,
+      total: pending.questions.length,
+    });
+    const patchAnsweredCard = () => this.#patchCardMessage(
+      pending.chatId,
+      questionMessageId ?? pending.questionCardMessageId,
+      answeredCardJson,
+    );
 
     pending.answers.push(harnessAnswerForQuestion(question, answerText));
     pending.index += 1;
@@ -4601,6 +4681,7 @@ export class FeishuHarnessBridge {
         pending.claimedReplyMessageId = null;
       }
       pending.needsPresentation = true;
+      await patchAnsweredCard();
       try {
         await this.#presentInteraction(pending);
       } catch {
@@ -4621,6 +4702,8 @@ export class FeishuHarnessBridge {
           answer: { answers: pending.answers },
         },
       });
+      await patchAnsweredCard();
+      this.#answeredInteractionIds.set(pending.interactionId, Date.now() + RESOLVED_REPLY_TTL_MS);
       this.#rememberResolvedInteraction(key, pending);
       this.#clearPendingInteraction(key, pending.interactionId);
       this.#status.lastError = null;
@@ -4757,6 +4840,7 @@ export class FeishuHarnessBridge {
       submitting: false,
       needsPresentation: true,
       questionMessageIds: new Set(),
+      questionCardMessageId: null,
       inactive: false,
     };
     this.#pendingInteractions.set(key, pending);
@@ -4786,6 +4870,10 @@ export class FeishuHarnessBridge {
       && options.length > 0
       && question.multiSelect !== true;
     let messageId;
+    let presentedAsCard = false;
+    // 评审补充（#162）：每次呈现先重置——本题走文本路径（或卡片回退到文本）
+    // 时不得沿用上一题的卡消息 id，否则后一题的回执会覆盖前一张已答卡。
+    pending.questionCardMessageId = null;
     if (interactive) {
       // Single-choice question with options: render each option as a button.
       messageId = await this.#sendCard(
@@ -4800,7 +4888,10 @@ export class FeishuHarnessBridge {
           total: pending.questions.length,
         }),
         { key: pending.key, replyTo: pending.replyToMessageId },
-      ).catch(async () => {
+      ).then((sent) => {
+        presentedAsCard = true;
+        return sent;
+      }).catch(async () => {
         // Fall back to the plain-text question if the card cannot be sent.
         // If the text send also fails, let the error propagate so the pending
         // question is not marked as presented and the existing retry logic runs.
@@ -4827,9 +4918,19 @@ export class FeishuHarnessBridge {
     }
     if (messageId) {
       pending.questionMessageIds.add(messageId);
+      // issue #162：仅卡片路径成功时记录——文本回退产生的消息 id 不参与已答回写。
+      if (presentedAsCard) pending.questionCardMessageId = messageId;
       if (pending.inactive) this.#rememberResolvedInteraction(pending.key, pending);
     }
     pending.needsPresentation = false;
+  }
+
+  #isAnsweredInteraction(interactionId) {
+    const now = Date.now();
+    for (const [id, expiresAt] of this.#answeredInteractionIds) {
+      if (expiresAt <= now) this.#answeredInteractionIds.delete(id);
+    }
+    return this.#answeredInteractionIds.has(interactionId);
   }
 
   #rememberResolvedInteraction(key, pending) {

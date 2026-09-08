@@ -207,6 +207,15 @@ export class VerifiedFeishuChannel {
     const cards = [];
     let activeCard = null;
     let rotating = false;
+    let awaitingPresentation = false;
+    // issue #163：过程写卡与换卡定格共用一条写队列串行化——在途写必然先于
+    // 定格完成，消除「写飞越定格」竞态；前序失败不阻塞后续写入。
+    let writeQueue = Promise.resolve();
+    const enqueue = (job) => {
+      const run = writeQueue.then(job, job);
+      writeQueue = run.catch(() => undefined);
+      return run;
+    };
     try {
       activeCard = await this.#createStreamCard(chatId, options);
       cards.push(activeCard);
@@ -215,6 +224,9 @@ export class VerifiedFeishuChannel {
       // 回写旧卡。rotate() 把旧卡定格为「过程记录 + 指引行」并标记换卡态；
       // 下一次 setContent（过程更新或最终答案）才创建新卡——新卡必然创建于
       // 交互消息之后。旧卡纳入 cards，参与 recall 与 providerMessageIds。
+      // issue #163：定格后进入换卡挂起（awaitingPresentation），挂起期内
+      // setContent 只推进快照、不建卡不写卡；bridge 呈现交互消息后调用
+      // interactionPresented() 解除挂起，此后建的新卡必然位于交互消息下方。
       const ensureActiveCard = async () => {
         if (!rotating) return activeCard;
         activeCard = await this.#createStreamCard(chatId, options);
@@ -222,44 +234,87 @@ export class VerifiedFeishuChannel {
         rotating = false;
         return activeCard;
       };
+      // issue #163：冻结前缀去重——换卡定格时旧卡已展示 frozenContent；此后
+      // 新卡只展示剥离该前缀后的增量（重放快照剥为空白则跳过写卡），终稿
+      // 分段同样使用增量视图，提问前的过程不再重复播放。
+      let frozenContent = null;
+      let postRotationView = null;
+      const applyFrozenDedup = (next) => {
+        if (frozenContent === null || !next.startsWith(frozenContent)) return next;
+        const rest = next.slice(frozenContent.length);
+        return rest.trim().length > 0 ? rest : ''; // 不改写增量原文；全空白视为无增量
+      };
+      // 评审补充（#163）：去重基线与定格内容必须以「旧卡实际展示的内容」为准——
+      // 超长快照的旧卡只展示了截断前缀，若冻结完整 lastContent，未展示的尾部
+      // 会被整段剥掉而丢失；再次换卡时旧卡展示的是上一轮增量，不得回写完整快照。
+      const shownPrefixOf = (text) => {
+        const notice = `\n\n${t('内容较长，生成完成后将分段发送完整回答。')}`;
+        return text.length <= MAX_STREAM_CHARS
+          ? text
+          : streamTextPrefix(text, MAX_STREAM_CHARS - notice.length);
+      };
       const controller = {
         get messageId() {
           return activeCard.messageId;
         },
-        rotate: async () => {
+        interactionPresented: () => {
+          awaitingPresentation = false;
+        },
+        rotate: () => enqueue(async () => {
           if (rotating) return;
           rotating = true;
+          awaitingPresentation = true;
+          const shown = postRotationView !== null && postRotationView.trim().length > 0
+            ? postRotationView
+            : lastContent;
+          const shownPrefix = shownPrefixOf(shown);
+          // 基线按轮拼接：已展示前缀 + 本卡增量，恰好是累计快照的前缀。
+          frozenContent = frozenContent === null ? shownPrefix : frozenContent + shownPrefix;
+          postRotationView = '';
           try {
             await this.#updateStreamCard(
               activeCard,
-              `${streamPreview(lastContent)}\n\n${t('⤵️ 最终结果见下方')}`,
+              `${streamPreview(shownPrefix)}\n\n${t('⤵️ 最终结果见下方')}`,
             );
             await this.#finishStreamCard(activeCard);
           } catch (error) {
             // 明确降级：定格失败不阻塞交互呈现，旧卡保留原内容。
             console.warn('[dsh-feishu] unable to finalize the superseded stream card:', error.message);
           }
-        },
-        setContent: async (content) => {
+        }),
+        setContent: (content) => enqueue(async () => {
           const next = String(content ?? '') || '…';
-          const card = await ensureActiveCard();
-          await this.#updateStreamCard(card, streamPreview(next));
-          // Updates are replaceable snapshots, including progress/tool text.
-          // Retain the full latest snapshot even when its preview is unchanged.
+          // 快照推进先于写卡：并发定格读取的是最新值。
           lastContent = next;
-        },
+          const visible = applyFrozenDedup(next);
+          if (frozenContent !== null) {
+            if (visible === '') return; // 无增量：不建卡不写卡（挂起与否则无关）
+            postRotationView = visible;
+          }
+          if (awaitingPresentation) return; // 换卡挂起：视图已推进，仅挂起卡片写入
+          const card = await ensureActiveCard();
+          await this.#updateStreamCard(card, streamPreview(visible));
+        }),
       };
 
       await input.markdown(controller);
-      const chunks = splitStreamContent(lastContent);
-      for (const [index, chunk] of chunks.entries()) {
-        const card = index === 0
-          ? await ensureActiveCard()
-          : await this.#createStreamCard(chatId, options);
-        if (index > 0) cards.push(card);
-        await this.#updateStreamCard(card, chunk);
-        await this.#finishStreamCard(card);
-      }
+      await enqueue(async () => {
+        // 终稿强制解除挂起：异常路径下呈现通知缺失时仍可收尾。
+        awaitingPresentation = false;
+        // 终稿使用增量视图；极端退化（增量全部为空）回退完整快照，宁重复不丢失。
+        const finalView = postRotationView !== null && postRotationView.trim().length > 0
+          ? postRotationView
+          : lastContent;
+        const chunks = splitStreamContent(finalView);
+        for (const [index, chunk] of chunks.entries()) {
+          const card = index === 0
+            ? await ensureActiveCard()
+            : await this.#createStreamCard(chatId, options);
+          if (index > 0) cards.push(card);
+          await this.#updateStreamCard(card, chunk);
+          await this.#finishStreamCard(card);
+        }
+      });
       return {
         messageId: cards[0].messageId,
         providerMessageIds: cards.map((card) => card.messageId),
