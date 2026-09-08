@@ -12,6 +12,7 @@ import {
   validAgentPresetPayload,
 } from './agent-preset-rpc.mjs';
 import { SET_MODEL_ENDPOINT, validModelPayload } from './model-setting-rpc.mjs';
+import { SET_HUMANIZE_ENDPOINT, validHumanizeSectionPayload } from './humanize-bot-rpc.mjs';
 
 export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   status: 'connection.status',
@@ -22,6 +23,7 @@ export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   setModel: SET_MODEL_ENDPOINT,
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
   setContextEnhancement: SET_CONTEXT_ENHANCEMENT_ENDPOINT,
+  setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
 });
 
@@ -84,6 +86,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === TOKEN_BOT_ENDPOINTS.setContextEnhancement) {
     return validContextEnhancementPayload(payload)
       ? null : '请提交有效的上下文增强设置。';
+  }
+  if (endpoint === TOKEN_BOT_ENDPOINTS.setHumanize) {
+    return validHumanizeSectionPayload(payload)
+      ? null : '请提交有效的拟人化设置。';
   }
   if (endpoint === TOKEN_BOT_ENDPOINTS.setAccessPolicy) {
     return validAccessPolicyPayload(payload)
@@ -176,6 +182,9 @@ export function createTokenBotRpcHandler(controller, { channel }) {
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.setContextEnhancement) {
         if (typeof controller.updateContextEnhancement !== 'function') throw new Error('Context enhancement update is unavailable');
         value = await controller.updateContextEnhancement(payload.botId, payload.config);
+      } else if (endpoint === TOKEN_BOT_ENDPOINTS.setHumanize) {
+        if (typeof controller.updateHumanize !== 'function') throw new Error('Humanization update is unavailable');
+        value = await controller.updateHumanize(payload.botId, payload.humanize);
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.setAccessPolicy) {
         if (typeof controller.updateAccessPolicy !== 'function') throw new Error('Access policy update is unavailable');
         value = await controller.updateAccessPolicy(payload.botId, payload.policy);

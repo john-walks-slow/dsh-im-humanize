@@ -29,6 +29,7 @@ import {
   accessPolicyProvider,
   initialAccessPolicyFor,
 } from '../shared/access-policy-production.mjs';
+import { createHumanizeProvider } from '../shared/humanize-provider.mjs';
 
 function pluginPaths(config) {
   const dshHome = resolve(config.dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh'));
@@ -133,6 +134,11 @@ export async function createProductionController(ctx, config = {}, internals = {
         harness: workspaceScope.harness,
         state: workspaceScope.state,
         contextEnhancement: { botId, getSettings: () => workspaces.contextEnhancementFor(botId) },
+        humanize: createHumanizeProvider({
+          defaults: () => config.humanizeDefaults?.('dingtalk'),
+          workspaces,
+          botId: botId,
+        }),
         accessPolicy: accessPolicyProvider(workspaces, botId, {
           channel: 'dingtalk', config: botConfig,
         }),
@@ -169,6 +175,9 @@ export async function createProductionController(ctx, config = {}, internals = {
     stateFor,
     agentPresetCatalog,
     modelCatalog,
+    // Live global humanize defaults: snapshot-level prefill for per-bot
+    // editors and the inherit base for override writes.
+    humanizeDefaults: () => config.humanizeDefaults?.('dingtalk'),
   });
   const supervisor = createSupervisor({
     controller,

@@ -56,6 +56,12 @@ import {
   workspacePathSnapshot,
 } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
+import {
+  applyReadDelay,
+  applySegmentGap,
+  SHORT_DELAY_CAP_MS,
+} from '../shared/send-delay.mjs';
+import { resolveHumanizeSettings } from '../shared/humanize-resolver.mjs';
 import { createDeferredDeliveryCoordinator, deferredOutcomeText } from '../shared/deferred-delivery-coordinator.mjs';
 import { captureContextEnhancement, enhanceContextContent } from '../shared/context-enhancement.mjs';
 import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
@@ -613,6 +619,13 @@ export class FeishuHarnessBridge {
   #messageBreak = true;
   /** onNewMessage policy: interrupt (default) | queue | steer. */
   #onNewMessage = 'interrupt';
+  // Live per-turn settings provider; falls back to ctor snapshot.
+  #humanize = null;
+  // Pre-ask controllers: alive only while a turn is in its silent read
+  // delay / image staging; aborting supersedes that turn.
+  #preAskControllers = new Map();
+  // Wall-clock end of the last completed turn per conversation (idle boost).
+  #turnEnds = new Map();
 
   constructor({
     client,
@@ -632,6 +645,7 @@ export class FeishuHarnessBridge {
     streaming = true,
     messageBreak = false,
     onNewMessage = 'interrupt',
+    humanize = null,
     stepPushClock = null,
     repair,
     repairPollIntervalMs = REPAIR_POLL_INTERVAL_MS,
@@ -690,6 +704,7 @@ export class FeishuHarnessBridge {
     this.#messageBreak = messageBreak === true;
     this.#streaming = streaming !== false;
     this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
+    this.#humanize = humanize ?? null;
     this.#logger = logger;
     this.#approvals = new HarnessApprovalQueue({ label: 'Feishu', logger });
     this.#signal = signal;
@@ -1108,6 +1123,10 @@ export class FeishuHarnessBridge {
       onNewMessage: this.#onNewMessage,
     });
     if (policy === 'interrupt') {
+      // Supersede any silent pre-ask phase first: stopActiveTurn cannot
+      // cancel a turn that has not reached the harness yet (unconditional,
+      // not gated by sendDelay.enabled).
+      this.#abortPreAskPhase(key);
       const current = this.#enqueueMessage(event, messageId, key, processingReaction);
       fireAndForgetStop({
         session: this.#boundSession(key),
@@ -1263,6 +1282,13 @@ export class FeishuHarnessBridge {
   }
 
   async #handleMessageFailure(event, messageId, processingReaction, error) {
+    if (error?.code === 'superseded') {
+      // Superseded by a newer message (interrupt) or /stop before this turn
+      // reached the harness: silent — no failure text; the newer turn
+      // already owns this conversation.
+      await this.#removeProcessingReaction(messageId, processingReaction);
+      return;
+    }
     if (error?.code === 'turn-stopped') {
       await this.#removeProcessingReaction(messageId, processingReaction);
       if (error?.batchInputMessage) {
@@ -1350,6 +1376,7 @@ export class FeishuHarnessBridge {
         hasFiles: hasInboundFiles(message),
         pendingInteraction: this.#hasPendingInteraction(key),
         control: { owner: this, key },
+        abortPreAsk: () => this.#abortPreAskPhase(key),
       },
     );
     if (result?.stopped) {
@@ -3947,7 +3974,30 @@ export class FeishuHarnessBridge {
    * 过程（工具调用、助手中间说明）与最终答案均以富文本 post 逐条直推
    * （工具参数折叠为代码块）；post 失败走既有纯文本降级。
    */
-  async #answerWithStepPush(event, key, message, { onAskComplete } = {}) {
+  #humanizeSettings() {
+    return resolveHumanizeSettings({
+      humanize: this.#humanize,
+      streaming: this.#streaming,
+      messageBreak: this.#messageBreak,
+      onNewMessage: this.#onNewMessage,
+    });
+  }
+
+  #abortPreAskPhase(key) {
+    const controller = this.#preAskControllers.get(key);
+    if (!controller) return false;
+    const reason = new Error('已由更新的消息接替。');
+    reason.code = 'superseded';
+    controller.abort(reason);
+    return true;
+  }
+
+  #idleMsFor(key) {
+    const lastTurnEnd = this.#turnEnds.get(key);
+    return lastTurnEnd === undefined ? 0 : Date.now() - lastTurnEnd;
+  }
+
+  async #answerWithStepPush(event, key, message, { onAskComplete, preAskSignal = null } = {}) {
     const chatId = event.message.chat_id;
     const messageId = event.message.message_id;
     const text = message.content;
@@ -3961,7 +4011,10 @@ export class FeishuHarnessBridge {
     // 的上下文增强按原样重放。直推分流发生在 `#answerWithStream` 构造之前，
     // 这里就是本回合唯一一次构造（无重复的 prompt 往返）。
     let content = hasInboundImages(message) || hasReplyReference(message)
-      ? await promptContentForInboundMessage(message, { signal: this.#signal })
+      ? await promptContentForInboundMessage(
+        message,
+        { signal: preAskSignal ?? this.#signal },
+      )
       : undefined;
     const snapshot = this.#acceptedMessageIds.get(messageId);
     let contextEnhanced = false;
@@ -4202,172 +4255,260 @@ export class FeishuHarnessBridge {
     const chatId = event.message.chat_id;
     const messageId = event.message.message_id;
     const text = message.content;
-    let askCompleted = false;
-    const markAskComplete = () => {
-      if (askCompleted) return;
-      askCompleted = true;
-      onAskComplete?.();
-    };
-    // 分步直推：开关开启且通道支持流式卡时，在构造提示内容之前分流到完整替
-    // 代路径（`#answerWithStepPush` 自行构造一次，回复引用回合不做第二次
-    // promptContentForInboundMessage 往返）；关闭或无流式卡通道时与 main
-    // 零差异（含下方 `!this.#channel?.stream` 纯文本路径）。
-    if (this.#stepPush && this.#channel?.stream) {
-      return this.#answerWithStepPush(event, key, message, { onAskComplete });
-    }
-    let content = hasInboundImages(message) || hasReplyReference(message)
-      ? await promptContentForInboundMessage(message, { signal: this.#signal })
-      : undefined;
-    const snapshot = this.#acceptedMessageIds.get(messageId);
-    let contextEnhanced = false;
-    if (snapshot) {
-      const originalContent = content ?? text;
-      content = enhanceContextContent(originalContent, snapshot, () => ({
-        channel: 'feishu',
-        senderId: senderOpenId(event),
-        chatId: event.message.chat_id,
-        threadId: event.message.thread_id,
-      }));
-      contextEnhanced = content !== originalContent;
-    }
-    if (!this.#channel?.stream || !this.#streaming) {
-      // Create message_break handler for the plain text path.
-      const messageBreakHandler = this.#messageBreak
-        ? createMessageBreakHandler({
-          sendSegment: async (segmentText) => {
-            await this.#sendAnswerText(
-              chatId,
-              segmentText,
-              { deliveryId: messageId, presentation: 'feishu-text', replyTo: messageId },
-            );
-          },
-          logger: this.#logger,
-        })
-        : null;
-      const { answer, artifacts = [] } = await askInWorkspaceSession({
-        deferredDelivery: () => ({ coordinator: this.#deferred, chatId, replyToMessageId: messageId }),
-        harness: this.#harness,
-        state: this.#state,
-        key,
-        text,
-        content,
-        contextEnhanced,
-        createOptions: { signal: this.#signal },
-        existsOptions: { signal: this.#signal },
-        askOptions: {
-          ...this.#interactionAskOptions(event, key, message.files),
-          ...(messageBreakHandler ? {
-            onUpdate: async (update) => {
-              await messageBreakHandler.handleUpdate(update);
-            },
-          } : {}),
-        },
+    const humanize = this.#humanizeSettings();
+    // ---- Phase ①: read delay（"过了一段时间才读到消息"）----
+    // Silent: no card, no reply. Abortable: a newer message (interrupt) or
+    // /stop supersedes the phase instead of waiting it out. Feishu has no
+    // typing API, so the wait is capped (SHORT_DELAY_CAP_MS).
+    const preAsk = new AbortController();
+    this.#preAskControllers.set(key, preAsk);
+    const preAskSignal = this.#signal
+      ? AbortSignal.any([this.#signal, preAsk.signal])
+      : preAsk.signal;
+    try {
+      await applyReadDelay({
+        settings: humanize,
+        userText: text,
+        idleMs: this.#idleMsFor(key),
+        channelCapMs: SHORT_DELAY_CAP_MS,
+        signal: preAskSignal,
       });
-      markAskComplete();
-      // When message_break sent segments, the final message is only the
-      // remaining text after the last break point.
-      const deliveryText = messageBreakHandler?.hasBreaks()
-        ? messageBreakHandler.remainingText(answerTextForDelivery(answer, artifacts))
-        : answerTextForDelivery(answer, artifacts);
-      let textReceipt;
-      let textSendError = null;
-      try {
-        // Skip sending an empty final message when all text was sent as segments.
-        if (messageBreakHandler?.hasBreaks() && !deliveryText.trim()) {
-          // Artifacts (if any) are delivered separately.
-        } else {
-          textReceipt = await this.#sendAnswerText(
-            chatId,
-            deliveryText,
-            {
-              deliveryId: messageId,
-              presentation: 'feishu-text',
-              replyTo: messageId,
+      if (preAsk.signal.aborted) {
+        const superseded = new Error('superseded by a newer message');
+        superseded.code = 'superseded';
+        throw superseded;
+      }
+      let askCompleted = false;
+      const markAskComplete = () => {
+        if (askCompleted) return;
+        askCompleted = true;
+        onAskComplete?.();
+      };
+      // 分步直推：开关开启且通道支持流式卡时，在构造提示内容之前分流到完整替
+      // 代路径（`#answerWithStepPush` 自行构造一次，回复引用回合不做第二次
+      // promptContentForInboundMessage 往返）；关闭或无流式卡通道时与 main
+      // 零差异（含下方 `!this.#channel?.stream` 纯文本路径）。
+      if (this.#stepPush && this.#channel?.stream) {
+        return this.#answerWithStepPush(event, key, message, { onAskComplete, preAskSignal });
+      }
+      // Image staging stays inside the pre-ask window: interrupting it
+      // must supersede cleanly instead of producing a double reply.
+      let content = hasInboundImages(message) || hasReplyReference(message)
+        ? await promptContentForInboundMessage(message, { signal: preAskSignal })
+        : undefined;
+      const snapshot = this.#acceptedMessageIds.get(messageId);
+      let contextEnhanced = false;
+      if (snapshot) {
+        const originalContent = content ?? text;
+        content = enhanceContextContent(originalContent, snapshot, () => ({
+          channel: 'feishu',
+          senderId: senderOpenId(event),
+          chatId: event.message.chat_id,
+          threadId: event.message.thread_id,
+        }));
+        contextEnhanced = content !== originalContent;
+      }
+      if (!this.#channel?.stream || !this.#streaming) {
+        // Create message_break handler for the plain text path. Segment
+        // gaps ("typing the next message") pause between segments.
+        let segmentsSent = 0;
+        const messageBreakHandler = humanize.messageBreak
+          ? createMessageBreakHandler({
+            sendSegment: async (segmentText) => {
+              if (segmentsSent > 0) {
+                await applySegmentGap({
+                  settings: humanize,
+                  segmentText,
+                  signal: this.#signal,
+                });
+              }
+              segmentsSent += 1;
+              await this.#sendAnswerText(
+                chatId,
+                segmentText,
+                { deliveryId: messageId, presentation: 'feishu-text', replyTo: messageId },
+              );
             },
+            logger: this.#logger,
+          })
+          : null;
+        const { answer, artifacts = [] } = await askInWorkspaceSession({
+          deferredDelivery: () => ({ coordinator: this.#deferred, chatId, replyToMessageId: messageId }),
+          harness: this.#harness,
+          state: this.#state,
+          key,
+          text,
+          content,
+          contextEnhanced,
+          createOptions: { signal: this.#signal },
+          existsOptions: { signal: this.#signal },
+          askOptions: {
+            ...this.#interactionAskOptions(event, key, message.files),
+            ...(messageBreakHandler ? {
+              onUpdate: async (update) => {
+                await messageBreakHandler.handleUpdate(update);
+              },
+            } : {}),
+          },
+        });
+        markAskComplete();
+        // When message_break sent segments, the final message is only the
+        // remaining text after the last break point.
+        const deliveryText = messageBreakHandler?.hasBreaks()
+          ? messageBreakHandler.remainingText(answerTextForDelivery(answer, artifacts))
+          : answerTextForDelivery(answer, artifacts);
+        let textReceipt;
+        let textSendError = null;
+        try {
+          // Skip sending an empty final message when all text was sent as segments.
+          if (messageBreakHandler?.hasBreaks() && !deliveryText.trim()) {
+            // Artifacts (if any) are delivered separately.
+          } else {
+            textReceipt = await this.#sendAnswerText(
+              chatId,
+              deliveryText,
+              {
+                deliveryId: messageId,
+                presentation: 'feishu-text',
+                replyTo: messageId,
+              },
+            );
+          }
+        } catch (error) {
+          textSendError = channelDeliveryFailure(error);
+          this.#logger.warn?.(
+            '[dsh-feishu] final text delivery failed; continuing with result files:',
+            error,
           );
         }
-      } catch (error) {
-        textSendError = channelDeliveryFailure(error);
-        this.#logger.warn?.(
-          '[dsh-feishu] final text delivery failed; continuing with result files:',
-          error,
+        const delivery = await this.#deliverArtifacts(chatId, messageId, artifacts, textReceipt);
+        const artifactDispatched = delivery.receipt.artifacts.some(
+          ({ outcome }) => outcome === 'sent' || outcome === 'unknown',
         );
+        if (textSendError && !artifactDispatched && !delivery.failureNoticeVisible) {
+          throw textSendError;
+        }
+        if (textSendError && delivery.artifactSendErrors === 0) {
+          setLastMessageFailure(this.#status, textSendError);
+        }
+        this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
+        return { ...delivery, textDeliveryErrors: textSendError ? 1 : 0 };
       }
-      const delivery = await this.#deliverArtifacts(chatId, messageId, artifacts, textReceipt);
-      const artifactDispatched = delivery.receipt.artifacts.some(
-        ({ outcome }) => outcome === 'sent' || outcome === 'unknown',
-      );
-      if (textSendError && !artifactDispatched && !delivery.failureNoticeVisible) {
-        throw textSendError;
-      }
-      if (textSendError && delivery.artifactSendErrors === 0) {
-        setLastMessageFailure(this.#status, textSendError);
-      }
-      this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
-      return { ...delivery, textDeliveryErrors: textSendError ? 1 : 0 };
-    }
 
-    let promptStarted = false;
-    let completedAnswer = '';
-    let completedArtifacts = [];
-    let stream;
-    try {
-      stream = await this.#channel.stream(chatId, {
-        markdown: async (controller) => {
-          promptStarted = true;
-          const baseAskOptions = this.#interactionAskOptions(event, key, message.files);
-          const askOptions = {
-            ...baseAskOptions,
-            // issue #86：独立交互消息（提问/审批）会落在占位卡下方，呈现前
-            // 先换卡，让最终答案落在交互消息之后的新流式卡上。
-            onInteraction: async (interaction) => {
-              if ((interaction?.kind === 'question' || interaction?.kind === 'approval')
-                && typeof controller?.rotate === 'function') {
-                await controller.rotate();
-              }
-              await baseAskOptions.onInteraction(interaction);
-            },
-            onUpdate: async (update) => {
-              await controller.setContent(this.#progressText(update));
-              this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
-            },
-          };
-          const completed = await askInWorkspaceSession({
-            deferredDelivery: () => ({ coordinator: this.#deferred, chatId, replyToMessageId: messageId }),
-            harness: this.#harness,
-            state: this.#state,
-            key,
-            text,
-            content,
-            contextEnhanced,
-            createOptions: { signal: this.#signal },
-            existsOptions: { signal: this.#signal },
-            askOptions,
-          });
-          markAskComplete();
-          completedAnswer = completed.answer;
-          completedArtifacts = completed.artifacts ?? [];
-          await controller.setContent(answerTextForDelivery(completedAnswer, completedArtifacts));
-        },
-      }, {
-        replyTo: messageId,
-        ...(this.#replyInThreadFor(messageId)
-          ? { replyInThread: true, onReplyThreadId: async (threadId) => this.#registerTopicThreadId(threadId, messageId, chatId) }
-          : {}),
-      });
-    } catch (error) {
-      this.#status.streamErrors = (this.#status.streamErrors ?? 0) + 1;
-      if (completedAnswer || completedArtifacts.length > 0) {
-        this.#logger.warn?.(
-          '[dsh-feishu] native stream failed after generation; sending final text:',
-          error.message,
-        );
+      let promptStarted = false;
+      let completedAnswer = '';
+      let completedArtifacts = [];
+      let stream;
+      try {
+        stream = await this.#channel.stream(chatId, {
+          markdown: async (controller) => {
+            promptStarted = true;
+            const baseAskOptions = this.#interactionAskOptions(event, key, message.files);
+            const askOptions = {
+              ...baseAskOptions,
+              // issue #86：独立交互消息（提问/审批）会落在占位卡下方，呈现前
+              // 先换卡，让最终答案落在交互消息之后的新流式卡上。
+              onInteraction: async (interaction) => {
+                if ((interaction?.kind === 'question' || interaction?.kind === 'approval')
+                  && typeof controller?.rotate === 'function') {
+                  await controller.rotate();
+                }
+                await baseAskOptions.onInteraction(interaction);
+              },
+              onUpdate: async (update) => {
+                await controller.setContent(this.#progressText(update));
+                this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
+              },
+            };
+            const completed = await askInWorkspaceSession({
+              deferredDelivery: () => ({ coordinator: this.#deferred, chatId, replyToMessageId: messageId }),
+              harness: this.#harness,
+              state: this.#state,
+              key,
+              text,
+              content,
+              contextEnhanced,
+              createOptions: { signal: this.#signal },
+              existsOptions: { signal: this.#signal },
+              askOptions,
+            });
+            markAskComplete();
+            completedAnswer = completed.answer;
+            completedArtifacts = completed.artifacts ?? [];
+            await controller.setContent(answerTextForDelivery(completedAnswer, completedArtifacts));
+          },
+        }, {
+          replyTo: messageId,
+          ...(this.#replyInThreadFor(messageId)
+            ? { replyInThread: true, onReplyThreadId: async (threadId) => this.#registerTopicThreadId(threadId, messageId, chatId) }
+            : {}),
+        });
+      } catch (error) {
+        this.#status.streamErrors = (this.#status.streamErrors ?? 0) + 1;
+        if (completedAnswer || completedArtifacts.length > 0) {
+          this.#logger.warn?.(
+            '[dsh-feishu] native stream failed after generation; sending final text:',
+            error.message,
+          );
+          let textReceipt;
+          let textSendError = null;
+          try {
+            textReceipt = await this.#sendAnswerText(
+              chatId,
+              answerTextForDelivery(completedAnswer, completedArtifacts),
+              {
+                deliveryId: messageId,
+                presentation: 'feishu-text-fallback',
+                replyTo: messageId,
+              },
+            );
+          } catch (fallbackError) {
+            textSendError = channelDeliveryFailure(fallbackError);
+            this.#logger.warn?.(
+              '[dsh-feishu] fallback text delivery failed; continuing with result files:',
+              fallbackError,
+            );
+          }
+          const delivery = await this.#deliverArtifacts(
+            chatId,
+            messageId,
+            completedArtifacts,
+            textReceipt,
+          );
+          const artifactDispatched = delivery.receipt.artifacts.some(
+            ({ outcome }) => outcome === 'sent' || outcome === 'unknown',
+          );
+          if (textSendError && !artifactDispatched && !delivery.failureNoticeVisible) {
+            throw textSendError;
+          }
+          if (textSendError && delivery.artifactSendErrors === 0) {
+            setLastMessageFailure(this.#status, textSendError);
+          }
+          this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
+          return { ...delivery, textDeliveryErrors: textSendError ? 1 : 0 };
+        }
+        if (promptStarted) throw error;
+
+        this.#logger.warn?.('[dsh-feishu] native stream unavailable; using text fallback:', error.message);
+        const { answer, artifacts = [] } = await askInWorkspaceSession({
+          deferredDelivery: () => ({ coordinator: this.#deferred, chatId, replyToMessageId: messageId }),
+          harness: this.#harness,
+          state: this.#state,
+          key,
+          text,
+          content,
+          contextEnhanced,
+          createOptions: { signal: this.#signal },
+          existsOptions: { signal: this.#signal },
+          askOptions: this.#interactionAskOptions(event, key, message.files),
+        });
+        markAskComplete();
         let textReceipt;
         let textSendError = null;
         try {
           textReceipt = await this.#sendAnswerText(
             chatId,
-            answerTextForDelivery(completedAnswer, completedArtifacts),
+            answerTextForDelivery(answer, artifacts),
             {
               deliveryId: messageId,
               presentation: 'feishu-text-fallback',
@@ -4381,12 +4522,7 @@ export class FeishuHarnessBridge {
             fallbackError,
           );
         }
-        const delivery = await this.#deliverArtifacts(
-          chatId,
-          messageId,
-          completedArtifacts,
-          textReceipt,
-        );
+        const delivery = await this.#deliverArtifacts(chatId, messageId, artifacts, textReceipt);
         const artifactDispatched = delivery.receipt.artifacts.some(
           ({ outcome }) => outcome === 'sent' || outcome === 'unknown',
         );
@@ -4399,66 +4535,24 @@ export class FeishuHarnessBridge {
         this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
         return { ...delivery, textDeliveryErrors: textSendError ? 1 : 0 };
       }
-      if (promptStarted) throw error;
-
-      this.#logger.warn?.('[dsh-feishu] native stream unavailable; using text fallback:', error.message);
-      const { answer, artifacts = [] } = await askInWorkspaceSession({
-        deferredDelivery: () => ({ coordinator: this.#deferred, chatId, replyToMessageId: messageId }),
-        harness: this.#harness,
-        state: this.#state,
-        key,
-        text,
-        content,
-        contextEnhanced,
-        createOptions: { signal: this.#signal },
-        existsOptions: { signal: this.#signal },
-        askOptions: this.#interactionAskOptions(event, key, message.files),
-      });
-      markAskComplete();
-      let textReceipt;
-      let textSendError = null;
-      try {
-        textReceipt = await this.#sendAnswerText(
-          chatId,
-          answerTextForDelivery(answer, artifacts),
-          {
-            deliveryId: messageId,
-            presentation: 'feishu-text-fallback',
-            replyTo: messageId,
-          },
-        );
-      } catch (fallbackError) {
-        textSendError = channelDeliveryFailure(fallbackError);
-        this.#logger.warn?.(
-          '[dsh-feishu] fallback text delivery failed; continuing with result files:',
-          fallbackError,
-        );
-      }
-      const delivery = await this.#deliverArtifacts(chatId, messageId, artifacts, textReceipt);
-      const artifactDispatched = delivery.receipt.artifacts.some(
-        ({ outcome }) => outcome === 'sent' || outcome === 'unknown',
+      const delivery = await this.#deliverArtifacts(
+        chatId,
+        messageId,
+        completedArtifacts,
+        createDeliveryReceipt({
+          deliveryId: messageId,
+          presentation: 'feishu-cardkit',
+          providerMessageIds: providerMessageIdsFor(stream),
+        }),
       );
-      if (textSendError && !artifactDispatched && !delivery.failureNoticeVisible) {
-        throw textSendError;
+      this.#status.streamResponses = (this.#status.streamResponses ?? 0) + 1;
+      return delivery;
+    } finally {
+      if (this.#preAskControllers.get(key) === preAsk) {
+        this.#preAskControllers.delete(key);
       }
-      if (textSendError && delivery.artifactSendErrors === 0) {
-        setLastMessageFailure(this.#status, textSendError);
-      }
-      this.#status.streamFallbacks = (this.#status.streamFallbacks ?? 0) + 1;
-      return { ...delivery, textDeliveryErrors: textSendError ? 1 : 0 };
+      this.#turnEnds.set(key, Date.now());
     }
-    const delivery = await this.#deliverArtifacts(
-      chatId,
-      messageId,
-      completedArtifacts,
-      createDeliveryReceipt({
-        deliveryId: messageId,
-        presentation: 'feishu-cardkit',
-        providerMessageIds: providerMessageIdsFor(stream),
-      }),
-    );
-    this.#status.streamResponses = (this.#status.streamResponses ?? 0) + 1;
-    return delivery;
   }
 
   async #processInteractionReply(event, messageId, key, expected, processingReaction) {

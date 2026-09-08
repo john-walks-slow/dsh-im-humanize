@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import { publicConnectionTestResult } from '../../../../src/channels/shared/connection-test.mjs';
 import { SET_ACCESS_POLICY_ENDPOINT, validAccessPolicyPayload } from '../shared/access-policy-rpc.mjs';
 import { SET_CONTEXT_ENHANCEMENT_ENDPOINT, validContextEnhancementPayload } from '../shared/context-enhancement-rpc.mjs';
+import { SET_HUMANIZE_ENDPOINT, validHumanizeSectionPayload } from '../shared/humanize-bot-rpc.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, SET_WORKSPACE_ENDPOINT, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
 import { SET_AGENT_PRESET_ENDPOINT, validAgentPresetPayload } from '../shared/agent-preset-rpc.mjs';
@@ -21,6 +22,7 @@ export const WHATSAPP_ENDPOINTS = Object.freeze({
   setModel: SET_MODEL_ENDPOINT,
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
   setContextEnhancement: SET_CONTEXT_ENHANCEMENT_ENDPOINT,
+  setHumanize: SET_HUMANIZE_ENDPOINT,
 });
 export const WHATSAPP_RPC_ENDPOINTS = Object.freeze(Object.values(WHATSAPP_ENDPOINTS));
 
@@ -74,6 +76,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === WHATSAPP_ENDPOINTS.setContextEnhancement) {
     return validContextEnhancementPayload(payload)
       ? null : '请提交有效的上下文增强设置。';
+  }
+  if (endpoint === WHATSAPP_ENDPOINTS.setHumanize) {
+    return validHumanizeSectionPayload(payload)
+      ? null : '请提交有效的拟人化设置。';
   }
   return 'Unknown WhatsApp endpoint.';
 }
@@ -193,6 +199,11 @@ export function createWhatsappRpcHandler(controller, { encodeQr = qrDataUrl } = 
         value = await publicStatus(
           await controller.updateAgentPreset(payload.botId, payload.agentPreset),
           cachedEncode,
+        );
+      } else if (endpoint === WHATSAPP_ENDPOINTS.setHumanize) {
+        if (typeof controller.updateHumanize !== 'function') throw new Error('Humanization update is unavailable');
+        value = await controller.updateHumanize(
+          payload.botId, payload.humanize, (status) => publicStatus(status, cachedEncode),
         );
       } else if (endpoint === WHATSAPP_ENDPOINTS.setAccessPolicy) {
         if (typeof controller.updateAccessPolicy !== 'function') throw new Error('Access policy update is unavailable');

@@ -1,4 +1,5 @@
 import { SET_CONTEXT_ENHANCEMENT_ENDPOINT, validContextEnhancementPayload } from '../shared/context-enhancement-rpc.mjs';
+import { SET_HUMANIZE_ENDPOINT, validHumanizeSectionPayload } from '../shared/humanize-bot-rpc.mjs';
 import { SET_ACCESS_POLICY_ENDPOINT, validAccessPolicyPayload } from '../shared/access-policy-rpc.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicConnectionTestResult } from '../../../../src/channels/shared/connection-test.mjs';
@@ -23,6 +24,7 @@ export const SLACK_ENDPOINTS = Object.freeze({
   setModel: SET_MODEL_ENDPOINT,
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
   setContextEnhancement: SET_CONTEXT_ENHANCEMENT_ENDPOINT,
+  setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
 });
 export const SLACK_RPC_ENDPOINTS = Object.freeze(Object.values(SLACK_ENDPOINTS));
@@ -87,6 +89,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === SLACK_ENDPOINTS.setContextEnhancement) {
     return validContextEnhancementPayload(payload)
       ? null : '请提交有效的上下文增强设置。';
+  }
+  if (endpoint === SLACK_ENDPOINTS.setHumanize) {
+    return validHumanizeSectionPayload(payload)
+      ? null : '请提交有效的拟人化设置。';
   }
   if (endpoint === SLACK_ENDPOINTS.setAccessPolicy) {
     return validAccessPolicyPayload(payload)
@@ -178,6 +184,10 @@ export function createSlackRpcHandler(controller) {
       else if (endpoint === SLACK_ENDPOINTS.setContextEnhancement) {
         if (typeof controller.updateContextEnhancement !== 'function') throw new Error('Context enhancement update is unavailable');
         value = await controller.updateContextEnhancement(payload.botId, payload.config);
+      }
+      else if (endpoint === SLACK_ENDPOINTS.setHumanize) {
+        if (typeof controller.updateHumanize !== 'function') throw new Error('Humanization update is unavailable');
+        value = await controller.updateHumanize(payload.botId, payload.humanize);
       }
       else if (endpoint === SLACK_ENDPOINTS.setAccessPolicy) {
         if (typeof controller.updateAccessPolicy !== 'function') throw new Error('Access policy update is unavailable');

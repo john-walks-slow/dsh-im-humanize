@@ -158,6 +158,7 @@ function createBridge({
   signal,
   logger,
   reactions,
+  humanize,
 } = {}) {
   return new TextHarnessBridge({
     descriptor: { key: 'test', label: 'Test', reactions },
@@ -166,6 +167,7 @@ function createBridge({
     state,
     signal,
     logger: logger ?? { warn() {}, error() {} },
+    humanize,
   });
 }
 
@@ -1653,6 +1655,12 @@ test('shared text streaming finalizes once before delivering result files', asyn
   const order = [];
   const bridge = createBridge({
     state: fixture.state,
+    // Pinned to 'off': with the default burst session this assertion would
+    // depend on the fragile coupling of "the first fire is synchronous and
+    // the refresh timers never tick within the test window". The burst
+    // ordering itself is covered by the typing-session unit tests and the
+    // bridge burst-order test below.
+    humanize: { getSettings: () => ({ typingIndicator: 'off' }) },
     bot: {
       sendText: async (_target, text) => order.push(`text:${text}`),
       sendTyping: async () => order.push('typing'),
@@ -1680,7 +1688,6 @@ test('shared text streaming finalizes once before delivering result files', asyn
   const receipt = await bridge.accept(message('artifact-stream', '流式生成文件'));
 
   assert.deepEqual(order, [
-    'typing',
     'open',
     'update:处理中',
     'finish:流式回答完成',

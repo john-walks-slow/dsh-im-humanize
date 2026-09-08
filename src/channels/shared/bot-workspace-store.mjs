@@ -29,6 +29,11 @@ import {
   sameModelSelection,
   validateModelSelection,
 } from './model-setting.mjs';
+import {
+  normalizeHumanizeOverride,
+  validateHumanizeOverrideSection,
+} from './humanize-override.mjs';
+import { normalizeSendDelayConfig } from './send-delay.mjs';
 import { WORKSPACE_SESSION_STALE } from './workspace-session.mjs';
 
 const DELIVERY_DOCUMENT_VERSION = 2;
@@ -247,6 +252,16 @@ function normalizeDocument(value) {
       }
     }
   }
+  const humanize = Object.create(null);
+  if (value.humanize && typeof value.humanize === 'object'
+    && !Array.isArray(value.humanize)) {
+    for (const [botId, section] of Object.entries(value.humanize)) {
+      if (/^[A-Za-z0-9_-]{1,128}$/.test(botId)) {
+        const override = normalizeHumanizeOverride(section);
+        if (override) humanize[botId] = override;
+      }
+    }
+  }
   if (value.version === 1 && value.deliveryTargets !== undefined) return null;
   const deliveryTargets = normalizeDeliveryTargets(value.deliveryTargets, { version: value.version });
   if (!deliveryTargets) return null;
@@ -263,6 +278,7 @@ function normalizeDocument(value) {
     agentPresets,
     models,
     contextEnhancement,
+    humanize,
     deliveryTargets,
     accessPolicies,
   };
@@ -274,6 +290,7 @@ function storedDocument({
   agentPresets,
   models,
   contextEnhancement,
+  humanize,
   deliveryTargets,
   accessPolicies,
 }) {
@@ -283,6 +300,7 @@ function storedDocument({
   if (Object.keys(contextEnhancement).length > 0) {
     document.contextEnhancement = contextEnhancement;
   }
+  if (Object.keys(humanize).length > 0) document.humanize = humanize;
   if (version >= DELIVERY_DOCUMENT_VERSION && Object.keys(deliveryTargets).length > 0) {
     document.deliveryTargets = deliveryTargets;
   }
@@ -333,6 +351,7 @@ export class BotWorkspaceStore {
   #agentPresets = {};
   #models = {};
   #contextEnhancement = {};
+  #humanize = Object.create(null);
   #deliveryTargets = Object.create(null);
   #accessPolicies = Object.create(null);
   #generations = new Map();
@@ -360,6 +379,7 @@ export class BotWorkspaceStore {
       this.#agentPresets = normalized.agentPresets;
       this.#models = normalized.models;
       this.#contextEnhancement = normalized.contextEnhancement;
+      this.#humanize = normalized.humanize;
       this.#deliveryTargets = normalized.deliveryTargets;
       this.#accessPolicies = normalized.accessPolicies;
     } catch (error) {
@@ -369,6 +389,7 @@ export class BotWorkspaceStore {
       this.#agentPresets = {};
       this.#models = {};
       this.#contextEnhancement = {};
+      this.#humanize = Object.create(null);
       this.#deliveryTargets = Object.create(null);
       this.#accessPolicies = Object.create(null);
     }
@@ -418,6 +439,18 @@ export class BotWorkspaceStore {
     return this.has(id) && Object.hasOwn(this.#contextEnhancement, id)
       ? this.#contextEnhancement[id]
       : DEFAULT_CONTEXT_ENHANCEMENT_CONFIG;
+  }
+
+  /**
+   * Per-bot humanization override section, or null when the bot follows
+   * the resolved global defaults. Returns a copy: callers must not mutate
+   * the stored section.
+   */
+  humanizeFor(botId) {
+    const id = botIdOf(botId);
+    return this.has(id) && Object.hasOwn(this.#humanize, id)
+      ? { ...this.#humanize[id] }
+      : null;
   }
 
   accessPolicyFor(botId) {
@@ -749,6 +782,31 @@ export class BotWorkspaceStore {
     });
   }
 
+  /**
+   * Set (or clear with null) a bot's humanization override section. The
+   * section replaces top-level settings keys whole; see
+   * validateHumanizeOverrideSection for the completeness rules.
+   */
+  async setHumanize(botId, value, { incarnation } = {}) {
+    const id = botIdOf(botId);
+    const expectedIncarnation = incarnation === undefined ? this.incarnationFor(id) : incarnation;
+    const section = validateHumanizeOverrideSection(value);
+    return this.#enqueue(id, async () => {
+      if (!this.has(id) || expectedIncarnation !== this.incarnationFor(id)) {
+        const error = new Error('找不到要修改的机器人。');
+        error.code = 'workspace-bot-not-found';
+        throw error;
+      }
+      const next = { ...this.#humanize };
+      if (section) next[id] = section;
+      else delete next[id];
+      // Messages keep the previous committed snapshot until rename succeeds.
+      await this.#persist(undefined, undefined, undefined, undefined, next);
+      this.#humanize = next;
+      return section ? { ...section } : null;
+    });
+  }
+
   async setAccessPolicy(botId, value, { incarnation } = {}) {
     const id = botIdOf(botId);
     const expectedIncarnation = incarnation === undefined ? this.incarnationFor(id) : incarnation;
@@ -932,6 +990,7 @@ export class BotWorkspaceStore {
       ...Object.keys(this.#agentPresets),
       ...Object.keys(this.#models),
       ...Object.keys(this.#contextEnhancement),
+      ...Object.keys(this.#humanize),
       ...Object.keys(this.#deliveryTargets),
       ...Object.keys(this.#accessPolicies),
       ...this.#dirtyRemovals,
@@ -952,6 +1011,7 @@ export class BotWorkspaceStore {
           agentPreset: this.agentPresetFor(bot.botId),
           model: this.modelFor(bot.botId),
           contextEnhancement: this.contextEnhancementFor(bot.botId),
+          humanize: this.humanizeFor(bot.botId),
           accessPolicy: this.accessPolicyFor(bot.botId),
         }
         : bot),
@@ -984,14 +1044,16 @@ export class BotWorkspaceStore {
     const hadPreset = Object.hasOwn(this.#agentPresets, id);
     const hadModel = Object.hasOwn(this.#models, id);
     const hadContextEnhancement = Object.hasOwn(this.#contextEnhancement, id);
+    const hadHumanize = Object.hasOwn(this.#humanize, id);
     const hadDeliveryTargets = Object.hasOwn(this.#deliveryTargets, id);
     const hadAccessPolicy = Object.hasOwn(this.#accessPolicies, id);
     const needsCleanup = hadWorkspace || hadPreset || hadModel || hadContextEnhancement
-      || hadDeliveryTargets || hadAccessPolicy || this.#dirtyRemovals.has(id);
+      || hadHumanize || hadDeliveryTargets || hadAccessPolicy || this.#dirtyRemovals.has(id);
     delete this.#workspaces[id];
     delete this.#agentPresets[id];
     delete this.#models[id];
     delete this.#contextEnhancement[id];
+    delete this.#humanize[id];
     delete this.#deliveryTargets[id];
     delete this.#accessPolicies[id];
     this.#generations.delete(id);
@@ -1028,6 +1090,7 @@ export class BotWorkspaceStore {
     deliveryTargets = this.#deliveryTargets,
     version = this.#version,
     accessPolicies = this.#accessPolicies,
+    humanize = this.#humanize,
   ) {
     await writeStoredDocument(this.#path, storedDocument({
       version,
@@ -1035,6 +1098,7 @@ export class BotWorkspaceStore {
       agentPresets: this.#agentPresets,
       models: this.#models,
       contextEnhancement,
+      humanize,
       deliveryTargets,
       accessPolicies,
     }));
@@ -1046,6 +1110,7 @@ export class BotWorkspaceStore {
       || Object.keys(this.#agentPresets).length > 0
       || Object.keys(this.#models).length > 0
       || Object.keys(this.#contextEnhancement).length > 0
+      || Object.keys(this.#humanize).length > 0
       || Object.keys(this.#deliveryTargets).length > 0
       || Object.keys(this.#accessPolicies).length > 0) {
       await this.#persist();
@@ -1096,9 +1161,30 @@ function assertCurrentBotScope(isCurrentScope) {
   throw error;
 }
 
-function decorateResult(workspaces, result, agentPresetCatalogSource, modelCatalogSource) {
+/**
+ * Project the resolved GLOBAL sendDelay onto the snapshot as
+ * `humanizeDefaults.sendDelay` so per-bot editors can prefill from the
+ * live global config (plan §5.2/§7.2). Never throws: the editor falls
+ * back to shipped defaults when absent.
+ */
+function withHumanizeDefaults(value, humanizeDefaultsSource) {
+  if (!humanizeDefaultsSource || !value || typeof value !== 'object') return value;
+  let sendDelay = null;
+  try {
+    const settings = humanizeDefaultsSource();
+    if (settings?.sendDelay && typeof settings.sendDelay === 'object') {
+      sendDelay = normalizeSendDelayConfig(settings.sendDelay);
+    }
+  } catch {
+    sendDelay = null;
+  }
+  return sendDelay ? { ...value, humanizeDefaults: { sendDelay } } : value;
+}
+
+function decorateResult(workspaces, result, agentPresetCatalogSource, modelCatalogSource,
+  humanizeDefaultsSource) {
   const decorate = (value) => {
-    const decorated = workspaces.decorateStatus(value);
+    const decorated = withHumanizeDefaults(workspaces.decorateStatus(value), humanizeDefaultsSource);
     if ((!agentPresetCatalogSource && !modelCatalogSource)
       || !decorated || typeof decorated !== 'object') return decorated;
     const attachCatalogs = ([agentPresetCatalog, modelCatalog]) => ({
@@ -1534,6 +1620,7 @@ export function createWorkspaceAwareController(controller, {
   stateFor,
   agentPresetCatalog,
   modelCatalog,
+  humanizeDefaults = null,
 } = {}) {
   if (!controller || !workspaces || typeof stateFor !== 'function') {
     throw new TypeError('controller, workspaces, and stateFor are required');
@@ -1552,7 +1639,18 @@ export function createWorkspaceAwareController(controller, {
     value,
     agentPresetCatalog,
     modelCatalog,
+    humanizeDefaults,
   );
+  const humanizeSendDelayBase = () => {
+    try {
+      const settings = typeof humanizeDefaults === 'function' ? humanizeDefaults() : null;
+      return settings?.sendDelay && typeof settings.sendDelay === 'object'
+        ? settings.sendDelay
+        : null;
+    } catch {
+      return null;
+    }
+  };
   const updateWorkspace = (botId, workspace) => {
     // Capture at API invocation, before even waiting for an older outer
     // transition. A queued request still belongs to the incarnation that the
@@ -1596,6 +1694,7 @@ export function createWorkspaceAwareController(controller, {
         await controller.status(),
         catalog ?? agentPresetCatalog,
         modelCatalog,
+        humanizeDefaults,
       );
     });
   };
@@ -1621,6 +1720,7 @@ export function createWorkspaceAwareController(controller, {
         await controller.status(),
         agentPresetCatalog,
         catalog ?? modelCatalog,
+        humanizeDefaults,
       );
     });
   };
@@ -1638,7 +1738,8 @@ export function createWorkspaceAwareController(controller, {
         resolveAgentPresetCatalog(agentPresetCatalog),
         resolveModelCatalog(modelCatalog),
       ]);
-      const decorated = workspaces.decorateStatus(snapshot);
+      const decorated = withHumanizeDefaults(
+        workspaces.decorateStatus(snapshot), humanizeDefaults);
       const updated = {
         ...decorated,
         bots: decorated.bots.map((bot) => bot?.botId === botId
@@ -1650,6 +1751,41 @@ export function createWorkspaceAwareController(controller, {
       // commit so a failed save never publishes new running settings.
       const result = projectStatus ? await projectStatus(updated) : updated;
       await workspaces.setContextEnhancement(botId, config, { incarnation });
+      return result;
+    });
+  };
+  const updateHumanize = (botId, value, projectStatus) => {
+    const incarnation = workspaces.incarnationFor(botId);
+    // Unset sendDelay subfields inherit the current global values at write
+    // time (plan §5.2): an override that only edits the base fields must
+    // not silently reset reading speed / caps / idle boost to factory.
+    const section = validateHumanizeOverrideSection(value, {
+      sendDelayBase: humanizeSendDelayBase(),
+    });
+    return withBotTransition(botId, async () => {
+      const snapshot = await controller.status();
+      if (!snapshot?.bots?.some((bot) => bot?.botId === botId)) {
+        const error = new Error('找不到要修改的机器人。');
+        error.code = 'workspace-bot-not-found';
+        throw error;
+      }
+      const [catalog, models] = await Promise.all([
+        resolveAgentPresetCatalog(agentPresetCatalog),
+        resolveModelCatalog(modelCatalog),
+      ]);
+      const decorated = withHumanizeDefaults(
+        workspaces.decorateStatus(snapshot), humanizeDefaults);
+      const updated = {
+        ...decorated,
+        bots: decorated.bots.map((bot) => bot?.botId === botId
+          ? { ...bot, humanize: section ? { ...section } : null } : bot),
+        ...(catalog ? { agentPresetCatalog: catalog } : {}),
+        ...(models ? { modelCatalog: models } : {}),
+      };
+      // QR/status projection can fail too. Prepare the complete response before
+      // commit so a failed save never publishes new running settings.
+      const result = projectStatus ? await projectStatus(updated) : updated;
+      await workspaces.setHumanize(botId, section, { incarnation });
       return result;
     });
   };
@@ -1667,7 +1803,8 @@ export function createWorkspaceAwareController(controller, {
         resolveAgentPresetCatalog(agentPresetCatalog),
         resolveModelCatalog(modelCatalog),
       ]);
-      const decorated = workspaces.decorateStatus(snapshot);
+      const decorated = withHumanizeDefaults(
+        workspaces.decorateStatus(snapshot), humanizeDefaults);
       const updated = {
         ...decorated,
         bots: decorated.bots.map((bot) => bot?.botId === botId
@@ -1723,6 +1860,7 @@ export function createWorkspaceAwareController(controller, {
       if (property === 'updateAgentPreset') return updateAgentPreset;
       if (property === 'updateModel') return updateModel;
       if (property === 'updateContextEnhancement') return updateContextEnhancement;
+      if (property === 'updateHumanize') return updateHumanize;
       if (property === 'updateAccessPolicy') return updateAccessPolicy;
       const value = Reflect.get(target, property, target);
       if (typeof value !== 'function') return value;

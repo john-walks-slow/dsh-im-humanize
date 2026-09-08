@@ -17,6 +17,7 @@ import {
 import { createPollScheduler, useAnimationFrameScheduler } from '../../lifecycle.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
 import { ContextEnhancementEditor } from '../../context-enhancement.js';
+import { BotSendDelayEditor, TYPING_CAPABILITY } from '../shared/bot-send-delay.js';
 import {
   AgentPresetCatalogContext,
   AgentPresetEditor,
@@ -217,6 +218,7 @@ export function AccountCard({
   onModelSave,
   onAgentPresetSave,
   onContextEnhancementSave,
+  onHumanizeSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -275,6 +277,13 @@ export function AccountCard({
         disabled: Boolean(busy),
         onSave: onContextEnhancementSave,
       }),
+      h(BotSendDelayEditor, {
+        humanize: account.humanize,
+        sendDelayDefaults: account.humanizeDefaults?.sendDelay ?? null,
+        capability: TYPING_CAPABILITY.full,
+        disabled: Boolean(busy),
+        onSave: onHumanizeSave,
+      }),
       h('div', { className: 'dxw-accountFooter dim-cardFooter' },
         h('div', { className: 'dim-cardFooterLayout' },
           h('div', { className: 'dxw-actions dim-cardActions' },
@@ -321,6 +330,7 @@ function AccountList(props) {
         onModelSave: (model) => props.onModelSave(account, model),
         onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(account, agentPreset),
         onContextEnhancementSave: (config) => props.onContextEnhancementSave(account, config),
+        onHumanizeSave: (humanize) => props.onHumanizeSave(account, humanize),
         onRequestRemove: () => props.onRequestRemove(account),
         onConfirmRemove: () => props.onConfirmRemove(account),
         onCancelRemove: props.onCancelRemove,
@@ -760,6 +770,9 @@ export function WeixinSettingsTab({ rpcCall }) {
                   ),
                   onContextEnhancementSave: (account, config) => saveBotSetting(
                     account, 'context-enhancement', WEIXIN_ENDPOINTS.setContextEnhancement, { config },
+                  ),
+                  onHumanizeSave: (account, humanize) => saveBotSetting(
+                    account, 'humanize', WEIXIN_ENDPOINTS.setHumanize, { humanize },
                   ),
                   onRequestRemove: (account) => setRemoveTarget(account.botId),
                   onConfirmRemove: (account) => void remove(account),

@@ -76,11 +76,23 @@ import {
   fireAndForgetStop,
   trySteer,
 } from '../shared/new-message-policy.mjs';
+import {
+  applyReadDelay,
+  applySegmentGap,
+  SHORT_DELAY_CAP_MS,
+} from '../shared/send-delay.mjs';
+import { createTypingSession } from '../shared/typing-session.mjs';
+import { resolveHumanizeSettings } from '../shared/humanize-resolver.mjs';
 
 function interactionResolvedText() {
   return t('这个问题已在其他客户端处理，无需再次回答。');
 }
 const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
+// QQ C2C typing (input_notify, input_second <= 60): the display window must
+// outlive the 50s refresh cadence so the indicator never goes dark between
+// renewals; the reply delivery itself clears the indicator.
+const QQ_TYPING_DISPLAY_SEC = 55;
+const QQ_TYPING_REFRESH_MS = 50_000;
 
 export const QQ_IMAGE_HOSTS = Object.freeze([
   '.myqcloud.com',
@@ -440,7 +452,14 @@ export class QqHarnessBridge {
   #replyTimeoutMs;
   #streaming = true;
   #messageBreak = false;
+  // Pre-ask controllers: alive only while a turn is in its silent read
+  // delay (and pre-ask staging); aborting supersedes that turn.
+  #preAskControllers = new Map();
+  // Wall-clock end of the last completed turn per conversation (idle boost).
+  #turnEnds = new Map();
   #onNewMessage = 'interrupt';
+  // Live per-turn settings provider; falls back to ctor snapshot.
+  #humanize = null;
   #signal;
   #fetchImpl;
   #fileUploadTimeoutMs;
@@ -469,6 +488,7 @@ export class QqHarnessBridge {
     streaming = true,
     messageBreak = false,
     onNewMessage = 'interrupt',
+    humanize = null,
     signal,
     fetchImpl = fetch,
     fileUploadTimeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS,
@@ -492,6 +512,7 @@ export class QqHarnessBridge {
     this.#streaming = streaming !== false;
     this.#messageBreak = messageBreak === true;
     this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
+    this.#humanize = humanize ?? null;
     this.#signal = signal;
     this.#deferred = createDeferredDeliveryCoordinator({ harness, state, signal, logger,
       deliver: (entry, outcome) => this.#deliverDeferredOutcome(entry, outcome),
@@ -688,6 +709,10 @@ export class QqHarnessBridge {
       onNewMessage: this.#onNewMessage,
     });
     if (policy === 'interrupt') {
+      // Supersede any silent read-delay phase first: stopActiveTurn cannot
+      // cancel a turn that has not reached the harness yet (unconditional,
+      // not gated by sendDelay.enabled).
+      this.#abortPreAskPhase(key);
       const current = this.#enqueueMessage(message, messageId, key);
       fireAndForgetStop({
         session: this.#boundSession(key),
@@ -880,6 +905,7 @@ export class QqHarnessBridge {
         || this.#approvals.hasPending(key),
       control: { owner: this, key },
       deferredDelivery: this.#deferred,
+      abortPreAsk: () => this.#abortPreAskPhase(key),
     });
     if (result?.stopped) {
       await Promise.allSettled([
@@ -989,6 +1015,29 @@ export class QqHarnessBridge {
     };
   }
 
+  #humanizeSettings() {
+    return resolveHumanizeSettings({
+      humanize: this.#humanize,
+      streaming: this.#streaming,
+      messageBreak: this.#messageBreak,
+      onNewMessage: this.#onNewMessage,
+    });
+  }
+
+  #abortPreAskPhase(key) {
+    const controller = this.#preAskControllers.get(key);
+    if (!controller) return false;
+    const reason = new Error('已由更新的消息接替。');
+    reason.code = 'superseded';
+    controller.abort(reason);
+    return true;
+  }
+
+  #idleMsFor(key) {
+    const lastTurnEnd = this.#turnEnds.get(key);
+    return lastTurnEnd === undefined ? 0 : Date.now() - lastTurnEnd;
+  }
+
   async #process(message, key, {
     alreadyRecorded = false,
     preparedMessage,
@@ -1020,6 +1069,9 @@ export class QqHarnessBridge {
     const hasFiles = hasInboundFiles(promptMessage);
     const hasReply = hasReplyReference(promptMessage);
     let stream = null;
+    let preAsk = null;
+    let typingSession = null;
+    let staging;
     let batchSettled = batchSubmission === null;
     try {
       if (!text && !hasImages && !hasFiles && !hasReply) {
@@ -1070,9 +1122,65 @@ export class QqHarnessBridge {
         return;
       }
 
-      let content = hasImages || hasReply
-        ? await promptContentForInboundMessage(promptMessage, { signal: this.#signal })
-        : undefined;
+      const humanize = this.#humanizeSettings();
+      // Persist consumption BEFORE the silent read delay: QQ redelivers
+      // unacknowledged messages, so a redelivery arriving during the delay
+      // must never enqueue the same message as a second turn.
+      await markMessageSeen();
+      // ---- Phase ①: read delay（"过了一段时间才读到消息"）----
+      // Silent: no typing, no partial reply. Abortable: a newer message
+      // (interrupt) or /stop supersedes the phase instead of waiting it out.
+      preAsk = new AbortController();
+      this.#preAskControllers.set(key, preAsk);
+      const preAskSignal = this.#signal
+        ? AbortSignal.any([this.#signal, preAsk.signal])
+        : preAsk.signal;
+      try {
+        await applyReadDelay({
+          settings: humanize,
+          userText: text,
+          idleMs: this.#idleMsFor(key),
+          // C2C has a typing indicator to explain the wait (full delay);
+          // group chats have no indicator at all (SHORT_DELAY_CAP_MS).
+          channelCapMs: message.kind === 'c2c' ? undefined : SHORT_DELAY_CAP_MS,
+          signal: preAskSignal,
+        });
+        if (preAsk.signal.aborted) {
+          const superseded = new Error('superseded by a newer message');
+          superseded.code = 'superseded';
+          throw superseded;
+        }
+        // ---- Phase ②: compose ----
+        // Self-managed C2C typing session (replaces the SDK middleware whose
+        // 50s keepalive was dead in this integration): starts AFTER the
+        // silence, renews every 50s, and dies with the turn. QQ is
+        // continuous-only in v1 (ticket-style API; burst is v2).
+        if (message.kind === 'c2c'
+          && humanize.typingIndicator !== 'off'
+          && typeof this.#bot.sendTyping === 'function') {
+          typingSession = createTypingSession({
+            sendTyping: () => this.#bot.sendTyping(target, QQ_TYPING_DISPLAY_SEC),
+            mode: 'continuous',
+            refreshMs: QQ_TYPING_REFRESH_MS,
+            darkResidualMs: 0,
+            signal: this.#signal,
+            logger: this.#logger,
+          });
+          // await: with the pre-aborted-signal guard inside start(), an
+          // unawaited rejection could crash the host process.
+          await typingSession.start();
+        }
+        // Image staging stays inside the pre-ask window: interrupting it
+        // must supersede cleanly instead of producing a double reply.
+        staging = hasImages || hasReply
+          ? await promptContentForInboundMessage(promptMessage, { signal: preAskSignal })
+          : undefined;
+      } finally {
+        if (this.#preAskControllers.get(key) === preAsk) {
+          this.#preAskControllers.delete(key);
+        }
+      }
+      let content = staging;
       const snapshot = this.#acceptedMessageIds.get(messageId);
       let contextEnhanced = false;
       if (snapshot) {
@@ -1090,14 +1198,27 @@ export class QqHarnessBridge {
       const toolErrors = [];
       let answer;
       let artifacts = [];
+      let messageBreakHandler = null;
       try {
-        // Persist consumption before handing the prompt to Harness. Provider
-        // redelivery after a failed error notice must never execute it twice.
-        await markMessageSeen();
-        // Create message_break handler for this turn.
-        const messageBreakHandler = this.#messageBreak
+        // Create message_break handler for this turn. Segment gaps
+        // ("typing the next message") pause between segments and the typing
+        // indicator relights after each send.
+        let segmentsSent = 0;
+        messageBreakHandler = humanize.messageBreak
           ? createMessageBreakHandler({
             sendSegment: async (segmentText) => {
+              if (segmentsSent > 0) {
+                // restartOn → sleep → send (plan §6.3): the indicator covers
+                // the gap and the upcoming send; a trailing restartOn after
+                // the final segment would relight it with nothing following.
+                await typingSession?.restartOn();
+                await applySegmentGap({
+                  settings: humanize,
+                  segmentText,
+                  signal: this.#signal,
+                });
+              }
+              segmentsSent += 1;
               await sendMarkdownReply(this.#bot, target, segmentText, { logger: this.#logger });
             },
             logger: this.#logger,
@@ -1142,13 +1263,24 @@ export class QqHarnessBridge {
                   ));
                 }
               },
-            onInteraction: (interaction) => this.#handleInteraction(interaction, {
-              key,
-              actor: sender,
-              target,
-              requiresMention: message.kind === 'group',
-            }),
-            onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
+            onInteraction: (interaction) => {
+              // A pending question/approval means the human is being waited
+              // on, not typed for: pause the indicator. Recovered
+              // interactions auto-cancel without a matching resume.
+              if (interaction?.recovered !== true) typingSession?.pause();
+              return this.#handleInteraction(interaction, {
+                key,
+                actor: sender,
+                target,
+                requiresMention: message.kind === 'group',
+              });
+            },
+            onInteractionResolved: async (resolution) => {
+              await this.#handleInteractionResolved(resolution);
+              if (!this.#pendingInteractions.has(key) && !this.#approvals.hasPending(key)) {
+                typingSession?.resume();
+              }
+            },
             files: promptMessage.files,
           },
         }));
@@ -1248,6 +1380,17 @@ export class QqHarnessBridge {
         await markMessageSeen();
         return;
       }
+      if (preAsk?.signal.aborted === true) {
+        // Superseded by a newer message (interrupt) or /stop before this
+        // turn reached the harness: silent — no failure text, and the newer
+        // turn already owns this conversation.
+        try {
+          stream?.cancel?.();
+        } catch (streamError) {
+          this.#logger.warn?.('[dsh-im:qq] unable to cancel a superseded QQ stream:', streamError);
+        }
+        return;
+      }
       try {
         stream?.cancel?.();
       } catch (streamError) {
@@ -1275,6 +1418,11 @@ export class QqHarnessBridge {
       } catch (sendError) {
         this.#logger.error?.('[dsh-im:qq] failed to send the safe error reply:', sendError);
       }
+    } finally {
+      // Turn-bound lifecycle: the indicator dies with the turn whatever
+      // happens (delivered, failed, stopped, superseded).
+      typingSession?.stop();
+      this.#turnEnds.set(key, Date.now());
     }
   }
 

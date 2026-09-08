@@ -30,6 +30,12 @@ import {
 } from '../shared/preset-command.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
+import {
+  applyReadDelay,
+  applySegmentGap,
+  SHORT_DELAY_CAP_MS,
+} from '../shared/send-delay.mjs';
+import { resolveHumanizeSettings } from '../shared/humanize-resolver.mjs';
 import { captureContextEnhancement, enhanceContextContent } from '../shared/context-enhancement.mjs';
 import {
   BatchInputManager,
@@ -479,6 +485,10 @@ export function createDingtalkBridgeStatus({ pendingSenders = [] } = {}) {
   };
 }
 
+// DingTalk webhook throughput cap: ~20 messages/min → keep >=3s between
+// message_break segments so multi-segment replies cannot trigger a ban.
+const DINGTALK_MIN_SEGMENT_GAP_MS = 3000;
+
 export class DingtalkHarnessBridge {
   #api;
   #clientId;
@@ -494,6 +504,13 @@ export class DingtalkHarnessBridge {
   #streaming = true;
   #messageBreak = false;
   #onNewMessage = 'interrupt';
+  // Live per-turn settings provider; falls back to ctor snapshot.
+  #humanize = null;
+  // Pre-ask controllers: alive only while a turn is in its silent read
+  // delay / image staging; aborting supersedes that turn.
+  #preAskControllers = new Map();
+  // Wall-clock end of the last completed turn per conversation (idle boost).
+  #turnEnds = new Map();
   #reactionTimeoutMs;
   #maxMessageChars;
   #signal;
@@ -522,6 +539,7 @@ export class DingtalkHarnessBridge {
     streaming = true,
     messageBreak = false,
     onNewMessage = 'interrupt',
+    humanize = null,
     reactionTimeoutMs = 5_000,
     maxMessageChars = 4_000,
     signal,
@@ -545,6 +563,7 @@ export class DingtalkHarnessBridge {
     this.#streaming = streaming !== false;
     this.#messageBreak = messageBreak === true;
     this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
+    this.#humanize = humanize ?? null;
     this.#reactionTimeoutMs = Number.isFinite(reactionTimeoutMs) && reactionTimeoutMs > 0
       ? Math.floor(reactionTimeoutMs)
       : 5_000;
@@ -807,6 +826,10 @@ export class DingtalkHarnessBridge {
       onNewMessage: this.#onNewMessage,
     });
     if (policy === 'interrupt') {
+      // Supersede any silent pre-ask phase first: stopActiveTurn cannot
+      // cancel a turn that has not reached the harness yet (unconditional,
+      // not gated by sendDelay.enabled).
+      this.#abortPreAskPhase(key);
       const current = this.#enqueueMessage(message, messageId, sender, key, { statusReaction });
       fireAndForgetStop({
         session: this.#boundSession(key),
@@ -1162,6 +1185,7 @@ export class DingtalkHarnessBridge {
           || this.#approvals.hasPending(key),
         control: { owner: this, key },
         deferredDelivery: this.#deferred,
+        abortPreAsk: () => this.#abortPreAskPhase(key),
       },
     );
     if (result?.stopped) {
@@ -1238,6 +1262,29 @@ export class DingtalkHarnessBridge {
     return task;
   }
 
+  #humanizeSettings() {
+    return resolveHumanizeSettings({
+      humanize: this.#humanize,
+      streaming: this.#streaming,
+      messageBreak: this.#messageBreak,
+      onNewMessage: this.#onNewMessage,
+    });
+  }
+
+  #abortPreAskPhase(key) {
+    const controller = this.#preAskControllers.get(key);
+    if (!controller) return false;
+    const reason = new Error('已由更新的消息接替。');
+    reason.code = 'superseded';
+    controller.abort(reason);
+    return true;
+  }
+
+  #idleMsFor(key) {
+    const lastTurnEnd = this.#turnEnds.get(key);
+    return lastTurnEnd === undefined ? 0 : Date.now() - lastTurnEnd;
+  }
+
   async #process(message, messageId, sender, key, {
     alreadyRecorded = false,
     preparedMessage,
@@ -1276,6 +1323,7 @@ export class DingtalkHarnessBridge {
     let cardStream = null;
     let cardStarted = false;
     let cardStartedAt = null;
+    let preAsk = null;
     let batchSettled = batchSubmission === null;
     try {
       if (!text && !hasImages && !hasFiles && !hasReply) {
@@ -1321,9 +1369,40 @@ export class DingtalkHarnessBridge {
         return;
       }
 
-      let content = hasImages || hasReply
-        ? await promptContentForInboundMessage(promptMessage, { signal: this.#signal })
-        : undefined;
+      const humanize = this.#humanizeSettings();
+      // ---- Phase ①: read delay（"过了一段时间才读到消息"）----
+      // Silent: no card placeholder, no reply. Abortable: a newer message
+      // (interrupt) or /stop supersedes the phase instead of waiting it out.
+      // Dingtalk has no typing API, so the wait is capped (SHORT_DELAY_CAP_MS).
+      let content;
+      preAsk = new AbortController();
+      this.#preAskControllers.set(key, preAsk);
+      const preAskSignal = this.#signal
+        ? AbortSignal.any([this.#signal, preAsk.signal])
+        : preAsk.signal;
+      try {
+        await applyReadDelay({
+          settings: humanize,
+          userText: text,
+          idleMs: this.#idleMsFor(key),
+          channelCapMs: SHORT_DELAY_CAP_MS,
+          signal: preAskSignal,
+        });
+        if (preAsk.signal.aborted) {
+          const superseded = new Error('superseded by a newer message');
+          superseded.code = 'superseded';
+          throw superseded;
+        }
+        // Image staging stays inside the pre-ask window: interrupting it
+        // must supersede cleanly instead of producing a double reply.
+        content = hasImages || hasReply
+          ? await promptContentForInboundMessage(promptMessage, { signal: preAskSignal })
+          : undefined;
+      } finally {
+        if (this.#preAskControllers.get(key) === preAsk) {
+          this.#preAskControllers.delete(key);
+        }
+      }
       const snapshot = this.#acceptedMessageIds.get(messageId);
       let contextEnhanced = false;
       if (snapshot) {
@@ -1337,7 +1416,11 @@ export class DingtalkHarnessBridge {
         }));
         contextEnhanced = content !== originalContent;
       }
-      if (typeof this.#api.createAiCard === 'function'
+      // ---- Phase ②: compose ----
+      // #streaming is now live: false disables the card stream entirely and
+      // delivers the final answer as a one-shot message.
+      if (humanize.streaming
+        && typeof this.#api.createAiCard === 'function'
         && typeof this.#api.updateAiCard === 'function'
         && typeof this.#api.finishAiCard === 'function') {
         cardStream = createDingTalkCardStream({
@@ -1352,10 +1435,23 @@ export class DingtalkHarnessBridge {
         cardStarted = await cardStream.start(t(CARD_INITIAL_TEXT));
         if (cardStarted) cardStartedAt = startedAt;
       }
-      // Create message_break handler for this turn.
-      const messageBreakHandler = this.#messageBreak
+      // Create message_break handler for this turn. Segment gaps
+      // ("typing the next message") pause between segments.
+      let segmentsSent = 0;
+      const messageBreakHandler = humanize.messageBreak
         ? createMessageBreakHandler({
           sendSegment: async (segmentText) => {
+            if (segmentsSent > 0) {
+              await applySegmentGap({
+                settings: humanize,
+                segmentText,
+                // DingTalk webhooks are capped at ~20 messages/min; segment
+                // bursts below this floor risk a 10-minute rate-limit ban.
+                minSegmentGapMs: DINGTALK_MIN_SEGMENT_GAP_MS,
+                signal: this.#signal,
+              });
+            }
+            segmentsSent += 1;
             await this.#send(sessionWebhook, segmentText, this.#atUsersFor(message));
           },
           logger: this.#logger,
@@ -1471,6 +1567,13 @@ export class DingtalkHarnessBridge {
         if (cardStarted) await cardStream.finish(t('已停止。')).catch(() => undefined);
         return;
       }
+      if (preAsk?.signal.aborted === true) {
+        // Superseded by a newer message (interrupt) or /stop before this
+        // turn reached the harness: silent — no card, no failure text; the
+        // newer turn already owns this conversation.
+        this.#finishStatusReaction(statusReaction, 'clear');
+        return;
+      }
       if (this.#signal?.aborted) {
         this.#finishStatusReaction(statusReaction, 'clear');
         return;
@@ -1498,6 +1601,7 @@ export class DingtalkHarnessBridge {
         this.#logger.error?.('[dsh-dingtalk] failed to send the safe error reply');
       }
     } finally {
+      this.#turnEnds.set(key, Date.now());
       await this.#cancelPendingInteraction(key);
       await this.#approvals.closeRoute(key);
     }

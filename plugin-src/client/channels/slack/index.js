@@ -107,6 +107,7 @@ export function SlackCredentialPanel({ busy, error, onSubmit, onCancel }) {
 
 const channel = createTokenChannelSettings({
   channel: 'Slack',
+  typingCapability: 'none',
   endpoints: SLACK_ENDPOINTS,
   api: slackClientApi,
   LogoGlyph: SlackLogoGlyph,

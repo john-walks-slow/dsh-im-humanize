@@ -6,6 +6,7 @@ import { CollapsibleAccountSection } from '../shared/collapsible-account.js';
 import { h } from '../../i18n.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
 import { ContextEnhancementEditor } from '../../context-enhancement.js';
+import { BotSendDelayEditor, TYPING_CAPABILITY } from '../shared/bot-send-delay.js';
 import {
   AgentPresetCatalogContext,
   AgentPresetEditor,
@@ -176,6 +177,7 @@ export function AccountCard({
   onModelSave,
   onAgentPresetSave,
   onContextEnhancementSave,
+  onHumanizeSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -233,6 +235,13 @@ export function AccountCard({
         config: account.contextEnhancement,
         disabled: Boolean(busy),
         onSave: onContextEnhancementSave,
+      }),
+      h(BotSendDelayEditor, {
+        humanize: account.humanize,
+        sendDelayDefaults: account.humanizeDefaults?.sendDelay ?? null,
+        capability: TYPING_CAPABILITY.c2cOnly,
+        disabled: Boolean(busy),
+        onSave: onHumanizeSave,
       }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         h('div', { className: 'dim-cardFooterLayout' },
@@ -521,6 +530,12 @@ export function QqSettingsTab({ rpcCall }) {
               'context-enhancement',
               QQ_ENDPOINTS.setContextEnhancement,
               { botId: account.botId, config },
+            ),
+            onHumanizeSave: (humanize) => botAction(
+              account,
+              'humanize',
+              QQ_ENDPOINTS.setHumanize,
+              { botId: account.botId, humanize },
             ),
             onRequestRemove: () => setRemoveTarget(account.botId),
             onCancelRemove: () => setRemoveTarget(null),

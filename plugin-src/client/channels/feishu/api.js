@@ -11,6 +11,7 @@ import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } fr
 import { normalizeLastMessageError } from "../../last-message-error.js";
 import { normalizeAccessPolicy } from "../../../../src/channels/shared/access-policy.mjs";
 import { normalizeContextEnhancementConfig } from "../../../../src/channels/shared/context-enhancement.mjs";
+import { normalizeHumanizeOverride, SET_HUMANIZE_ENDPOINT } from "../../../../src/channels/shared/humanize-override.mjs";
 
 export const FEISHU_RPC_CHANNEL = "/feishu";
 
@@ -29,6 +30,7 @@ export const FEISHU_ENDPOINTS = Object.freeze({
   setModel: SET_MODEL_ENDPOINT,
   setAgentPreset: "bot.preset.set",
   setContextEnhancement: "bot.context-enhancement.set",
+  setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: "bot.access-policy.set",
   setGroupResponseMode: "bot.group-response-mode.set",
   setGroupTopicReply: "bot.group-topic-reply.set",
@@ -213,6 +215,9 @@ export function normalizeBotConnection(value, fallbackBotId) {
     model: normalizeModelSelection(value.model),
     agentPreset: normalizeAgentPresetId(value.agentPreset),
     contextEnhancement: normalizeContextEnhancementConfig(value.contextEnhancement),
+    ...(Object.hasOwn(value, 'humanize')
+      ? { humanize: normalizeHumanizeOverride(value.humanize) }
+      : {}),
     ...(Object.hasOwn(value, "accessPolicy")
       ? { accessPolicy: normalizeAccessPolicy(value.accessPolicy) }
       : {}),
@@ -278,6 +283,9 @@ export function normalizeBotsSnapshot(value) {
     error: normalizeError(value.error),
     agentPresetCatalog: normalizeAgentPresetCatalog(value.agentPresetCatalog),
     modelCatalog: normalizeModelCatalog(value.modelCatalog),
+    ...(isRecord(value.humanizeDefaults?.sendDelay)
+      ? { humanizeDefaults: { sendDelay: value.humanizeDefaults.sendDelay } }
+      : {}),
   };
 }
 

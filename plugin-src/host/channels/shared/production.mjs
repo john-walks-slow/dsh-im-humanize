@@ -26,6 +26,7 @@ import {
   accessPolicyProvider,
   initialAccessPolicyFor,
 } from './access-policy-production.mjs';
+import { createHumanizeProvider } from './humanize-provider.mjs';
 
 export function pluginPaths(config, channel) {
   const dshHome = resolve(config.dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh'));
@@ -54,9 +55,10 @@ export async function createTokenProductionController(ctx, config, internals, de
     || Array.isArray(channelRuntimeOptions)) {
     throw new TypeError(`dsh-im ${channel} runtimeOptions must return an object`);
   }
-  // Pass the humanization config options (streaming, messageBreak, onNewMessage)
-  // from the global plugin config to every channel runtime. Per-bot overrides
-  // can be added later via the config store.
+  // Pass the humanization config options (streaming, messageBreak,
+  // onNewMessage) from the global plugin config to every channel runtime
+  // as the constructor-time snapshot, plus the live per-bot provider
+  // (`humanize`) that bridges re-read on every turn.
   const humanizationOptions = {
     streaming: config.streaming !== false,
     messageBreak: config.messageBreak !== false,
@@ -143,6 +145,11 @@ export async function createTokenProductionController(ctx, config, internals, de
         harness: workspaceScope.harness,
         state: workspaceScope.state,
         contextEnhancement: { botId, getSettings: () => workspaces.contextEnhancementFor(botId) },
+        humanize: createHumanizeProvider({
+          defaults: () => config.humanizeDefaults?.(channel),
+          workspaces,
+          botId,
+        }),
         accessPolicy: accessPolicyProvider(workspaces, botId, { channel, config: botConfig }),
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
         connectTimeoutMs: config.connectTimeoutMs ?? 20_000,
@@ -173,6 +180,9 @@ export async function createTokenProductionController(ctx, config, internals, de
     stateFor,
     agentPresetCatalog,
     modelCatalog,
+    // Live global humanize defaults: snapshot-level prefill for per-bot
+    // editors and the inherit base for override writes.
+    humanizeDefaults: () => config.humanizeDefaults?.(channel),
   });
   const supervisor = createSupervisor({
     channel,

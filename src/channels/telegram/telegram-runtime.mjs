@@ -430,10 +430,13 @@ export class TelegramBotClient {
     });
   }
 
-  sendTyping(target) {
+  // `action` allows the compose-phase typing session to switch the
+  // indicator to upload_photo / upload_document before attachments.
+  sendTyping(target, action) {
     return this.#api.sendChatAction({
       chatId: target.chatId,
       messageThreadId: target.messageThreadId,
+      action: typeof action === 'string' && action ? action : 'typing',
       signal: this.#signal,
     });
   }
@@ -773,6 +776,7 @@ export class TelegramRuntime {
   #streaming = true;
   #messageBreak = false;
   #onNewMessage = 'interrupt';
+  #humanize = null;
   #createApi;
   #createHttpTransport;
   #status = createTelegramRuntimeStatus();
@@ -795,6 +799,7 @@ export class TelegramRuntime {
     streaming = true,
     messageBreak = false,
     onNewMessage = 'interrupt',
+    humanize = null,
     createApi = (options) => new TelegramApi(options),
     createHttpTransport = createTelegramHttpTransport,
   }) {
@@ -812,6 +817,7 @@ export class TelegramRuntime {
     this.#streaming = streaming;
     this.#messageBreak = messageBreak;
     this.#onNewMessage = onNewMessage;
+    this.#humanize = humanize ?? null;
     this.#createApi = createApi;
     this.#createHttpTransport = createHttpTransport;
   }
@@ -917,6 +923,7 @@ export class TelegramRuntime {
         streaming: this.#streaming,
         messageBreak: this.#messageBreak,
         onNewMessage: this.#onNewMessage,
+        humanize: this.#humanize,
         signal: controller.signal,
       });
 

@@ -325,10 +325,12 @@ export class TelegramApi {
     }, { signal });
   }
 
-  async sendChatAction({ chatId, messageThreadId, signal }) {
+  async sendChatAction({ chatId, messageThreadId, action = 'typing', signal }) {
+    const validAction = ['typing', 'upload_photo', 'upload_document', 'record_video', 'choose_sticker']
+      .includes(action) ? action : 'typing';
     return this.#call('sendChatAction', {
       chat_id: chatId,
-      action: 'typing',
+      action: validAction,
       ...(messageThreadId ? { message_thread_id: messageThreadId } : {}),
     }, { signal });
   }

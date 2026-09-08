@@ -5,6 +5,7 @@ import { CollapsibleAccountSection } from '../shared/collapsible-account.js';
 import { h } from '../../i18n.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
 import { ContextEnhancementEditor } from '../../context-enhancement.js';
+import { BotSendDelayEditor, TYPING_CAPABILITY } from '../shared/bot-send-delay.js';
 import {
   AgentPresetCatalogContext,
   AgentPresetEditor,
@@ -247,6 +248,7 @@ export function AccountCard({
   onModelSave,
   onAgentPresetSave,
   onContextEnhancementSave,
+  onHumanizeSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -307,6 +309,13 @@ export function AccountCard({
         disabled: Boolean(busy),
         onSave: onContextEnhancementSave,
       }),
+      h(BotSendDelayEditor, {
+        humanize: account.humanize,
+        sendDelayDefaults: account.humanizeDefaults?.sendDelay ?? null,
+        capability: TYPING_CAPABILITY.none,
+        disabled: Boolean(busy),
+        onSave: onHumanizeSave,
+      }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         h('div', { className: 'dim-cardFooterLayout' },
           h('div', { className: 'ddt-actions dim-cardActions' },
@@ -352,6 +361,7 @@ function AccountList(props) {
         onModelSave: (model) => props.onModelSave(account, model),
         onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(account, agentPreset),
         onContextEnhancementSave: (config) => props.onContextEnhancementSave(account, config),
+        onHumanizeSave: (humanize) => props.onHumanizeSave(account, humanize),
         onRequestRemove: () => props.onRequestRemove(account),
         onConfirmRemove: () => props.onConfirmRemove(account),
         onCancelRemove: props.onCancelRemove,
@@ -936,6 +946,9 @@ export function DingtalkSettingsTab({ rpcCall }) {
                   ),
                   onContextEnhancementSave: (account, config) => saveBotSetting(
                     account, 'context-enhancement', DINGTALK_ENDPOINTS.setContextEnhancement, { config },
+                  ),
+                  onHumanizeSave: (account, humanize) => saveBotSetting(
+                    account, 'humanize', DINGTALK_ENDPOINTS.setHumanize, { humanize },
                   ),
                   onRequestRemove: (account) => setRemoveTarget(account.botId),
                   onConfirmRemove: (account) => void remove(account),

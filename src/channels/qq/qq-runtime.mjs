@@ -1,11 +1,10 @@
-import { QQBot, contentSanitizer, typingIndicator } from '@tencent-connect/qqbot-nodejs';
+import { QQBot, contentSanitizer } from '@tencent-connect/qqbot-nodejs';
 
 import {
   connectionTestTarget,
   connectionTestTargetUnavailable,
 } from '../shared/connection-test.mjs';
 import { t } from '../shared/i18n.mjs';
-import { evaluateInboundAccess } from '../shared/inbound-access.mjs';
 import { createQqBridgeStatus, QqHarnessBridge } from './qq-bridge.mjs';
 
 function timeoutError() {
@@ -39,9 +38,9 @@ export class QqRuntime {
   #streaming = true;
   #messageBreak = false;
   #onNewMessage = 'interrupt';
+  #humanize = null;
   #connectTimeoutMs;
   #createBot;
-  #typingMiddleware;
   #status = createQqRuntimeStatus();
   #bot = null;
   #bridge = null;
@@ -58,10 +57,9 @@ export class QqRuntime {
     accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
-    streaming = true, messageBreak = false, onNewMessage = 'interrupt',
+    streaming = true, messageBreak = false, onNewMessage = 'interrupt', humanize = null,
     connectTimeoutMs = 20_000,
     createBot = (options) => new QQBot(options),
-    typingMiddleware = typingIndicator,
   }) {
     if (!config || !appSecret || !harness || !state) {
       throw new TypeError('QqRuntime requires config, app secret, Harness, and state');
@@ -77,9 +75,9 @@ export class QqRuntime {
     this.#streaming = streaming !== false;
     this.#messageBreak = messageBreak === true;
     this.#onNewMessage = onNewMessage;
+    this.#humanize = humanize ?? null;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#createBot = createBot;
-    this.#typingMiddleware = typingMiddleware;
   }
 
   get status() {
@@ -182,30 +180,19 @@ export class QqRuntime {
       logger: this.#logger,
       replyTimeoutMs: this.#replyTimeoutMs,
       streaming: this.#streaming, messageBreak: this.#messageBreak, onNewMessage: this.#onNewMessage,
+        humanize: this.#humanize,
       signal: controller.signal,
     });
     // QQ delivers emoji/face messages as opaque `<faceType=..,faceId="..",ext="..">`
     // tags. Parse them into readable text so the Harness sees what the sender
     // actually meant instead of an unusable markup fragment.
     bot.use(contentSanitizer({ parseFaceTags: true }));
-    bot.use?.(this.#typingMiddleware({
-      keepAlive: true,
-      predicate: (ctx) => {
-        const message = ctx?.message;
-        if (!message || (message.kind === 'group'
-          && message.rawEventType !== 'GROUP_AT_MESSAGE_CREATE')) return false;
-        if (!this.#accessPolicy) {
-          return message.kind === 'group'
-            || this.#config.ownerUserOpenid === '*'
-            || message.senderId === this.#config.ownerUserOpenid;
-        }
-        return evaluateInboundAccess(this.#accessPolicy, {
-          conversationType: message.kind === 'c2c' ? 'direct' : 'group',
-          senderIds: message.senderId,
-          text: typeof message.content === 'string' ? message.content.trim() : '',
-        }).allowed;
-      },
-    }));
+    // The SDK typingIndicator middleware was removed: its 50s keepalive was
+    // dead in this integration (the SDK awaits middleware handlers while
+    // onMessage does not await the bridge task, so `await next()` returned
+    // immediately and the timer was cleared). The bridge now runs a
+    // self-managed typing session that starts after the read delay,
+    // covers the whole compose phase, and actually renews (qq-bridge.mjs).
 
     let readyResolve;
     let readyReject;

@@ -41,6 +41,11 @@ export async function runControlCommand(text, harness, state, key, {
   pendingInteraction = false,
   control,
   deferredDelivery,
+  // () => boolean: abort this conversation's pre-ask phase (read delay /
+  // image staging / stream opening). Returns true when a pending phase was
+  // aborted. stopActiveTurn alone cannot cancel a turn that has not
+  // reached the harness yet, so /stop falls back to this hook.
+  abortPreAsk = null,
 } = {}) {
   if (!isControlCommand(text)) return null;
   const command = text.trim();
@@ -58,11 +63,20 @@ export async function runControlCommand(text, harness, state, key, {
   if (stop) {
     if (!/^\/stop$/iu.test(command)) return commandResult(t(STOP_USAGE));
     const session = boundSession(harness, state, key);
-    if (!session) return commandResult(t('当前聊天没有正在运行的任务。'));
+    if (!session) {
+      // No session was ever bound, but a message may still be sitting in
+      // its silent pre-ask phase (read delay / image staging).
+      if (abortPreAsk?.()) return commandResult(t('已停止待发送的消息。'), { stopped: true });
+      return commandResult(t('当前聊天没有正在运行的任务。'));
+    }
     if (typeof session.stopActiveTurn !== 'function') {
       throw new TypeError('Harness session does not support stopping active turns');
     }
     const stopped = await session.stopActiveTurn(control, requestOptions(signal));
+    if (!stopped && abortPreAsk?.()) {
+      // The chat's running task was a message still in its pre-ask phase.
+      return commandResult(t('已停止待发送的消息。'), { stopped: true });
+    }
     if (!stopped && deferredDelivery) {
       const background = await deferredDelivery.stop(key);
       if (background === 'stopped') return commandResult(t('已请求停止后台任务。'), { stopped: true });

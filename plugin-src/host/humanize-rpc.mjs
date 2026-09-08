@@ -1,16 +1,28 @@
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import {
   HUMANIZE_RPC_CHANNEL,
   HUMANIZE_ENDPOINTS,
   HumanizeSettingsStore,
   createHumanizeRpcHandler,
+  validateHumanizeUpdate,
 } from '../../src/channels/shared/humanize-settings.mjs';
 import { resolveRpcAuthority } from './rpc-authority.mjs';
 
 export { HUMANIZE_RPC_CHANNEL, HUMANIZE_ENDPOINTS };
 
 const ENDPOINTS = new Set(Object.values(HUMANIZE_ENDPOINTS));
+
+// Keys the client may send on humanize.set. Field-level validation
+// happens in validateHumanizeUpdate; this only gates the top-level shape.
+const SETTABLE_KEYS = new Set([
+  'streaming',
+  'messageBreak',
+  'onNewMessage',
+  'sendDelay',
+  'typingIndicator',
+  'typingBurst',
+]);
 
 export function validHumanizePayload(endpoint, payload) {
   if (!ENDPOINTS.has(endpoint)) return false;
@@ -21,8 +33,7 @@ export function validHumanizePayload(endpoint, payload) {
   if (endpoint === HUMANIZE_ENDPOINTS.set) {
     if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
     const keys = Object.keys(payload);
-    const allowed = new Set(['streaming', 'messageBreak', 'onNewMessage']);
-    return keys.every((key) => allowed.has(key));
+    return keys.every((key) => SETTABLE_KEYS.has(key));
   }
   return false;
 }
@@ -36,7 +47,7 @@ export function installHumanizeRpc(ctx, { config = {}, logger = null, authority 
     ?? process.env.DSH_HOME
     ?? homedir() + '/.dsh');
   const settingsPath = resolve(config.humanizeSettingsPath
-    ?? homedir() + '/.dsh/integrations/dsh-im/humanize.json');
+    ?? join(dshHome, 'integrations', 'dsh-im', 'humanize.json'));
 
   const store = new HumanizeSettingsStore(settingsPath);
   const handler = createHumanizeRpcHandler({ store, logger: log });

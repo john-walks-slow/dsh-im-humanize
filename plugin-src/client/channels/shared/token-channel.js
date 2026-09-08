@@ -6,6 +6,7 @@ import { h } from '../../i18n.js';
 import { installDingtalkStyles } from '../dingtalk/styles.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
 import { ContextEnhancementEditor } from '../../context-enhancement.js';
+import { BotSendDelayEditor, TYPING_CAPABILITY } from './bot-send-delay.js';
 import {
   AgentPresetCatalogContext,
   AgentPresetEditor,
@@ -79,9 +80,10 @@ export function createTokenChannelSettings(definition) {
     emptyActionLabel = '填写 Bot Token',
     AccountSettings = null,
     accountSettingsEndpoint = null,
+    typingCapability = 'full',
   } = definition;
 
-  function AccountCard({ account, busy, testNotice, removing, onReconnect, onWorkspaceSave, onModelSave, onAgentPresetSave, onContextEnhancementSave, onAccountSettingsSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
+  function AccountCard({ account, busy, testNotice, removing, onReconnect, onWorkspaceSave, onModelSave, onAgentPresetSave, onContextEnhancementSave, onHumanizeSave, onAccountSettingsSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
     const state = busy === 'reconnect' ? 'connecting' : account.state;
     const tone = account.connected ? 'success' : state === 'error' ? 'error' : 'warning';
     const stateLabel = account.connected ? '运行正常' : state === 'connecting' ? '正在连接' : '连接未就绪';
@@ -138,6 +140,13 @@ export function createTokenChannelSettings(definition) {
           config: account.contextEnhancement,
           disabled: Boolean(busy),
           onSave: onContextEnhancementSave,
+        }),
+        h(BotSendDelayEditor, {
+          humanize: account.humanize,
+          sendDelayDefaults: account.humanizeDefaults?.sendDelay ?? null,
+          capability: TYPING_CAPABILITY[typingCapability] ?? TYPING_CAPABILITY.full,
+          disabled: Boolean(busy),
+          onSave: onHumanizeSave,
         }),
         AccountSettings ? h(AccountSettings, {
           account,
@@ -360,6 +369,12 @@ export function createTokenChannelSettings(definition) {
                 'context-enhancement',
                 endpoints.setContextEnhancement,
                 { botId: account.botId, config },
+              ),
+              onHumanizeSave: (humanize) => botAction(
+                account,
+                'humanize',
+                endpoints.setHumanize,
+                { botId: account.botId, humanize },
               ),
               onAccountSettingsSave: AccountSettings && accountSettingsEndpoint
                 ? (payload) => botAction(

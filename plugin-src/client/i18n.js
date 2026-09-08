@@ -892,6 +892,99 @@ const EN = Object.freeze({
   '确认清理': 'Confirm cleanup',
   '正在清理…': 'Cleaning up…',
   // Humanization settings
+  '轻拟人': 'Light humanization',
+  '慢性子': 'Slow-paced',
+  '沉浸角色扮演': 'Immersive role-play',
+  '即刻应答': 'Instant replies',
+  '探索预设': 'Exploration presets',
+  '探索预设…': 'Exploration presets…',
+  '阅读速度': 'the reading speed',
+  '阅读速度（字/秒）': 'Reading speed (chars/s)',
+  '阅读速度（字/秒，0 关闭）': 'Reading speed (chars/s, 0 = off)',
+  '单回合封顶（秒）': 'Per-turn cap (s)',
+  '阅读延迟单回合封顶（秒）': 'Read-delay per-turn cap (s)',
+  '阅读延迟封顶': 'the read-delay cap',
+  '阅读延迟封顶（秒）': 'Read-delay cap (s)',
+  '阅读延迟封顶不能低于上限。': 'The read-delay cap cannot be below the upper bound.',
+  '用户消息越长“读”得越久（0 关闭按长度计算）；单回合阅读延迟的硬上限。': 'Longer user messages take longer to "read" (0 disables the length term); the hard per-turn cap for the read delay.',
+  '闲置加成': 'Idle boost',
+  '闲置 ≥': 'idle for',
+  '闲置阈值': 'the idle threshold',
+  '闲置阈值（分钟）': 'Idle threshold (minutes)',
+  '分钟 → 延迟 ×': 'min → delay ×',
+  '闲置加成倍数': 'the idle boost multiplier',
+  '会话闲置超过阈值后，阅读延迟乘以该倍数；倍数为 1 即关闭。': 'When the conversation has been idle past the threshold, the read delay is multiplied by this factor; 1 disables it.',
+  '分段打字速度': 'the segment typing speed',
+  '分段打字速度（字/秒）': 'Segment typing speed (chars/s)',
+  '分段打字速度（字/秒，0 关闭）': 'Segment typing speed (chars/s, 0 = off)',
+  '封顶（秒）': 'Cap (s)',
+  '分段间隔封顶': 'the segment-gap cap',
+  '分段间隔封顶（秒）': 'Segment-gap cap (s)',
+  '分段间隔封顶不能低于上限。': 'The segment-gap cap cannot be below the upper bound.',
+  '按下一分段长度折算“正在打下一条”的时间（0 关闭）；分段间隔的硬上限。': 'Scales the "typing the next message" time by the next segment length (0 disables); the hard cap for segment gaps.',
+  '断续节奏高级参数': 'Advanced bursty-rhythm parameters',
+  '亮相（毫秒）': 'On phase (ms)',
+  '亮相最短（毫秒）': 'On phase minimum (ms)',
+  '亮相最长（毫秒）': 'On phase maximum (ms)',
+  '灭相（毫秒）': 'Off phase (ms)',
+  '灭相最短（毫秒）': 'Off phase minimum (ms)',
+  '灭相最长（毫秒）': 'Off phase maximum (ms)',
+  '断续模式下“正在输入”亮起与熄灭的可见时长范围；平台显示残余由插件自动补足，无需在此考虑。': 'The visible on/off durations of the typing indicator in bursty mode; platform display residuals are compensated automatically.',
+  '覆盖保存后固定为本页值，之后修改全局设置不影响此机器人（覆盖为整体替换）。': 'After saving, the override is fixed to the values on this page; later global changes no longer affect this bot (overrides replace whole).',
+  '${label}不能超过 ${max} 分钟。': '${label} cannot exceed ${max} minutes.',
+  '${label}不能超过 ${max}。': '${label} cannot exceed ${max}.',
+  '${label}必须是不小于 ${min} 的数字。': '${label} must be a number no less than ${min}.',
+  '持续': 'Continuous',
+  '断续': 'Intermittent',
+  '已覆盖': 'Overridden',
+  '配置无效，请检查后重试。': 'The configuration is invalid. Check it and try again.',
+  '阅读延迟下限': 'the read delay lower bound',
+  '阅读延迟上限': 'the read delay upper bound',
+  '分段间隔下限': 'the segment gap lower bound',
+  '分段间隔上限': 'the segment gap upper bound',
+  '请填写${label}。': 'Enter ${label}.',
+  '${label}必须是不小于 0 的数字。': '${label} must be a number no less than 0.',
+  '${label}不能超过 ${max} 秒。': '${label} cannot exceed ${max} seconds.',
+  '已覆盖 ${min}–${max} 秒': 'Overridden ${min}–${max} s',
+  '发送延迟': 'Send delay',
+  '发送延迟模式': 'Send delay mode',
+  '跟随全局': 'Follow global',
+  '自定义覆盖': 'Custom override',
+  '已覆盖·未启用': 'Overridden · off',
+  '启用发送延迟': 'Enable send delay',
+  '发送延迟（全局默认）': 'Send delay (global default)',
+  '阅读延迟（秒）': 'Read delay (seconds)',
+  '分段间隔（秒）': 'Segment gap (seconds)',
+  '阅读延迟下限（秒）': 'Read delay lower bound (seconds)',
+  '阅读延迟上限（秒）': 'Read delay upper bound (seconds)',
+  '分段间隔下限（秒）': 'Segment gap lower bound (seconds)',
+  '分段间隔上限（秒）': 'Segment gap upper bound (seconds)',
+  '两阶段拟人化：先静默“稍后才读到消息”，再开始处理；排队等待的多条消息延迟会累积。': 'Two-phase humanization: the bot first stays silent as if it had not seen the message yet, then starts processing. Queued messages accumulate their delays.',
+  '开启后，机器人收到消息先静默一段时间再处理，模拟真人稍后才读到消息。': 'When enabled, the bot stays silent for a while after receiving a message before processing it, like a human who reads it a moment later.',
+  '收到消息后到开始处理之间的静默时间，按用户消息长度还会略有增加。': 'The silent window between receiving a message and processing it; longer user messages add a small reading term.',
+  '分段间隔是分段回复之间“正在打下一条”的停顿；阅读延迟是收到消息后的静默时间。': 'The segment gap is the "typing the next message" pause between segments; the read delay is the silent window after a message arrives.',
+  '多条分段回复之间“正在打下一条”的停顿，仅在启用分步消息或流式分段时生效。': 'The "typing the next message" pause between segments; only applies to message-break or streamed segments.',
+  '钉钉、企业微信、飞书、Slack 等无输入状态接口的渠道只有延迟生效，且阅读延迟封顶 5 秒。': 'Channels without a typing-status API (DingTalk, WeCom, Feishu, Slack, …) only get the delay, with the read delay capped at 5 seconds.',
+  '该渠道没有输入状态接口：仅发送延迟生效，阅读延迟封顶 5 秒。': 'This channel has no typing-status API: only the send delay applies, and the read delay is capped at 5 seconds.',
+  '输入状态仅私聊可用；群聊没有输入状态，阅读延迟封顶 5 秒。': 'The typing indicator is available in direct chats only; group chats have no typing status and the read delay is capped at 5 seconds.',
+  '输入状态指示': 'Typing indicator',
+  '处理开始后显示“正在输入”的方式：持续显示，或像真人一样时断时续（断续）。无对应接口的渠道自动忽略此项。': 'How the "typing" status appears once processing starts: shown continuously, or intermittently like a real person. Channels without such an API ignore this.',
+  '按机器人单独覆盖发送延迟：在各渠道的机器人卡片“发送延迟”中设置。': 'To override the send delay per bot, use the "Send delay" section on each channel\u2019s bot card.',
+  '机器人使用全局拟人化设置中的发送延迟。': 'This bot uses the send delay from the global humanization settings.',
+  '切换回跟随全局会清除该机器人的全部拟人化覆盖。': 'Switching back to "Follow global" clears all humanization overrides for this bot.',
+  '清除覆盖': 'Clear override',
+  '请填写阅读延迟。': 'Enter the read delay.',
+  '请填写分段间隔。': 'Enter the segment gap.',
+  '阅读延迟下限必须是不小于 0 的数字。': 'The read delay lower bound must be a number ≥ 0.',
+  '阅读延迟上限必须是不小于 0 的数字。': 'The read delay upper bound must be a number ≥ 0.',
+  '分段间隔下限必须是不小于 0 的数字。': 'The segment gap lower bound must be a number ≥ 0.',
+  '分段间隔上限必须是不小于 0 的数字。': 'The segment gap upper bound must be a number ≥ 0.',
+  '阅读延迟下限不能超过上限。': 'The read delay lower bound must not exceed the upper bound.',
+  '分段间隔下限不能超过上限。': 'The segment gap lower bound must not exceed the upper bound.',
+  '阅读延迟下限不能超过 300 秒。': 'The read delay cannot exceed 300 seconds.',
+  '阅读延迟上限不能超过 300 秒。': 'The read delay cannot exceed 300 seconds.',
+  '分段间隔下限不能超过 30 秒。': 'The segment gap cannot exceed 30 seconds.',
+  '分段间隔上限不能超过 30 秒。': 'The segment gap cannot exceed 30 seconds.',
   '拟人化设置': 'Humanization settings',
   '拟人化设置暂不可用。': 'Humanization settings are unavailable.',
   '无法读取拟人化设置，请稍后重试。': 'Could not load humanization settings. Try again later.',
@@ -930,6 +1023,22 @@ function channelName(value) {
 }
 
 function translateDynamic(text) {
+  // Send-delay editor interpolated validation messages (labels like
+  // 阅读延迟下限 resolve through the static dictionary).
+  let sendDelay = /^请填写(.+?)。$/.exec(text);
+  if (sendDelay) return `Enter ${localizeText(sendDelay[1])}.`;
+  sendDelay = /^(.+?)必须是不小于 0 的数字。$/.exec(text);
+  if (sendDelay) return `${localizeText(sendDelay[1])} must be a number no less than 0.`;
+  sendDelay = /^(.+?)不能超过 (\d+) 秒。$/.exec(text);
+  if (sendDelay) return `${localizeText(sendDelay[1])} cannot exceed ${sendDelay[2]} seconds.`;
+  sendDelay = /^(.+?)不能超过 (\d+(?:\.\d+)?) 分钟。$/.exec(text);
+  if (sendDelay) return `${localizeText(sendDelay[1])} cannot exceed ${sendDelay[2]} minutes.`;
+  sendDelay = /^(.+?)不能超过 (\d+(?:\.\d+)?)。$/.exec(text);
+  if (sendDelay) return `${localizeText(sendDelay[1])} cannot exceed ${sendDelay[2]}.`;
+  sendDelay = /^(.+?)必须是不小于 (\d+(?:\.\d+)?) 的数字。$/.exec(text);
+  if (sendDelay) return `${localizeText(sendDelay[1])} must be a number no less than ${sendDelay[2]}.`;
+  sendDelay = /^已覆盖 (.+?)–(.+?) 秒$/.exec(text);
+  if (sendDelay) return `Overridden ${sendDelay[1]}–${sendDelay[2]} s`;
   const guidanceLimit = /^增强提示词不得超过 (\d+) 个字符。$/.exec(text);
   if (guidanceLimit) return `Guidance must not exceed ${guidanceLimit[1]} characters.`;
   let match = /^(\d+) \/ (\d+) 在线$/.exec(text);

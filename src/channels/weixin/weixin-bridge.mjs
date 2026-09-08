@@ -36,6 +36,11 @@ import {
 } from '../shared/preset-command.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
+import {
+  applyReadDelay,
+  applySegmentGap,
+} from '../shared/send-delay.mjs';
+import { resolveHumanizeSettings } from '../shared/humanize-resolver.mjs';
 import { captureContextEnhancement, enhanceContextContent } from '../shared/context-enhancement.mjs';
 import {
   hasInboundImages,
@@ -328,12 +333,22 @@ export class WeixinHarnessBridge {
   #typingClosed = false;
   #typingRetryAt = 0;
   #typingTicketStale = false;
+  // True while a pending interaction paused the keepalive: the timer is
+  // dropped but target + ticket survive for #resumeTyping to re-arm.
+  #typingPaused = false;
   /** Streaming toggle (default true). When off, no progressive stream updates. */
   #streaming = true;
   /** message_break toggle (default false). When on, streaming is forced off. */
   #messageBreak = false;
   /** onNewMessage policy: interrupt (default) | queue | steer. */
   #onNewMessage = 'interrupt';
+  // Live per-turn settings provider; falls back to ctor snapshot.
+  #humanize = null;
+  // Pre-ask controllers: alive only while a turn is in its silent read
+  // delay; aborting supersedes that turn before it reaches the harness.
+  #preAskControllers = new Map();
+  // Wall-clock end of the last completed turn per conversation (idle boost).
+  #turnEnds = new Map();
 
   constructor({
     api,
@@ -353,6 +368,7 @@ export class WeixinHarnessBridge {
     streaming = true,
     messageBreak = false,
     onNewMessage = 'interrupt',
+    humanize = null,
   }) {
     if (!api || typeof api.sendText !== 'function') throw new TypeError('Weixin API is required');
     if (!baseUrl || !token || !ownerUserId) throw new TypeError('Weixin account credentials are required');
@@ -377,6 +393,7 @@ export class WeixinHarnessBridge {
     this.#messageBreak = messageBreak === true;
     this.#streaming = streaming !== false;
     this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
+    this.#humanize = humanize ?? null;
     this.#deferred = createDeferredDeliveryCoordinator({ harness, state, signal, logger,
       deliver: (entry, outcome) => this.#deliverDeferredOutcome(entry, outcome),
     });
@@ -550,6 +567,10 @@ export class WeixinHarnessBridge {
       onNewMessage: this.#onNewMessage,
     });
     if (policy === 'interrupt') {
+      // Supersede any silent read-delay phase first: stopActiveTurn cannot
+      // cancel a turn that has not reached the harness yet (unconditional,
+      // not gated by sendDelay.enabled).
+      this.#abortPreAskPhase(key);
       const current = this.#enqueueMessage(message, messageId, key);
       fireAndForgetStop({
         session: this.#boundSession(key),
@@ -780,6 +801,7 @@ export class WeixinHarnessBridge {
         || this.#approvals.hasPending(key),
       control: { owner: this, key },
       deferredDelivery: this.#deferred,
+      abortPreAsk: () => this.#abortPreAskPhase(key),
     });
     if (result?.stopped) {
       await Promise.allSettled([
@@ -796,6 +818,29 @@ export class WeixinHarnessBridge {
       }
     }
     this.#status.lastError = null;
+  }
+
+  #humanizeSettings() {
+    return resolveHumanizeSettings({
+      humanize: this.#humanize,
+      streaming: this.#streaming,
+      messageBreak: this.#messageBreak,
+      onNewMessage: this.#onNewMessage,
+    });
+  }
+
+  #abortPreAskPhase(key) {
+    const controller = this.#preAskControllers.get(key);
+    if (!controller) return false;
+    const reason = new Error('已由更新的消息接替。');
+    reason.code = 'superseded';
+    controller.abort(reason);
+    return true;
+  }
+
+  #idleMsFor(key) {
+    const lastTurnEnd = this.#turnEnds.get(key);
+    return lastTurnEnd === undefined ? 0 : Date.now() - lastTurnEnd;
   }
 
   async #process(message, key, {
@@ -816,6 +861,7 @@ export class WeixinHarnessBridge {
     const runId = typeof message.run_id === 'string' ? message.run_id : undefined;
     let batchSettled = batchSubmission === null;
     let promptRecorded = false;
+    let preAsk = null;
     try {
       const promptMessage = preparedMessage ?? this.#inboundMessage(message);
       const text = promptMessage.content;
@@ -874,6 +920,36 @@ export class WeixinHarnessBridge {
       let answer;
       let artifacts = [];
       let messageBreakHandler = null;
+      const humanize = this.#humanizeSettings();
+      // Mark the message seen BEFORE the silent read delay: WeChat
+      // redelivers unacknowledged messages, so a redelivery arriving during
+      // a long delay must not re-enqueue the same message as a new turn.
+      await this.#state.markSeen(messageId);
+      promptRecorded = true;
+      // ---- Phase ①: read delay（"过了一段时间才读到消息"）----
+      // Silent: no typing ticket, no keepalive. Abortable: a newer message
+      // (interrupt) or /stop supersedes the phase instead of waiting it out.
+      preAsk = new AbortController();
+      this.#preAskControllers.set(key, preAsk);
+      const preAskSignal = this.#signal
+        ? AbortSignal.any([this.#signal, preAsk.signal])
+        : preAsk.signal;
+      try {
+        await applyReadDelay({
+          settings: humanize,
+          userText: text,
+          idleMs: this.#idleMsFor(key),
+          // Long tier (plan §6.2): WeChat has a ticket typing indicator that
+          // explains the whole wait once the silence ends, like TG/DC/WA.
+          signal: preAskSignal,
+        });
+      } finally {
+        if (this.#preAskControllers.get(key) === preAsk) {
+          this.#preAskControllers.delete(key);
+        }
+      }
+      // ---- Phase ②: compose ----
+      // The typing ticket/keepalive opens only after the silence.
       await this.#startTyping(sender, contextToken);
       try {
         let content = hasImages || hasReply
@@ -890,13 +966,24 @@ export class WeixinHarnessBridge {
           }));
           contextEnhanced = content !== originalContent;
         }
-        await this.#state.markSeen(messageId);
-        promptRecorded = true;
-        // Create message_break handler for this turn.
-        messageBreakHandler = this.#messageBreak
+        // Create message_break handler for this turn. Segment gaps
+        // ("typing the next message") pause between segments and the
+        // keepalive relights after each send.
+        let segmentsSent = 0;
+        messageBreakHandler = humanize.messageBreak
           ? createMessageBreakHandler({
             sendSegment: async (segmentText) => {
-              await this.#send(sender, segmentText, contextToken, runId);
+              if (segmentsSent > 0) {
+                await applySegmentGap({
+                  settings: humanize,
+                  segmentText,
+                  signal: this.#signal,
+                });
+              }
+              segmentsSent += 1;
+              const sent = await this.#send(sender, segmentText, contextToken, runId);
+              await this.#resumeTyping(key, sender, contextToken);
+              return sent;
             },
             logger: this.#logger,
           })
@@ -941,6 +1028,7 @@ export class WeixinHarnessBridge {
           batchSettled = true;
         }
       } finally {
+        this.#turnEnds.set(key, Date.now());
         await Promise.allSettled([
           this.#stopTyping(),
           this.#cancelPendingInteraction(key),
@@ -1007,6 +1095,11 @@ export class WeixinHarnessBridge {
       }
       if (error?.code === 'turn-stopped') {
         if (!promptRecorded) await this.#state.markSeen(messageId);
+        return;
+      }
+      if (preAsk?.signal.aborted === true) {
+        // Superseded by a newer message or /stop before this turn reached
+        // the harness: silent — the newer turn owns this conversation.
         return;
       }
       if (this.#signal?.aborted) return;
@@ -1175,6 +1268,11 @@ export class WeixinHarnessBridge {
     contextToken,
     runId,
   }) {
+    // A pending question/approval means the human is waiting for the other
+    // side, not typing: pause the keepalive timer (the ticket stays valid;
+    // onInteractionResolved resumes). Recovered interactions auto-cancel
+    // without a matching resume, so they must not pause.
+    if (interaction?.recovered !== true) this.#pauseTypingForPending();
     if (interaction?.kind === 'approval') {
       return this.#approvals.handleRequested(interaction, {
         key,
@@ -1450,6 +1548,7 @@ export class WeixinHarnessBridge {
         }
 
         this.#typingTarget = target;
+        this.#typingPaused = false;
         await this.#api.sendTyping({
           baseUrl: this.#baseUrl,
           token: this.#token,
@@ -1480,6 +1579,7 @@ export class WeixinHarnessBridge {
   async #stopTyping({ signal = AbortSignal.timeout(5_000) } = {}) {
     ++this.#typingGeneration;
     this.#clearTypingTimer();
+    this.#typingPaused = false;
     const target = this.#typingTarget;
     const ticket = this.#typingTicket;
     const stale = this.#typingTicketStale;
@@ -1553,7 +1653,66 @@ export class WeixinHarnessBridge {
     if (this.#pendingInteractions.has(key) || this.#approvals.hasPending(key)) {
       return Promise.resolve(false);
     }
+    if (this.#typingTarget === nonEmptyString(toUserId)) {
+      // Live keepalive: nothing to do — redundant resumes (every streaming
+      // update, out-of-band notices) must not send extra status:1 calls.
+      // Only a PAUSED keepalive needs action: a pending interaction dropped
+      // the timer but kept target + ticket, and #startTyping would
+      // early-return on the matching target and leave the indicator dead
+      // for the rest of the turn, so re-arm explicitly.
+      return this.#typingPaused ? this.#refreshTyping() : Promise.resolve(true);
+    }
     return this.#startTyping(toUserId, contextToken);
+  }
+
+  /** Re-send status:1 immediately and restart the keepalive loop. */
+  #refreshTyping() {
+    const generation = this.#typingGeneration;
+    if (!this.#typingTarget || !this.#typingTicket
+      || this.#typingClosed || this.#signal?.aborted
+      || Date.now() < this.#typingRetryAt
+      || typeof this.#api.sendTyping !== 'function') {
+      return Promise.resolve(false);
+    }
+    return this.#queueTyping(async () => {
+      if (generation !== this.#typingGeneration || !this.#typingTarget || this.#typingClosed) {
+        return false;
+      }
+      await this.#api.sendTyping({
+        baseUrl: this.#baseUrl,
+        token: this.#token,
+        toUserId: this.#typingTarget,
+        typingTicket: this.#typingTicket,
+        status: 1,
+        signal: this.#signal,
+      });
+      if (generation !== this.#typingGeneration) return false;
+      this.#typingTicketStale = false;
+      this.#typingPaused = false;
+      this.#scheduleTyping(generation);
+      return true;
+    }).catch((error) => {
+      if (generation === this.#typingGeneration) {
+        this.#clearTypingTimer();
+        this.#typingPaused = false;
+        // Drop target + ticket so the next resume takes the full
+        // #startTyping path with a fresh ticket (long pauses can expire it).
+        this.#typingTarget = null;
+        this.#typingTicket = null;
+        this.#typingTicketStale = false;
+        this.#typingRetryAt = Date.now() + TYPING_RETRY_DELAY_MS;
+      }
+      if (!this.#signal?.aborted && !this.#typingClosed) {
+        this.#logger.warn?.('[dsh-weixin] typing resume failed:', error);
+      }
+      return false;
+    });
+  }
+
+  /** Stop the keepalive timer only; ticket/target survive for resume. */
+  #pauseTypingForPending() {
+    this.#clearTypingTimer();
+    if (this.#typingTarget) this.#typingPaused = true;
   }
 
   async #deliverArtifacts(toUserId, replyTo, artifacts, contextToken, runId, baseReceipt) {

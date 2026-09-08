@@ -8,6 +8,7 @@ import { installTelegramStyles } from './styles.js';
 
 const channel = createTokenChannelSettings({
   channel: 'Telegram',
+  typingCapability: 'full',
   endpoints: TELEGRAM_ENDPOINTS,
   api: telegramClientApi,
   LogoGlyph: TelegramLogoGlyph,

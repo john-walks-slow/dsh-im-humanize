@@ -6,6 +6,22 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Added / 新增
+
+- 拟人化两阶段发送：新增**发送延迟**（默认关闭）与**输入状态指示**。阅读延迟在回合开始前静默 `readDelay`（min/max 随机 + 可选按用户消息长度的阅读项 + 可选闲置加成，`maxTotalMs` 封顶；无输入状态接口的渠道封顶 5 秒），分段间隔为分步消息/流式分段之间"正在打下一条"的停顿。延迟期间的新消息（interrupt）或 `/stop` 会**静默取代**旧回合：不生成、不发送、无失败提示、无双回复；排队模式延迟累积。发送延迟支持**按机器人覆盖**（渠道卡片内跟随全局/自定义），配置文件暴露全部参数（charsPerSecond、idleBoost、typingBurst 等）。
+  Two-phase humanized sending: adds a **send delay** (off by default) and a **typing indicator**. A read delay stays silent before the turn starts (`readDelay` min/max random + optional per-message-length reading term + optional idle boost, capped by `maxTotalMs`; channels without a typing API are capped at 5 seconds), and segment gaps pause between message-break or streamed segments like someone typing the next message. A new message (interrupt) or `/stop` during the delay **silently supersedes** the old turn — no generation, no send, no failure notice, no double reply; queued messages accumulate delays. The send delay supports **per-bot overrides** (follow global / custom override on each channel card), and the config file exposes every parameter (charsPerSecond, idleBoost, typingBurst, …).
+- 设置面板提供发送延迟**全参数面与探索预设**（轻拟人/慢性子/沉浸角色扮演/即刻应答）；按机器人覆盖草稿预填当前全局值，未显式修改的高级子字段保存时继承全局值，未保存草稿在轮询刷新下保留。钉钉分段间隔强制 ≥3 秒（webhook 频控）。
+  The settings panel exposes the full send-delay parameter face plus exploration presets (lightly human / slow-paced / immersive role-play / instant reply); per-bot override drafts prefill the current global values, untouched advanced subfields inherit the global values on save, and unsaved drafts survive polling refreshes. DingTalk segment gaps are floored at 3 seconds (webhook rate limit).
+- 输入状态指示三档（off/continuous/burst，默认断续）：Telegram/Discord/WhatsApp 全档支持，微信票据型保活，QQ 仅私聊；交互等待期间暂停、回答后恢复、回合结束必熄灭；QQ 改用桥内自管理输入状态会话（55 秒显示 / 50 秒续期）替代失效的 SDK 中间件。
+  Typing indicator in three modes (off/continuous/burst, bursty by default): full support on Telegram/Discord/WhatsApp, ticket-based keepalive on WeChat, direct chats only on QQ; paused while interactions are pending and always dark when the turn ends; QQ now uses a bridge-managed typing session (55 s display / 50 s renewal) instead of the dead SDK middleware.
+
+### Fixed / 修复
+
+- 修复 QQ 桥接 `messageBreakHandler` 作用域缺陷：此前任何成功回合只要启用 message_break 就会触发 ReferenceError 并误报"任务未完成"（4 个基线测试失败的真实根因）。
+  Fixes a QQ bridge `messageBreakHandler` scoping bug: any successful turn with message_break enabled previously threw a ReferenceError and misreported a task failure (the true root cause behind 4 baseline test failures).
+- 修复延迟窗口内被取代回合的双回复问题；被取代的批量输入保留待 `/send` 重试（turn-stopped 仍完成批次）。
+  Fixes double replies for turns superseded during the delay window; superseded batch inputs are retained for `/send` retry (turn-stopped still completes its batch).
+
 ## [4.13.0] - 2026-09-06
 
 ### Added / 新增

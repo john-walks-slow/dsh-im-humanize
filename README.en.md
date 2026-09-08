@@ -40,7 +40,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 ## This fork: humanized messaging
 
-This repository is a fork of `xmanrui/dsh-im` focused on **humanized messaging** for role-play immersion. It keeps every upstream feature and adds three settings, all configured in the **Humanization settings** section under **Settings → IM bots → General settings** and applied globally to every channel and bot:
+This repository is a fork of `xmanrui/dsh-im` focused on **humanized messaging** for role-play immersion. It keeps every upstream feature and adds settings configured in the **Humanization settings** section under **Settings → IM bots → General settings**; the **send delay** can additionally be overridden per bot on each channel's bot card:
 
 - **Streaming replies (streaming, on by default)**: when disabled, model output is no longer pushed progressively; the complete reply is sent at once when the turn finishes, closer to real human reply pacing. Mutually exclusive with message breaks (enabling message_break turns streaming off automatically).
 - **Message breaks (message_break, off by default)**: the plugin registers a **no-op tool** named `message_break` (it executes nothing; it only marks a break point inside the reply). When the model calls it deliberately in a long reply to "take a breath", the plugin sends the text accumulated before the break as a separate message and then continues with the following segments, so one answer becomes several messages that read like someone typing line by line. Natural spots are between the thinking/tool progress and the final answer, between paragraphs of long answers, and at topic transitions; at most 20 segments per turn, and whitespace-only segments are skipped.
@@ -50,6 +50,31 @@ This repository is a fork of `xmanrui/dsh-im` focused on **humanized messaging**
   - **Inject as steering (steer)**: does not interrupt the generation; the new message text is injected as a steering instruction for the current turn, and the model weaves it into the tail of its answer.
 
   When the turn is waiting for user interaction (question/approval pending, verification, etc.), the message is always queued so the interaction flow is never disturbed by new input.
+
+### Send delay (two-phase model)
+
+The send delay splits the human feel into two phases matching the real gaps in human messaging:
+
+1. **Read delay (readDelay, phase 1)**: after a message arrives, the bot **stays silent for a while** before it starts processing — as if it only noticed the message later. No typing indicator and no read receipt appear during this silence. The duration is random within `minMs–maxMs`, plus two optional terms:
+   - **Length reading term (charsPerSecond)**: longer user messages take longer to "read" (character count divided by a reading speed);
+   - **Idle boost (idleBoost)**: when the conversation has been inactive for more than `afterMs`, the delay is multiplied by `multiplier` — quick replies while actively chatting, slow ones after a long pause.
+
+   The total is capped by `maxTotalMs`; **channels without a typing-status API (DingTalk, WeCom, Feishu, Slack, …) cap the read delay at 5 seconds**.
+2. **Segment gap (segmentGap, part of phase 2)**: the "typing the next message" pause between message-break or streamed segments, likewise random within `minMs–maxMs` with an optional per-segment length term.
+
+**Supersede semantics**: if a new message arrives (interrupt mode) or `/stop` runs while the read delay is ticking, the old turn is **silently cancelled** — no generation, no send, no "processing failed" notice, no double reply — and the new message takes over immediately. In queue mode messages are processed one by one and their delays accumulate (each one is "read" in turn).
+
+The send delay is off by default (`enabled=false`), in which case behavior matches upstream exactly, apart from the supersede fix above. The settings panel exposes the full parameter face: read-delay min/max, reading speed (chars/sec), per-turn cap, idle boost (idle ≥ N minutes → delay ×M), segment gap and segment typing speed, folded advanced burst-rhythm fields (on/off durations in ms), plus **exploration presets** (Lightly human / Slow-paced / Immersive role-play / Instant reply) that fill every field at once. The config file (`~/.dsh/integrations/dsh-im/humanize.json`) exposes the same parameters. **Each bot can override the send delay on its channel card** (follow global / custom override; the override draft prefills the current global values, and advanced subfields left untouched inherit the global values on save).
+
+### Typing indicator (typingIndicator)
+
+How "typing…" is displayed once processing starts, in three modes:
+
+- **Off**: no typing indicator at all;
+- **Continuous**: shown continuously while processing;
+- **Bursty (default)**: flickers on and off like a real person — a few seconds on, a second or two dark, then on again — avoiding the bot-like endless glow. The on/off rhythm (typingBurst ranges) is tunable in the config file.
+
+Channel capabilities: Telegram / Discord / WhatsApp (composing presence) support all three modes; WeChat fetches and keeps alive an input ticket once the read delay ends; QQ supports direct chats only (the group API does not exist); DingTalk, WeCom, Feishu, and Slack have no typing API and ignore this setting. The indicator pauses while an interaction (question/approval) is pending and always goes dark when the turn ends (including `/stop` and failures).
 
 > Upstream sync note: this branch is a long-lived fork and keeps merging updates from `xmanrui/dsh-im` upstream, staying fully compatible when features get merged. **Message breaks and the streaming toggle depend on this fork's extension of the Harness reply tracker (HarnessReplyTracker)** and are not available in the upstream repository.
 

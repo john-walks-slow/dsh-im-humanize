@@ -142,20 +142,40 @@ if (client.includes('settings.plugins.tab') || clientSources.includes('settings.
   throw new Error('client source or bundle still contains the legacy Plugins-tab settings entry');
 }
 // Connections still have no channel-enable toggle. Checkable inputs are owned
-// only by the shared context editor and the saved-target Session sync row.
-// The context editor contains one switch template and one mapped field-input
-// template; the delivery target adds one ordinary checkbox template.
+// only by the shared context editor, the saved-target Session sync row, the
+// humanization panel, and the per-bot send-delay editor. The expected bundle
+// counts are derived from those audited sources so adding a field inside one
+// of them only needs a manifest update here, while a stray checkable anywhere
+// else still fails the build.
 const contextEditorSource = await readFile(resolve(root, 'plugin-src/client/context-enhancement.js'), 'utf8');
 const deliverySettingsSource = await readFile(resolve(root, 'plugin-src/client/delivery-settings.js'), 'utf8');
-const otherClientSources = clientSources
-  .replace(contextEditorSource, '')
-  .replace(deliverySettingsSource, '');
+const humanizeSettingsSource = await readFile(resolve(root, 'plugin-src/client/humanize-settings.js'), 'utf8');
+const botSendDelaySource = await readFile(resolve(root, 'plugin-src/client/channels/shared/bot-send-delay.js'), 'utf8');
+const auditedSources = [
+  ['context-enhancement.js', contextEditorSource, { checkbox: 2, switch: 1 }],
+  ['delivery-settings.js', deliverySettingsSource, { checkbox: 1, switch: 0 }],
+  ['humanize-settings.js', humanizeSettingsSource, { checkbox: 3, switch: 0 }],
+  ['bot-send-delay.js', botSendDelaySource, { checkbox: 1, switch: 0 }],
+];
+let expectedCheckboxes = 0;
+let expectedSwitches = 0;
+for (const [name, source, expected] of auditedSources) {
+  const checkboxes = (source.match(/type:\s*["']checkbox["']/g) ?? []).length;
+  const switches = (source.match(/role:\s*["']switch["']/g) ?? []).length;
+  if (checkboxes !== expected.checkbox || switches !== expected.switch) {
+    throw new Error(`checkable-input manifest out of date for ${name}: found ${checkboxes} checkbox / ${switches} switch, expected ${expected.checkbox} / ${expected.switch}`);
+  }
+  expectedCheckboxes += checkboxes;
+  expectedSwitches += switches;
+}
+const otherClientSources = auditedSources.reduce(
+  (rest, [, source]) => rest.replace(source, ''),
+  clientSources,
+);
 if (/role:\s*["']switch|type:\s*["']checkbox/.test(otherClientSources)
-  || (deliverySettingsSource.match(/type:\s*["']checkbox["']/g) ?? []).length !== 1
-  || /role:\s*["']switch["']/u.test(deliverySettingsSource)
-  || (client.match(/role:\s*["']switch["']/g) ?? []).length !== 1
-  || (client.match(/type:\s*["']checkbox["']/g) ?? []).length !== 3) {
-  throw new Error('checkable inputs must be limited to context enhancement and Session sync');
+  || (client.match(/role:\s*["']switch["']/g) ?? []).length !== expectedSwitches
+  || (client.match(/type:\s*["']checkbox["']/g) ?? []).length !== expectedCheckboxes) {
+  throw new Error('checkable inputs must be limited to context enhancement, Session sync, humanization, and send-delay editors');
 }
 for (const marker of ['bot.context-enhancement.set', '<dsh_im_source>', '<dsh_im_source_guidance>']) {
   if (!host.includes(marker) || !client.includes(marker)) {

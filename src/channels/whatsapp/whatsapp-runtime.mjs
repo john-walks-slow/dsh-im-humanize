@@ -445,7 +445,6 @@ export class WhatsappBotClient {
   #abortController = new AbortController();
   #mediaUploadTimeoutMs;
   #logger;
-  #typingTimers = new Map();
   #streams = new Set();
 
   constructor(socket, outboundIds, {
@@ -626,33 +625,32 @@ export class WhatsappBotClient {
     return result;
   }
 
+  // A single composing update; refreshing belongs to the shared compose-
+  // phase typing session (refreshMs 8000 from the bridge, well inside the
+  // ~10s presence lifetime — the old 20s loop actually outlived it).
   async sendTyping(target) {
     if (!target.selfChat && target.quoted?.key) {
       await this.#socket.readMessages([target.quoted.key]).catch(() => undefined);
     }
     await this.#socket.sendPresenceUpdate('composing', target.jid);
-    await this.#stopTyping(target.jid, false);
-    const timer = setInterval(() => {
-      void this.#socket.sendPresenceUpdate('composing', target.jid).catch(() => {
-        void this.#stopTyping(target.jid);
-      });
-    }, 20_000);
-    timer.unref?.();
-    this.#typingTimers.set(target.jid, timer);
+  }
+
+  // Explicitly clear the composing indicator ('paused'). Public so the
+  // shared typing session can end the indicator at burst dark phases and
+  // at turn end — including turns that never send anything (previously the
+  // composing indicator just kept looping forever in that case).
+  stopTyping(target) {
+    return this.#stopTyping(target.jid);
   }
 
   async close() {
     this.#abortController.abort();
     const stoppingStreams = [...this.#streams].map((stream) => stream.cancel());
-    const jids = [...this.#typingTimers.keys()];
-    await Promise.allSettled([...stoppingStreams, ...jids.map((jid) => this.#stopTyping(jid))]);
+    await Promise.allSettled(stoppingStreams);
   }
 
-  async #stopTyping(jid, sendPaused = true) {
-    const timer = this.#typingTimers.get(jid);
-    if (timer) clearInterval(timer);
-    this.#typingTimers.delete(jid);
-    if (sendPaused) await this.#socket.sendPresenceUpdate('paused', jid).catch(() => undefined);
+  async #stopTyping(jid) {
+    await this.#socket.sendPresenceUpdate('paused', jid).catch(() => undefined);
   }
 }
 
@@ -681,6 +679,7 @@ export class WhatsappRuntime {
   #streaming = true;
   #messageBreak = false;
   #onNewMessage = 'interrupt';
+  #humanize = null;
   #connectTimeoutMs;
   #mediaUploadTimeoutMs;
   #createSession;
@@ -703,6 +702,7 @@ export class WhatsappRuntime {
     streaming = true,
     messageBreak = false,
     onNewMessage = 'interrupt',
+    humanize = null,
     connectTimeoutMs = 30_000,
     mediaUploadTimeoutMs = WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS,
     createSession = createWhatsappWebSession,
@@ -721,6 +721,7 @@ export class WhatsappRuntime {
     this.#streaming = streaming;
     this.#messageBreak = messageBreak;
     this.#onNewMessage = onNewMessage;
+    this.#humanize = humanize ?? null;
     this.#connectTimeoutMs = connectTimeoutMs;
     if (!Number.isSafeInteger(mediaUploadTimeoutMs) || mediaUploadTimeoutMs <= 0) {
       throw new TypeError('mediaUploadTimeoutMs must be a positive safe integer');
@@ -823,6 +824,7 @@ export class WhatsappRuntime {
         streaming: this.#streaming,
         messageBreak: this.#messageBreak,
         onNewMessage: this.#onNewMessage,
+        humanize: this.#humanize,
         signal: controller.signal,
       });
       const now = Date.now();

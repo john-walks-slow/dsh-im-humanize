@@ -70,6 +70,13 @@ import {
   resolveNewMessagePolicy,
   trySteer,
 } from './new-message-policy.mjs';
+import { resolveHumanizeSettings } from './humanize-resolver.mjs';
+import {
+  applyReadDelay,
+  applySegmentGap,
+  SHORT_DELAY_CAP_MS,
+} from './send-delay.mjs';
+import { createTypingSession } from './typing-session.mjs';
 
 const INTERACTION_RESOLVED_TEXT = '这个问题已在其他客户端处理，无需再次回答。';
 const FILE_ONLY_COMPLETION_TEXT = '任务已完成。';
@@ -162,6 +169,16 @@ export class TextHarnessBridge {
   #streaming = true;
   #messageBreak = false;
   #onNewMessage = 'interrupt';
+  // Live per-turn settings provider ({ getSettings() }); falls back to the
+  // constructor snapshot above when absent.
+  #humanize = null;
+  // Pre-ask controllers: one per conversation key, alive only while a turn
+  // is in its pre-ask phase (read delay + image staging + stream opening),
+  // i.e. before it reaches the harness. Aborting supersedes that turn.
+  #preAskControllers = new Map();
+  // Wall-clock end of the last completed turn per conversation, for the
+  // sendDelay idle boost ("away for a while, replies sooner when back").
+  #turnEnds = new Map();
 
   constructor({
     descriptor,
@@ -177,6 +194,7 @@ export class TextHarnessBridge {
     streaming = true,
     messageBreak = false,
     onNewMessage = 'interrupt',
+    humanize = null,
   }) {
     if (!descriptor?.key || !descriptor?.label) throw new TypeError('A channel descriptor is required');
     if (!bot || typeof bot.sendText !== 'function') throw new TypeError('A bot client is required');
@@ -194,6 +212,7 @@ export class TextHarnessBridge {
     this.#messageBreak = messageBreak === true;
     this.#streaming = streaming !== false;
     this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
+    this.#humanize = humanize ?? null;
     this.#deferred = createDeferredDeliveryCoordinator({ harness, state, signal, logger,
       deliver: (entry, outcome) => this.#deliverDeferredOutcome(entry, outcome),
     });
@@ -422,7 +441,7 @@ export class TextHarnessBridge {
       hasQueue: this.#queues.has(key),
       hasPendingInteraction: this.#pendingInteractions.has(key),
       hasPendingApproval: this.#approvals.hasPending(key),
-      onNewMessage: this.#onNewMessage,
+      onNewMessage: this.#humanizeSettings().onNewMessage,
     });
     if (policy === 'interrupt') {
       return this.#interruptAndResend(normalized, messageId, senderId, key);
@@ -431,6 +450,20 @@ export class TextHarnessBridge {
       return this.#steerOrEnqueue(normalized, messageId, senderId, key);
     }
     return this.#enqueueMessage(normalized, messageId, senderId, key);
+  }
+
+  /**
+   * Per-turn humanization settings: live provider read with
+   * constructor-snapshot fallback. Called once per inbound message and
+   * once per processed turn; never cached across turns.
+   */
+  #humanizeSettings() {
+    return resolveHumanizeSettings({
+      humanize: this.#humanize,
+      streaming: this.#streaming,
+      messageBreak: this.#messageBreak,
+      onNewMessage: this.#onNewMessage,
+    });
   }
 
   #finishLocalMessage(message, messageId, reply, { recordReceived = true } = {}) {
@@ -479,6 +512,13 @@ export class TextHarnessBridge {
    * old #process() settles.
    */
   #interruptAndResend(message, messageId, senderId, key) {
+    // Supersede any pre-ask phase (read delay, image staging, stream
+    // opening) of the current turn FIRST: stopActiveTurn cannot cancel a
+    // turn that has not reached the harness yet, so without this the new
+    // message would wait out the whole delayed turn and both replies
+    // would race. Unconditional — deliberately not gated by
+    // sendDelay.enabled (it also fixes a pre-existing double-reply race).
+    this.#abortPreAskPhase(key);
     // Chain the new process after the current queue settles. The old
     // #process() will detect turn/end (within ~300 ms) and return silently.
     const previous = this.#queues.get(key) ?? Promise.resolve();
@@ -594,6 +634,7 @@ export class TextHarnessBridge {
             || this.#approvals.hasPending(key),
           control: { owner: this, key },
           deferredDelivery: this.#deferred,
+          abortPreAsk: () => this.#abortPreAskPhase(key),
         },
       );
       if (result?.stopped) {
@@ -636,7 +677,12 @@ export class TextHarnessBridge {
     return this.#bot.sendText(target, text);
   }
 
-  async #deliverArtifacts(target, replyTo, artifacts = [], baseReceipt) {
+  async #deliverArtifacts(target, replyTo, artifacts = [], baseReceipt, {
+    onArtifact = null,
+  } = {}) {
+    // `onArtifact(item)` fires before each materialized artifact is sent;
+    // `item.mediaType` distinguishes images from documents.
+    const beforeArtifact = onArtifact ?? (() => Promise.resolve());
     const delivery = await deliverOutboundArtifacts({
       artifacts,
       baseReceipt,
@@ -644,10 +690,10 @@ export class TextHarnessBridge {
       channelKey: this.#descriptor.key,
       signal: this.#signal,
       sendImage: typeof this.#bot.sendImage === 'function'
-        ? (file) => this.#bot.sendImage(target, file)
+        ? (file) => beforeArtifact(file).then(() => this.#bot.sendImage(target, file))
         : undefined,
       sendFile: typeof this.#bot.sendFile === 'function'
-        ? (file) => this.#bot.sendFile(target, file)
+        ? (file) => beforeArtifact(file).then(() => this.#bot.sendFile(target, file))
         : undefined,
       onFailure: (artifact, error) => setLastMessageFailure(this.#status, error, {
         userMessage: artifactFailureText(artifact?.fileName, error, this.#descriptor),
@@ -670,6 +716,31 @@ export class TextHarnessBridge {
     };
   }
 
+  /**
+   * Abort the pre-ask phase (read delay + image staging + stream opening)
+   * of one conversation's current turn. Unconditional — deliberately not
+   * gated by sendDelay.enabled, because it also closes a pre-existing
+   * double-reply race: stopActiveTurn cannot cancel a turn that has not
+   * reached the harness yet. Returns true when a pending phase was aborted.
+   */
+  #abortPreAskPhase(key) {
+    const controller = this.#preAskControllers.get(key);
+    if (!controller) return false;
+    const reason = new Error('已由更新的消息接替。');
+    reason.code = 'superseded';
+    controller.abort(reason);
+    return true;
+  }
+
+  /**
+   * Idle time in ms since the last completed turn in this conversation
+   * (for the sendDelay idle boost). A first-ever message is never "idle".
+   */
+  #idleMsFor(key) {
+    const lastTurnEnd = this.#turnEnds.get(key);
+    return lastTurnEnd === undefined ? 0 : Date.now() - lastTurnEnd;
+  }
+
   async #process(message, messageId, senderId, conversationKey, {
     alreadyRecorded = false,
   } = {}) {
@@ -685,6 +756,12 @@ export class TextHarnessBridge {
     const batchSubmission = message.batchSubmission;
     let stream = null;
     let semanticStream = false;
+    let typingSession = null;
+    let content;
+    let contextEnhanced = false;
+    let streamFinished = false;
+    let firstStreamReplySent = false;
+    let preAsk = null;
     try {
       this.#signal?.throwIfAborted();
       if (message.kind === 'group' && message.addressed !== true) {
@@ -767,48 +844,125 @@ export class TextHarnessBridge {
         return;
       }
 
-      await this.#bot.sendTyping?.(target).catch((error) => {
-        this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] typing indicator failed:`, error);
-      });
-      let streamFinished = false;
-      // Streaming is skipped when streaming=false or messageBreak=true
-      // (mutually exclusive). Without streaming, the reply is delivered as a
-      // single complete message at the end via sendDelivery/sendText.
-      if (this.#streaming) {
-        if (typeof this.#bot.openDeliveryStream === 'function') {
-          try {
-            stream = await this.#bot.openDeliveryStream(target);
-            semanticStream = true;
-          } catch (error) {
-            this.#logger.warn?.(
-              `[dsh-im:${this.#descriptor.key}] unable to start a semantic reply stream; using final delivery:`,
-              error,
-            );
+      // Resolve humanization settings for THIS turn (live provider read
+      // with constructor fallback) — global/per-bot panel updates apply
+      // from the next message without a restart.
+      const humanize = this.#humanizeSettings();
+
+      // ---- Phase ①: read delay（"过了一段时间才读到消息"）----
+      // Silent: no typing indicator, no read receipts, no harness activity.
+      // All command / approval / error paths return above and are never
+      // delayed. The pre-ask controller makes the phase abortable: a newer
+      // message (interrupt) or /stop supersedes the whole phase instead of
+      // waiting it out. Channels without any typing API cap the silence at
+      // SHORT_DELAY_CAP_MS — a long dead chat looks broken there.
+      preAsk = new AbortController();
+      this.#preAskControllers.set(conversationKey, preAsk);
+      const preAskSignal = this.#signal
+        ? AbortSignal.any([this.#signal, preAsk.signal])
+        : preAsk.signal;
+      // Phase ② state, filled in below: the compose-phase typing session
+      // ("打字、思考的断续"), bound to this turn and stopped in finally.
+      typingSession = null;
+      try {
+        await applyReadDelay({
+          settings: humanize,
+          userText: text,
+          idleMs: this.#idleMsFor(conversationKey),
+          channelCapMs: typeof this.#bot.sendTyping === 'function'
+            ? undefined
+            : SHORT_DELAY_CAP_MS,
+          signal: preAskSignal,
+        });
+        // ---- Phase ②: compose（"打字、思考的断续"）----
+        // The indicator opens only after the silence and then covers
+        // generation, segment gaps and pending-interaction waits.
+        if (humanize.typingIndicator !== 'off' && typeof this.#bot.sendTyping === 'function') {
+          typingSession = createTypingSession({
+            sendTyping: (action) => this.#bot.sendTyping(target, action),
+            stopTyping: typeof this.#bot.stopTyping === 'function'
+              ? () => this.#bot.stopTyping(target)
+              : null,
+            refreshMs: this.#descriptor.typing?.refreshMs ?? 4000,
+            darkResidualMs: this.#descriptor.typing?.darkResidualMs ?? 0,
+            mode: humanize.typingIndicator,
+            burst: humanize.typingBurst,
+            logger: this.#logger,
+            signal: this.#signal,
+          });
+          await typingSession.start();
+        }
+        // Streaming is skipped when streaming=false or messageBreak=true
+        // (mutually exclusive). Without streaming, the reply is delivered as a
+        // single complete message at the end via sendDelivery/sendText.
+        // Stream opening stays inside the pre-ask region so a supersede
+        // abort still wins against it.
+        if (humanize.streaming) {
+          if (typeof this.#bot.openDeliveryStream === 'function') {
+            try {
+              stream = await this.#bot.openDeliveryStream(target);
+              semanticStream = true;
+            } catch (error) {
+              this.#logger.warn?.(
+                `[dsh-im:${this.#descriptor.key}] unable to start a semantic reply stream; using final delivery:`,
+                error,
+              );
+            }
+          } else if (typeof this.#bot.openStream === 'function') {
+            try {
+              stream = await this.#bot.openStream(target);
+            } catch (error) {
+              this.#logger.warn?.(
+                `[dsh-im:${this.#descriptor.key}] unable to start a streamed reply; using text:`,
+                error,
+              );
+            }
           }
-        } else if (typeof this.#bot.openStream === 'function') {
-          try {
-            stream = await this.#bot.openStream(target);
-          } catch (error) {
-            this.#logger.warn?.(
-              `[dsh-im:${this.#descriptor.key}] unable to start a streamed reply; using text:`,
-              error,
-            );
-          }
+        }
+        if (preAsk.signal.aborted) {
+          const superseded = new Error('superseded by a newer message');
+          superseded.code = 'superseded';
+          throw superseded;
+        }
+        // Image staging is the last pre-ask step.
+        content = hasImages || hasReply
+          ? await promptContentForInboundMessage(message, { signal: preAskSignal })
+          : undefined;
+      } finally {
+        if (this.#preAskControllers.get(conversationKey) === preAsk) {
+          this.#preAskControllers.delete(conversationKey);
         }
       }
       // Create a message_break handler for this turn. sendSegment sends each
       // segment as a separate IM message. Only active when messageBreak=true.
-      const messageBreakHandler = this.#messageBreak
+      // Phase-② segment gap: "typing the next message" — every segment after
+      // the first waits a humanized pause; the typing session keeps glowing
+      // through the gap and restarts its on-phase after each send.
+      let segmentsSent = 0;
+      const messageBreakHandler = humanize.messageBreak
         ? createMessageBreakHandler({
-          sendSegment: (segmentText) => this.#bot.sendText(target, segmentText),
+          sendSegment: async (segmentText) => {
+            if (segmentsSent > 0) {
+              // restartOn → sleep → send (plan §6.3): the indicator covers
+              // the gap and the upcoming send, and there is no trailing
+              // restartOn after the final segment (channels without a cancel
+              // API would glow for the platform residual with no follow-up).
+              await typingSession?.restartOn();
+              await applySegmentGap({
+                settings: humanize,
+                segmentText,
+                minSegmentGapMs: this.#descriptor.minSegmentGapMs ?? 0,
+                signal: this.#signal,
+              });
+            }
+            segmentsSent += 1;
+            const sent = await this.#bot.sendText(target, segmentText);
+            return sent;
+          },
           logger: this.#logger,
         })
         : null;
-      let content = hasImages || hasReply
-        ? await promptContentForInboundMessage(message, { signal: this.#signal })
-        : undefined;
       const snapshot = this.#acceptedMessageIds.get(messageId);
-      let contextEnhanced = false;
       if (snapshot) {
         const originalContent = content ?? text;
         const contextSource = message.contextSource?.();
@@ -853,6 +1007,13 @@ export class TextHarnessBridge {
               await stream.update(semanticStream
                 ? createTextDeliveryBlock(progress, format)
                 : progress);
+              // The first visible reply chunk makes the platform drop its
+              // typing indicator by itself; stop ours so both signals agree
+              // and the final send does not race a stale indicator refresh.
+              if (!firstStreamReplySent) {
+                firstStreamReplySent = true;
+                typingSession?.stop();
+              }
             }
           } : undefined,
           onInteraction: (interaction) => this.#handleInteraction(interaction, {
@@ -860,8 +1021,20 @@ export class TextHarnessBridge {
             actor: senderId,
             target,
             requiresMention: message.kind === 'group' && message.requiresMention !== false,
+            typingSession,
           }),
-          onInteractionResolved: (resolution) => this.#handleInteractionResolved(resolution),
+          onInteractionResolved: (resolution) => {
+            const settled = this.#handleInteractionResolved(resolution);
+            return Promise.resolve(settled).finally(() => {
+              // Resume typing only when no other question/approval is still
+              // pending for this conversation (multi-question flows pause
+              // again on the next interaction).
+              if (!this.#pendingInteractions.has(conversationKey)
+                && !this.#approvals.hasPending(conversationKey)) {
+                typingSession?.resume();
+              }
+            });
+          },
           files: message.files,
         },
       });
@@ -945,7 +1118,18 @@ export class TextHarnessBridge {
       }
       // A failed final text must not discard an already registered result file.
       // Settle the independent attachment path before surfacing the text error.
-      const delivery = await this.#deliverArtifacts(target, messageId, artifacts, textReceipt);
+      // "Uploading a file" replaces the typing action where the platform has
+      // one (Telegram upload_photo/upload_document); other adapters ignore
+      // the action and simply keep the indicator glowing during the upload.
+      const delivery = await this.#deliverArtifacts(target, messageId, artifacts, textReceipt, {
+        onArtifact: (item) => {
+          if (!typingSession) return Promise.resolve();
+          const action = typeof item?.mediaType === 'string' && item.mediaType.startsWith('image/')
+            ? 'upload_photo'
+            : 'upload_document';
+          return typingSession.restartOn(action);
+        },
+      });
       if (textDeliveryError && (!delivery.userVisible || finalDeliveryUnknown)) {
         textDeliveryError.deliveryReceipt = delivery.receipt;
         throw textDeliveryError;
@@ -967,6 +1151,9 @@ export class TextHarnessBridge {
       if (batchSubmission && turnStopped) {
         this.#batches.complete(conversationKey, batchSubmission.token);
       }
+      const superseded = preAsk?.signal.aborted === true;
+      // Superseded turns never reached the harness: retain the batch for a
+      // /send retry instead of leaving it stuck in 'submitting'.
       const failedBatch = batchSubmission && !turnStopped
         ? this.#batches.fail(conversationKey, batchSubmission.token)
         : null;
@@ -979,6 +1166,14 @@ export class TextHarnessBridge {
             stream.cancel?.();
           }
         }
+        return;
+      }
+      if (superseded) {
+        // A newer message (interrupt) or /stop replaced this turn before it
+        // reached the harness: silent — the reaction clears, no failure text,
+        // and the newer turn already owns this conversation.
+        message.statusReaction?.clear();
+        stream?.cancel?.();
         return;
       }
       if (this.#signal?.aborted) {
@@ -1033,6 +1228,11 @@ export class TextHarnessBridge {
       }
       return error.deliveryReceipt;
     } finally {
+      // Phase-② lifecycle: the typing session is bound to the turn, not to
+      // any specific send — /stop, errors and no-send endings all land here
+      // and never leave a composing indicator behind.
+      typingSession?.stop();
+      this.#turnEnds.set(conversationKey, Date.now());
       await Promise.allSettled([
         this.#cancelPendingInteraction(conversationKey),
         this.#approvals.closeRoute(conversationKey),
@@ -1209,8 +1409,13 @@ export class TextHarnessBridge {
     actor,
     target,
     requiresMention,
+    typingSession = null,
   }) {
     if (interaction?.kind === 'approval') {
+      // A pending approval means the human is waiting for the other side,
+      // not typing. Recovered approvals are auto-cancelled below without
+      // a matching resume, so they must not pause either.
+      if (interaction.recovered !== true) typingSession?.pause();
       return this.#approvals.handleRequested(interaction, {
         key,
         actor,
@@ -1287,6 +1492,9 @@ export class TextHarnessBridge {
       needsPresentation: true,
       presentationTask: null,
     };
+    // Real question pending: the human is waiting for the other side, not
+    // typing (recovered questions return above without reaching here).
+    typingSession?.pause();
     this.#pendingInteractions.set(key, pending);
     this.#interactionKeys.set(interactionId, key);
     await this.#presentInteraction(pending);

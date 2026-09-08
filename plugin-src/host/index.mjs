@@ -26,12 +26,37 @@ export const inject = [
   'typertGateway',
 ];
 
+// Humanization keys forwarded to every channel config with channel
+// sub-object priority. `humanizeDefaults` (installed by activateChannels)
+// provides the live per-channel resolution for bridges.
+const HUMANIZE_CONFIG_KEYS = [
+  'streaming',
+  'messageBreak',
+  'onNewMessage',
+  'sendDelay',
+  'typingIndicator',
+  'typingBurst',
+];
+
 function channelConfig(config, name, deliveryService) {
   const channel = config[name] ?? {};
   const withAuthority = config.rpcAuthority === undefined
     ? channel
     : { ...channel, rpcAuthority: config.rpcAuthority };
-  return name === 'office' ? withAuthority : { ...withAuthority, deliveryService };
+  const base = name === 'office' ? withAuthority : { ...withAuthority, deliveryService };
+  const forwarded = {};
+  for (const key of HUMANIZE_CONFIG_KEYS) {
+    if (channel[key] !== undefined || config[key] !== undefined) {
+      forwarded[key] = channel[key] ?? config[key];
+    }
+  }
+  return {
+    ...base,
+    ...forwarded,
+    ...(typeof config.humanizeDefaults === 'function'
+      ? { humanizeDefaults: config.humanizeDefaults }
+      : {}),
+  };
 }
 
 export function createImHostPlugin(internals = {}) {
@@ -107,7 +132,9 @@ export function createImHostPlugin(internals = {}) {
     setImHostLanguage(config.language ?? process.env.DSH_IM_LANGUAGE);
 
     // Load humanization settings from the file-backed store and merge them
-    // into the config so all channels receive the same values.
+    // into the config so all channels receive the same values. The
+    // humanizeDefaults accessor lets bridges re-read the store on every
+    // turn, so panel updates apply without a plugin restart.
     let humanizeStore = null;
     try {
       const result = installHumanizeRpc(ctx, {
@@ -117,15 +144,33 @@ export function createImHostPlugin(internals = {}) {
       });
       humanizeStore = result.store;
       await humanizeStore.load();
-      const settings = humanizeStore.get();
-      config = {
-        ...config,
-        streaming: config.streaming ?? settings.streaming,
-        messageBreak: config.messageBreak ?? settings.messageBreak,
-        onNewMessage: config.onNewMessage ?? settings.onNewMessage,
-      };
     } catch (error) {
       ctx?.logger?.error?.('[dsh-im] humanization settings load failed; using defaults:', error);
+    }
+    // Explicit dsh-config values outrank the store; channel sub-objects
+    // outrank both. Captured before the merge below so the live accessor
+    // never resolves through a stale snapshot.
+    const explicitHumanize = Object.fromEntries(
+      HUMANIZE_CONFIG_KEYS.map((key) => [key, config[key]]),
+    );
+    const humanizeSnapshot = humanizeStore ? humanizeStore.get() : {};
+    const humanizeDefaults = (channelName) => {
+      const live = humanizeStore ? humanizeStore.get() : {};
+      const sub = config[channelName] ?? {};
+      const resolved = {};
+      for (const key of HUMANIZE_CONFIG_KEYS) {
+        resolved[key] = sub[key] ?? explicitHumanize[key] ?? live[key];
+      }
+      return resolved;
+    };
+    config = {
+      ...config,
+      humanizeDefaults,
+    };
+    for (const key of HUMANIZE_CONFIG_KEYS) {
+      if (config[key] === undefined && humanizeSnapshot[key] !== undefined) {
+        config[key] = humanizeSnapshot[key];
+      }
     }
 
     if (typeof ctx?.inject === 'function') {

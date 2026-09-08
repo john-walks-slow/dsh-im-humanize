@@ -6,6 +6,7 @@ import { CollapsibleAccountSection } from '../shared/collapsible-account.js';
 import { h } from '../../i18n.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
 import { ContextEnhancementEditor } from '../../context-enhancement.js';
+import { BotSendDelayEditor, TYPING_CAPABILITY } from '../shared/bot-send-delay.js';
 import {
   AgentPresetCatalogContext,
   AgentPresetEditor,
@@ -194,6 +195,7 @@ export function WhatsappAccountCard({
   onModelSave,
   onAgentPresetSave,
   onContextEnhancementSave,
+  onHumanizeSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -255,6 +257,13 @@ export function WhatsappAccountCard({
         config: account.contextEnhancement,
         disabled: Boolean(busy),
         onSave: onContextEnhancementSave,
+      }),
+      h(BotSendDelayEditor, {
+        humanize: account.humanize,
+        sendDelayDefaults: account.humanizeDefaults?.sendDelay ?? null,
+        capability: TYPING_CAPABILITY.full,
+        disabled: Boolean(busy),
+        onSave: onHumanizeSave,
       }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         h('div', { className: 'dim-cardFooterLayout' },
@@ -529,6 +538,12 @@ export function WhatsappSettingsTab({ rpcCall }) {
               'context-enhancement',
               WHATSAPP_ENDPOINTS.setContextEnhancement,
               { botId: account.botId, config },
+            ),
+            onHumanizeSave: (humanize) => botAction(
+              account,
+              'humanize',
+              WHATSAPP_ENDPOINTS.setHumanize,
+              { botId: account.botId, humanize },
             ),
             onRequestRemove: () => setRemoveTarget(account.botId),
             onCancelRemove: () => setRemoveTarget(null),

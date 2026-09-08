@@ -17,6 +17,7 @@ import {
 import { useAnimationFrameScheduler } from "../../lifecycle.js";
 import { WorkspaceEditor } from "../../workspace-editor.js";
 import { ContextEnhancementEditor } from "../../context-enhancement.js";
+import { BotSendDelayEditor, TYPING_CAPABILITY } from "../shared/bot-send-delay.js";
 import {
   AgentPresetCatalogContext,
   AgentPresetEditor,
@@ -526,6 +527,7 @@ export function BotCard({
   onModelSave,
   onAgentPresetSave,
   onContextEnhancementSave,
+  onHumanizeSave,
   onStepPushSave,
   onRequestRemove,
   onConfirmRemove,
@@ -612,6 +614,13 @@ export function BotCard({
         config: connection.contextEnhancement,
         disabled: Boolean(busy),
         onSave: onContextEnhancementSave,
+      }),
+      h(BotSendDelayEditor, {
+        humanize: connection.humanize,
+        sendDelayDefaults: connection.humanizeDefaults?.sendDelay ?? null,
+        capability: TYPING_CAPABILITY.none,
+        disabled: Boolean(busy),
+        onSave: onHumanizeSave,
       }),
       h(StepPushEditor, {
         value: connection.stepPush,
@@ -710,6 +719,7 @@ function BotList(props) {
           onModelSave: (model) => props.onModelSave(bot, model),
           onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(bot, agentPreset),
           onContextEnhancementSave: (config) => props.onContextEnhancementSave(bot, config),
+          onHumanizeSave: (humanize) => props.onHumanizeSave(bot, humanize),
           onStepPushSave: (stepPush) => props.onStepPushSave(bot, stepPush),
           onRequestRemove: () => props.onRequestRemove(bot),
           onConfirmRemove: () => props.onConfirmRemove(bot),
@@ -1484,6 +1494,9 @@ export function FeishuSettingsTab({ rpcCall }) {
                   ),
                   onContextEnhancementSave: (connection, config) => saveBotSetting(
                     connection, "context-enhancement", FEISHU_ENDPOINTS.setContextEnhancement, { config },
+                  ),
+                  onHumanizeSave: (connection, humanize) => saveBotSetting(
+                    connection, "humanize", FEISHU_ENDPOINTS.setHumanize, { humanize },
                   ),
                   onStepPushSave: (connection, stepPush) => saveBotSetting(
                     connection, "step-push", FEISHU_ENDPOINTS.setStepPush, { stepPush },

@@ -15,8 +15,10 @@ import { publicWorkspaceError, validWorkspacePayload } from '../shared/workspace
 import { validAgentPresetPayload } from '../shared/agent-preset-rpc.mjs';
 import { validModelPayload } from '../shared/model-setting-rpc.mjs';
 import { validContextEnhancementPayload } from '../shared/context-enhancement-rpc.mjs';
+import { SET_HUMANIZE_ENDPOINT, validHumanizeSectionPayload } from '../shared/humanize-bot-rpc.mjs';
 import { SET_ACCESS_POLICY_ENDPOINT, validAccessPolicyPayload } from '../shared/access-policy-rpc.mjs';
 import { normalizeContextEnhancementConfig } from '../../../../src/channels/shared/context-enhancement.mjs';
+import { normalizeHumanizeOverride } from '../../../../src/channels/shared/humanize-override.mjs';
 import {
   isFeishuGroupResponseMode,
   normalizeFeishuGroupResponseMode,
@@ -28,6 +30,7 @@ import {
 
 export const FEISHU_ENDPOINTS = Object.freeze({
   ...FEISHU_CLIENT_ENDPOINTS,
+  setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
 });
 export { FEISHU_RPC_CHANNEL };
@@ -291,6 +294,7 @@ function publicBotEntry(entry) {
     model: normalizeModelSelection(source.model),
     agentPreset: normalizeAgentPresetId(source.agentPreset),
     contextEnhancement: normalizeContextEnhancementConfig(source.contextEnhancement),
+    humanize: normalizeHumanizeOverride(source.humanize),
     accessPolicy: normalizeAccessPolicy(source.accessPolicy),
     groupResponseMode: normalizeFeishuGroupResponseMode(source.groupResponseMode),
     groupTopicReply: source.groupTopicReply === true,
@@ -440,6 +444,10 @@ function validPayload(endpoint, payload) {
   if (endpoint === FEISHU_ENDPOINTS.setContextEnhancement) {
     return validContextEnhancementPayload(payload)
       ? null : '请提交有效的上下文增强设置。';
+  }
+  if (endpoint === FEISHU_ENDPOINTS.setHumanize) {
+    return validHumanizeSectionPayload(payload)
+      ? null : '请提交有效的拟人化设置。';
   }
   if (endpoint === FEISHU_ENDPOINTS.setAccessPolicy) {
     return validAccessPolicyPayload(payload)
@@ -720,6 +728,12 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
         if (typeof controller.updateContextEnhancement !== 'function') throw new Error('Context enhancement update is unavailable');
         value = await controller.updateContextEnhancement(
           payload.botId, payload.config,
+          (status) => toPublicFeishuStatus(status, { encodeQr: cachedEncodeQr }),
+        );
+      } else if (endpoint === FEISHU_ENDPOINTS.setHumanize) {
+        if (typeof controller.updateHumanize !== 'function') throw new Error('Humanization update is unavailable');
+        value = await controller.updateHumanize(
+          payload.botId, payload.humanize,
           (status) => toPublicFeishuStatus(status, { encodeQr: cachedEncodeQr }),
         );
       } else if (endpoint === FEISHU_ENDPOINTS.setAccessPolicy) {

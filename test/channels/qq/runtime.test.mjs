@@ -24,7 +24,7 @@ class FakeBot extends EventEmitter {
   async sendText(target, text) { this.sent.push({ target, text }); }
 }
 
-test('QQ runtime waits for gateway ready, installs typing, and stops its client', async () => {
+test('QQ runtime waits for gateway ready, installs only contentSanitizer, and stops its client', async () => {
   const bot = new FakeBot();
   let botOptions;
   const sdkLogs = [];
@@ -41,17 +41,17 @@ test('QQ runtime waits for gateway ready, installs typing, and stops its client'
       debug: (...args) => sdkLogs.push(['debug', ...args]),
       info: (...args) => sdkLogs.push(['info', ...args]),
     },
-    typingMiddleware: (options) => ({ name: 'typing-middleware', options }),
     connectTimeoutMs: 100,
   });
   const status = await runtime.start();
   assert.equal(status.ready, true);
   assert.equal(status.qqConnectionState, 'connected');
   assert.equal(typeof bot.middlewares[0], 'function'); // contentSanitizer (face-tag parsing)
-  assert.equal(bot.middlewares[1].name, 'typing-middleware');
-  assert.equal(bot.middlewares[1].options.keepAlive, true);
-  assert.equal(bot.middlewares[1].options.predicate({ message: { senderId: 'owner' } }), true);
-  assert.equal(bot.middlewares[1].options.predicate({ message: { senderId: 'other' } }), false);
+  // The SDK typingIndicator middleware is gone: its 50s keepalive was dead
+  // in this integration, and the two-phase model starts the indicator only
+  // after the read delay. Typing is the bridge's self-managed session now
+  // (qq-bridge.mjs); only contentSanitizer is installed.
+  assert.equal(bot.middlewares.length, 1);
   assert.equal(botOptions.markdownSupport, false);
   botOptions.logger.debug('raw gateway payload');
   botOptions.logger.info('gateway ready');

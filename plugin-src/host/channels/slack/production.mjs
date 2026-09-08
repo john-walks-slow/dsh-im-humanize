@@ -28,6 +28,7 @@ import {
   accessPolicyProvider,
   initialAccessPolicyFor,
 } from '../shared/access-policy-production.mjs';
+import { createHumanizeProvider } from '../shared/humanize-provider.mjs';
 
 export async function createProductionController(ctx, config = {}, internals = {}) {
   if (!ctx?.credentials) throw new TypeError('dsh-im slack requires ctx.credentials');
@@ -113,10 +114,18 @@ export async function createProductionController(ctx, config = {}, internals = {
         harness: workspaceScope.harness,
         state: workspaceScope.state,
         contextEnhancement: { botId, getSettings: () => workspaces.contextEnhancementFor(botId) },
+        humanize: createHumanizeProvider({
+          defaults: () => config.humanizeDefaults?.('slack'),
+          workspaces,
+          botId: botId,
+        }),
         accessPolicy: accessPolicyProvider(workspaces, botId, {
           channel: 'slack', config: botConfig,
         }),
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
+        streaming: config.streaming !== false,
+        messageBreak: config.messageBreak !== false,
+        onNewMessage: config.onNewMessage ?? 'interrupt',
         connectTimeoutMs: config.connectTimeoutMs ?? 20_000,
         logger: {
           error: (...args) => logger.error?.(`[${botId}]`, ...args),
@@ -145,6 +154,9 @@ export async function createProductionController(ctx, config = {}, internals = {
     stateFor,
     agentPresetCatalog,
     modelCatalog,
+      // Live global humanize defaults: snapshot-level prefill for per-bot
+    // editors and the inherit base for override writes.
+    humanizeDefaults: () => config.humanizeDefaults?.('slack'),
   });
   const supervisor = createSupervisor({
     channel: 'slack',

@@ -535,6 +535,7 @@ export class DiscordRuntime {
   #streaming = true;
   #messageBreak = false;
   #onNewMessage = 'interrupt';
+  #humanize = null;
   #connectTimeoutMs;
   #createApi;
   #createWebSocket;
@@ -570,6 +571,7 @@ export class DiscordRuntime {
     streaming = true,
     messageBreak = false,
     onNewMessage = 'interrupt',
+    humanize = null,
     connectTimeoutMs = 20_000,
     createApi = (options) => new DiscordApi(options),
     createWebSocket = (url) => new WebSocket(url),
@@ -590,6 +592,7 @@ export class DiscordRuntime {
     this.#streaming = streaming;
     this.#messageBreak = messageBreak;
     this.#onNewMessage = onNewMessage;
+    this.#humanize = humanize ?? null;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#createApi = createApi;
     this.#createWebSocket = createWebSocket;
@@ -674,6 +677,7 @@ export class DiscordRuntime {
         streaming: this.#streaming,
         messageBreak: this.#messageBreak,
         onNewMessage: this.#onNewMessage,
+        humanize: this.#humanize,
         signal: controller.signal,
       });
       let timer;

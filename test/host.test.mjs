@@ -1,9 +1,24 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import { Context } from '@deepseek-ai/cordis';
 
 import { createImHostPlugin, inject, name } from '../plugin-src/host/index.mjs';
+import {
+  DEFAULT_SEND_DELAY_CONFIG,
+} from '../src/channels/shared/send-delay.mjs';
+import {
+  DEFAULT_TYPING_BURST,
+  DEFAULT_TYPING_INDICATOR,
+} from '../src/channels/shared/typing-session.mjs';
+
+/** Deterministic settings path: absent file ⇒ built-in defaults. */
+function tempSettingsPath(label) {
+  return join(tmpdir(), `dsh-im-humanize-${label}-${process.pid}-${Date.now()}.json`);
+}
 
 test('Host composes nine IM channels and the AI Office connector inside one plugin context', async () => {
   const calls = [];
@@ -24,6 +39,7 @@ test('Host composes nine IM channels and the AI Office connector inside one plug
   const ctx = { marker: 'shared-context' };
   const config = {
     rpcAuthority: 'trusted-host',
+    humanizeSettingsPath: tempSettingsPath('compose'),
     feishu: { domain: 'feishu' },
     weixin: { timeout: 30 },
     dingtalk: { replyTimeoutMs: 60_000 },
@@ -44,18 +60,41 @@ test('Host composes nine IM channels and the AI Office connector inside one plug
     'credentials',
     'typertGateway',
   ]);
-  assert.deepEqual(calls, [
-    ['feishu', ctx, { ...config.feishu, rpcAuthority: 'trusted-host', deliveryService }],
-    ['weixin', ctx, { ...config.weixin, rpcAuthority: 'trusted-host', deliveryService }],
-    ['dingtalk', ctx, { ...config.dingtalk, rpcAuthority: 'trusted-host', deliveryService }],
-    ['wecom', ctx, { ...config.wecom, rpcAuthority: 'trusted-host', deliveryService }],
-    ['qq', ctx, { ...config.qq, rpcAuthority: 'trusted-host', deliveryService }],
-    ['slack', ctx, { ...config.slack, rpcAuthority: 'trusted-host', deliveryService }],
-    ['telegram', ctx, { ...config.telegram, rpcAuthority: 'trusted-host', deliveryService }],
-    ['discord', ctx, { ...config.discord, rpcAuthority: 'trusted-host', deliveryService }],
-    ['whatsapp', ctx, { ...config.whatsapp, rpcAuthority: 'trusted-host', deliveryService }],
-    ['office', ctx, { ...config.office, rpcAuthority: 'trusted-host' }],
+  // Humanization settings from the store snapshot are forwarded to every
+  // channel config (previously dropped: the panel values never reached
+  // the runtimes), alongside the live humanizeDefaults accessor.
+  const expectedHumanize = {
+    streaming: true,
+    messageBreak: true,
+    onNewMessage: 'interrupt',
+    sendDelay: DEFAULT_SEND_DELAY_CONFIG,
+    typingIndicator: DEFAULT_TYPING_INDICATOR,
+    typingBurst: DEFAULT_TYPING_BURST,
+  };
+  assert.deepEqual(calls.map(([channel]) => channel), [
+    'feishu', 'weixin', 'dingtalk', 'wecom', 'qq',
+    'slack', 'telegram', 'discord', 'whatsapp', 'office',
   ]);
+  for (const [channel, ctxArg, channelConfigArg] of calls) {
+    assert.equal(ctxArg, ctx, `${channel} receives the shared context`);
+    const { humanizeDefaults, ...rest } = channelConfigArg;
+    assert.equal(typeof humanizeDefaults, 'function', `${channel} gets the live accessor`);
+    assert.deepEqual(
+      Object.keys(humanizeDefaults(channel)).sort(),
+      Object.keys(expectedHumanize).sort(),
+      `${channel} accessor covers every humanization key`,
+    );
+    assert.deepEqual(
+      humanizeDefaults(channel),
+      expectedHumanize,
+    );
+    assert.deepEqual(rest, {
+      ...config[channel],
+      rpcAuthority: 'trusted-host',
+      ...(channel === 'office' ? {} : { deliveryService }),
+      ...expectedHumanize,
+    }, `${channel} config forwards humanization settings`);
+  }
 });
 
 test('Host provides #65 and installs #84 with the same delivery service', async () => {
@@ -251,4 +290,76 @@ test('Host reports aggregate failure only after every channel was attempted', as
   );
   assert.deepEqual(fixture.calls, CHANNELS.map(([channel]) => channel));
   assert.equal(fixture.errors.length, CHANNELS.length);
+});
+
+test('humanizeDefaults resolves channel priority and reflects live store updates', async () => {
+  const settingsPath = tempSettingsPath('live');
+  await mkdir(dirname(settingsPath), { recursive: true });
+  await writeFile(settingsPath, JSON.stringify({
+    streaming: false,
+    typingIndicator: 'continuous',
+  }));
+
+  const capturedConfigs = new Map();
+  const internals = Object.fromEntries(CHANNELS.map(([channel, applyName]) => [
+    applyName,
+    async (_ctx, config) => capturedConfigs.set(channel, config),
+  ]));
+  let humanizeHandler = null;
+  const ctx = {
+    connection: {
+      rpc: {
+        handle: (channel, handler) => {
+          if (channel === '/dsh-im-humanize') humanizeHandler = handler;
+        },
+      },
+    },
+  };
+  const config = {
+    humanizeSettingsPath: settingsPath,
+    // Explicit dsh-config value: wins over the store (messageBreak would
+    // default to true from the store).
+    messageBreak: false,
+    // Channel sub-object: wins over both the store and the top level.
+    telegram: { streaming: true },
+  };
+
+  await createImHostPlugin({
+    ...internals,
+    createDeliveryService: () => ({}),
+    installUpdateRpc: () => {},
+  }).apply(ctx, config);
+
+  // Activation snapshot: every channel received the resolved values.
+  assert.equal(capturedConfigs.get('slack').streaming, false); // store value
+  assert.equal(capturedConfigs.get('slack').messageBreak, false); // explicit top-level
+  assert.equal(capturedConfigs.get('slack').typingIndicator, 'continuous');
+  assert.equal(capturedConfigs.get('telegram').streaming, true); // channel sub-object
+
+  // Live accessor honors the same priority chain.
+  const slackDefaults = capturedConfigs.get('slack').humanizeDefaults;
+  assert.equal(slackDefaults('slack').streaming, false);
+  assert.equal(slackDefaults('slack').messageBreak, false);
+  assert.equal(slackDefaults('slack').typingIndicator, 'continuous');
+  assert.equal(slackDefaults('telegram').streaming, true);
+  assert.deepEqual(
+    slackDefaults('telegram').sendDelay,
+    DEFAULT_SEND_DELAY_CONFIG,
+  );
+
+  // A panel write through the humanize RPC updates the store live: the
+  // next turn's accessor read sees it without a plugin restart.
+  assert.ok(humanizeHandler, 'humanize RPC handler registered');
+  const result = await humanizeHandler('humanize.set', { typingIndicator: 'burst' });
+  assert.equal(result.ok, true);
+  assert.equal(slackDefaults('slack').typingIndicator, 'burst');
+  assert.equal(slackDefaults('slack').streaming, false, 'untouched keys keep their values');
+
+  // Malformed writes are rejected with field information.
+  const rejected = await humanizeHandler('humanize.set', { sendDelay: { readDelay: { minMs: -1 } } });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error.code, 'invalid-send-delay');
+  assert.equal(rejected.error.field, 'sendDelay.readDelay.minMs');
+
+  await rm(settingsPath, { force: true });
 });

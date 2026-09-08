@@ -32,6 +32,7 @@ import {
   accessPolicyProvider,
   initialAccessPolicyFor,
 } from '../shared/access-policy-production.mjs';
+import { createHumanizeProvider } from '../shared/humanize-provider.mjs';
 
 const AUTH_DIRECTORY_PATTERN = /^[a-f0-9-]{36}$/;
 
@@ -133,10 +134,18 @@ export async function createProductionController(ctx, config = {}, internals = {
         harness: workspaceScope.harness,
         state: workspaceScope.state,
         contextEnhancement: { botId, getSettings: () => workspaces.contextEnhancementFor(botId) },
+        humanize: createHumanizeProvider({
+          defaults: () => config.humanizeDefaults?.('whatsapp'),
+          workspaces,
+          botId: botId,
+        }),
         accessPolicy: accessPolicyProvider(workspaces, botId, {
           channel: 'whatsapp', config: botConfig, equals: whatsappAccessPolicyIdsEqual,
         }),
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
+        streaming: config.streaming !== false,
+        messageBreak: config.messageBreak !== false,
+        onNewMessage: config.onNewMessage ?? 'interrupt',
         connectTimeoutMs: config.connectTimeoutMs ?? 30_000,
         createSession,
         logger: {
@@ -170,6 +179,9 @@ export async function createProductionController(ctx, config = {}, internals = {
     stateFor,
     agentPresetCatalog,
     modelCatalog,
+      // Live global humanize defaults: snapshot-level prefill for per-bot
+    // editors and the inherit base for override writes.
+    humanizeDefaults: () => config.humanizeDefaults?.('whatsapp'),
   });
   const supervisor = createSupervisor({
     channel: 'whatsapp',

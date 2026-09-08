@@ -251,6 +251,7 @@ export default {
   '控制命令仅支持纯文字，请移除图片后重试。':
     'Control commands support text only; please remove images and try again.',
   '当前聊天没有正在运行的任务。': 'This chat has no running task.',
+  '已停止待发送的消息。': 'Stopped the pending message.',
   '已请求停止当前任务。': 'Stop requested for the current task.',
   '当前聊天没有正在运行的任务，请直接发送普通消息。':
     'This chat has no running task; just send a regular message.',
