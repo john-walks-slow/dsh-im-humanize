@@ -6,11 +6,44 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.16.0] - 2026-09-09
+
+### Added / 新增
+
+- 新增实验性企业微信自建应用渠道（`wecom-app`），成为第十个 IM 渠道：通过加密 HTTP 回调接收消息，支持多应用独立配置、私聊流式回复、图片输入、结果文件回传与主动投递目标。成员关注企业的微信插件后可在微信中对话，微信端自动降级为分段文字；接入需要公网回调与企业可信 IP 配置。回调监听按需启动，移除最后一个应用后关闭。接入步骤见[中文指南](docs/企业微信自建应用接入.md)和[英文指南](docs/企业微信自建应用接入.en.md)。
+  Adds the experimental WeCom self-built app channel (`wecom-app`) as the tenth IM channel, with encrypted HTTP callbacks, independent multi-app configuration, private-chat streaming, image input, result files, and proactive delivery targets. Members can chat from WeChat through the enterprise's WeChat plugin, with segmented-text fallback there. Setup requires a public callback route and trusted IP configuration. The callback listener starts on demand and stops when the last app is removed. See the linked Chinese and English setup guides.
+
+- 机器人设置新增显式的「思考强度」选择，档位、说明和默认值来自 DSH 当前模型；每个机器人独立保存，切换模型时恢复新模型默认强度，仅影响之后新建的会话，不改变已有会话或进行中的回答。
+  Bot settings now expose reasoning-effort choices using the current model's levels, descriptions, and defaults from DSH. Each bot saves its own override; changing models restores the new model's default effort. Changes apply only to future Sessions, leaving existing Sessions and in-progress replies unchanged.
+
+- 飞书分步直推在静默 20 秒后显示「正在思考中」及运行时长，并原位定时更新。出现实际进度、问题或审批，以及回合结束时会尝试撤回；撤回失败最多重试三次，迟到的状态消息也会清理，避免重复状态和残留提示。
+  Feishu Step Push shows a thinking-status message with elapsed time after 20 seconds of silence and periodically updates it in place. Real progress, questions, approvals, and turn completion trigger cleanup. Failed recalls allow up to three attempts, and late-arriving status messages are also cleaned up to prevent duplicates and stale notices.
+
+- 飞书提问卡片新增自定义答案入口，提交后将原卡片更新为已回答状态并展示选择结果；重复或过期点击会提示已回答，避免重复提交。
+  Feishu question cards add a custom-answer entry and update the original card with its answered state and selected result after submission. Repeated or stale clicks report that the question was already answered instead of submitting again.
+
+### Changed / 变更
+
+- Telegram 原生命令菜单与文字帮助改为共用命令目录，启动和重连时生成本地化完整菜单，自动纳入历史、推理等级等命令及别名；删除的命令不再残留，空目录会清空旧菜单。菜单同步失败不会阻止机器人连接。
+  Telegram's native command menu and text help now share one command catalog. Startup and reconnection generate the complete localized menu, including history, reasoning commands, and aliases. Removed commands no longer linger, an empty catalog clears the previous menu, and synchronization failures do not block connection.
+
+### Fixed / 修复
+
+- 修复飞书提问或审批前后的流式消息顺序：卡片写入串行化，交互卡片展示后才继续后续回复，并按已展示正文去重；临时工具状态不再混入固定正文，最终卡片使用最新正文快照，避免旧过程重播、重复回答和正文丢失。
+  Feishu serializes streaming-card writes and resumes subsequent replies only after a question or approval is presented, deduplicating already displayed text. Transient tool statuses stay out of the frozen answer prefix, and final cards use the latest text snapshot, preventing replayed progress, duplicate answers, and lost text.
+
+- 各渠道与 AI Office 在初始化期间或启动失败后仍保留管理 RPC，返回可读、脱敏的初始化或失败信息，并清理部分启动的资源，避免设置页因处理器未注册而只显示 404。
+  All channels and AI Office retain their management RPC during initialization and after startup failure, returning readable, sanitized status or error information and cleaning up partially initialized resources instead of leaving settings requests with an unregistered-handler 404.
+
+- 企业微信菜单发送错误现在区分权限、限流、断连与结果不确定等情况；仅在明确且可降级的卡片拒绝后回退文字，结果不确定时保留卡片操作状态并避免重复发送。菜单恢复成功后清除对应旧错误，不覆盖模型错误或并发请求的新错误。
+  WeCom menu delivery now distinguishes permission, rate-limit, disconnection, and uncertain-outcome errors. Only definite, eligible card rejections fall back to text; uncertain delivery retains card interaction state without duplicate sends. Successful menu recovery clears its own previous error without overwriting model failures or newer concurrent errors.
+
+- 设置页恢复显示完整渠道导航列表，并将飞书分步直推说明移入帮助提示，减少设置项拥挤。
+  Settings show the complete channel navigation list again, and Feishu Step Push guidance moves into its help tooltip to reduce clutter.
+
 ## [4.15.0] - 2026-09-08
 
 ### Added / 新增
-- 新增企业微信自建应用渠道（wecom-app）：在企业微信管理后台创建自建应用并完成回调配置后，成员的微信关注该企业的微信插件，即可在微信中直接对话；私聊支持流式回复（微信端自动改为整段发送）、图片输入与结果文件回传。接入步骤和公网回调基址、代理地址、企业可信 IP 的配置说明见 `docs/企业微信自建应用接入.md`.
-  Adds the WeCom self-built app channel (wecom-app). After creating the app in the WeCom console and finishing the callback setup, members can chat from WeChat directly by following the enterprise WeChat plugin. Private chats support streaming replies (falling back to full messages on WeChat), image input, and result file delivery. See `docs/企业微信自建应用接入.en.md` for setup details, including the callback base URL, API proxy, and trusted IP.
 
 - 本机 Host 的九个 IM 渠道与 AI Office 会话自动追加渠道前缀（如「微信 · 标题」），保留自动标题的来源与后续生成能力；不会调用手动重命名接口锁定标题，重复生成和重启不会叠加前缀。已有会话在加载时补齐；显式连接远程 `harnessBaseUrl` 时需在目标 Host 上安装插件。
   Sessions from all nine IM channels and AI Office on the local Host automatically receive channel prefixes such as “WeChat · Title”, preserving automatic title provenance and later generation. Prefixes do not use manual rename or pin titles, and do not stack across regeneration or restarts. Existing Sessions are decorated when loaded; explicit remote `harnessBaseUrl` connections require the plugin on the destination Host.
@@ -777,7 +810,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.15.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.16.0...HEAD
+[4.16.0]: https://github.com/xmanrui/dsh-im/compare/v4.15.0...v4.16.0
 [4.15.0]: https://github.com/xmanrui/dsh-im/compare/v4.14.0...v4.15.0
 [4.14.0]: https://github.com/xmanrui/dsh-im/compare/v4.13.0...v4.14.0
 [4.13.0]: https://github.com/xmanrui/dsh-im/compare/v4.12.0...v4.13.0
