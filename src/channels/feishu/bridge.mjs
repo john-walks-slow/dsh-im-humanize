@@ -4468,7 +4468,11 @@ export class FeishuHarnessBridge {
     const answeredIndex = pending.index;
     const answeredCardJson = answeredQuestionCard({
       interactionId: pending.interactionId,
-      question,
+      // 评审补充（#162）：与呈现提问卡保持一致，传入原题的文本/标题/说明，
+      // 否则回执会退化为「请输入你的回答。」。
+      question: question.question,
+      header: question.header,
+      detail: question.detail,
       options: Array.isArray(question?.options) ? question.options : [],
       chosen: answerText,
       index: answeredIndex,
@@ -4677,6 +4681,9 @@ export class FeishuHarnessBridge {
       && question.multiSelect !== true;
     let messageId;
     let presentedAsCard = false;
+    // 评审补充（#162）：每次呈现先重置——本题走文本路径（或卡片回退到文本）
+    // 时不得沿用上一题的卡消息 id，否则后一题的回执会覆盖前一张已答卡。
+    pending.questionCardMessageId = null;
     if (interactive) {
       // Single-choice question with options: render each option as a button.
       messageId = await this.#sendCard(

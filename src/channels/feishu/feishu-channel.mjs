@@ -244,6 +244,15 @@ export class VerifiedFeishuChannel {
         const rest = next.slice(frozenContent.length);
         return rest.trim().length > 0 ? rest : ''; // 不改写增量原文；全空白视为无增量
       };
+      // 评审补充（#163）：去重基线与定格内容必须以「旧卡实际展示的内容」为准——
+      // 超长快照的旧卡只展示了截断前缀，若冻结完整 lastContent，未展示的尾部
+      // 会被整段剥掉而丢失；再次换卡时旧卡展示的是上一轮增量，不得回写完整快照。
+      const shownPrefixOf = (text) => {
+        const notice = `\n\n${t('内容较长，生成完成后将分段发送完整回答。')}`;
+        return text.length <= MAX_STREAM_CHARS
+          ? text
+          : streamTextPrefix(text, MAX_STREAM_CHARS - notice.length);
+      };
       const controller = {
         get messageId() {
           return activeCard.messageId;
@@ -255,12 +264,17 @@ export class VerifiedFeishuChannel {
           if (rotating) return;
           rotating = true;
           awaitingPresentation = true;
-          frozenContent = lastContent;
+          const shown = postRotationView !== null && postRotationView.trim().length > 0
+            ? postRotationView
+            : lastContent;
+          const shownPrefix = shownPrefixOf(shown);
+          // 基线按轮拼接：已展示前缀 + 本卡增量，恰好是累计快照的前缀。
+          frozenContent = frozenContent === null ? shownPrefix : frozenContent + shownPrefix;
           postRotationView = '';
           try {
             await this.#updateStreamCard(
               activeCard,
-              `${streamPreview(lastContent)}\n\n${t('⤵️ 最终结果见下方')}`,
+              `${streamPreview(shownPrefix)}\n\n${t('⤵️ 最终结果见下方')}`,
             );
             await this.#finishStreamCard(activeCard);
           } catch (error) {

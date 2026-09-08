@@ -4700,6 +4700,47 @@ test('issue #162: 未答过的陈旧 interaction 点击保持现有「其他客�
   assert.ok(textsAfter.some((e) => e.text.includes('其他客户端')), '未答过的 id 保持现有提示');
 });
 
+test('issue #162: 卡片题后的文本题不再回写前一张卡', async () => {
+  const questions = [
+    { id: 'environment', header: '测试环境', question: '请选择测试环境', options: [{ label: '测试环境' }, { label: '生产环境' }] },
+    { id: 'scope', header: '改动范围', question: '请用文字描述改动范围' },
+  ];
+  const context = issue86RotationFixture({ interactionCards: true, questions });
+  await bridge_click_option(context, '生产环境', { waitFinal: false });
+  await eventually(
+    () => context.timeline.some((e) => e.kind === 'text-message' && e.text.includes('请用文字描述改动范围')),
+    '第 2 题（文本题）未呈现',
+  );
+  const textQuestion = context.timeline.filter(
+    (e) => e.kind === 'text-message' && e.text.includes('请用文字描述改动范围'),
+  ).at(-1);
+  const turn = context.bridge.accept(event('om-86-scope-answer', '后端模块', {
+    root_id: 'om-86-prompt',
+    parent_id: textQuestion.messageId,
+    thread_id: 'omt-86',
+  }));
+  await Promise.race([
+    context.submitStarted.promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('text answer never reached')), 1_000)),
+  ]);
+  context.answerAccepted.resolve();
+  await turn;
+  await context.bridge.waitForIdle();
+  const patches = context.timeline.filter((e) => e.kind === 'card-patch');
+  assert.equal(patches.length, 1, '文本题不得回写任何卡');
+  assert.ok(JSON.stringify(JSON.parse(patches[0].content)).includes('✅ 已选择：生产环境'),
+    '唯一的回执必须是第 1 题的答案');
+});
+
+test('issue #162: 已答回执保留原题文本、标题与说明', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const cardPatch = context.timeline.filter((e) => e.kind === 'card-patch').at(-1);
+  const json = JSON.stringify(JSON.parse(cardPatch.content));
+  assert.ok(json.includes('请选择测试环境'), '原题文本必须保留（不得退化为「请输入你的回答。」）');
+  assert.ok(json.includes('测试环境'), '题头必须保留');
+});
+
 test('issue #86: finalize failure degrades without blocking the interaction', async () => {
   const context = issue86RotationFixture({ failFinalize: true });
   await bridge_accept_and_answer(context);

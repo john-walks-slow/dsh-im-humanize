@@ -978,4 +978,28 @@ test('issue #163: 两轮提问链式去重：第二轮冻结基线为第一轮�
   const card3Writes = calls.updates.filter((u) => u.path.card_id === 'card-test-3');
   assert.ok(card3Writes.at(-1).data.content.includes('B2'));
   assert.ok(!card3Writes.at(-1).data.content.includes('B1'), '第二轮新卡不得重放第一轮增量');
+  // 评审补充：第二张卡定格后只保留它实际展示的增量，不得被完整快照回写。
+  const card2Writes = calls.updates.filter((u) => u.path.card_id === 'card-test-2');
+  assert.ok(card2Writes.at(-1).data.content.includes('最终结果见下方'), '第二张卡必须定格');
+  assert.ok(!card2Writes.at(-1).data.content.includes('过程 A'), '定格不得把已剥离的前文写回第二张卡');
+  assert.ok(card2Writes.at(-1).data.content.includes('B1'), '定格保留第二张卡的增量');
+});
+
+test('issue #163: 超长快照换卡后，旧卡未展示的尾部进入新卡（不丢失）', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+  const longText = `${'x'.repeat(30_000)}TAIL_MARKER`;
+  await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent(longText);
+      await controller.rotate();
+      controller.interactionPresented();
+      await controller.setContent(`${longText}\n\n增量 B`);
+    },
+  });
+  const oldCardWrites = calls.updates.filter((u) => u.path.card_id === 'card-test');
+  assert.ok(!oldCardWrites.at(-1).data.content.includes('TAIL_MARKER'), '旧卡定格展示的是截断前缀');
+  const newCardWrites = calls.updates.filter((u) => u.path.card_id === 'card-test-2');
+  assert.ok(newCardWrites.at(-1).data.content.includes('TAIL_MARKER'), '旧卡未展示的尾部必须进入新卡');
+  assert.ok(newCardWrites.at(-1).data.content.includes('增量 B'), '增量同样保留');
 });
