@@ -96,8 +96,16 @@ function validBotCommand(value) {
   return Boolean(value)
     && typeof value === 'object' && !Array.isArray(value)
     && typeof value.command === 'string' && TELEGRAM_COMMAND_NAME.test(value.command)
-    && typeof value.description === 'string' && value.description.length >= 1
-    && value.description.length <= 256;
+    && typeof value.description === 'string' && value.description.trim().length >= 1
+    && [...value.description].length <= 256;
+}
+
+export function validateTelegramCommands(commands, { allowEmpty = false } = {}) {
+  if (!Array.isArray(commands) || (!allowEmpty && commands.length === 0)
+    || commands.length > 100 || commands.some((command) => !validBotCommand(command))
+    || new Set(commands.map((item) => item.command)).size !== commands.length) {
+    throw new TypeError('Telegram bot commands are invalid');
+  }
 }
 
 export const COMMANDS_MENU_BUTTON = Object.freeze({ type: 'commands' });
@@ -334,12 +342,16 @@ export class TelegramApi {
   }
 
   async setMyCommands({ commands, scope, languageCode, signal } = {}) {
-    if (!Array.isArray(commands) || commands.length === 0
-      || commands.some((command) => !validBotCommand(command))) {
-      throw new TypeError('Telegram bot commands are invalid');
-    }
+    validateTelegramCommands(commands);
     return this.#call('setMyCommands', {
       commands,
+      ...(scope ? { scope } : {}),
+      ...(cleanString(languageCode) ? { language_code: cleanString(languageCode) } : {}),
+    }, { signal });
+  }
+
+  async deleteMyCommands({ scope, languageCode, signal } = {}) {
+    return this.#call('deleteMyCommands', {
       ...(scope ? { scope } : {}),
       ...(cleanString(languageCode) ? { language_code: cleanString(languageCode) } : {}),
     }, { signal });
