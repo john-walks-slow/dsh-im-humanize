@@ -6,6 +6,19 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.16.1] - 2026-09-09
+
+### Fixed / 修复
+
+- 钉钉 AI Card 改为在创建并投放时同时写入可见的思考提示，避免先出现空白卡片；首次流式更新失败时保留已显示的卡片，后续仍可原位完成。
+  DingTalk AI Cards now include visible thinking text in the combined create-and-deliver request, avoiding an initially blank card. A failed initial streaming update keeps the visible card available for later in-place completion.
+
+- 修复钉钉 AI Card 完成后正文消失或继续显示处理中：先结束流式组件，再将完整回答和完成状态持久化到模板实际使用的 `msgContent` 字段，保持正文可见。
+  Fix DingTalk AI Cards losing their answer or remaining in the processing state after completion. The stream is finalized first, then the full answer and completed state are persisted in the template's visible `msgContent` field.
+
+- 钉钉卡片创建、流式更新或最终状态写入失败时，恢复完整文字回答和安全错误提示的兜底投递，避免卡片失败被误记为已成功送达而丢失结果。
+  Restore full-text answers and safe error-message fallback when DingTalk card creation, streaming updates, or final-state persistence fail, preventing failed cards from being treated as successful delivery and losing the result.
+
 ## [4.16.0] - 2026-09-09
 
 ### Added / 新增
@@ -810,7 +823,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.16.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.16.1...HEAD
+[4.16.1]: https://github.com/xmanrui/dsh-im/compare/v4.16.0...v4.16.1
 [4.16.0]: https://github.com/xmanrui/dsh-im/compare/v4.15.0...v4.16.0
 [4.15.0]: https://github.com/xmanrui/dsh-im/compare/v4.14.0...v4.15.0
 [4.14.0]: https://github.com/xmanrui/dsh-im/compare/v4.13.0...v4.14.0
