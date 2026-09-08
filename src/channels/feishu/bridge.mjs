@@ -4452,7 +4452,9 @@ export class FeishuHarnessBridge {
               }
             },
             onUpdate: async (update) => {
-              await controller.setContent(this.#progressText(update));
+              await controller.setContent(this.#progressText(update), {
+                transient: update.type !== 'text',
+              });
               this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
             },
           };

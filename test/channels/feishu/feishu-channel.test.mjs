@@ -1004,6 +1004,80 @@ test('issue #163: 超长快照换卡后，旧卡未展示的尾部进入新卡�
   assert.ok(newCardWrites.at(-1).data.content.includes('增量 B'), '增量同样保留');
 });
 
+test('rotation keeps transient tool statuses out of the frozen text prefix', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client });
+  await channel.stream('oc_chat', { markdown: async (controller) => {
+    await controller.setContent('正文 A');
+    await controller.rotate();
+    controller.interactionPresented();
+    await controller.setContent('_正在使用 read_file…_', { transient: true });
+    await controller.rotate();
+    controller.interactionPresented();
+    await controller.setContent('正文 A\n\n正文 B');
+  } });
+  assert.deepEqual(finalCardContents(calls), [
+    '正文 A\n\n⤵️ 最终结果见下方',
+    '_正在使用 read_file…_\n\n⤵️ 最终结果见下方',
+    '\n\n正文 B',
+  ]);
+});
+
+test('a final snapshot with no new text replaces the previous transient status', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client });
+  await channel.stream('oc_chat', { markdown: async (controller) => {
+    await controller.setContent('完整回答 A');
+    await controller.rotate();
+    controller.interactionPresented();
+    await controller.setContent('_正在整理结果…_', { transient: true });
+    const writesBeforeReplay = calls.updates.length;
+    await controller.setContent('完整回答 A');
+    assert.equal(calls.updates.length, writesBeforeReplay, 'replayed snapshots stay silent during generation');
+  } });
+  assert.equal(finalCardContents(calls).at(-1), '完整回答 A');
+  assert.equal(JSON.parse(calls.settings.at(-1).data.settings).config.streaming_mode, false);
+});
+
+test('rotation starts a text prefix after a placeholder or an unrelated text snapshot', async () => {
+  for (const initialSnapshot of [null, '先前独立正文']) {
+    const { client, calls } = fakeClient();
+    const channel = new VerifiedFeishuChannel({ client });
+    await channel.stream('oc_chat', { markdown: async (controller) => {
+      if (initialSnapshot) await controller.setContent(initialSnapshot);
+      await controller.rotate();
+      controller.interactionPresented();
+      await controller.setContent('新正文 A');
+      await controller.rotate();
+      controller.interactionPresented();
+      await controller.setContent('新正文 A\n\n后续 B');
+    } });
+    assert.equal(finalCardContents(calls).at(-1), '\n\n后续 B');
+  }
+});
+
+test('rotation freezes only content that reached the card after an update failure', async () => {
+  const { client, calls } = fakeClient({ updateContent: async (request) => {
+    if (request.data.content.includes('尚未送达 B') && !request.data.content.includes('最终 C')) {
+      throw new Error('update failed');
+    }
+    calls.updates.push(request);
+    return { code: 0 };
+  } });
+  const channel = new VerifiedFeishuChannel({ client });
+  await channel.stream('oc_chat', { markdown: async (controller) => {
+    await controller.setContent('正文 A');
+    await assert.rejects(controller.setContent('正文 A\n\n尚未送达 B'), /update failed/);
+    await controller.rotate();
+    controller.interactionPresented();
+    await controller.setContent('正文 A\n\n尚未送达 B\n\n最终 C');
+  } });
+  assert.deepEqual(finalCardContents(calls), [
+    '正文 A\n\n⤵️ 最终结果见下方',
+    '\n\n尚未送达 B\n\n最终 C',
+  ]);
+});
+
 test('recallMessage deletes through the message delete API and swallows failures', async () => {
   const { client, calls } = fakeClient();
   const channel = new VerifiedFeishuChannel({ client });
