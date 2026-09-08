@@ -1513,9 +1513,14 @@ test('all nine channel bridge families advertise and fan out workspace command r
   ];
   for (const file of bridgeFiles) {
     const source = await readFile(new URL(file, import.meta.url), 'utf8');
-    assert.match(source, /\/workspacelist  列出工作区绝对路径/);
-    assert.match(source, /\/sessionlist 或 \/sessions \[工作区序号或绝对路径\]  列出会话 ID 和标题/);
-    assert.match(source, /\/sessionlist --limit N  仅列出当前工作区前 N 个会话/);
+    if (file.endsWith('/shared/text-harness-bridge.mjs')) {
+      // Full rendered help for all four consumers is covered by command-help.test.mjs.
+      assert.match(source, /commandHelpLines\(this\.#descriptor\.key\)/);
+    } else {
+      assert.match(source, /\/workspacelist  列出工作区绝对路径/);
+      assert.match(source, /\/sessionlist 或 \/sessions \[工作区序号或绝对路径\]  列出会话 ID 和标题/);
+      assert.match(source, /\/sessionlist --limit N  仅列出当前工作区前 N 个会话/);
+    }
     assert.match(source, /workspaceCommand\.messages \?\? \[workspaceCommand\.message\]/);
   }
 });

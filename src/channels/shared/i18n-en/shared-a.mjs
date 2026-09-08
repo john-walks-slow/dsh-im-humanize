@@ -118,6 +118,9 @@ export default {
   '直接发送文字、图片、文件或带文字识别结果的语音即可继续当前会话。':
     'Send text, an image, a file, or a voice message already transcribed to text to continue the current session.',
   '{label}机器人已连接 DeepSeek Harness。': 'The {label} bot is connected to DeepSeek Harness.',
+  '查看最近历史消息（仅私聊）': 'Show recent history (private chats only)',
+  '按序号列出当前模型可用推理等级': 'List reasoning efforts for the current model by index',
+  '查看或切换当前推理等级': 'Show or switch the current reasoning effort',
   '/new  开启一个全新会话': '/new  Start a brand-new session',
   '/compact  压缩当前会话的较早上下文': '/compact  Compact the earlier context of the current session',
   '/workspace 工作区序号或绝对路径  切换工作区':

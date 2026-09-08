@@ -647,7 +647,7 @@ test('Feishu bot settings render the step push toggle and save through the bot s
     await flushTasks();
   });
 
-  // Rendering: the toggle row shows the「分步直推」label, help description,
+  // Rendering: the toggle row shows the「分步直推」label, help tooltip,
   // and defaults to off.
   const stepPushSelect = () => renderer.root.findByProps({ 'aria-label': '分步直推' });
   assert.equal(stepPushSelect().type, 'select');
@@ -657,8 +657,12 @@ test('Feishu bot settings render the step push toggle and save through the bot s
   const helpNodes = renderer.root.findAll(
     (node) => node.props?.className === 'dim-feishuGroupHelp',
   );
-  assert.equal(helpNodes.length, 1);
-  assert.match(nodeText(helpNodes[0]), /开启后逐步推送工具调用与过程说明/);
+  assert.equal(helpNodes.length, 0);
+  const helpButton = renderer.root.findByProps({ 'aria-label': '查看分步直推说明' });
+  assert.equal(helpButton.type, 'button');
+  const helpTooltip = renderer.root.findByProps({ id: helpButton.props['aria-describedby'] });
+  assert.equal(helpTooltip.props.role, 'tooltip');
+  assert.equal(nodeText(helpTooltip), '开启后逐步推送工具调用与过程说明');
   assert.deepEqual(
     stepPushSelect().findAllByType('option').map((option) => option.props.value),
     ['off', 'on'],

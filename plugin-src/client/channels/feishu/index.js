@@ -467,6 +467,7 @@ function RemoveConfirmation({ bot, busy, onConfirm, onCancel }) {
 /** Toggle row for 分步直推, mirroring the group-topic reply toggle pattern. */
 function StepPushEditor({ value = false, disabled = false, onSave }) {
   const titleId = React.useId();
+  const helpId = `${titleId}-help`;
   const current = value === true ? "on" : "off";
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState(null);
@@ -490,7 +491,20 @@ function StepPushEditor({ value = false, disabled = false, onSave }) {
     "aria-labelledby": titleId,
   },
   h("div", { className: "dim-feishuGroupControlHeader" },
-    h("h3", { id: titleId }, "分步直推"),
+    h("div", { className: "dim-presetTitle" },
+      h("h3", { id: titleId }, "分步直推"),
+      h("span", { className: "dim-presetHelp" },
+        h("button", {
+          type: "button",
+          className: "dim-presetHelpButton",
+          "aria-label": "查看分步直推说明",
+          "aria-describedby": helpId,
+        }, h("span", { "aria-hidden": "true" }, "?")),
+        h("span", {
+          id: helpId,
+          className: "dim-presetTooltip",
+          role: "tooltip",
+        }, "开启后逐步推送工具调用与过程说明"))),
     saving
       ? h("span", { className: "dim-feishuGroupControlStatus", role: "status" }, "保存中…")
       : null),
@@ -503,8 +517,6 @@ function StepPushEditor({ value = false, disabled = false, onSave }) {
   },
   h("option", { value: "off" }, "关闭（保持流式卡模式）"),
   h("option", { value: "on" }, "开启（逐步推送工具调用与过程说明）")),
-  h("p", { className: "dim-feishuGroupHelp" },
-    "开启后逐步推送工具调用与过程说明"),
   error ? h("p", {
     className: "dim-feishuGroupError",
     role: "alert",
