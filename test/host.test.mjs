@@ -277,17 +277,17 @@ function activationFixture(failedChannels) {
   return { plugin: createImHostPlugin(internals), ctx, calls, events, errors, failures };
 }
 
-test('Host continues activating channels in order when one channel fails', async () => {
+test('Host starts all channels before awaiting them and isolates activation failures', async () => {
   for (const [failedChannel] of CHANNELS) {
     const fixture = activationFixture(new Set([failedChannel]));
 
     await fixture.plugin.apply(fixture.ctx, {});
 
     assert.deepEqual(fixture.calls, CHANNELS.map(([channel]) => channel));
-    assert.deepEqual(fixture.events, CHANNELS.flatMap(([channel]) => [
-      `${channel}:start`,
-      `${channel}:${channel === failedChannel ? 'failed' : 'end'}`,
-    ]));
+    assert.deepEqual(fixture.events, [
+      ...CHANNELS.map(([channel]) => `${channel}:start`),
+      ...CHANNELS.map(([channel]) => `${channel}:${channel === failedChannel ? 'failed' : 'end'}`),
+    ]);
     assert.equal(fixture.errors.length, 1);
     assert.match(fixture.errors[0][0], new RegExp(`activate ${failedChannel}`));
     assert.equal(fixture.errors[0][1], fixture.failures.get(failedChannel));

@@ -1,5 +1,6 @@
 import { createProductionController } from './production.mjs';
-import { installQqRpc } from './rpc.mjs';
+import { createQqRpcHandler, installQqRpc, QQ_RPC_CHANNEL } from './rpc.mjs';
+import { installProductionChannel } from '../shared/startup.mjs';
 
 export const name = 'dsh-im-qq-host';
 export const inject = ['connection', 'credentials', 'typertGateway'];
@@ -8,20 +9,12 @@ export async function apply(ctx, config = {}) {
   if (config?.controller) {
     return installQqRpc(ctx, config.controller, config.rpcOptions, config.rpcAuthority);
   }
-  const production = await createProductionController(ctx, config, config.internals);
-  const unregisterDelivery = config.deliveryService && production.deliveryAdapter
-    ? config.deliveryService.registerAdapter(production.deliveryAdapter) : undefined;
-  const disposeRpc = installQqRpc(
-    ctx,
-    production.controller,
-    config.rpcOptions,
-    config.rpcAuthority,
-  );
-  ctx.effect(() => async () => {
-    await unregisterDelivery?.();
-    await production.close();
-  }, 'dsh-im: close QQ bot connections');
-  return disposeRpc;
+  return installProductionChannel(ctx, config, {
+    channel: 'qq',
+    rpcChannel: QQ_RPC_CHANNEL,
+    createProduction: () => createProductionController(ctx, config, config.internals),
+    createHandler: controller => createQqRpcHandler(controller, config.rpcOptions),
+  });
 }
 
 export function createQqHostPlugin(config) {

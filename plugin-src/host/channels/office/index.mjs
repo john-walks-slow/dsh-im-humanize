@@ -1,10 +1,14 @@
 import { createProductionController } from './production.mjs';
-import { installOfficeRpc } from './rpc.mjs';
+import { createOfficeRpcHandler, installOfficeRpc } from './rpc.mjs';
+import { installProductionChannel } from '../shared/startup.mjs';
+import { OFFICE_RPC_CHANNEL } from '../../../../src/channels/office/protocol.mjs';
 
 export async function apply(ctx, config = {}) {
   if (config.controller) return installOfficeRpc(ctx, config.controller, config.rpcAuthority);
-  const production = await createProductionController(ctx, config, config.internals ?? {});
-  const dispose = installOfficeRpc(ctx, production.controller, config.rpcAuthority);
-  ctx.effect(() => async () => production.close(), 'dsh-im: close AI Office connector');
-  return dispose;
+  return installProductionChannel(ctx, config, {
+    channel: 'office',
+    rpcChannel: OFFICE_RPC_CHANNEL,
+    createProduction: () => createProductionController(ctx, config, config.internals ?? {}),
+    createHandler: controller => createOfficeRpcHandler(controller),
+  });
 }

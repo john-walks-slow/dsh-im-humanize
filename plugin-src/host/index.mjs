@@ -148,14 +148,16 @@ export function createImHostPlugin(internals = {}) {
       }
     }
     const failures = [];
-    for (const [channel, start] of channels) {
+    // Each channel mounts its management RPC before awaiting initialization.
+    // Start them together so a slow channel cannot leave later routes absent.
+    await Promise.all(channels.map(async ([channel, start]) => {
       try {
         await start(ctx, channelConfig(config, channel, deliveryService));
       } catch (error) {
         failures.push(error);
         logger.error?.(`[dsh-im] failed to activate ${channel}; continuing with the remaining channels`, error);
       }
-    }
+    }));
     if (failures.length === channels.length) {
       throw new AggregateError(failures, 'dsh-im failed to activate every channel');
     }

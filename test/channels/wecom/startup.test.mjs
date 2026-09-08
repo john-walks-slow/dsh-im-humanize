@@ -8,7 +8,7 @@ import { Context, Service } from '@deepseek-ai/cordis';
 import { createWecomHostPlugin } from '../../../plugin-src/host/channels/wecom/index.mjs';
 import { WecomConfigStore } from '../../../src/channels/wecom/config-store.mjs';
 import { WecomController } from '../../../src/channels/wecom/wecom-controller.mjs';
-import { publicWecomStartupError } from '../../../plugin-src/host/channels/wecom/startup-error.mjs';
+import { publicChannelStartupError } from '../../../plugin-src/host/channels/shared/startup-error.mjs';
 import { setImHostLanguage } from '../../../src/channels/shared/i18n.mjs';
 import { presentError, unwrapRpcResult } from '../../../plugin-src/client/channels/wecom/api.js';
 
@@ -126,17 +126,17 @@ test('WeCom closes a prepared controller when delivery registration fails and ke
 test('WeCom startup guidance distinguishes invalid data and permissions without returning private paths', () => {
   for (const code of ['EACCES', 'EPERM']) {
     const error = Object.assign(new Error('private/path/private-secret'), { code });
-    const failure = publicWecomStartupError(error);
+    const failure = publicChannelStartupError('wecom', error);
     assert.equal(failure.code, 'wecom-startup-permission-denied');
     assert.match(failure.message, /权限/);
     assert.doesNotMatch(JSON.stringify(failure), /private/);
   }
   for (const message of ['dsh-im Enterprise WeChat config contains invalid bot data', 'dsh-im workspace config is invalid']) {
-    assert.equal(publicWecomStartupError(new Error(message)).code, 'wecom-startup-config-invalid');
+    assert.equal(publicChannelStartupError('wecom', new Error(message)).code, 'wecom-startup-config-invalid');
   }
   setImHostLanguage('en');
   try {
-    assert.match(publicWecomStartupError(new SyntaxError('private-secret')).message, /configuration is invalid/);
+    assert.match(publicChannelStartupError('wecom', new SyntaxError('private-secret')).message, /configuration is invalid/);
   } finally {
     setImHostLanguage('zh');
   }

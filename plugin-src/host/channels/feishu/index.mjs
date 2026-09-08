@@ -1,6 +1,7 @@
 import { createProvisioningBackedController } from './controller.mjs';
 import { createProductionController } from './production.mjs';
-import { installFeishuRpc } from './rpc.mjs';
+import { createFeishuRpcHandler, installFeishuRpc, FEISHU_RPC_CHANNEL } from './rpc.mjs';
+import { installProductionChannel } from '../shared/startup.mjs';
 
 export const name = 'dsh-feishu-host';
 export const inject = ['connection', 'credentials', 'typertGateway'];
@@ -28,20 +29,12 @@ export async function apply(ctx, config = {}) {
     return installFeishuRpc(ctx, controller, config.rpcOptions, config.rpcAuthority);
   }
 
-  const production = await createProductionController(ctx, config);
-  const unregisterDelivery = config.deliveryService && production.deliveryAdapter
-    ? config.deliveryService.registerAdapter(production.deliveryAdapter) : undefined;
-  const disposeRpc = installFeishuRpc(
-    ctx,
-    production.controller,
-    config.rpcOptions,
-    config.rpcAuthority,
-  );
-  ctx.effect(() => async () => {
-    await unregisterDelivery?.();
-    await production.close();
-  }, 'dsh-feishu: close controller and live connection');
-  return disposeRpc;
+  return installProductionChannel(ctx, config, {
+    channel: 'feishu',
+    rpcChannel: FEISHU_RPC_CHANNEL,
+    createProduction: () => createProductionController(ctx, config, config.internals),
+    createHandler: controller => createFeishuRpcHandler(controller, config.rpcOptions),
+  });
 }
 
 /** Create a programmatic plugin module with dependencies closed over. */

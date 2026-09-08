@@ -1,5 +1,6 @@
 import { createProductionController } from './production.mjs';
-import { installWecomAppRpc, WECOM_APP_ENDPOINTS, WECOM_APP_RPC_CHANNEL, WECOM_APP_RPC_ENDPOINTS, createWecomAppRpcHandler } from './rpc.mjs';
+import { createWecomAppRpcHandler, installWecomAppRpc, WECOM_APP_RPC_CHANNEL } from './rpc.mjs';
+import { installProductionChannel } from '../shared/startup.mjs';
 
 export const name = 'dsh-im-wecom-app-host';
 export const inject = ['connection', 'credentials', 'typertGateway'];
@@ -8,20 +9,12 @@ export async function apply(ctx, config = {}) {
   if (config?.controller) {
     return installWecomAppRpc(ctx, config.controller, config.rpcOptions, config.rpcAuthority);
   }
-  const production = await createProductionController(ctx, config, config.internals);
-  const unregisterDelivery = config.deliveryService && production.deliveryAdapter
-    ? config.deliveryService.registerAdapter(production.deliveryAdapter) : undefined;
-  const disposeRpc = installWecomAppRpc(
-    ctx,
-    production.controller,
-    config.rpcOptions,
-    config.rpcAuthority,
-  );
-  ctx.effect(() => async () => {
-    await unregisterDelivery?.();
-    await production.close();
-  }, 'dsh-im: close Enterprise WeChat app connections');
-  return disposeRpc;
+  return installProductionChannel(ctx, config, {
+    channel: 'wecom-app',
+    rpcChannel: WECOM_APP_RPC_CHANNEL,
+    createProduction: () => createProductionController(ctx, config, config.internals),
+    createHandler: controller => createWecomAppRpcHandler(controller, config.rpcOptions),
+  });
 }
 
 export function createWecomAppHostPlugin(config) {
