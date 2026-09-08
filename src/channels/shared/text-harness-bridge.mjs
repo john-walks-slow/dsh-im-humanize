@@ -1,5 +1,6 @@
 import { createDeferredDeliveryCoordinator, deferredOutcomeText } from './deferred-delivery-coordinator.mjs';
 import { t } from './i18n.mjs';
+import { commandHelpLines } from './command-catalog.mjs';
 import {
   COMMAND_PERMISSION_DENIED_MESSAGE,
   evaluateInboundAccess,
@@ -605,32 +606,7 @@ export class TextHarnessBridge {
           t('{label}机器人已连接 DeepSeek Harness。', { label: this.#descriptor.label }),
           '',
           t('直接发送文字、图片或文件即可继续当前会话。'),
-          t('/new  开启一个全新会话'),
-          t('/compact  压缩当前会话的较早上下文'),
-          t('/history [数量]  查看最近历史消息（默认 3 条，最多 5 条）'),
-          t('/workspace 工作区序号或绝对路径  切换工作区'),
-          t('/workspacelist  列出工作区绝对路径'),
-          t('/ws、/wsl、/workspaces  工作区命令别名'),
-          t('/sessionlist 或 /sessions [工作区序号或绝对路径]  列出会话 ID 和标题'),
-          t('/sessionlist --limit N  仅列出当前工作区前 N 个会话'),
-          t('/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话'),
-          t('/models  按序号列出所有可用模型'),
-          t('/reasoninglist 或 /reasonings  按序号列出当前模型可用推理等级'),
-          t('/reasoning [序号、等级ID或 --default]  查看或切换当前推理等级'),
-          t('/model [序号或完整模型ID] [推理等级ID]  查看或切换当前会话模型'),
-          t('示例：先发 /models，再发 /model 2 [推理等级ID]'),
-          t('/presetlist 或 /presets  按序号列出可用 Agent Preset'),
-          t('/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset'),
-          t('纯数字 ID：/preset id:<ID>'),
-          t('/preset --default  跟随 Host 默认'),
-          t('/stop  停止当前任务'),
-          t('/steer 补充指令  纠偏当前任务'),
-          t('/batch  开始批量输入（仅私聊，最多 10 条文字）'),
-          t('/send  提交当前批次'),
-          t('/cancel  取消当前批次'),
-          t('/status  检查连接状态'),
-          t('/version  查看插件版本'),
-          t('/help  显示本帮助'),
+          ...commandHelpLines(this.#descriptor.key),
         ].join('\n'));
         return;
       }
