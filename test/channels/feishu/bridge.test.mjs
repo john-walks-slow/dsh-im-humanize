@@ -4389,6 +4389,56 @@ test('issue #86: even without any progress update, the final answer must not pre
   );
 });
 
+test('streamed tool updates between questions do not replay the frozen answer prefix', async () => {
+  const secondAnswerAccepted = deferred();
+  const context = issue86RotationFixture({
+    onInteractionOverride: async (sessionId, options) => {
+      const question = (interactionId, respond) => ({
+        kind: 'question', interactionId, rpcId: interactionId, sessionId,
+        payload: {
+          type: 'question/requested', sessionId,
+          questions: [{ id: 'environment', question: '请选择测试环境', options: [{ label: '测试环境' }] }],
+        },
+        respond,
+      });
+      await options.onUpdate({ type: 'text', text: '最终回答：' });
+      await options.onInteraction(question('question-86', async (result) => {
+        context.submitStarted.resolve(result);
+        await context.answerAccepted.promise;
+        return { accepted: true };
+      }));
+      await context.answerAccepted.promise;
+      await options.onUpdate({ type: 'tool', name: 'read_file' });
+      await options.onInteraction(question('question-followup', async () => {
+        secondAnswerAccepted.resolve();
+        return { accepted: true };
+      }));
+      await secondAnswerAccepted.promise;
+    },
+  });
+  const questions = () => context.timeline.filter(
+    (entry) => entry.kind === 'text-message' && entry.text.includes('请选择测试环境'),
+  );
+  const turn = context.bridge.accept(event('om-86-prompt', '请先提问两次再回答'));
+  await eventually(() => questions().length === 1);
+  const firstReply = context.bridge.accept(event('om-first-answer', '1', {
+    root_id: 'om-86-prompt', parent_id: questions()[0].messageId, thread_id: 'omt-86',
+  }));
+  await context.submitStarted.promise;
+  context.answerAccepted.resolve();
+  await firstReply;
+  await eventually(() => questions().length === 2);
+  await context.bridge.accept(event('om-second-answer', '1', {
+    root_id: 'om-86-prompt', parent_id: questions()[1].messageId, thread_id: 'omt-86',
+  }));
+  await turn;
+  await context.bridge.waitForIdle();
+  const contents = context.timeline.filter((entry) => entry.kind === 'card-content');
+  assert.ok(contents.some((entry) => entry.cardId === 'card-86-2'
+    && entry.content.includes('read_file')), 'the tool status is still presented');
+  assert.equal(contents.at(-1).content, '选择了测试环境');
+});
+
 function issue86RotationFixture({
   postAnswerUpdate = false,
   onInteractionOverride = null,

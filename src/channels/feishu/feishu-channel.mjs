@@ -220,6 +220,11 @@ export class VerifiedFeishuChannel {
       activeCard = await this.#createStreamCard(chatId, options);
       cards.push(activeCard);
       let lastContent = this.#initialText;
+      let lastContentIsTransient = true;
+      // Track the current card separately from incoming snapshots: held or
+      // failed writes have not delivered any text that can be deduplicated.
+      let activeView = lastContent;
+      let activeTextPrefix = null;
       // issue #86：独立交互消息（提问/审批）落在占位卡下方后，最终答案不得
       // 回写旧卡。rotate() 把旧卡定格为「过程记录 + 指引行」并标记换卡态；
       // 下一次 setContent（过程更新或最终答案）才创建新卡——新卡必然创建于
@@ -230,6 +235,8 @@ export class VerifiedFeishuChannel {
       const ensureActiveCard = async () => {
         if (!rotating) return activeCard;
         activeCard = await this.#createStreamCard(chatId, options);
+        activeView = this.#initialText;
+        activeTextPrefix = null;
         cards.push(activeCard);
         rotating = false;
         return activeCard;
@@ -238,7 +245,6 @@ export class VerifiedFeishuChannel {
       // 新卡只展示剥离该前缀后的增量（重放快照剥为空白则跳过写卡），终稿
       // 分段同样使用增量视图，提问前的过程不再重复播放。
       let frozenContent = null;
-      let postRotationView = null;
       const applyFrozenDedup = (next) => {
         if (frozenContent === null || !next.startsWith(frozenContent)) return next;
         const rest = next.slice(frozenContent.length);
@@ -264,36 +270,36 @@ export class VerifiedFeishuChannel {
           if (rotating) return;
           rotating = true;
           awaitingPresentation = true;
-          const shown = postRotationView !== null && postRotationView.trim().length > 0
-            ? postRotationView
-            : lastContent;
-          const shownPrefix = shownPrefixOf(shown);
-          // 基线按轮拼接：已展示前缀 + 本卡增量，恰好是累计快照的前缀。
-          frozenContent = frozenContent === null ? shownPrefix : frozenContent + shownPrefix;
-          postRotationView = '';
+          const shownPrefix = shownPrefixOf(activeView);
           try {
             await this.#updateStreamCard(
               activeCard,
               `${streamPreview(shownPrefix)}\n\n${t('⤵️ 最终结果见下方')}`,
             );
+            // Tool/status messages remain visible but never extend the text
+            // prefix. Only a successfully displayed text snapshot advances it.
+            if (activeTextPrefix !== null) frozenContent = activeTextPrefix;
             await this.#finishStreamCard(activeCard);
           } catch (error) {
             // 明确降级：定格失败不阻塞交互呈现，旧卡保留原内容。
             console.warn('[dsh-feishu] unable to finalize the superseded stream card:', error.message);
           }
         }),
-        setContent: (content) => enqueue(async () => {
+        setContent: (content, { transient = false } = {}) => enqueue(async () => {
           const next = String(content ?? '') || '…';
-          // 快照推进先于写卡：并发定格读取的是最新值。
+          // Retain the latest snapshot even if it is a replay or a held write.
           lastContent = next;
-          const visible = applyFrozenDedup(next);
-          if (frozenContent !== null) {
-            if (visible === '') return; // 无增量：不建卡不写卡（挂起与否则无关）
-            postRotationView = visible;
-          }
+          lastContentIsTransient = transient;
+          const visible = transient ? next : applyFrozenDedup(next);
+          if (visible === '') return; // 重放快照不建卡不写卡
           if (awaitingPresentation) return; // 换卡挂起：视图已推进，仅挂起卡片写入
           const card = await ensureActiveCard();
           await this.#updateStreamCard(card, streamPreview(visible));
+          activeView = visible;
+          const previousPrefix = frozenContent !== null && next.startsWith(frozenContent)
+            ? frozenContent
+            : '';
+          activeTextPrefix = transient ? null : previousPrefix + shownPrefixOf(visible);
         }),
       };
 
@@ -301,10 +307,10 @@ export class VerifiedFeishuChannel {
       await enqueue(async () => {
         // 终稿强制解除挂起：异常路径下呈现通知缺失时仍可收尾。
         awaitingPresentation = false;
-        // 终稿使用增量视图；极端退化（增量全部为空）回退完整快照，宁重复不丢失。
-        const finalView = postRotationView !== null && postRotationView.trim().length > 0
-          ? postRotationView
-          : lastContent;
+        // Recompute from the final snapshot, including an empty delta, rather
+        // than retaining the last nonempty progress/tool view as the answer.
+        const finalView = (lastContentIsTransient ? lastContent : applyFrozenDedup(lastContent))
+          || lastContent;
         const chunks = splitStreamContent(finalView);
         for (const [index, chunk] of chunks.entries()) {
           const card = index === 0
