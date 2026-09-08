@@ -9,6 +9,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 ## [4.15.0] - 2026-09-08
 
 ### Added / 新增
+- 新增企业微信自建应用渠道（wecom-app）：在企业微信管理后台创建自建应用并完成回调配置后，成员的微信关注该企业的微信插件，即可在微信中直接对话；私聊支持流式回复（微信端自动改为整段发送）、图片输入与结果文件回传。接入步骤和公网回调基址、代理地址、企业可信 IP 的配置说明见 `docs/企业微信自建应用接入.md`.
+  Adds the WeCom self-built app channel (wecom-app). After creating the app in the WeCom console and finishing the callback setup, members can chat from WeChat directly by following the enterprise WeChat plugin. Private chats support streaming replies (falling back to full messages on WeChat), image input, and result file delivery. See `docs/企业微信自建应用接入.en.md` for setup details, including the callback base URL, API proxy, and trusted IP.
 
 - 本机 Host 的九个 IM 渠道与 AI Office 会话自动追加渠道前缀（如「微信 · 标题」），保留自动标题的来源与后续生成能力；不会调用手动重命名接口锁定标题，重复生成和重启不会叠加前缀。已有会话在加载时补齐；显式连接远程 `harnessBaseUrl` 时需在目标 Host 上安装插件。
   Sessions from all nine IM channels and AI Office on the local Host automatically receive channel prefixes such as “WeChat · Title”, preserving automatic title provenance and later generation. Prefixes do not use manual rename or pin titles, and do not stack across regeneration or restarts. Existing Sessions are decorated when loaded; explicit remote `harnessBaseUrl` connections require the plugin on the destination Host.

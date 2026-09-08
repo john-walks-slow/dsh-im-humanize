@@ -244,6 +244,7 @@ const CHANNELS = [
   ['weixin', 'applyWeixin'],
   ['dingtalk', 'applyDingtalk'],
   ['wecom', 'applyWecom'],
+  ['wecomApp', 'applyWecomApp'],
   ['qq', 'applyQq'],
   ['slack', 'applySlack'],
   ['telegram', 'applyTelegram'],
