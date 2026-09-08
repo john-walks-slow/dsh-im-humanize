@@ -628,7 +628,7 @@ const CSS = String.raw`
 .dim-sendDelayAdvancedField input { width: 100%; min-width: 0; height: 30px; padding: 0 8px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 7px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-layer-1, #fff); font: inherit; font-size: 12px; }
 .dim-sendDelayAdvancedField input:focus { outline: 2px solid color-mix(in srgb, var(--dsw-alias-state-business-primary, #3370ff) 28%, transparent); border-color: var(--dsw-alias-state-business-primary, #3370ff); }
 .dim-sendDelayAdvancedField input:disabled { opacity: .55; cursor: not-allowed; }
-.dim-sendDelayIdleBoost .dim-sendDelayRangeName { white-space: nowrap; }
+.dim-sendDelayActivity .dim-sendDelayRangeName { white-space: nowrap; }
 .dim-humanizeAdvanced { margin-top: 4px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 8px; padding: 6px 10px 10px; }
 .dim-humanizeAdvanced > summary { color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; line-height: 18px; cursor: pointer; user-select: none; }
 .dim-humanizeAdvanced .dim-humanizeRangeRow { margin-top: 8px; }

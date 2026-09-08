@@ -153,6 +153,49 @@ test('read delay is silent and precedes both the typing indicator and the ask', 
   assert.ok(textIndex > typingIndex, 'reply text follows the typing indicator');
 }));
 
+test('a follow-up message right after a completed turn gets the activity fast reply', async () => withKeepAlive(async () => {
+  const bot = recordedBot({ withTyping: true });
+  const askWaits = [];
+  const bridge = createBridge({
+    bot,
+    humanize: humanizeSettings(
+      { typingIndicator: 'continuous' },
+      {
+        enabled: true,
+        readDelay: {
+          minMs: 200, maxMs: 300, charsPerSecond: 0, maxTotalMs: 30_000,
+          activityBoost: {
+            enabled: true, fastReplyMs: 150, fastWindowMs: 60_000,
+            minWindowMs: 120_000, fullWindowMs: 300_000,
+          },
+        },
+      },
+    ),
+    harness: {
+      createSession: async () => 'session-activity',
+      sessionExists: async () => true,
+      ask: async () => {
+        askWaits.push(Date.now());
+        return '回答';
+      },
+    },
+  });
+  let turnStartedAt = Date.now();
+  await bridge.accept(message('activity-one', '第一条'));
+  // First message: no completed turn on record (idleMs null) → the full
+  // uniform range applies, not the fast reply.
+  const firstWait = askWaits[0] - turnStartedAt;
+  assert.ok(firstWait >= 200, `first message waits the full range (waited ${firstWait}ms)`);
+
+  turnStartedAt = Date.now();
+  await bridge.accept(message('activity-two', '马上又来一条'));
+  // The previous turn just ended: idle is inside the fast window, so the
+  // base snaps to fastReplyMs instead of uniform(200, 300).
+  const secondWait = askWaits[1] - turnStartedAt;
+  assert.ok(secondWait >= 100, `fast reply still waits (waited ${secondWait}ms)`);
+  assert.ok(secondWait < 200, `follow-up beats the configured floor (waited ${secondWait}ms)`);
+}));
+
 test('sendDelay disabled keeps the legacy immediate flow', async () => withKeepAlive(async () => {
   const bot = recordedBot({ withTyping: true });
   const startedAt = Date.now();

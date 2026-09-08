@@ -27,9 +27,23 @@ const TYPING_INDICATOR_OPTIONS = [
 const READ_DELAY_MAX_SECONDS = 300;
 const SEGMENT_GAP_MAX_SECONDS = 30;
 const CHARS_PER_SECOND_MAX = 1000;
-const IDLE_AFTER_MAX_MINUTES = 1440;
-const IDLE_MULTIPLIER_MAX = 10;
+const ACTIVITY_FAST_REPLY_MAX_SECONDS = 60;
+const ACTIVITY_WINDOW_MAX_MINUTES = 1440;
 const TYPING_BURST_MAX_MS = 30000;
+
+// Mirrors DEFAULT_ACTIVITY_BOOST in src/channels/shared/send-delay.mjs
+// (kept local to avoid pulling the module graph into stale snapshots).
+const ACTIVITY_BOOST_DEFAULTS = Object.freeze({
+  enabled: true,
+  fastReplyMs: 1000,
+  fastWindowMs: 60_000,
+  minWindowMs: 120_000,
+  fullWindowMs: 300_000,
+});
+
+function activityBoostOf(settings) {
+  return settings?.sendDelay?.readDelay?.activityBoost ?? ACTIVITY_BOOST_DEFAULTS;
+}
 
 // Exploration presets (plan §5.1/§7.1): fill the send-delay fields for
 // further tweaking; nothing is saved until 保存.
@@ -39,7 +53,7 @@ const SEND_DELAY_PRESETS = Object.freeze([
     label: '轻拟人',
     config: {
       enabled: true,
-      readDelay: { minMs: 1000, maxMs: 6000, charsPerSecond: 0, maxTotalMs: 30000, idleBoost: { afterMs: 600000, multiplier: 2 } },
+      readDelay: { minMs: 1000, maxMs: 6000, charsPerSecond: 0, maxTotalMs: 30000, activityBoost: { enabled: true, fastReplyMs: 1000, fastWindowMs: 60000, minWindowMs: 120000, fullWindowMs: 300000 } },
       segmentGap: { minMs: 500, maxMs: 2000, charsPerSecond: 0, maxTotalMs: 10000 },
     },
   },
@@ -48,7 +62,7 @@ const SEND_DELAY_PRESETS = Object.freeze([
     label: '慢性子',
     config: {
       enabled: true,
-      readDelay: { minMs: 5000, maxMs: 15000, charsPerSecond: 12, maxTotalMs: 60000, idleBoost: { afterMs: 300000, multiplier: 2.5 } },
+      readDelay: { minMs: 5000, maxMs: 15000, charsPerSecond: 12, maxTotalMs: 60000, activityBoost: { enabled: false, fastReplyMs: 1000, fastWindowMs: 60000, minWindowMs: 120000, fullWindowMs: 300000 } },
       segmentGap: { minMs: 1500, maxMs: 4000, charsPerSecond: 15, maxTotalMs: 20000 },
     },
   },
@@ -57,7 +71,7 @@ const SEND_DELAY_PRESETS = Object.freeze([
     label: '沉浸角色扮演',
     config: {
       enabled: true,
-      readDelay: { minMs: 8000, maxMs: 30000, charsPerSecond: 8, maxTotalMs: 120000, idleBoost: { afterMs: 300000, multiplier: 3 } },
+      readDelay: { minMs: 8000, maxMs: 30000, charsPerSecond: 8, maxTotalMs: 120000, activityBoost: { enabled: true, fastReplyMs: 2500, fastWindowMs: 90000, minWindowMs: 240000, fullWindowMs: 600000 } },
       segmentGap: { minMs: 2000, maxMs: 6000, charsPerSecond: 10, maxTotalMs: 30000 },
     },
   },
@@ -66,7 +80,7 @@ const SEND_DELAY_PRESETS = Object.freeze([
     label: '即刻应答',
     config: {
       enabled: true,
-      readDelay: { minMs: 0, maxMs: 500, charsPerSecond: 0, maxTotalMs: 30000, idleBoost: { afterMs: 600000, multiplier: 1 } },
+      readDelay: { minMs: 0, maxMs: 500, charsPerSecond: 0, maxTotalMs: 30000, activityBoost: { enabled: false, fastReplyMs: 0, fastWindowMs: 60000, minWindowMs: 120000, fullWindowMs: 300000 } },
       segmentGap: { minMs: 1000, maxMs: 3000, charsPerSecond: 12, maxTotalMs: 10000 },
     },
   },
@@ -175,33 +189,33 @@ export function HumanizeSettingsPanel({ rpcCall }) {
     }));
   };
 
-  // Idle boost: threshold in minutes on the wire in ms; multiplier
-  // unitless (1 = off).
-  const updateIdleAfterMs = (minutes) => {
+  // Activity boost: fastReplyMs is seconds on the wire in ms; the window
+  // fields are minutes on the wire in ms.
+  const updateActivityBoost = (field, toMs) => {
     setSaveSucceeded(false);
-    const numeric = Number(minutes);
-    const ms = Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric * 60000) : 0;
     setSettings((prev) => ({
       ...prev,
       sendDelay: {
         ...prev.sendDelay,
-        idleBoost: { ...prev.sendDelay?.idleBoost, afterMs: ms },
+        readDelay: {
+          ...prev.sendDelay?.readDelay,
+          activityBoost: { ...activityBoostOf(prev), [field]: toMs() },
+        },
       },
     }));
   };
 
-  const updateIdleMultiplier = (raw) => {
-    setSaveSucceeded(false);
-    const numeric = Number(raw);
-    const multiplier = Number.isFinite(numeric) && numeric >= 1 ? Math.round(numeric * 10) / 10 : 1;
-    setSettings((prev) => ({
-      ...prev,
-      sendDelay: {
-        ...prev.sendDelay,
-        idleBoost: { ...prev.sendDelay?.idleBoost, multiplier },
-      },
-    }));
-  };
+  const updateActivitySeconds = (field, seconds) => updateActivityBoost(field, () => {
+    const numeric = Number(seconds);
+    return Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric * 1000) : 0;
+  });
+
+  const updateActivityMinutes = (field, minutes) => updateActivityBoost(field, () => {
+    const numeric = Number(minutes);
+    return Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric * 60000) : 0;
+  });
+
+  const updateActivityEnabled = (enabled) => updateActivityBoost('enabled', () => enabled);
 
   // typingBurst rhythm fields (milliseconds).
   const updateTypingBurstMs = (field, raw) => {
@@ -223,7 +237,10 @@ export function HumanizeSettingsPanel({ rpcCall }) {
       ...prev,
       sendDelay: {
         enabled: preset.config.enabled,
-        readDelay: { ...preset.config.readDelay, idleBoost: { ...preset.config.readDelay.idleBoost } },
+        readDelay: {
+          ...preset.config.readDelay,
+          activityBoost: { ...preset.config.readDelay.activityBoost },
+        },
         segmentGap: { ...preset.config.segmentGap },
       },
     }));
@@ -384,25 +401,54 @@ export function HumanizeSettingsPanel({ rpcCall }) {
           }))),
       h('span', { className: 'dim-humanizeFieldHint' },
         '用户消息越长“读”得越久（0 关闭按长度计算）；单回合阅读延迟的硬上限。'),
-      h('div', { className: 'dim-humanizeRangeRow' },
-        h('span', { className: 'dim-humanizeRangeName' }, '闲置加成'),
-        h('span', { className: 'dim-humanizeRangeInputs' },
-          h('span', { className: 'dim-humanizeRangeName' }, '闲置 ≥'),
+      h('label', { className: 'dim-humanizeField' },
+        h('span', { className: 'dim-humanizeFieldRow' },
           h('input', {
-            type: 'number', min: 0, max: IDLE_AFTER_MAX_MINUTES, step: 1,
-            value: String(minutesInputValue(settings.sendDelay?.readDelay?.idleBoost?.afterMs)),
-            'aria-label': '闲置阈值（分钟）',
-            onChange: (e) => updateIdleAfterMs(e.target.value),
+            type: 'checkbox',
+            checked: activityBoostOf(settings).enabled !== false,
+            'aria-label': '启用活跃响应',
+            onChange: (e) => updateActivityEnabled(e.target.checked),
           }),
-          h('span', { className: 'dim-humanizeRangeSep', 'aria-hidden': 'true' }, '分钟 → 延迟 ×'),
+          h('span', { className: 'dim-humanizeFieldName' }, '活跃响应')),
+        h('span', { className: 'dim-humanizeFieldHint' },
+          '刚聊完天时“秒回”，闲置越久越接近完整延迟区间：模拟真人是否还盯着屏幕。')),
+      h('div', { className: 'dim-humanizeRangeRow' },
+        h('span', { className: 'dim-humanizeRangeName' }, '活跃曲线'),
+        h('span', { className: 'dim-humanizeRangeInputs' },
+          h('span', { className: 'dim-humanizeRangeName' }, '快速回复'),
           h('input', {
-            type: 'number', min: 1, max: IDLE_MULTIPLIER_MAX, step: 0.5,
-            value: String(rateInputValue(settings.sendDelay?.readDelay?.idleBoost?.multiplier)),
-            'aria-label': '闲置加成倍数',
-            onChange: (e) => updateIdleMultiplier(e.target.value),
-          }))),
+            type: 'number', min: 0, max: ACTIVITY_FAST_REPLY_MAX_SECONDS, step: 0.5,
+            value: String(secondsInputValue(activityBoostOf(settings).fastReplyMs)),
+            'aria-label': '快速回复延迟（秒）',
+            onChange: (e) => updateActivitySeconds('fastReplyMs', e.target.value),
+          }),
+          h('span', { className: 'dim-humanizeRangeSep', 'aria-hidden': 'true' }, '秒'),
+          h('span', { className: 'dim-humanizeRangeName' }, '秒回 ≤'),
+          h('input', {
+            type: 'number', min: 0, max: ACTIVITY_WINDOW_MAX_MINUTES, step: 0.5,
+            value: String(minutesInputValue(activityBoostOf(settings).fastWindowMs)),
+            'aria-label': '秒回窗口（分钟）',
+            onChange: (e) => updateActivityMinutes('fastWindowMs', e.target.value),
+          }),
+          h('span', { className: 'dim-humanizeRangeSep', 'aria-hidden': 'true' }, '分钟'),
+          h('span', { className: 'dim-humanizeRangeName' }, '恢复下限 ≤'),
+          h('input', {
+            type: 'number', min: 0, max: ACTIVITY_WINDOW_MAX_MINUTES, step: 0.5,
+            value: String(minutesInputValue(activityBoostOf(settings).minWindowMs)),
+            'aria-label': '恢复下限窗口（分钟）',
+            onChange: (e) => updateActivityMinutes('minWindowMs', e.target.value),
+          }),
+          h('span', { className: 'dim-humanizeRangeSep', 'aria-hidden': 'true' }, '分钟'),
+          h('span', { className: 'dim-humanizeRangeName' }, '完全恢复 ≥'),
+          h('input', {
+            type: 'number', min: 0, max: ACTIVITY_WINDOW_MAX_MINUTES, step: 0.5,
+            value: String(minutesInputValue(activityBoostOf(settings).fullWindowMs)),
+            'aria-label': '完全恢复窗口（分钟）',
+            onChange: (e) => updateActivityMinutes('fullWindowMs', e.target.value),
+          }),
+          h('span', { className: 'dim-humanizeRangeSep', 'aria-hidden': 'true' }, '分钟'))),
       h('span', { className: 'dim-humanizeFieldHint' },
-        '会话闲置超过阈值后，阅读延迟乘以该倍数；倍数为 1 即关闭。'),
+        '上一回合结束后：秒回窗口内直接用快速回复；过渡到下限窗口线性回升；超过完全恢复窗口回到完整随机区间。首条消息不加速。'),
       h('div', { className: 'dim-humanizeRangeRow' },
         h('span', { className: 'dim-humanizeRangeName' }, '分段间隔（秒）'),
         h('span', { className: 'dim-humanizeRangeInputs' },

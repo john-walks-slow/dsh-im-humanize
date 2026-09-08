@@ -12,7 +12,7 @@
  * the prefill base is the override when one exists, otherwise the resolved
  * GLOBAL sendDelay projected onto the snapshot as
  * `humanizeDefaults.sendDelay`, falling back to the shipped defaults.
- * UI values are seconds (minutes for the idle threshold) / per-second
+ * UI values are seconds (minutes for the activity windows) / per-second
  * rates; the wire format is milliseconds.
  *
  * A mounted editor owns its draft: the 15-second silent status polling
@@ -21,7 +21,7 @@
  * while the draft is clean (never edited, or after a successful save).
  *
  * Checkable inputs are audited by scripts/verify-package.mjs — keep the
- * single checkbox here in sync with its manifest.
+ * two checkboxes here in sync with its manifest.
  */
 import * as React from 'react';
 
@@ -31,8 +31,8 @@ import { DEFAULT_SEND_DELAY_CONFIG } from '../../../../src/channels/shared/send-
 export const READ_DELAY_MAX_SECONDS = 300;
 export const SEGMENT_GAP_MAX_SECONDS = 30;
 const CHARS_PER_SECOND_MAX = 1000;
-const IDLE_AFTER_MAX_MINUTES = 1440;
-const IDLE_MULTIPLIER_MAX = 10;
+const ACTIVITY_FAST_REPLY_MAX_SECONDS = 60;
+const ACTIVITY_WINDOW_MAX_MINUTES = 1440;
 
 // Channels without a typing/status API only get the delay, and their read
 // delay is capped at SHORT_DELAY_CAP_MS (5s) by the bridges.
@@ -72,7 +72,8 @@ function draftFromConfig(config) {
   // config omits them (hand-edited disk sections): the resolver normalizes
   // those the same way, and a zero prefill would dead-end the cross-field
   // cap >= max validation.
-  const idleBoost = config.readDelay?.idleBoost ?? DEFAULT_SEND_DELAY_CONFIG.readDelay.idleBoost;
+  const activity = config.readDelay?.activityBoost
+    ?? DEFAULT_SEND_DELAY_CONFIG.readDelay.activityBoost;
   return {
     enabled: config.enabled === true,
     readMin: String(secondsOf(config.readDelay?.minMs)),
@@ -80,8 +81,11 @@ function draftFromConfig(config) {
     readCps: String(rateOf(config.readDelay?.charsPerSecond)),
     readCap: String(secondsOf(
       config.readDelay?.maxTotalMs ?? DEFAULT_SEND_DELAY_CONFIG.readDelay.maxTotalMs)),
-    idleAfter: String(minutesOf(idleBoost.afterMs)),
-    idleMult: String(rateOf(idleBoost.multiplier)),
+    actOn: activity.enabled !== false,
+    actFast: String(secondsOf(activity.fastReplyMs)),
+    actFastWin: String(minutesOf(activity.fastWindowMs)),
+    actMinWin: String(minutesOf(activity.minWindowMs)),
+    actFullWin: String(minutesOf(activity.fullWindowMs)),
     gapMin: String(secondsOf(config.segmentGap?.minMs)),
     gapMax: String(secondsOf(config.segmentGap?.maxMs)),
     gapCps: String(rateOf(config.segmentGap?.charsPerSecond)),
@@ -150,10 +154,21 @@ function validateDraft(draft) {
   if (readCapMs < readMaxMs) {
     throw new FieldError('readCap', '阅读延迟封顶不能低于上限。');
   }
-  const idleAfterMs = parseMinutes(draft.idleAfter, { field: 'idleAfter', label: '闲置阈值', max: IDLE_AFTER_MAX_MINUTES });
-  const idleMult = parseRate(draft.idleMult, {
-    field: 'idleMult', label: '闲置加成倍数', min: 1, max: IDLE_MULTIPLIER_MAX,
+  const activityFastMs = parseSeconds(draft.actFast, {
+    field: 'actFast', label: '快速回复', max: ACTIVITY_FAST_REPLY_MAX_SECONDS,
   });
+  const activityFastWinMs = parseMinutes(draft.actFastWin, {
+    field: 'actFastWin', label: '秒回窗口', max: ACTIVITY_WINDOW_MAX_MINUTES,
+  });
+  const activityMinWinMs = parseMinutes(draft.actMinWin, {
+    field: 'actMinWin', label: '恢复下限窗口', max: ACTIVITY_WINDOW_MAX_MINUTES,
+  });
+  const activityFullWinMs = parseMinutes(draft.actFullWin, {
+    field: 'actFullWin', label: '完全恢复窗口', max: ACTIVITY_WINDOW_MAX_MINUTES,
+  });
+  if (activityFastWinMs > activityMinWinMs || activityMinWinMs > activityFullWinMs) {
+    throw new FieldError('actFastWin', '活跃响应窗口需依次递增：秒回 ≤ 恢复下限 ≤ 完全恢复。');
+  }
   const gapMinMs = parseSeconds(draft.gapMin, { field: 'gapMin', label: '分段间隔下限', max: SEGMENT_GAP_MAX_SECONDS });
   const gapMaxMs = parseSeconds(draft.gapMax, { field: 'gapMax', label: '分段间隔上限', max: SEGMENT_GAP_MAX_SECONDS });
   if (gapMinMs > gapMaxMs) {
@@ -171,7 +186,13 @@ function validateDraft(draft) {
       maxMs: readMaxMs,
       charsPerSecond: readCps,
       maxTotalMs: readCapMs,
-      idleBoost: { afterMs: idleAfterMs, multiplier: idleMult },
+      activityBoost: {
+        enabled: draft.actOn === true,
+        fastReplyMs: activityFastMs,
+        fastWindowMs: activityFastWinMs,
+        minWindowMs: activityMinWinMs,
+        fullWindowMs: activityFullWinMs,
+      },
     },
     segmentGap: {
       minMs: gapMinMs,
@@ -403,27 +424,45 @@ export function BotSendDelayEditor({
             error: fieldError('readCap'),
             onChange: (value) => updateDraft('readCap', value),
           })),
-        h('div', { className: 'dim-sendDelayRange dim-sendDelayIdleBoost' },
-          h('span', { className: 'dim-sendDelayRangeName' }, '闲置加成'),
-          h('span', { className: 'dim-sendDelayRangeInputs' },
+        h('label', { className: 'dim-humanizeField dim-sendDelayField' },
+          h('span', { className: 'dim-humanizeFieldRow' },
             h('input', {
-              type: 'number', min: 0, max: IDLE_AFTER_MAX_MINUTES, step: 1,
-              value: draft.idleAfter,
+              type: 'checkbox',
+              checked: draft.actOn,
               disabled: busy,
-              'aria-label': '闲置阈值（分钟）',
-              onChange: (event) => updateDraft('idleAfter', event.target.value),
+              'aria-label': '启用活跃响应',
+              onChange: (event) => updateDraft('actOn', event.target.checked),
             }),
-            h('span', { className: 'dim-sendDelayRangeSep', 'aria-hidden': 'true' }, '分钟 → 延迟 ×'),
-            h('input', {
-              type: 'number', min: 1, max: IDLE_MULTIPLIER_MAX, step: 0.5,
-              value: draft.idleMult,
-              disabled: busy,
-              'aria-label': '闲置加成倍数',
-              onChange: (event) => updateDraft('idleMult', event.target.value),
-            })),
-          fieldError('idleAfter') || fieldError('idleMult'),
+            h('span', { className: 'dim-humanizeFieldName' }, '活跃响应')),
           h('span', { className: 'dim-humanizeFieldHint' },
-            '会话闲置超过阈值后，阅读延迟乘以该倍数；倍数为 1 即关闭。')),
+            '刚聊完天时“秒回”，闲置越久越接近完整延迟区间。')),
+        h('div', { className: 'dim-sendDelayAdvanced dim-sendDelayActivity' },
+          h(NumberField, {
+            label: '快速回复（秒）', ariaLabel: '快速回复延迟（秒）',
+            value: draft.actFast, max: ACTIVITY_FAST_REPLY_MAX_SECONDS, step: 0.5, disabled: busy,
+            error: fieldError('actFast'),
+            onChange: (value) => updateDraft('actFast', value),
+          }),
+          h(NumberField, {
+            label: '秒回窗口（分钟）', ariaLabel: '秒回窗口（分钟）',
+            value: draft.actFastWin, max: ACTIVITY_WINDOW_MAX_MINUTES, step: 0.5, disabled: busy,
+            error: fieldError('actFastWin'),
+            onChange: (value) => updateDraft('actFastWin', value),
+          }),
+          h(NumberField, {
+            label: '恢复下限窗口（分钟）', ariaLabel: '恢复下限窗口（分钟）',
+            value: draft.actMinWin, max: ACTIVITY_WINDOW_MAX_MINUTES, step: 0.5, disabled: busy,
+            error: fieldError('actMinWin'),
+            onChange: (value) => updateDraft('actMinWin', value),
+          }),
+          h(NumberField, {
+            label: '完全恢复窗口（分钟）', ariaLabel: '完全恢复窗口（分钟）',
+            value: draft.actFullWin, max: ACTIVITY_WINDOW_MAX_MINUTES, step: 0.5, disabled: busy,
+            error: fieldError('actFullWin'),
+            onChange: (value) => updateDraft('actFullWin', value),
+          })),
+        h('span', { className: 'dim-humanizeFieldHint' },
+          '上一回合结束后：秒回窗口内直接用快速回复；过渡到下限窗口线性回升；超过完全恢复窗口回到完整随机区间。首条消息不加速。'),
         h('div', { className: 'dim-sendDelayRange' },
           h('span', { className: 'dim-sendDelayRangeName' }, '分段间隔（秒）'),
           h('span', { className: 'dim-sendDelayRangeInputs' },

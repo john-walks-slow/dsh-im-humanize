@@ -1347,8 +1347,10 @@ export class WecomHarnessBridge {
   }
 
   #idleMsFor(key) {
+    // null = no completed turn on record (first message): the activity
+    // boost then stays out of the way and the full read-delay range applies.
     const lastTurnEnd = this.#turnEnds.get(key);
-    return lastTurnEnd === undefined ? 0 : Date.now() - lastTurnEnd;
+    return lastTurnEnd === undefined ? null : Date.now() - lastTurnEnd;
   }
 
   async #process(frame, {

@@ -177,7 +177,7 @@ export class TextHarnessBridge {
   // i.e. before it reaches the harness. Aborting supersedes that turn.
   #preAskControllers = new Map();
   // Wall-clock end of the last completed turn per conversation, for the
-  // sendDelay idle boost ("away for a while, replies sooner when back").
+  // sendDelay activity boost ("still at the keyboard, replies fast").
   #turnEnds = new Map();
 
   constructor({
@@ -734,11 +734,14 @@ export class TextHarnessBridge {
 
   /**
    * Idle time in ms since the last completed turn in this conversation
-   * (for the sendDelay idle boost). A first-ever message is never "idle".
+   * (for the sendDelay activity boost). A first-ever message has no
+   * activity record and always uses the full range.
    */
   #idleMsFor(key) {
+    // null = no completed turn on record (first message): the activity
+    // boost then stays out of the way and the full read-delay range applies.
     const lastTurnEnd = this.#turnEnds.get(key);
-    return lastTurnEnd === undefined ? 0 : Date.now() - lastTurnEnd;
+    return lastTurnEnd === undefined ? null : Date.now() - lastTurnEnd;
   }
 
   async #process(message, messageId, senderId, conversationKey, {

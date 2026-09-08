@@ -52,8 +52,9 @@ export function normalizeHumanizeOverride(value) {
 /**
  * Merge unset sendDelay subfields from the resolved GLOBAL config so a
  * per-bot override written with only the base fields (enabled + min/max)
- * keeps the global reading speed / cap / idle boost instead of silently
- * snapping them back to factory defaults. Explicit keys always win.
+ * keeps the global reading speed / cap / activity boost instead of
+ * silently snapping them back to factory defaults. Explicit keys always
+ * win; the nested activityBoost object merges subfield-wise as well.
  */
 function inheritSendDelayBase(config, base) {
   if (!isPlainObject(base)) return config;
@@ -61,8 +62,18 @@ function inheritSendDelayBase(config, base) {
     ...config,
     readDelay: { ...base.readDelay, ...config.readDelay },
     segmentGap: { ...base.segmentGap, ...config.segmentGap },
-    ...(isPlainObject(base.idleBoost) || isPlainObject(config.idleBoost)
-      ? { idleBoost: { ...base.idleBoost, ...config.idleBoost } }
+    ...((isPlainObject(base.readDelay?.activityBoost)
+      || isPlainObject(config.readDelay?.activityBoost))
+      ? {
+        readDelay: {
+          ...base.readDelay,
+          ...config.readDelay,
+          activityBoost: {
+            ...base.readDelay?.activityBoost,
+            ...config.readDelay?.activityBoost,
+          },
+        },
+      }
       : {}),
   };
 }

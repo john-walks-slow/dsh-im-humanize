@@ -111,7 +111,7 @@ test('validateHumanizeOverrideSection accepts partial sections and enforces send
       typingIndicator: 'burst',
       sendDelay: {
         ...completeSendDelay,
-        readDelay: { ...completeSendDelay.readDelay, idleBoost: DEFAULT_SEND_DELAY_CONFIG.readDelay.idleBoost },
+        readDelay: { ...completeSendDelay.readDelay, activityBoost: DEFAULT_SEND_DELAY_CONFIG.readDelay.activityBoost },
       },
     },
   );
@@ -145,7 +145,7 @@ test('validateHumanizeOverrideSection inherits unset sendDelay subfields from th
       maxMs: 60000,
       charsPerSecond: 8,
       maxTotalMs: 120000,
-      idleBoost: { afterMs: 300000, multiplier: 3 },
+      activityBoost: { enabled: true, fastReplyMs: 2000, fastWindowMs: 90000, minWindowMs: 180000, fullWindowMs: 600000 },
     },
     segmentGap: {
       minMs: 2000,
@@ -170,7 +170,8 @@ test('validateHumanizeOverrideSection inherits unset sendDelay subfields from th
   assert.equal(section.sendDelay.readDelay.maxMs, 7000);
   assert.equal(section.sendDelay.readDelay.charsPerSecond, 8);
   assert.equal(section.sendDelay.readDelay.maxTotalMs, 120000);
-  assert.equal(section.sendDelay.readDelay.idleBoost.multiplier, 3);
+  assert.equal(section.sendDelay.readDelay.activityBoost.fastReplyMs, 2000);
+  assert.equal(section.sendDelay.readDelay.activityBoost.fullWindowMs, 600000);
   assert.equal(section.sendDelay.segmentGap.charsPerSecond, 10);
   assert.equal(section.sendDelay.segmentGap.maxTotalMs, 30000);
 
@@ -187,8 +188,22 @@ test('validateHumanizeOverrideSection inherits unset sendDelay subfields from th
   );
   assert.equal(explicit.sendDelay.readDelay.charsPerSecond, 0);
   assert.equal(explicit.sendDelay.segmentGap.maxTotalMs, 8000);
-  assert.equal(explicit.sendDelay.readDelay.idleBoost.multiplier, 3,
-    'idle boost still inherits when not explicitly set');
+  assert.equal(explicit.sendDelay.readDelay.activityBoost.fastReplyMs, 2000,
+    'activity boost still inherits when not explicitly set');
+  // A partial activityBoost (hand-edited override) merges subfield-wise:
+  // the explicit fast reply wins, the rest still inherits the base.
+  const partialBoost = validateHumanizeOverrideSection(
+    {
+      sendDelay: {
+        enabled: true,
+        readDelay: { minMs: 2000, maxMs: 7000, activityBoost: { fastReplyMs: 500 } },
+        segmentGap: { minMs: 500, maxMs: 1500 },
+      },
+    },
+    { sendDelayBase: base },
+  );
+  assert.equal(partialBoost.sendDelay.readDelay.activityBoost.fastReplyMs, 500);
+  assert.equal(partialBoost.sendDelay.readDelay.activityBoost.fullWindowMs, 600000);
 
   // Without a base the unset subfields keep the factory defaults.
   const noBase = validateHumanizeOverrideSection({
@@ -200,7 +215,7 @@ test('validateHumanizeOverrideSection inherits unset sendDelay subfields from th
   });
   assert.equal(noBase.sendDelay.readDelay.charsPerSecond, 0);
   assert.equal(noBase.sendDelay.readDelay.maxTotalMs, 30000);
-  assert.equal(noBase.sendDelay.readDelay.idleBoost.multiplier, 2);
+  assert.equal(noBase.sendDelay.readDelay.activityBoost.fullWindowMs, 300000);
 });
 
 test('BotWorkspaceStore persists humanize sections, clears them and removes them with the bot', async (t) => {
@@ -216,7 +231,7 @@ test('BotWorkspaceStore persists humanize sections, clears them and removes them
     streaming: false,
     sendDelay: {
       ...completeSendDelay,
-      readDelay: { ...completeSendDelay.readDelay, idleBoost: DEFAULT_SEND_DELAY_CONFIG.readDelay.idleBoost },
+      readDelay: { ...completeSendDelay.readDelay, activityBoost: DEFAULT_SEND_DELAY_CONFIG.readDelay.activityBoost },
     },
   });
   assert.equal(store.humanizeFor(otherId), null);
@@ -289,7 +304,7 @@ for (const [channel, createHandler, endpoints] of CHANNELS) {
     assert.equal(saved.value.bots[1].humanize, null);
     assert.deepEqual(store.humanizeFor(botId).sendDelay.readDelay, {
       ...completeSendDelay.readDelay,
-      idleBoost: DEFAULT_SEND_DELAY_CONFIG.readDelay.idleBoost,
+      activityBoost: DEFAULT_SEND_DELAY_CONFIG.readDelay.activityBoost,
     });
 
     // Invalid saves are rejected without touching the stored section.

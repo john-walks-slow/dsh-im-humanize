@@ -4,7 +4,9 @@
  * Phase ① (read delay): a silent pause BEFORE the harness ask, simulating
  * "the human did not notice the message for a while". No typing indicator,
  * no read receipt. Delay = uniform(min, max) + optional inbound-length
- * reading term + optional idle boost, capped at maxTotalMs.
+ * reading term, capped at maxTotalMs. The optional activity boost SHORTENS
+ * the delay right after a completed turn ("still at the keyboard") and
+ * recovers to the full range as the conversation goes idle.
  *
  * Phase ② (compose) is covered by typing-session.mjs; message_break / long
  * reply chunk gaps use `segmentGap` here ("typing the next segment").
@@ -15,19 +17,39 @@
 
 export const READ_DELAY_ABSOLUTE_MAX_MS = 300_000;
 export const SEGMENT_GAP_ABSOLUTE_MAX_MS = 30_000;
-export const IDLE_BOOST_MULTIPLIER_MIN = 1;
-export const IDLE_BOOST_MULTIPLIER_MAX = 10;
-/** Idle threshold ceiling: one day — beyond that the boost is meaningless. */
-export const IDLE_BOOST_AFTER_MS_MAX = 86_400_000;
+/** A "fast reply" slower than a minute is not a fast reply. */
+export const ACTIVITY_FAST_REPLY_MS_MAX = 60_000;
+/** Window ceiling: one day — beyond that the curve is meaningless. */
+export const ACTIVITY_WINDOW_MS_MAX = 86_400_000;
 /** No-typing channels cap the read delay: nothing explains the silence. */
 export const SHORT_DELAY_CAP_MS = 5_000;
+
+/**
+ * Activity boost (replaces the retired idleBoost): a quick back-and-forth
+ * deserves a quick reply. Recovery curve over the idle time since the last
+ * completed turn:
+ *   idle <  fastWindowMs -> fastReplyMs  ("just chatting, replies in ~1s")
+ *   idle <  minWindowMs  -> linear ramp fastReplyMs -> minMs
+ *   idle <  fullWindowMs -> minMs (the configured floor)
+ *   idle >= fullWindowMs -> full uniform(minMs, maxMs) range
+ * `idleMs == null` (no completed turn on record, e.g. the first message)
+ * uses the full range: no activity history, no boost. At runtime the
+ * boosted base never exceeds minMs (the boost only ever shortens).
+ */
+export const DEFAULT_ACTIVITY_BOOST = Object.freeze({
+  enabled: true,
+  fastReplyMs: 1000,
+  fastWindowMs: 60_000,
+  minWindowMs: 120_000,
+  fullWindowMs: 300_000,
+});
 
 export const DEFAULT_READ_DELAY = Object.freeze({
   minMs: 1000,
   maxMs: 6000,
   charsPerSecond: 0,
   maxTotalMs: 30_000,
-  idleBoost: Object.freeze({ afterMs: 600_000, multiplier: 2 }),
+  activityBoost: DEFAULT_ACTIVITY_BOOST,
 });
 
 export const DEFAULT_SEGMENT_GAP = Object.freeze({
@@ -72,16 +94,22 @@ function normalizeRange(range, fallback, absoluteMax, defaultTotalMs) {
   return { minMs, maxMs, charsPerSecond, maxTotalMs };
 }
 
-function normalizeIdleBoost(value) {
+function normalizeActivityBoost(value) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  const afterMs = clamp(
-    finiteNumber(source.afterMs, DEFAULT_READ_DELAY.idleBoost.afterMs),
+  const fallback = DEFAULT_READ_DELAY.activityBoost;
+  const enabled = source.enabled !== false;
+  const fastReplyMs = clamp(
+    finiteNumber(source.fastReplyMs, fallback.fastReplyMs),
     0,
-    IDLE_BOOST_AFTER_MS_MAX,
+    ACTIVITY_FAST_REPLY_MS_MAX,
   );
-  let multiplier = finiteNumber(source.multiplier, DEFAULT_READ_DELAY.idleBoost.multiplier);
-  multiplier = clamp(multiplier, IDLE_BOOST_MULTIPLIER_MIN, IDLE_BOOST_MULTIPLIER_MAX);
-  return { afterMs, multiplier };
+  // Inverted windows are sorted, not rejected: lenient disk repair.
+  const [fastWindowMs, minWindowMs, fullWindowMs] = [
+    clamp(finiteNumber(source.fastWindowMs, fallback.fastWindowMs), 0, ACTIVITY_WINDOW_MS_MAX),
+    clamp(finiteNumber(source.minWindowMs, fallback.minWindowMs), 0, ACTIVITY_WINDOW_MS_MAX),
+    clamp(finiteNumber(source.fullWindowMs, fallback.fullWindowMs), 0, ACTIVITY_WINDOW_MS_MAX),
+  ].sort((a, b) => a - b);
+  return { enabled, fastReplyMs, fastWindowMs, minWindowMs, fullWindowMs };
 }
 
 /**
@@ -99,10 +127,10 @@ export function normalizeSendDelayConfig(partial) {
     READ_DELAY_ABSOLUTE_MAX_MS,
     30_000,
   );
-  readDelay.idleBoost = normalizeIdleBoost(
-    source.readDelay?.idleBoost && typeof source.readDelay.idleBoost === 'object'
-      ? source.readDelay.idleBoost
-      : DEFAULT_READ_DELAY.idleBoost,
+  readDelay.activityBoost = normalizeActivityBoost(
+    source.readDelay?.activityBoost && typeof source.readDelay.activityBoost === 'object'
+      ? source.readDelay.activityBoost
+      : DEFAULT_READ_DELAY.activityBoost,
   );
   const segmentGap = normalizeRange(
     source.segmentGap,
@@ -178,19 +206,38 @@ export function validateSendDelayConfig(config) {
     if (readDelay.maxTotalMs !== undefined) {
       assertNumber(readDelay, `${prefix}.maxTotalMs`, { max: READ_DELAY_ABSOLUTE_MAX_MS });
     }
-    if (readDelay.idleBoost !== undefined) {
-      if (!readDelay.idleBoost || typeof readDelay.idleBoost !== 'object'
-        || Array.isArray(readDelay.idleBoost)) {
-        throw invalid(`${prefix}.idleBoost`, 'idleBoost must be an object.');
+    if (readDelay.activityBoost !== undefined) {
+      const activity = readDelay.activityBoost;
+      if (!activity || typeof activity !== 'object' || Array.isArray(activity)) {
+        throw invalid(`${prefix}.activityBoost`, 'activityBoost must be an object.');
       }
-      if (readDelay.idleBoost.afterMs !== undefined) {
-        assertNumber(readDelay.idleBoost, `${prefix}.idleBoost.afterMs`, { max: IDLE_BOOST_AFTER_MS_MAX });
+      if (activity.enabled !== undefined && typeof activity.enabled !== 'boolean') {
+        throw invalid(`${prefix}.activityBoost.enabled`, 'enabled must be a boolean.');
       }
-      if (readDelay.idleBoost.multiplier !== undefined) {
-        assertNumber(readDelay.idleBoost, `${prefix}.idleBoost.multiplier`, {
-          min: IDLE_BOOST_MULTIPLIER_MIN,
-          max: IDLE_BOOST_MULTIPLIER_MAX,
-        });
+      if (activity.fastReplyMs !== undefined) {
+        assertNumber(activity, `${prefix}.activityBoost.fastReplyMs`, { max: ACTIVITY_FAST_REPLY_MS_MAX });
+      }
+      const windows = [
+        ['fastWindowMs', ACTIVITY_WINDOW_MS_MAX],
+        ['minWindowMs', ACTIVITY_WINDOW_MS_MAX],
+        ['fullWindowMs', ACTIVITY_WINDOW_MS_MAX],
+      ];
+      for (const [field, max] of windows) {
+        if (activity[field] !== undefined) {
+          assertNumber(activity, `${prefix}.activityBoost.${field}`, { max });
+        }
+      }
+      // Cross-field ordering applies only when every window is present
+      // (the global store merges partial updates).
+      if (activity.fastWindowMs !== undefined
+        && activity.minWindowMs !== undefined
+        && activity.fullWindowMs !== undefined
+        && (activity.fastWindowMs > activity.minWindowMs
+          || activity.minWindowMs > activity.fullWindowMs)) {
+        throw invalid(
+          `${prefix}.activityBoost.fastWindowMs`,
+          'activityBoost windows must satisfy fastWindowMs <= minWindowMs <= fullWindowMs.',
+        );
       }
     }
   }
@@ -284,20 +331,21 @@ function uniform(minMs, maxMs, random) {
 /**
  * Read delay for one turn.
  *
- * baseMs    = uniform(readDelay.minMs, maxMs)
+ * baseMs    = activityBoost base when an activity record exists and the
+ *             boost is enabled (see DEFAULT_ACTIVITY_BOOST for the curve;
+ *             never above readDelay.minMs), else uniform(minMs, maxMs)
  * readingMs = visibleLength(userText) / charsPerSecond * 1000 (0 when disabled)
- * idleMult  = idleBoost.multiplier when the conversation has been idle
- *             ≥ idleBoost.afterMs, else 1
- * result    = min((baseMs + readingMs) * idleMult, maxTotalMs, channelCapMs?)
+ * result    = min(baseMs + readingMs, maxTotalMs, channelCapMs?)
  *
- * `userTextLength` may be precomputed with visibleLength() by the caller
- * (bridges pass the raw inbound text through it when they have it).
+ * `idleMs == null` means "no completed turn on record" (e.g. the first
+ * message ever): no activity history, full uniform range. `userTextLength`
+ * may be precomputed with visibleLength() by the caller.
  */
 export function computeReadDelayMs({
   readDelay,
   userText = '',
   userTextLength,
-  idleMs = 0,
+  idleMs = null,
   channelCapMs,
   random = Math.random,
 } = {}) {
@@ -305,19 +353,41 @@ export function computeReadDelayMs({
   const length = typeof userTextLength === 'number' && Number.isFinite(userTextLength)
     ? userTextLength
     : visibleLength(userText);
-  const baseMs = uniform(cfg.minMs, cfg.maxMs, random);
+  const baseMs = boostedBaseMs(cfg.activityBoost, cfg.minMs, idleMs)
+    ?? uniform(cfg.minMs, cfg.maxMs, random);
   const readingMs = cfg.charsPerSecond > 0
     ? (length / cfg.charsPerSecond) * 1000
     : 0;
-  const idleMult = idleMs >= cfg.idleBoost.afterMs ? cfg.idleBoost.multiplier : 1;
-  const capped = Math.min(
-    (baseMs + readingMs) * idleMult,
-    cfg.maxTotalMs,
-  );
+  const capped = Math.min(baseMs + readingMs, cfg.maxTotalMs);
   if (typeof channelCapMs === 'number' && Number.isFinite(channelCapMs)) {
     return Math.min(capped, Math.max(0, channelCapMs));
   }
   return capped;
+}
+
+/**
+ * Activity-boosted base delay, or null when the full uniform range applies
+ * (boost disabled, idleMs unknown, or idle already past the full window).
+ * The boosted base never exceeds readDelay.minMs: a boost only shortens.
+ * Accepts raw or normalized configs (normalization is idempotent).
+ */
+export function activityBaseDelayMs(readDelay, idleMs) {
+  const cfg = normalizeSendDelayConfig({ readDelay }).readDelay;
+  return boostedBaseMs(cfg.activityBoost, cfg.minMs, idleMs);
+}
+
+/** Curve core on plain values (both inputs already normalized). */
+function boostedBaseMs(boost, minMs, idleMs) {
+  if (!boost.enabled || idleMs == null) return null;
+  const idle = Math.max(0, idleMs);
+  if (idle >= boost.fullWindowMs) return null;
+  // A fast reply slower than the configured floor is clamped to the floor.
+  const fastMs = Math.min(boost.fastReplyMs, minMs);
+  if (idle >= boost.minWindowMs) return minMs;
+  if (idle <= boost.fastWindowMs) return fastMs;
+  const span = Math.max(1, boost.minWindowMs - boost.fastWindowMs);
+  const progress = (idle - boost.fastWindowMs) / span;
+  return fastMs + (minMs - fastMs) * progress;
 }
 
 /**
@@ -377,7 +447,7 @@ export async function abortableSleep(ms, signal) {
 export async function applyReadDelay({
   settings,
   userText = '',
-  idleMs = 0,
+  idleMs = null,
   channelCapMs,
   signal,
   random = Math.random,
