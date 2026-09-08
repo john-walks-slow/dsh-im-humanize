@@ -5,7 +5,8 @@ import { createTextDeliveryBlock } from '../shared/semantic/delivery.mjs';
 import { t } from '../shared/i18n.mjs';
 import { captureContextEnhancement } from '../shared/context-enhancement.mjs';
 import { recoverAssistantTextByTimestamp } from '../shared/session-reply-recovery.mjs';
-import { COMMANDS_MENU_BUTTON, TelegramApi } from './telegram-api.mjs';
+import { SHARED_COMMAND_CATALOG, commandsForChannel } from '../shared/command-catalog.mjs';
+import { COMMANDS_MENU_BUTTON, TelegramApi, validateTelegramCommands } from './telegram-api.mjs';
 import { createTelegramHttpTransport } from './telegram-http.mjs';
 import { createTelegramBridgeStatus, TelegramHarnessBridge } from './telegram-bridge.mjs';
 import {
@@ -17,38 +18,29 @@ import {
   TELEGRAM_ACCESS_MODES,
 } from './config-store.mjs';
 
-export const TELEGRAM_COMMAND_MENU = Object.freeze([
-  { command: 'new', description: '开启一个全新会话' },
-  { command: 'compact', description: '压缩当前会话的较早上下文' },
-  { command: 'workspace', description: '切换工作区' },
-  { command: 'ws', description: '切换工作区' },
-  { command: 'workspacelist', description: '列出工作区绝对路径' },
-  { command: 'workspaces', description: '列出工作区绝对路径' },
-  { command: 'wsl', description: '列出工作区绝对路径' },
-  { command: 'sessionlist', description: '列出会话 ID 和标题' },
-  { command: 'sessions', description: '列出会话 ID 和标题' },
-  { command: 'session', description: '将当前聊天绑定到指定会话' },
-  { command: 'models', description: '按序号列出所有可用模型' },
-  { command: 'model', description: '查看或切换当前会话模型' },
-  { command: 'presetlist', description: '列出可用 Agent Preset' },
-  { command: 'presets', description: '列出可用 Agent Preset' },
-  { command: 'preset', description: '查看或设置新会话 Agent Preset' },
-  { command: 'stop', description: '停止当前任务' },
-  { command: 'steer', description: '纠偏当前任务' },
-  { command: 'batch', description: '开始批量输入（仅私聊）' },
-  { command: 'send', description: '提交当前批次' },
-  { command: 'cancel', description: '取消当前批次' },
-  { command: 'status', description: '检查连接状态' },
-  { command: 'version', description: '查看插件版本' },
-  { command: 'help', description: '显示帮助' },
-]);
-
-export function telegramCommandMenu() {
-  return TELEGRAM_COMMAND_MENU.map((item) => ({
-    ...item,
-    description: t(item.description),
-  }));
+function commandMenuEntries(catalog, translate) {
+  return commandsForChannel('telegram', catalog)
+    .filter((item) => item.menuVisible !== false)
+    .flatMap((item) => [item, ...(item.aliases ?? [])]
+      .filter((entry) => entry.menuVisible !== false && entry.enabled !== false
+        && (!entry.channels || entry.channels.includes('telegram')))
+      .map((entry) => ({
+        command: entry.name,
+        description: translate(entry.description ?? item.description),
+      })));
 }
+
+export function telegramCommandMenu(catalog = SHARED_COMMAND_CATALOG) {
+  const commands = commandMenuEntries(catalog, t);
+  validateTelegramCommands(commands, { allowEmpty: true });
+  return commands;
+}
+
+// Retain the source-language export for existing consumers, derived from the
+// catalog. Runtime synchronization always generates a fresh, localized list.
+export const TELEGRAM_COMMAND_MENU = Object.freeze(
+  commandMenuEntries(SHARED_COMMAND_CATALOG, (text) => text).map((item) => Object.freeze(item)),
+);
 
 function escaped(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -772,6 +764,7 @@ export class TelegramRuntime {
   #replyTimeoutMs;
   #createApi;
   #createHttpTransport;
+  #commandCatalog;
   #status = createTelegramRuntimeStatus();
   #httpTransport = null;
   #api = null;
@@ -791,6 +784,7 @@ export class TelegramRuntime {
     replyTimeoutMs = 600_000,
     createApi = (options) => new TelegramApi(options),
     createHttpTransport = createTelegramHttpTransport,
+    commandCatalog = SHARED_COMMAND_CATALOG,
   }) {
     if (!config || !token || !harness || !state) {
       throw new TypeError('TelegramRuntime requires config, token, Harness, and state');
@@ -805,6 +799,7 @@ export class TelegramRuntime {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#createApi = createApi;
     this.#createHttpTransport = createHttpTransport;
+    this.#commandCatalog = commandCatalog;
   }
 
   get status() {
@@ -883,7 +878,14 @@ export class TelegramRuntime {
         throw error;
       }
       try {
-        await api.setMyCommands({ commands: telegramCommandMenu(), signal: controller.signal });
+        const commands = telegramCommandMenu(this.#commandCatalog);
+        // Both operations use the existing default scope and language. Sending
+        // the full list replaces old entries; an empty catalog clears that list.
+        if (commands.length > 0) {
+          await api.setMyCommands({ commands, signal: controller.signal });
+        } else {
+          await api.deleteMyCommands({ signal: controller.signal });
+        }
         await api.setChatMenuButton({ menuButton: COMMANDS_MENU_BUTTON, signal: controller.signal });
       } catch (error) {
         this.#logger.warn?.(
