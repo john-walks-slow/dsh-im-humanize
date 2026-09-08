@@ -130,7 +130,7 @@ export function createImHostPlugin(internals = {}) {
     const logger = typeof ctx?.logger === 'function'
       ? ctx.logger(name)
       : (ctx?.logger ?? console);
-    if (ctx?.connection?.rpc) {
+    if (ctx?.connection?.fetch) {
       try {
         startUpdate(ctx);
       } catch (error) {

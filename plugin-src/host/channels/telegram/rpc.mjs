@@ -1,3 +1,4 @@
+import { registerManagementRpc } from '../../../management-rpc.mjs';
 import {
   TOKEN_BOT_ENDPOINTS,
   createTokenBotRpcHandler,
@@ -13,10 +14,7 @@ export function createTelegramRpcHandler(controller) {
 }
 
 export function installTelegramRpc(ctx, controller, authority) {
-  if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
-    throw new TypeError('DSH Host Connection RPC is required');
-  }
-  return ctx.connection.rpc.handle(
+  return registerManagementRpc(ctx,
     TELEGRAM_RPC_CHANNEL,
     createTelegramRpcHandler(controller),
     { authority: resolveRpcAuthority(authority) },

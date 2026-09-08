@@ -1,3 +1,4 @@
+import { managementFetch } from '../../fixtures/management-rpc.mjs';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -38,12 +39,10 @@ async function rpcFixture(controller) {
   let disposed = false;
   const ctx = {
     connection: {
-      rpc: {
-        handle(channel, handler, options) {
-          registration = { channel, handler, options };
-          return async () => { disposed = true; };
-        },
-      },
+      fetch: managementFetch((channel, handler, options) => {
+        registration = { channel, handler, options };
+        return async () => { disposed = true; };
+      }),
     },
   };
   const dispose = await apply(ctx, { controller });
@@ -54,7 +53,7 @@ async function rpcFixture(controller) {
   };
 }
 
-test('Host plugin registers the real rc.6 Connection RPC shape as loopback-only', async () => {
+test('Host plugin registers the public management Fetch route as loopback-only', async () => {
   const controller = {
     status: async () => status(),
     startRegistration: async () => status(),
@@ -64,7 +63,8 @@ test('Host plugin registers the real rc.6 Connection RPC shape as loopback-only'
   const fx = await rpcFixture(controller);
 
   assert.equal(fx.registration.channel, '/feishu');
-  assert.deepEqual(fx.registration.options, { authority: 'loopback' });
+  assert.equal(fx.registration.options.path, '/api/dsh-im/feishu');
+  await assert.rejects(fx.registration.handler(FEISHU_ENDPOINTS.status, {}, undefined, { host: 'remote.example' }), /HTTP 403/);
   const result = await fx.registration.handler(FEISHU_ENDPOINTS.status, {}, signal());
   assert.equal(result.ok, true);
   assert.equal(result.value.state, 'disconnected');

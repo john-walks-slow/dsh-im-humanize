@@ -1,3 +1,4 @@
+import { registerManagementRpc } from '../../../management-rpc.mjs';
 import QRCode from 'qrcode';
 import {
   connectionTestTargetUnavailable,
@@ -227,10 +228,7 @@ export function createQqRpcHandler(controller, { encodeQr = qrDataUrl } = {}) {
 }
 
 export function installQqRpc(ctx, controller, options, authority) {
-  if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
-    throw new TypeError('DSH Host Connection RPC is required');
-  }
-  return ctx.connection.rpc.handle(
+  return registerManagementRpc(ctx,
     QQ_RPC_CHANNEL,
     createQqRpcHandler(controller, options),
     { authority: resolveRpcAuthority(authority) },

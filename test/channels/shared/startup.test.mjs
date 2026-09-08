@@ -1,3 +1,4 @@
+import { managementFetch } from '../../fixtures/management-rpc.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -32,15 +33,15 @@ async function fixture(t) {
   const fibers = [];
   class Connection extends Service {
     constructor(context) { super(context, 'connection'); }
-    get rpc() {
+    get fetch() {
       const owner = this.ctx;
-      return { handle(channel, handler, options) {
+      return managementFetch((channel, handler, options) => {
         return owner.effect(() => {
           assert.equal(routes.has(channel), false, 'startup must not remount a route');
           routes.set(channel, { handler, options });
           return () => routes.delete(channel);
         }, 'test: management route');
-      } };
+      });
     }
   }
   new Connection(ctx);
@@ -89,7 +90,8 @@ for (const { id, apply, Store, api } of channels) {
     try {
       await loading.promise;
       const route = f.routes.get(`/${id}`);
-      assert.deepEqual(route.options, { authority: 'trusted-host' });
+      assert.deepEqual(route.options.methods, ['POST']);
+      assert.equal((await route.handler('connection.status', {}, undefined, { host: 'trusted.example' })).error.code, `${id}-initializing`);
       assert.equal((await f.call(id)).error.code, `${id}-initializing`);
       assert.equal((await f.call(id, 'bot.delete', { confirm: true })).error.code, `${id}-initializing`);
       gate.resolve();
@@ -99,6 +101,11 @@ for (const { id, apply, Store, api } of channels) {
       // The original handler still validates payloads; do not coerce null to {}.
       assert.equal((await f.call(id, 'connection.status', null)).error.code, 'bad-request');
       await fiber.dispose();
+      assert.equal(f.routes.size, 0);
+      const reloaded = f.start(apply, f.config(id));
+      await reloaded.await();
+      assert.equal((await f.call(id)).ok, true);
+      await reloaded.dispose();
       assert.equal(f.routes.size, 0);
     } finally {
       gate.resolve();
@@ -131,7 +138,7 @@ for (const { id, apply, Store, api } of channels) {
         else assert.match(message, /workspaces\.json/);
         return true;
       });
-      assert.deepEqual(f.routes.get(`/${id}`).options, { authority: 'loopback' });
+      await assert.rejects(f.routes.get(`/${id}`).handler('connection.status', {}, undefined, { host: 'remote.example' }), /HTTP 403/);
       assert.equal((await f.call(id, 'bot.bind-credentials', { token: 'must-not-be-saved' })).error.code, result.error.code);
       assert.equal((await f.call(id, 'connection.status', {}, AbortSignal.abort())).error.code, 'cancelled');
       await fiber.dispose();

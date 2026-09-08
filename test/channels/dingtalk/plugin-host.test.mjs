@@ -1,3 +1,4 @@
+import { managementFetch } from '../../fixtures/management-rpc.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -30,16 +31,16 @@ test('Host installs loopback RPC for an injected controller', async () => {
   const dispose = () => {};
   const ctx = {
     connection: {
-      rpc: {
-        handle: (...args) => {
-          calls.push(args);
-          return dispose;
-        },
-      },
+      fetch: managementFetch((...args) => {
+        calls.push(args);
+        return dispose;
+      }),
     },
   };
 
   assert.equal(await apply(ctx, { controller: controller() }), dispose);
   assert.equal(calls[0][0], '/dingtalk');
-  assert.deepEqual(calls[0][2], { authority: 'loopback' });
+  assert.equal(calls[0][2].path, '/api/dsh-im/dingtalk');
+  assert.equal((await calls[0][1]('connection.status', {})).ok, true);
+  await assert.rejects(calls[0][1]('connection.status', {}, undefined, { host: 'remote.example' }), /HTTP 403/);
 });

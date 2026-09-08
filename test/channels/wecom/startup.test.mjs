@@ -1,3 +1,4 @@
+import { managementFetch } from '../../fixtures/management-rpc.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -18,15 +19,15 @@ async function fixture(t, config = {}) {
   const routes = new Map();
   class Connection extends Service {
     constructor(context) { super(context, 'connection'); }
-    get rpc() {
+    get fetch() {
       const owner = this.ctx;
-      return { handle(channel, handler, options) {
+      return managementFetch((channel, handler, options) => {
         return owner.effect(() => {
           assert.equal(routes.has(channel), false, 'one route remains installed across startup');
           routes.set(channel, { handler, options });
           return () => routes.delete(channel);
         }, 'test: channel route');
-      } };
+      });
     }
   }
   new Connection(ctx);
@@ -64,7 +65,8 @@ test('WeCom exposes startup status before loading configuration, then serves the
   t.after(() => gate.resolve());
   await new Promise(setImmediate);
   const route = f.routes.get('/wecom');
-  assert.deepEqual(route.options, { authority: 'trusted-host' });
+  assert.deepEqual(route.options.methods, ['POST']);
+  assert.equal((await route.handler('connection.status', {}, undefined, { host: 'trusted.example' })).error.code, `wecom-initializing`);
   assert.equal((await f.call()).error.code, 'wecom-initializing');
   assert.equal((await f.call('bot.delete', { botId: 'test', confirm: true })).error.code, 'wecom-initializing');
   gate.resolve();

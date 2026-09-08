@@ -232,6 +232,8 @@ Logo 由 dsh-im 的浏览器适配显示，无需修改 DSH。适配保留原始
 
 ## 本地开发
 
+Web profile 已验证兼容原版 DSH `0.1.2-alpha.4`、`0.1.2-alpha.5`、`0.1.2-rc.1`、`0.1.3-alpha.1` 和 `0.1.5-alpha.1`。这些版本共用 dsh-im 的管理 RPC 适配，通过 Connection 的公开 `/api` Fetch 注册接口工作，无需修改或重新编译 DSH。升级插件后重启 Host 并刷新设置页，使 Host 和客户端使用同一版插件。
+
 ```sh
 npm install
 npm run check
@@ -248,7 +250,7 @@ IM 管理 RPC 默认仅接受回环浏览器。如果 Web profile 在受信任�
     rpcAuthority: trusted-host
 ```
 
-`trusted-host` 只复用 Harness 的 Host／Origin 防护，不是用户认证。启用后，能访问该局域网地址的人也能查看机器人状态、扫码或提交应用凭据、重连和删除机器人；只应在可信网络中使用。
+`trusted-host` 允许已通过 Harness 浏览器认证和 Host／Origin 检查的受信任地址访问 IM 管理接口。默认 `loopback` 还要求回环 Host 和 Origin；更新与入站 TTL 管理始终仅允许回环访问。
 
 ### 聊天消息语言
 

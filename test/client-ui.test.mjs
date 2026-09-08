@@ -1234,8 +1234,8 @@ test('client registers one top-level bilingual IM settings section with a direct
     await injected.updateRpcCall('update.status', {}, signal);
     await injected.globalSettingsRpcCall('settings.inbound-ttl.get', {}, signal);
     assert.deepEqual(rpcCalls, [
-      ['/dsh-im', 'update.status', {}, signal],
-      [GLOBAL_SETTINGS_RPC_CHANNEL, 'settings.inbound-ttl.get', {}, signal],
+      ['/api', 'dsh-im/dsh-im', { method: 'update.status', payload: {} }, signal],
+      ['/api', `dsh-im${GLOBAL_SETTINGS_RPC_CHANNEL}`, { method: 'settings.inbound-ttl.get', payload: {} }, signal],
     ]);
     assert.deepEqual(
       await injected.workspaceDirectoryPicker.listDirectory('/workspace/current', signal),

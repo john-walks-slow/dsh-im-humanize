@@ -1,3 +1,4 @@
+import { registerManagementRpc } from '../../../management-rpc.mjs';
 import QRCode from 'qrcode';
 import {
   normalizeAgentPresetCatalog,
@@ -795,10 +796,7 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
 
 /** Register the `/feishu` logical channel with its configured browser authority. */
 export function installFeishuRpc(ctx, controller, options, authority) {
-  if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
-    throw new TypeError('DSH Host Connection RPC is required');
-  }
-  return ctx.connection.rpc.handle(
+  return registerManagementRpc(ctx,
     FEISHU_RPC_CHANNEL,
     createFeishuRpcHandler(controller, options),
     { authority: resolveRpcAuthority(authority) },

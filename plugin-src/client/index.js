@@ -1,3 +1,4 @@
+import { callManagementRpc } from '../management-rpc.mjs';
 import * as React from 'react';
 import manifest from '../../package.json' with { type: 'json' };
 
@@ -403,33 +404,33 @@ export function apply(ctx) {
   }, 'im-settings: install combined channel styles');
 
   const feishuRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(FEISHU_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, FEISHU_RPC_CHANNEL, endpoint, payload, signal);
   const weixinRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(WEIXIN_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, WEIXIN_RPC_CHANNEL, endpoint, payload, signal);
   const dingtalkRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(DINGTALK_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, DINGTALK_RPC_CHANNEL, endpoint, payload, signal);
   const qqRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(QQ_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, QQ_RPC_CHANNEL, endpoint, payload, signal);
   const wecomRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(WECOM_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, WECOM_RPC_CHANNEL, endpoint, payload, signal);
   const wecomAppRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(WECOM_APP_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, WECOM_APP_RPC_CHANNEL, endpoint, payload, signal);
   const telegramRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(TELEGRAM_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, TELEGRAM_RPC_CHANNEL, endpoint, payload, signal);
   const discordRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(DISCORD_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, DISCORD_RPC_CHANNEL, endpoint, payload, signal);
   const whatsappRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(WHATSAPP_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, WHATSAPP_RPC_CHANNEL, endpoint, payload, signal);
   const slackRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(SLACK_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, SLACK_RPC_CHANNEL, endpoint, payload, signal);
   const officeRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(OFFICE_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, OFFICE_RPC_CHANNEL, endpoint, payload, signal);
   const updateRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(UPDATE_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, UPDATE_RPC_CHANNEL, endpoint, payload, signal);
   const deliveryRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(DELIVERY_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, DELIVERY_RPC_CHANNEL, endpoint, payload, signal);
   const globalSettingsRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(GLOBAL_SETTINGS_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, GLOBAL_SETTINGS_RPC_CHANNEL, endpoint, payload, signal);
   const workspaceDirectoryPicker = Object.freeze({
     listDirectory: (path, signal) =>
       callWorkspaceDirectoryApi(ctx, 'listDirectory', path, signal),

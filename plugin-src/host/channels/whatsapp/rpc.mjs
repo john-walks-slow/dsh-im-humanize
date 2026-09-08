@@ -1,3 +1,4 @@
+import { registerManagementRpc } from '../../../management-rpc.mjs';
 import QRCode from 'qrcode';
 
 import { publicConnectionTestResult } from '../../../../src/channels/shared/connection-test.mjs';
@@ -218,10 +219,7 @@ export function createWhatsappRpcHandler(controller, { encodeQr = qrDataUrl } = 
 }
 
 export function installWhatsappRpc(ctx, controller, options, authority) {
-  if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
-    throw new TypeError('DSH Host Connection RPC is required');
-  }
-  return ctx.connection.rpc.handle(
+  return registerManagementRpc(ctx,
     WHATSAPP_RPC_CHANNEL,
     createWhatsappRpcHandler(controller, options),
     { authority: resolveRpcAuthority(authority) },

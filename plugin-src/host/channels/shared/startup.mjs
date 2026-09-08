@@ -1,3 +1,4 @@
+import { registerManagementRpc } from '../../../management-rpc.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicChannelInitializing, publicChannelStartupError } from './startup-error.mjs';
 
@@ -5,12 +6,9 @@ import { publicChannelInitializing, publicChannelStartupError } from './startup-
 export async function installProductionChannel(ctx, config, {
   channel, rpcChannel, createProduction, createHandler,
 }) {
-  if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
-    throw new TypeError('DSH Host Connection RPC is required');
-  }
   let startupError = publicChannelInitializing(channel);
   let handler = async () => ({ ok: false, error: startupError });
-  const disposeRpc = ctx.connection.rpc.handle(rpcChannel, (endpoint, payload, signal) => {
+  const disposeRpc = registerManagementRpc(ctx, rpcChannel, (endpoint, payload, signal) => {
     if (signal?.aborted) {
       return { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.', details: {} } };
     }

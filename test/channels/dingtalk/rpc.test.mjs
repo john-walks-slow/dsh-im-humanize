@@ -1,3 +1,4 @@
+import { managementFetch } from '../../fixtures/management-rpc.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -119,23 +120,22 @@ test('RPC returns only the safe connection diagnostic projection', async () => {
   assert.doesNotMatch(JSON.stringify(result), /must-not-leak|clientSecret|cause/);
 });
 
-test('RPC is registered for loopback clients only', () => {
+test('RPC is registered for loopback clients only', async () => {
   const registrations = [];
   const dispose = () => {};
   const ctx = {
     connection: {
-      rpc: {
-        handle: (...args) => {
-          registrations.push(args);
-          return dispose;
-        },
-      },
+      fetch: managementFetch((...args) => {
+        registrations.push(args);
+        return dispose;
+      }),
     },
   };
 
   assert.equal(installDingtalkRpc(ctx, controller()), dispose);
   assert.equal(registrations[0][0], '/dingtalk');
-  assert.deepEqual(registrations[0][2], { authority: 'loopback' });
+  assert.equal(registrations[0][2].path, '/api/dsh-im/dingtalk');
+  await assert.rejects(registrations[0][1]('connection.status', {}, undefined, { host: 'remote.example' }), /HTTP 403/);
 });
 
 test('reconnect sends a DingTalk test message only for a connected bot and isolates send failures', async () => {

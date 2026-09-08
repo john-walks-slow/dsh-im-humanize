@@ -226,6 +226,8 @@ DingTalk menus use a shared template built into the plugin; no template setup is
 
 ## Local development
 
+The Web profile is verified with unmodified DSH `0.1.2-alpha.4`, `0.1.2-alpha.5`, `0.1.2-rc.1`, `0.1.3-alpha.1`, and `0.1.5-alpha.1`. All use the same dsh-im management RPC adapter through the public Connection `/api` Fetch registry; no DSH patch or rebuild is required. After upgrading the plugin, restart the Host and refresh the settings page so both sides use the same plugin build.
+
 ```sh
 npm install
 npm run check
@@ -242,7 +244,7 @@ IM management RPCs accept loopback browsers by default. When a Web profile is de
     rpcAuthority: trusted-host
 ```
 
-`trusted-host` reuses Harness's Host/Origin fence; it is not user authentication. Anyone who can reach that LAN authority can inspect bot status, scan or submit application credentials, reconnect bots, and remove bots. Enable it only on a trusted network.
+`trusted-host` allows trusted authorities to reach IM management after Harness browser authentication and Host/Origin checks. The default `loopback` policy additionally requires loopback Host and Origin values; update and inbound TTL management always remain loopback-only.
 
 ### Bot chat message language
 

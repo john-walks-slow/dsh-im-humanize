@@ -84,7 +84,7 @@ test('Host provides #65 and installs #84 with the same delivery service', async 
     installDeliveryHttp: (...args) => http.push(args),
   });
   const ctx = {
-    connection: { rpc: {} },
+    connection: { fetch: {} },
     webServer: { register() {} },
     effect() {},
     provide: (...args) => provided.push(args),
@@ -107,8 +107,8 @@ test('#65 activates a real Cordis consumer without crossing the Connection RPC',
   const ctx = new Context();
   const rpcCalls = [];
   ctx.provide('connection', {
+    fetch: { register: () => async () => {} },
     rpc: {
-      handle: () => async () => {},
       call: (...args) => rpcCalls.push(args),
     },
   });
@@ -188,7 +188,7 @@ test('Host waits for apiProxy on legacy Harness and Controllers on modern Harnes
 
 test('Host installs channel prefixes through the real Cordis sessions dependency', async (t) => {
   const ctx = new Context();
-  ctx.provide('connection', { rpc: { handle: () => () => {} } });
+  ctx.provide('connection', { fetch: { register: () => () => {} } });
   ctx.provide('credentials', {});
   ctx.provide('typertGateway', { stream() {} });
   ctx.provide('sessionController', {});
