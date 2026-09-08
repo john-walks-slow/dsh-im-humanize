@@ -3845,6 +3845,13 @@ export class FeishuHarnessBridge {
         cardIds: [],
         answerStart: null,
         answerEnd: null,
+        // Answer-integrity tracking: the version bumps every time the draft
+        // is rewritten in memory; `renderedAnswerVersion` records the version
+        // covered by the last SUCCESSFUL render. The seal may only skip the
+        // post fallback when both match (the final answer is provably
+        // visible on a delivered card).
+        answerVersion: 0,
+        renderedAnswerVersion: 0,
       };
       this.#stepCards.set(key, card);
     }
@@ -3917,6 +3924,9 @@ export class FeishuHarnessBridge {
     }
     card.answerStart = card.blocks.length - blocks.length;
     card.answerEnd = card.blocks.length - 1;
+    // The in-memory draft changed; nothing rendered so far can prove the new
+    // answer is visible. The next successful render re-aligns the versions.
+    card.answerVersion = (card.answerVersion ?? 0) + 1;
   }
 
   /** Convert the live answer draft into a folded thinking note in place. */
@@ -3968,13 +3978,24 @@ export class FeishuHarnessBridge {
     const live = chunks[chunks.length - 1] ?? [];
     try {
       if (card.messageId === null) {
-        card.messageId = await this.#sendCard(
-          chatId,
-          stepStreamCard(live, { status: 'running' }),
-          { replyTo: card.replyToMessageId },
-        );
-        card.cardIds.push(card.messageId);
+        // First render: deliver every chunk. When the turn opens with a long
+        // answer already in memory, chunks.length can exceed one — sending
+        // only the live chunk here would silently drop its prefix, and the
+        // chunkCount bookkeeping below would then rewrite the delivered
+        // message with chunk 0 on the next render.
+        for (let index = 0; index < chunks.length; index += 1) {
+          const isLive = index === chunks.length - 1;
+          const id = await this.#sendCard(
+            chatId,
+            stepStreamCard(chunks[index], { status: isLive ? 'running' : 'sealed' }),
+            { replyTo: card.replyToMessageId },
+          );
+          card.cardIds.push(id);
+          if (isLive) card.messageId = id;
+        }
+        card.chunkCount = chunks.length;
         card.lastRenderAt = this.#stepPushClock.now();
+        card.renderedAnswerVersion = card.answerVersion ?? 0;
         return;
       }
       // Overflow: the accumulated blocks outgrew one card. Seal the current
@@ -4000,6 +4021,7 @@ export class FeishuHarnessBridge {
         await this.#patchStepCard(card.messageId, stepStreamCard(live, { status: 'running' }));
       }
       card.lastRenderAt = this.#stepPushClock.now();
+      card.renderedAnswerVersion = card.answerVersion ?? 0;
     } catch (error) {
       card.broken = true;
       this.#logger.warn?.(
@@ -4052,14 +4074,39 @@ export class FeishuHarnessBridge {
         }
         return { ok: true, cardIds: card.cardIds };
       }
+      // The live message only ever shows the last chunk; spill every chunk
+      // that has not been delivered yet as sealed cards before patching the
+      // live one, otherwise a long answer finishing on an existing card
+      // would silently drop its prefix.
+      if (chunks.length > card.chunkCount) {
+        await this.#patchStepCard(
+          card.messageId,
+          stepStreamCard(chunks[card.chunkCount - 1], { status: 'sealed' }),
+        );
+        for (let index = card.chunkCount; index < chunks.length - 1; index += 1) {
+          const id = await this.#sendCard(
+            card.chatId,
+            stepStreamCard(chunks[index], { status: 'sealed' }),
+            { replyTo: card.replyToMessageId },
+          );
+          card.cardIds.push(id);
+        }
+        card.chunkCount = chunks.length;
+      }
       await this.#patchStepCard(card.messageId, stepStreamCard(live, { status }));
+      card.renderedAnswerVersion = card.answerVersion ?? 0;
       return { ok: true, cardIds: card.cardIds };
     } catch (error) {
-      // A streamed draft already carried the answer in the last successful
-      // render; without a draft the answer never reached the card.
-      if (card.messageId !== null && streamedDraft && body.trim()) {
+      // Only trust the streamed draft when the LAST SUCCESSFUL render actually
+      // covered the current answer version. A draft sitting in memory while
+      // its render failed (or never ran) does not prove the answer is visible.
+      const answerVisible = card.messageId !== null
+        && body.trim()
+        && (card.renderedAnswerVersion ?? 0) === (card.answerVersion ?? 0)
+        && streamedDraft;
+      if (answerVisible) {
         this.#logger.warn?.(
-          '[dsh-feishu] step streaming card seal failed; the streamed answer stays visible:',
+          '[dsh-feishu] step streaming card seal failed; the delivered answer stays visible:',
           error?.message ?? String(error),
         );
         return { ok: true, cardIds: card.cardIds };
