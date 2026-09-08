@@ -333,48 +333,99 @@ class TelegramDeliveryStream {
   #providerMessageIds;
   #closed = false;
   #lastUpdate = null;
+  #lastBlock = null;
+  #keepalive = false;
+  #chain = Promise.resolve();
 
-  constructor({ update, finish, fail, providerMessageIds = [], presentation, logger }) {
+  constructor({
+    update,
+    finish,
+    fail,
+    providerMessageIds = [],
+    presentation,
+    logger,
+    keepalive = false,
+  }) {
     this.#update = update;
     this.#finish = finish;
     this.#fail = fail;
     this.#providerMessageIds = providerMessageIds;
     this.presentation = presentation;
     this.#logger = logger;
+    // Only short-lived carriers (e.g. the private-chat Rich Draft) need a
+    // keepalive refresh; editing a real placeholder message with identical
+    // content would be rejected by the platform.
+    this.#keepalive = keepalive === true;
   }
 
   get providerMessageIds() {
     return [...this.#providerMessageIds];
   }
 
-  async update(value) {
-    if (this.#closed) return undefined;
-    const block = createTextDeliveryBlock(value);
-    const key = `${block.format}:${block.text}`;
-    if (key === this.#lastUpdate) return undefined;
-    this.#lastUpdate = key;
-    try {
-      return await this.#update(block);
-    } catch (error) {
-      this.#logger.warn?.('[dsh-im:telegram] rich stream update failed:', error);
-      return undefined;
-    }
+  /** Whether this carrier is short-lived and wants a keepalive heartbeat. */
+  get keepalive() {
+    return this.#keepalive;
   }
 
-  async finish(value) {
-    if (this.#closed) throw new Error('Message stream is already closed');
-    this.#closed = true;
-    const result = await this.#finish(createTextDeliveryBlock(value));
-    this.#providerMessageIds.push(...(result?.providerMessageIds ?? []));
-    return result;
+  /** Serialize every write so an in-flight keepalive refresh can never land
+   *  after the final frame: finish()/fail() queue behind refresh()/update(). */
+  #enqueue(task) {
+    const run = this.#chain.then(task);
+    this.#chain = run.catch(() => undefined);
+    return run;
   }
 
-  async fail(text) {
-    if (this.#closed) return undefined;
-    this.#closed = true;
-    const result = await this.#fail(createTextDeliveryBlock(text, 'plain'));
-    this.#providerMessageIds.push(...(result?.providerMessageIds ?? []));
-    return result;
+  update(value) {
+    return this.#enqueue(async () => {
+      if (this.#closed) return undefined;
+      const block = createTextDeliveryBlock(value);
+      this.#lastBlock = block;
+      const key = `${block.format}:${block.text}`;
+      if (key === this.#lastUpdate) return undefined;
+      this.#lastUpdate = key;
+      try {
+        return await this.#update(block);
+      } catch (error) {
+        this.#logger.warn?.('[dsh-im:telegram] rich stream update failed:', error);
+        return undefined;
+      }
+    });
+  }
+
+  /** Re-send the most recent frame even when unchanged, to keep a short-lived
+   *  carrier (the private-chat Rich Draft) visible during long silent
+   *  stretches such as a running tool call. Serialized like update() so it
+   *  never overtakes a later finish(). No-op for carriers without keepalive. */
+  refresh() {
+    return this.#enqueue(async () => {
+      if (this.#closed || !this.#keepalive || !this.#lastBlock) return undefined;
+      try {
+        return await this.#update(this.#lastBlock);
+      } catch (error) {
+        this.#logger.warn?.('[dsh-im:telegram] rich stream refresh failed:', error);
+        return undefined;
+      }
+    });
+  }
+
+  finish(value) {
+    return this.#enqueue(async () => {
+      if (this.#closed) throw new Error('Message stream is already closed');
+      this.#closed = true;
+      const result = await this.#finish(createTextDeliveryBlock(value));
+      this.#providerMessageIds.push(...(result?.providerMessageIds ?? []));
+      return result;
+    });
+  }
+
+  fail(text) {
+    return this.#enqueue(async () => {
+      if (this.#closed) return undefined;
+      this.#closed = true;
+      const result = await this.#fail(createTextDeliveryBlock(text, 'plain'));
+      this.#providerMessageIds.push(...(result?.providerMessageIds ?? []));
+      return result;
+    });
   }
 
   cancel() {
@@ -671,6 +722,7 @@ export class TelegramBotClient {
         finish: (block) => this.#sendRich(target, block),
         fail: (block) => this.#sendPlain(target, block.text),
         presentation: 'telegram-rich-draft',
+        keepalive: true,
         logger: this.#logger,
       });
       await stream.update(createTextDeliveryBlock('正在处理…', 'plain'));
