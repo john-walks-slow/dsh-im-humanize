@@ -337,12 +337,22 @@ function cardMarkdown(text, target) {
 }
 
 function cardData(text, flowStatus, target) {
+  const markdown = cardMarkdown(text, target);
+  // The public AI Card template renders msgContent while streaming and
+  // switches to staticMsgContent once the streaming widget is torn down
+  // (flowStatus !== '2'). Leaving staticMsgContent empty, or leaving
+  // sys_full_json_obj.order pinned to msgContent after finalize, makes the
+  // finished/failed card render as a blank bubble even though the answer
+  // was streamed correctly moments earlier.
+  const streaming = flowStatus === '2';
   return {
     cardParamMap: {
       flowStatus,
-      msgContent: cardMarkdown(text, target),
-      staticMsgContent: '',
-      sys_full_json_obj: JSON.stringify({ order: ['msgContent'] }),
+      msgContent: markdown,
+      staticMsgContent: markdown,
+      sys_full_json_obj: JSON.stringify({
+        order: [streaming ? 'msgContent' : 'staticMsgContent'],
+      }),
       config: JSON.stringify({ autoLayout: true }),
     },
   };
@@ -922,13 +932,17 @@ export function createDingtalkApi({
 
       let delivered = false;
       try {
-        await cardRequest('v1.0/card/instances', {
+        // Deliver the thinking copy in the same request that first shows the
+        // card. Creating an empty instance and filling it after deliver (the
+        // previous three-request sequence) leaves a blank bubble visible in
+        // DingTalk for the time between deliver and the follow-up PUT, and
+        // leaves a permanently blank card if that PUT ever fails.
+        await cardRequest('v1.0/card/instances/createAndDeliver', {
           body: {
+            ...cardDeliverBody(cardInstanceId, normalizedTarget, appKey),
             cardTemplateId: DINGTALK_AI_CARD_TEMPLATE_ID,
             outTrackId: cardInstanceId,
-            cardData: {
-              cardParamMap: { config: JSON.stringify({ autoLayout: true }) },
-            },
+            cardData: cardData(content, '2', normalizedTarget),
             callbackType: 'STREAM',
             cardAtUserIds: normalizedTarget.atUserIds
               ? Object.keys(normalizedTarget.atUserIds)
@@ -938,37 +952,31 @@ export function createDingtalkApi({
           },
           headers,
           signal,
-          action: 'AI Card 创建',
-        });
-        await cardRequest('v1.0/card/instances/deliver', {
-          body: cardDeliverBody(cardInstanceId, normalizedTarget, appKey),
-          headers,
-          signal,
-          action: 'AI Card 投放',
+          action: 'AI Card 创建并投放',
         });
         delivered = true;
-        await cardRequest('v1.0/card/instances', {
-          method: 'PUT',
-          body: { outTrackId: cardInstanceId, cardData: cardData(content, '2', normalizedTarget) },
-          headers,
-          signal,
-          action: 'AI Card 启动',
-        });
-        await cardRequest('v1.0/card/streaming', {
-          method: 'PUT',
-          body: {
-            outTrackId: cardInstanceId,
-            guid: randomUUID(),
-            key: 'msgContent',
-            content: cardMarkdown(content, normalizedTarget).replace(/\n+$/, ''),
-            isFull: true,
-            isFinalize: false,
-            isError: false,
-          },
-          headers,
-          signal,
-          action: 'AI Card 启动',
-        });
+        try {
+          await cardRequest('v1.0/card/streaming', {
+            method: 'PUT',
+            body: {
+              outTrackId: cardInstanceId,
+              guid: randomUUID(),
+              key: 'msgContent',
+              content: cardMarkdown(content, normalizedTarget).replace(/\n+$/, ''),
+              isFull: true,
+              isFinalize: false,
+              isError: false,
+            },
+            headers,
+            signal,
+            action: 'AI Card 启动',
+          });
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          // The card is already visible with the thinking copy from
+          // createAndDeliver above. Keep the instance so finishAiCard can
+          // still replace it in place instead of sending a second message.
+        }
       } catch (error) {
         if (delivered) {
           const cleanupSignal = AbortSignal.timeout(5_000);
@@ -1018,6 +1026,11 @@ export function createDingtalkApi({
       const token = await accessToken({ clientId, clientSecret, signal });
       const headers = { 'x-acs-dingtalk-access-token': token };
       const normalizedContent = cardMarkdown(content, target);
+      // Official close: overwrite msgContent with the full answer and set
+      // isFinalize=true in the same streaming request (DingTalk's "last
+      // frame"). A follow-up PUT /v1.0/card/instances after this — even one
+      // meant to set staticMsgContent — can blank the card once the
+      // streaming widget is torn down, so this must be the only request.
       await cardRequest('v1.0/card/streaming', {
         method: 'PUT',
         body: {
@@ -1033,28 +1046,7 @@ export function createDingtalkApi({
         signal,
         action: 'AI Card 完成',
       });
-      let completed = true;
-      const completionRequest = {
-        method: 'PUT',
-        body: {
-          outTrackId: instanceId,
-          cardData: cardData(content, '3', target),
-          cardUpdateOptions: { updateCardDataByKey: true },
-        },
-        headers,
-        signal,
-        action: 'AI Card 收口',
-      };
-      try {
-        await cardRequest('v1.0/card/instances', completionRequest);
-      } catch {
-        try {
-          await cardRequest('v1.0/card/instances', completionRequest);
-        } catch {
-          completed = false;
-        }
-      }
-      return { delivered: true, completed };
+      return { delivered: true, completed: true };
     },
 
     failAiCard: failCard,
