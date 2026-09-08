@@ -3,15 +3,14 @@ export const FEISHU_STEP_PUSH_MODES = Object.freeze({
   STREAMING_CARD: 'streaming_card',
 });
 
-/** The presentation a newly connected bot starts with, and the fallback for
- *  unknown or missing stored values. The process card keeps the chat clean
- *  while still surfacing the execution, so it is the default presentation. */
+/** New connections explicitly opt into the process-card presentation. */
 export const DEFAULT_FEISHU_STEP_PUSH_MODE = FEISHU_STEP_PUSH_MODES.STREAMING_CARD;
 
 export function normalizeFeishuStepPushMode(value) {
-  return value === FEISHU_STEP_PUSH_MODES.POST
-    ? FEISHU_STEP_PUSH_MODES.POST
-    : DEFAULT_FEISHU_STEP_PUSH_MODE;
+  // Bots created before modes existed used posts when step push was enabled.
+  return value === FEISHU_STEP_PUSH_MODES.STREAMING_CARD
+    ? FEISHU_STEP_PUSH_MODES.STREAMING_CARD
+    : FEISHU_STEP_PUSH_MODES.POST;
 }
 
 export function isFeishuStepPushMode(value) {

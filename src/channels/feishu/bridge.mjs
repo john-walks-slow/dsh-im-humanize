@@ -4156,17 +4156,20 @@ export class FeishuHarnessBridge {
           card.messageId,
           stepStreamCard(chunks[card.chunkCount - 1], { status: 'sealed' }),
         );
-        for (let index = card.chunkCount; index < chunks.length - 1; index += 1) {
+        for (let index = card.chunkCount; index < chunks.length; index += 1) {
+          const isLast = index === chunks.length - 1;
           const id = await this.#sendCard(
             card.chatId,
-            stepStreamCard(chunks[index], { status: 'sealed' }),
+            stepStreamCard(chunks[index], { status: isLast ? status : 'sealed' }),
             { replyTo: card.replyToMessageId },
           );
           card.cardIds.push(id);
+          if (isLast) card.messageId = id;
         }
         card.chunkCount = chunks.length;
+      } else {
+        await this.#patchStepCard(card.messageId, stepStreamCard(live, { status }));
       }
-      await this.#patchStepCard(card.messageId, stepStreamCard(live, { status }));
       card.renderedAnswerVersion = card.answerVersion ?? 0;
       return { ok: true, cardIds: card.cardIds };
     } catch (error) {

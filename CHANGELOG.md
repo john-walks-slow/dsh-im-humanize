@@ -8,8 +8,16 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ### Added / 新增
 
-- 飞书分步直推新增「zcode过程卡模式」呈现方式（设置页在开启分步直推后可选）：最终答案与任务过程汇总到一张蓝色过程卡中原地刷新（PATCH）——助手步骤实时流入卡片成为答案草稿，被后续工具证实为思考时自动收进「💭 思考过程」折叠面板（始终收起），工具调用以「🛠️ 工具摘要」折叠面板展示（运行中展开、结束折叠），结束时草稿替换为最终答案并标记已完成/已停止；纯问答回合同样只开一张卡。超长答案按段落预分块、工具与思考面板超出字节预算时滚动淘汰最旧行，单张卡片始终低于飞书尺寸上限，超出部分自动封存旧卡并续接新卡；提问或审批卡片弹出前会先定格当前过程卡，后续过程与答案流到交互消息之后的新卡上；回合内收到 `/stop` 时封存为「已停止」；卡片创建或封存失败时本轮自动降级回原有 post 答案阶梯，绝不丢答案。默认「逐条消息」方式保持不变，历史行为零变化。
-  Feishu step push gains "ZCode process-card mode" (selectable in the settings page once step push is enabled): the final answer and the task process live in one blue card that refreshes in place via PATCH — assistant steps stream into the card as the live answer draft, morph into a "💭 Thinking" collapsible panel (always folded) once a later tool call proves them interim, tool calls accumulate in a "🛠️ Tool summary" panel (expanded while running, folded at the end), and the draft is rewritten with the final answer and sealed Completed/Stopped; plain Q&A turns open exactly one card too. Long answers are pre-chunked at paragraph bounds and panels shed their oldest lines past a byte budget, so every card stays under the Feishu size cap, spilling into sealed continuation cards as needed. Before a question or approval card renders, the live process card is frozen and the stream continues on a fresh card below the interaction; a `/stop` received mid-turn seals the card as Stopped. Card create/seal failures downgrade the turn back to the existing post answer ladder, so the answer is never lost. The default "discrete messages" presentation is unchanged.
+- 飞书新增实时过程卡，将任务步骤和最终答案在卡片内更新，工具摘要与过程说明可折叠；支持长答案续卡、交互前换卡和停止状态。任务过程展示可选不显示过程、实时过程卡或逐步直播；新接入机器人默认实时过程卡。
+  Feishu gains process cards with in-place progress and answers, collapsible tool summaries and notes, long-answer continuation cards, interaction rotation, and stopped status. Users can choose no process, a live process card, or per-step messages; new bots default to the process card.
+
+### Fixed / 修复
+
+- 修复已有过程卡收尾时末块覆盖首块，长答案按顺序完整投递；卡片封存或续卡发送失败时沿用完整 post 答案兜底。
+  Preserve every answer chunk in order when completing an existing process card. Failed sealing or continuation creation falls back to the complete post answer.
+
+- 旧机器人缺少呈现模式时保留逐条消息行为，明确保存的模式及关闭状态不变；扫码和手动凭据新接入采用一致默认值。
+  Existing bots without a stored mode retain per-step posts, preserving explicit modes and disabled settings. QR and manual-credential onboarding use the same new-bot defaults.
 
 ## [4.16.1] - 2026-09-09
 

@@ -282,9 +282,8 @@ test('stepPushMode persists, normalizes, and reaches the live runtime without re
   });
   await fx.controller.initialize();
 
-  // Missing stored values normalize to the default presentation
-  // (the process card), not the legacy post stream.
-  assert.equal(fx.controller.status().bots[0].stepPushMode, 'streaming_card');
+  // Missing stored modes preserve the existing post presentation.
+  assert.equal(fx.controller.status().bots[0].stepPushMode, 'post');
   const runtime = fx.runtimes.get(existing.id)[0];
   const modes = [];
   runtime.setStepPushMode = (value) => modes.push(value);
@@ -1197,3 +1196,29 @@ test('a cancelled replacement whose start rejects still restores the old runtime
   assert.equal(fx.values.get(existing.secretRef), 'stable-secret');
   assert.equal(fx.controller.status().bots[0].connected, true);
 });
+
+for (const entry of ['manual', 'scan']) {
+  test('new process-card defaults and saved rebinding settings: ' + entry, async () => {
+    const fx = fixture({ createBotIds: ['bot_new_mode'] });
+    await fx.controller.initialize();
+    const connect = () => entry === 'manual'
+      ? fx.controller.bindCredentials({ appId: 'cli_new_mode', appSecret: 'test-secret' })
+      : completeScan(fx, { client_id: 'cli_new_mode', client_secret: 'test-secret', user_info: { open_id: 'ou_owner', tenant_brand: 'feishu' } });
+    await connect();
+    let saved = fx.configStore.getBot('bot_new_mode');
+    assert.equal(saved.stepPush, true);
+    assert.equal(saved.stepPushMode, 'streaming_card');
+    for (const settings of [
+      { stepPush: false, stepPushMode: 'post' },
+      { stepPush: true, stepPushMode: 'post' },
+      { stepPush: false, stepPushMode: 'streaming_card' },
+    ]) {
+      await fx.configStore.saveBot({ ...saved, ...settings });
+      await connect();
+      saved = fx.configStore.getBot(saved.id);
+      assert.equal(saved.stepPush, settings.stepPush);
+      assert.equal(saved.stepPushMode, settings.stepPushMode);
+    }
+    await fx.controller.close();
+  });
+}

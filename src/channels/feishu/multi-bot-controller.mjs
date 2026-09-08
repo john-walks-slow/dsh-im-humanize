@@ -453,6 +453,8 @@ export class MultiBotDshFeishuController {
         botName: bot.name,
         botOpenId: bot.openId,
         activated: bot.activated,
+        stepPush: existing?.stepPush ?? true,
+        stepPushMode: existing?.stepPushMode ?? DEFAULT_FEISHU_STEP_PUSH_MODE,
         deletionPending: false,
         connectedAt: new Date().toISOString(),
         createdAt: existing?.createdAt ?? new Date().toISOString(),
