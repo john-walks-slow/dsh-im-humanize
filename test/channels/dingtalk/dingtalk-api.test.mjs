@@ -842,15 +842,14 @@ test('AI Card replies create-and-deliver, stream full snapshots, and finalize on
     token: options.headers['x-acs-dingtalk-access-token'],
     redirect: options.redirect,
   }));
-  // One request creates and delivers the card with the thinking copy already
-  // in place, so the chat never shows an empty shell. Every update after
-  // that is a plain streaming PUT, and finalize is the last streaming frame
-  // with no follow-up instances PUT that could blank the finished card.
+  // The final frame closes streaming; the instance update persists the
+  // answer in the shared template's msgContent slot and marks it finished.
   assert.deepEqual(cardCalls.map(({ method, path }) => ({ method, path })), [
     { method: 'POST', path: '/v1.0/card/instances/createAndDeliver' },
     { method: 'PUT', path: '/v1.0/card/streaming' },
     { method: 'PUT', path: '/v1.0/card/streaming' },
     { method: 'PUT', path: '/v1.0/card/streaming' },
+    { method: 'PUT', path: '/v1.0/card/instances' },
   ]);
   assert.ok(cardCalls.every(({ token, redirect }) => token === 'access-token' && redirect === 'error'));
   assert.equal(cardCalls[0].body.cardTemplateId, DINGTALK_AI_CARD_TEMPLATE_ID);
@@ -859,13 +858,26 @@ test('AI Card replies create-and-deliver, stream full snapshots, and finalize on
   assert.equal(cardCalls[0].body.imRobotOpenDeliverModel.robotCode, 'ding-client');
   assert.equal(cardCalls[0].body.cardData.cardParamMap.flowStatus, '2');
   assert.equal(cardCalls[0].body.cardData.cardParamMap.msgContent, '正在处理…');
-  assert.equal(cardCalls[0].body.cardData.cardParamMap.staticMsgContent, '正在处理…');
+  assert.equal(cardCalls[0].body.cardData.cardParamMap.staticMsgContent, '');
   assert.equal(cardCalls[1].body.content, '正在处理…');
   assert.equal(cardCalls[2].body.content, '第一行<br>第二行');
   assert.equal(cardCalls[2].body.isFull, true);
   assert.equal(cardCalls[2].body.isFinalize, false);
   assert.equal(cardCalls[3].body.content, '最终回答');
   assert.equal(cardCalls[3].body.isFinalize, true);
+  assert.deepEqual(cardCalls[4].body, {
+    outTrackId: card.cardInstanceId,
+    cardData: {
+      cardParamMap: {
+        flowStatus: '3',
+        msgContent: '最终回答',
+        staticMsgContent: '',
+        sys_full_json_obj: JSON.stringify({ order: ['msgContent'] }),
+        config: JSON.stringify({ autoLayout: true }),
+      },
+    },
+    cardUpdateOptions: { updateCardDataByKey: true },
+  });
 });
 
 test('AI Cards keep native group mentions through every frame and leave private replies unchanged', async (t) => {
@@ -977,9 +989,6 @@ test('AI Cards keep native group mentions through every frame and leave private 
         { content: mention + '最终回答', isFinalize: true, isError: false },
         { content: mention + '处理失败', isFinalize: false, isError: true },
       ]);
-      // Only failAiCard still PUTs the instances endpoint (flowStatus '5');
-      // createAiCard now uses createAndDeliver, and finishAiCard's answer
-      // lives entirely in the last streaming frame above.
       const states = calls
         .filter(({ path, method }) => path.endsWith('/instances') && method === 'PUT')
         .map(({ body }) => body.cardData.cardParamMap);
@@ -988,8 +997,12 @@ test('AI Cards keep native group mentions through every frame and leave private 
         msgContent,
         staticMsgContent,
       })), [
-        { flowStatus: '5', msgContent: mention + '处理失败', staticMsgContent: mention + '处理失败' },
+        { flowStatus: '3', msgContent: mention + '最终回答', staticMsgContent: '' },
+        { flowStatus: '5', msgContent: mention + '处理失败', staticMsgContent: '' },
       ]);
+      for (const state of states) {
+        assert.deepEqual(JSON.parse(state.sys_full_json_obj).order, ['msgContent']);
+      }
     });
   }
 });
@@ -1075,7 +1088,7 @@ test('AI Card retries one QPS rejection after the configured backoff', async () 
   assert.deepEqual(waits, [1_000]);
 });
 
-test('AI Card finish failure propagates without a fallback instances PUT that could blank the card', async () => {
+test('AI Card final-frame failure propagates before publishing a finished instance', async () => {
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ url: url.toString(), options });
@@ -1094,11 +1107,6 @@ test('AI Card finish failure propagates without a fallback instances PUT that co
     cardInstanceId: 'card-one',
   };
 
-  // finishAiCard now writes the answer only in the last streaming frame, so
-  // a failed streaming PUT must surface as a rejection instead of silently
-  // falling back to an instances PUT (the old two-request close, which is
-  // what left finished cards blank whenever the second PUT raced the
-  // template's teardown of the streaming widget).
   await assert.rejects(api.finishAiCard({ ...request, text: '最终答案' }));
 
   const cardBodies = calls
@@ -1114,6 +1122,34 @@ test('AI Card finish failure propagates without a fallback instances PUT that co
     .map(({ options }) => JSON.parse(options.body));
   assert.equal(afterFailure.some((body) => body.isError === true), true);
   assert.equal(afterFailure.some((body) => body.cardData?.cardParamMap?.flowStatus === '5'), true);
+});
+
+test('AI Card rejects an unpersisted finished state so the bridge can deliver text instead', async () => {
+  const calls = [];
+  const api = createDingtalkApi({
+    cardMinIntervalMs: 0,
+    fetchImpl: async (url, options) => {
+      const path = new URL(url).pathname;
+      if (path === '/v1.0/oauth2/accessToken') {
+        return jsonResponse({ accessToken: 'access-token', expireIn: 7_200 });
+      }
+      const body = JSON.parse(options.body);
+      calls.push({ path, body });
+      return jsonResponse({}, { status: path === '/v1.0/card/instances' ? 500 : 200 });
+    },
+  });
+
+  await assert.rejects(api.finishAiCard({
+    clientId: 'ding-client',
+    clientSecret: 'host-only-secret',
+    cardInstanceId: 'card-one',
+    text: '最终答案',
+  }), { code: 'http-error', status: 500 });
+
+  assert.deepEqual(calls.map(({ path }) => path), ['/v1.0/card/streaming', '/v1.0/card/instances']);
+  assert.equal(calls[0].body.isFinalize, true);
+  assert.equal(calls[1].body.cardData.cardParamMap.flowStatus, '3');
+  assert.equal(calls[1].body.cardData.cardParamMap.msgContent, '最终答案');
 });
 
 test('AI Card creation cleanup preserves group mentions with an independent signal after abort', async () => {

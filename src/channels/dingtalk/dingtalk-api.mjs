@@ -338,21 +338,14 @@ function cardMarkdown(text, target) {
 
 function cardData(text, flowStatus, target) {
   const markdown = cardMarkdown(text, target);
-  // The public AI Card template renders msgContent while streaming and
-  // switches to staticMsgContent once the streaming widget is torn down
-  // (flowStatus !== '2'). Leaving staticMsgContent empty, or leaving
-  // sys_full_json_obj.order pinned to msgContent after finalize, makes the
-  // finished/failed card render as a blank bubble even though the answer
-  // was streamed correctly moments earlier.
-  const streaming = flowStatus === '2';
+  // The shared template uses msgContent for processing, finished, and
+  // failed cards. Switching its order to staticMsgContent hides the reply.
   return {
     cardParamMap: {
       flowStatus,
       msgContent: markdown,
-      staticMsgContent: markdown,
-      sys_full_json_obj: JSON.stringify({
-        order: [streaming ? 'msgContent' : 'staticMsgContent'],
-      }),
+      staticMsgContent: '',
+      sys_full_json_obj: JSON.stringify({ order: ['msgContent'] }),
       config: JSON.stringify({ autoLayout: true }),
     },
   };
@@ -1026,11 +1019,8 @@ export function createDingtalkApi({
       const token = await accessToken({ clientId, clientSecret, signal });
       const headers = { 'x-acs-dingtalk-access-token': token };
       const normalizedContent = cardMarkdown(content, target);
-      // Official close: overwrite msgContent with the full answer and set
-      // isFinalize=true in the same streaming request (DingTalk's "last
-      // frame"). A follow-up PUT /v1.0/card/instances after this — even one
-      // meant to set staticMsgContent — can blank the card once the
-      // streaming widget is torn down, so this must be the only request.
+      // Close the streaming widget before persisting the template's
+      // finished state and full answer in msgContent.
       await cardRequest('v1.0/card/streaming', {
         method: 'PUT',
         body: {
@@ -1045,6 +1035,17 @@ export function createDingtalkApi({
         headers,
         signal,
         action: 'AI Card 完成',
+      });
+      await cardRequest('v1.0/card/instances', {
+        method: 'PUT',
+        body: {
+          outTrackId: instanceId,
+          cardData: cardData(content, '3', target),
+          cardUpdateOptions: { updateCardDataByKey: true },
+        },
+        headers,
+        signal,
+        action: 'AI Card 完成状态',
       });
       return { delivered: true, completed: true };
     },
