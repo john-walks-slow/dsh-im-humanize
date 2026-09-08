@@ -384,4 +384,7 @@ export default {
   '这个问题已经回答过了。': 'This question has already been answered.',
   '想自定义答案？直接发送文字消息即可，将作为本题答案提交。':
     'Want a custom answer? Just send a text message and it will be submitted as your answer.',
+  // feishu/bridge.mjs — thinking status heartbeat
+  '⏳ 正在思考中…（已运行 {elapsed}）': '⏳ Thinking… (elapsed {elapsed})',
+  '⏳ 正在思考中…': '⏳ Thinking…',
 };

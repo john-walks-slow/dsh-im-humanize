@@ -1003,3 +1003,16 @@ test('issue #163: 超长快照换卡后，旧卡未展示的尾部进入新卡�
   assert.ok(newCardWrites.at(-1).data.content.includes('TAIL_MARKER'), '旧卡未展示的尾部必须进入新卡');
   assert.ok(newCardWrites.at(-1).data.content.includes('增量 B'), '增量同样保留');
 });
+
+test('recallMessage deletes through the message delete API and swallows failures', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client });
+
+  await channel.recallMessage('om_heartbeat');
+  assert.equal(calls.recalls.length, 1);
+  assert.equal(calls.recalls[0].path.message_id, 'om_heartbeat');
+
+  client.im.v1.message.delete = async () => { throw new Error('already gone'); };
+  await channel.recallMessage('om_gone');
+  assert.equal(calls.recalls.length, 1);
+});
