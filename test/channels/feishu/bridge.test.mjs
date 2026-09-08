@@ -10633,118 +10633,129 @@ function deliveredCardContents(interactiveCreates, patches, ids) {
   return [...state.values()].map((entry) => JSON.stringify(entry.content));
 }
 
-test('step push streaming_card mode: a long first answer is delivered across every chunk', async () => {
-  const fixture = stateFixture();
-  const { client, interactiveCreates, patches, text, ids } = stepCardClient();
-  const { stepPushClock } = stepPushClockFixture();
-  // The turn opens with one tool step (which triggers the first render) and
-  // then finishes with an answer far larger than one card.
-  const longAnswer = '首'.repeat(30_000);
-  const bridge = new FeishuHarnessBridge({
-    client,
-    channel: stepPushChannel({ streamCalls: [] }),
-    harness: stepPushHarness(async (_sessionId, _text, options) => {
-      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"prepare"}' });
-      // Let the queued first render (card creation) run before the answer lands.
-      await new Promise((resolve) => setImmediate(resolve));
-      return longAnswer;
-    }),
-    state: fixture.state,
-    status: bridgeStatus(),
-    allowedSenderOpenIds: new Set(['ou_user']),
-    stepPush: true,
-    stepPushMode: 'streaming_card',
-    stepPushClock,
+function numberedStepAnswer(paragraphs) {
+  return Array.from({ length: paragraphs }, (_, index) =>
+    `第${String(index + 1).padStart(4, '0')}段：${'完整顺序校验'.repeat(6)}`
+  ).join('\n\n');
+}
+
+function deliveredStepAnswer(fx) {
+  return deliveredCardContents(fx.interactiveCreates, fx.patches, fx.ids)
+    .flatMap((raw) => JSON.parse(raw).body.elements)
+    .filter((element) => element.tag === 'markdown' && !/^_(运行中|已完成|已停止)_$/.test(element.content))
+    .map((element) => element.content)
+    .join('\n\n');
+}
+
+for (const scenario of [
+  { name: 'existing card, two answer cards', paragraphs: 250, tool: true, expectedCards: 2 },
+  { name: 'existing card, multiple answer cards', paragraphs: 800, tool: true },
+  { name: 'first streamed answer', paragraphs: 800, tool: false },
+]) {
+  test('step push streaming_card mode: preserves full answer order: ' + scenario.name, async () => {
+    const fx = stepCardClient();
+    const answer = numberedStepAnswer(scenario.paragraphs);
+    const bridge = new FeishuHarnessBridge({
+      client: fx.client,
+      channel: stepPushChannel({}),
+      harness: stepPushHarness(async (_id, _text, options) => {
+        if (scenario.tool) {
+          await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"prepare"}' });
+          await new Promise((resolve) => setImmediate(resolve));
+        } else {
+          await options.onUpdate({ type: 'assistant-message', step: 0, text: answer });
+        }
+        return answer;
+      }),
+      state: stateFixture().state,
+      status: bridgeStatus(),
+      allowedSenderOpenIds: new Set(['ou_user']),
+      stepPush: true,
+      stepPushMode: 'streaming_card',
+      stepPushClock: stepPushClockFixture().stepPushClock,
+    });
+    await bridge.accept(event('om_full_answer', '生成长答案'));
+    await bridge.waitForIdle();
+    assert.equal(deliveredStepAnswer(fx), answer, 'each paragraph arrives exactly once and in order');
+    if (scenario.expectedCards) assert.equal(fx.ids.length, scenario.expectedCards);
+    else assert.ok(fx.ids.length > 2);
+    const cards = deliveredCardContents(fx.interactiveCreates, fx.patches, fx.ids).map(JSON.parse);
+    assert.equal(cards.filter((card) => JSON.stringify(card).includes('_已完成_')).length, 1);
+    assert.ok(JSON.stringify(cards.at(-1)).includes('_已完成_'), 'only the last card is completed');
+    assert.ok(cards.every((card) => Buffer.byteLength(JSON.stringify(card)) < 30_000));
+    assert.deepEqual(fx.text, []);
   });
+}
 
-  await bridge.accept(event('om_long_in_1', '生成长答案'));
-  await bridge.waitForIdle();
-
-  assert.ok(interactiveCreates.length >= 1, 'the process card is created');
-  const visible = deliveredCardContents(interactiveCreates, patches, ids).join('\n');
-  const head = longAnswer.slice(0, 400);
-  const tail = longAnswer.slice(-400);
-  assert.ok(visible.includes(head), 'the answer prefix is delivered on a card');
-  assert.ok(visible.includes(tail), 'the answer suffix is delivered on a card');
-  assert.equal(visible.split('已完成').length - 1, 1, 'exactly one card carries the terminal status');
-  assert.deepEqual(text, [], 'the complete answer lives on the cards, so no post fallback fires');
-});
-
-test('step push streaming_card mode: a seal failure falls back to the post ladder instead of trusting the draft', async () => {
-  const fixture = stateFixture();
-  const { interactiveCreates, patches, text } = stepCardClient();
-  const { stepPushClock } = stepPushClockFixture();
-
-  // Hold the FIRST card creation in flight while the final answer lands in
-  // memory; the seal PATCH then fails with the rate-limit code.
-  let releaseCreate;
-  const createGate = new Promise((resolve) => { releaseCreate = resolve; });
-  let createCalls = 0;
-  let sealFailArmed = false;
-  const client = {
-    im: { v1: { message: {
-      create: async (request) => {
-        createCalls += 1;
-        if (createCalls === 1) {
-          await createGate;
-          interactiveCreates.push(JSON.parse(request.data.content));
-          return { code: 0, data: { message_id: 'om_held_1' } };
-        }
-        interactiveCreates.push(JSON.parse(request.data.content));
-        return { code: 0, data: { message_id: `om_held_${createCalls}` } };
-      },
-      reply: async (request) => {
-        text.push(stepPushMessageText(request));
-        return { code: 0, data: { message_id: `om_held_reply_${text.length}` } };
-      },
-      patch: async (request) => {
-        const content = JSON.parse(request.data.content);
-        if (sealFailArmed) {
-          sealFailArmed = false;
-          throw { code: 230020, msg: 'rate limited' };
-        }
-        patches.push({ messageId: request.path.message_id, content });
-        return { code: 0, data: {} };
-      },
-    } } },
+test('step push streaming_card mode: a seal failure never trusts an in-flight draft', async () => {
+  const fx = stepCardClient();
+  const started = deferred();
+  const release = deferred();
+  const reply = fx.client.im.v1.message.reply;
+  fx.client.im.v1.message.reply = async (request) => {
+    if (request.data.msg_type === 'interactive') {
+      started.resolve();
+      await release.promise;
+    }
+    return reply(request);
   };
-
+  fx.client.im.v1.message.patch = async () => ({ code: 230020, msg: 'rate limited' });
+  const answer = '唯一的最终答案';
   const bridge = new FeishuHarnessBridge({
-    client,
-    channel: stepPushChannel({ streamCalls: [] }),
-    harness: stepPushHarness(async (_sessionId, _text, options) => {
+    client: fx.client,
+    channel: stepPushChannel({}),
+    harness: stepPushHarness(async (_id, _text, options) => {
       await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
-      const answer = '唯一的最终答案';
-      // Final answer arrives in memory while the first render is still held.
+      await started.promise;
       await options.onUpdate({ type: 'assistant-message', step: 0, text: answer });
-      sealFailArmed = true;
-      releaseCreate();
+      release.resolve();
       return answer;
     }),
-    state: fixture.state,
+    state: stateFixture().state,
     status: bridgeStatus(),
     allowedSenderOpenIds: new Set(['ou_user']),
     stepPush: true,
     stepPushMode: 'streaming_card',
-    stepPushClock,
+    stepPushClock: stepPushClockFixture().stepPushClock,
   });
-
-  await bridge.accept(event('om_seal_in_1', '触发封存失败'));
+  await bridge.accept(event('om_seal_failure', '封存失败'));
   await bridge.waitForIdle();
+  assert.deepEqual(fx.text, [answer]);
+  assert.ok(!JSON.stringify(fx.interactiveCreates).includes(answer));
+});
 
-  // The draft was NEVER successfully rendered, so the seal failure must not
-  // be reported as success: the answer goes out through the post ladder.
-  const postedAnswer = text.find((line) => line.includes('唯一的最终答案'));
-  assert.ok(postedAnswer, 'the final answer is delivered through the post fallback');
-  const cardContents = [
-    ...interactiveCreates.map((content) => JSON.stringify(content)),
-    ...patches.map(({ content }) => JSON.stringify(content)),
-  ].join('\n');
-  assert.equal(
-    cardContents.includes('唯一的最终答案'),
-    false,
-    'no card claims the answer was visible when its seal failed',
-  );
+test('step push streaming_card mode: failed overflow creation falls back with the whole answer', async () => {
+  const fx = stepCardClient();
+  let failCards = false;
+  for (const method of ['create', 'reply']) {
+    const send = fx.client.im.v1.message[method];
+    fx.client.im.v1.message[method] = async (request) => failCards && request.data.msg_type === 'interactive'
+      ? { code: 230001, msg: 'card rejected' }
+      : send(request);
+  }
+  const answer = numberedStepAnswer(800);
+  const status = bridgeStatus();
+  const bridge = new FeishuHarnessBridge({
+    client: fx.client,
+    channel: stepPushChannel({}),
+    harness: stepPushHarness(async (_id, _text, options) => {
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"prepare"}' });
+      await new Promise((resolve) => setImmediate(resolve));
+      failCards = true;
+      return answer;
+    }),
+    state: stateFixture().state,
+    status,
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock: stepPushClockFixture().stepPushClock,
+  });
+  await bridge.accept(event('om_overflow_failure', '长答案降级'));
+  await bridge.waitForIdle();
+  assert.equal(fx.text.join('\n\n'), answer);
+  assert.equal(status.messagesReplied, 1);
+  assert.ok(!deliveredCardContents(fx.interactiveCreates, fx.patches, fx.ids).join('').includes('_已完成_'));
 });
 
 // ── 思考中状态（静默期心跳）────────────────────────────────────────────────
