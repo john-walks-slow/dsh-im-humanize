@@ -1,20 +1,18 @@
 import { createProductionController } from './production.mjs';
-import { installSlackRpc } from './rpc.mjs';
+import { createSlackRpcHandler, installSlackRpc, SLACK_RPC_CHANNEL } from './rpc.mjs';
+import { installProductionChannel } from '../shared/startup.mjs';
 
 export const name = 'dsh-im-slack-host';
 export const inject = ['connection', 'credentials', 'typertGateway'];
 
 export async function apply(ctx, config = {}) {
   if (config?.controller) return installSlackRpc(ctx, config.controller, config.rpcAuthority);
-  const production = await createProductionController(ctx, config, config.internals ?? {});
-  const unregisterDelivery = config.deliveryService && production.deliveryAdapter
-    ? config.deliveryService.registerAdapter(production.deliveryAdapter) : undefined;
-  const disposeRpc = installSlackRpc(ctx, production.controller, config.rpcAuthority);
-  ctx.effect(() => async () => {
-    await unregisterDelivery?.();
-    await production.close();
-  }, 'dsh-im: close Slack bot connections');
-  return disposeRpc;
+  return installProductionChannel(ctx, config, {
+    channel: 'slack',
+    rpcChannel: SLACK_RPC_CHANNEL,
+    createProduction: () => createProductionController(ctx, config, config.internals ?? {}),
+    createHandler: controller => createSlackRpcHandler(controller),
+  });
 }
 
 export function createSlackHostPlugin(config) {

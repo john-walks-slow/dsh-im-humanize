@@ -11,6 +11,54 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 飞书分步直推新增「zcode过程卡模式」呈现方式（设置页在开启分步直推后可选）：最终答案与任务过程汇总到一张蓝色过程卡中原地刷新（PATCH）——助手步骤实时流入卡片成为答案草稿，被后续工具证实为思考时自动收进「💭 思考过程」折叠面板（始终收起），工具调用以「🛠️ 工具摘要」折叠面板展示（运行中展开、结束折叠），结束时草稿替换为最终答案并标记已完成/已停止；纯问答回合同样只开一张卡。超长答案按段落预分块、工具与思考面板超出字节预算时滚动淘汰最旧行，单张卡片始终低于飞书尺寸上限，超出部分自动封存旧卡并续接新卡；提问或审批卡片弹出前会先定格当前过程卡，后续过程与答案流到交互消息之后的新卡上；回合内收到 `/stop` 时封存为「已停止」；卡片创建或封存失败时本轮自动降级回原有 post 答案阶梯，绝不丢答案。默认「逐条消息」方式保持不变，历史行为零变化。
   Feishu step push gains "ZCode process-card mode" (selectable in the settings page once step push is enabled): the final answer and the task process live in one blue card that refreshes in place via PATCH — assistant steps stream into the card as the live answer draft, morph into a "💭 Thinking" collapsible panel (always folded) once a later tool call proves them interim, tool calls accumulate in a "🛠️ Tool summary" panel (expanded while running, folded at the end), and the draft is rewritten with the final answer and sealed Completed/Stopped; plain Q&A turns open exactly one card too. Long answers are pre-chunked at paragraph bounds and panels shed their oldest lines past a byte budget, so every card stays under the Feishu size cap, spilling into sealed continuation cards as needed. Before a question or approval card renders, the live process card is frozen and the stream continues on a fresh card below the interaction; a `/stop` received mid-turn seals the card as Stopped. Card create/seal failures downgrade the turn back to the existing post answer ladder, so the answer is never lost. The default "discrete messages" presentation is unchanged.
 
+## [4.16.1] - 2026-09-09
+
+### Fixed / 修复
+
+- 钉钉 AI Card 改为在创建并投放时同时写入可见的思考提示，避免先出现空白卡片；首次流式更新失败时保留已显示的卡片，后续仍可原位完成。
+  DingTalk AI Cards now include visible thinking text in the combined create-and-deliver request, avoiding an initially blank card. A failed initial streaming update keeps the visible card available for later in-place completion.
+
+- 修复钉钉 AI Card 完成后正文消失或继续显示处理中：先结束流式组件，再将完整回答和完成状态持久化到模板实际使用的 `msgContent` 字段，保持正文可见。
+  Fix DingTalk AI Cards losing their answer or remaining in the processing state after completion. The stream is finalized first, then the full answer and completed state are persisted in the template's visible `msgContent` field.
+
+- 钉钉卡片创建、流式更新或最终状态写入失败时，恢复完整文字回答和安全错误提示的兜底投递，避免卡片失败被误记为已成功送达而丢失结果。
+  Restore full-text answers and safe error-message fallback when DingTalk card creation, streaming updates, or final-state persistence fail, preventing failed cards from being treated as successful delivery and losing the result.
+
+## [4.16.0] - 2026-09-09
+
+### Added / 新增
+
+- 新增实验性企业微信自建应用渠道（`wecom-app`），成为第十个 IM 渠道：通过加密 HTTP 回调接收消息，支持多应用独立配置、私聊流式回复、图片输入、结果文件回传与主动投递目标。成员关注企业的微信插件后可在微信中对话，微信端自动降级为分段文字；接入需要公网回调与企业可信 IP 配置。回调监听按需启动，移除最后一个应用后关闭。接入步骤见[中文指南](docs/企业微信自建应用接入.md)和[英文指南](docs/企业微信自建应用接入.en.md)。
+  Adds the experimental WeCom self-built app channel (`wecom-app`) as the tenth IM channel, with encrypted HTTP callbacks, independent multi-app configuration, private-chat streaming, image input, result files, and proactive delivery targets. Members can chat from WeChat through the enterprise's WeChat plugin, with segmented-text fallback there. Setup requires a public callback route and trusted IP configuration. The callback listener starts on demand and stops when the last app is removed. See the linked Chinese and English setup guides.
+
+- 机器人设置新增显式的「思考强度」选择，档位、说明和默认值来自 DSH 当前模型；每个机器人独立保存，切换模型时恢复新模型默认强度，仅影响之后新建的会话，不改变已有会话或进行中的回答。
+  Bot settings now expose reasoning-effort choices using the current model's levels, descriptions, and defaults from DSH. Each bot saves its own override; changing models restores the new model's default effort. Changes apply only to future Sessions, leaving existing Sessions and in-progress replies unchanged.
+
+- 飞书分步直推在静默 20 秒后显示「正在思考中」及运行时长，并原位定时更新。出现实际进度、问题或审批，以及回合结束时会尝试撤回；撤回失败最多重试三次，迟到的状态消息也会清理，避免重复状态和残留提示。
+  Feishu Step Push shows a thinking-status message with elapsed time after 20 seconds of silence and periodically updates it in place. Real progress, questions, approvals, and turn completion trigger cleanup. Failed recalls allow up to three attempts, and late-arriving status messages are also cleaned up to prevent duplicates and stale notices.
+
+- 飞书提问卡片新增自定义答案入口，提交后将原卡片更新为已回答状态并展示选择结果；重复或过期点击会提示已回答，避免重复提交。
+  Feishu question cards add a custom-answer entry and update the original card with its answered state and selected result after submission. Repeated or stale clicks report that the question was already answered instead of submitting again.
+
+### Changed / 变更
+
+- Telegram 原生命令菜单与文字帮助改为共用命令目录，启动和重连时生成本地化完整菜单，自动纳入历史、推理等级等命令及别名；删除的命令不再残留，空目录会清空旧菜单。菜单同步失败不会阻止机器人连接。
+  Telegram's native command menu and text help now share one command catalog. Startup and reconnection generate the complete localized menu, including history, reasoning commands, and aliases. Removed commands no longer linger, an empty catalog clears the previous menu, and synchronization failures do not block connection.
+
+### Fixed / 修复
+
+- 修复飞书提问或审批前后的流式消息顺序：卡片写入串行化，交互卡片展示后才继续后续回复，并按已展示正文去重；临时工具状态不再混入固定正文，最终卡片使用最新正文快照，避免旧过程重播、重复回答和正文丢失。
+  Feishu serializes streaming-card writes and resumes subsequent replies only after a question or approval is presented, deduplicating already displayed text. Transient tool statuses stay out of the frozen answer prefix, and final cards use the latest text snapshot, preventing replayed progress, duplicate answers, and lost text.
+
+- 各渠道与 AI Office 在初始化期间或启动失败后仍保留管理 RPC，返回可读、脱敏的初始化或失败信息，并清理部分启动的资源，避免设置页因处理器未注册而只显示 404。
+  All channels and AI Office retain their management RPC during initialization and after startup failure, returning readable, sanitized status or error information and cleaning up partially initialized resources instead of leaving settings requests with an unregistered-handler 404.
+
+- 企业微信菜单发送错误现在区分权限、限流、断连与结果不确定等情况；仅在明确且可降级的卡片拒绝后回退文字，结果不确定时保留卡片操作状态并避免重复发送。菜单恢复成功后清除对应旧错误，不覆盖模型错误或并发请求的新错误。
+  WeCom menu delivery now distinguishes permission, rate-limit, disconnection, and uncertain-outcome errors. Only definite, eligible card rejections fall back to text; uncertain delivery retains card interaction state without duplicate sends. Successful menu recovery clears its own previous error without overwriting model failures or newer concurrent errors.
+
+- 设置页恢复显示完整渠道导航列表，并将飞书分步直推说明移入帮助提示，减少设置项拥挤。
+  Settings show the complete channel navigation list again, and Feishu Step Push guidance moves into its help tooltip to reduce clutter.
+
 ## [4.15.0] - 2026-09-08
 
 ### Added / 新增
@@ -780,7 +828,9 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.15.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.16.1...HEAD
+[4.16.1]: https://github.com/xmanrui/dsh-im/compare/v4.16.0...v4.16.1
+[4.16.0]: https://github.com/xmanrui/dsh-im/compare/v4.15.0...v4.16.0
 [4.15.0]: https://github.com/xmanrui/dsh-im/compare/v4.14.0...v4.15.0
 [4.14.0]: https://github.com/xmanrui/dsh-im/compare/v4.13.0...v4.14.0
 [4.13.0]: https://github.com/xmanrui/dsh-im/compare/v4.12.0...v4.13.0

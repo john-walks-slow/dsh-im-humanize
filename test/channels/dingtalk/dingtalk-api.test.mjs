@@ -816,7 +816,7 @@ test('session webhook validation accepts only HTTPS DingTalk hosts on the defaul
   }
 });
 
-test('AI Card replies create, deliver, stream full snapshots, and finalize on fixed endpoints', async () => {
+test('AI Card replies create-and-deliver, stream full snapshots, and finalize on fixed endpoints', async () => {
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ url: url.toString(), options });
@@ -842,10 +842,10 @@ test('AI Card replies create, deliver, stream full snapshots, and finalize on fi
     token: options.headers['x-acs-dingtalk-access-token'],
     redirect: options.redirect,
   }));
+  // The final frame closes streaming; the instance update persists the
+  // answer in the shared template's msgContent slot and marks it finished.
   assert.deepEqual(cardCalls.map(({ method, path }) => ({ method, path })), [
-    { method: 'POST', path: '/v1.0/card/instances' },
-    { method: 'POST', path: '/v1.0/card/instances/deliver' },
-    { method: 'PUT', path: '/v1.0/card/instances' },
+    { method: 'POST', path: '/v1.0/card/instances/createAndDeliver' },
     { method: 'PUT', path: '/v1.0/card/streaming' },
     { method: 'PUT', path: '/v1.0/card/streaming' },
     { method: 'PUT', path: '/v1.0/card/streaming' },
@@ -854,16 +854,30 @@ test('AI Card replies create, deliver, stream full snapshots, and finalize on fi
   assert.ok(cardCalls.every(({ token, redirect }) => token === 'access-token' && redirect === 'error'));
   assert.equal(cardCalls[0].body.cardTemplateId, DINGTALK_AI_CARD_TEMPLATE_ID);
   assert.equal(cardCalls[0].body.outTrackId, card.cardInstanceId);
-  assert.equal(cardCalls[1].body.openSpaceId, 'dtv1.card//IM_ROBOT.staff-one');
-  assert.equal(cardCalls[1].body.imRobotOpenDeliverModel.robotCode, 'ding-client');
-  assert.equal(cardCalls[2].body.cardData.cardParamMap.flowStatus, '2');
-  assert.equal(cardCalls[3].body.content, '正在处理…');
-  assert.equal(cardCalls[4].body.content, '第一行<br>第二行');
-  assert.equal(cardCalls[4].body.isFull, true);
-  assert.equal(cardCalls[4].body.isFinalize, false);
-  assert.equal(cardCalls[5].body.content, '最终回答');
-  assert.equal(cardCalls[5].body.isFinalize, true);
-  assert.equal(cardCalls[6].body.cardData.cardParamMap.flowStatus, '3');
+  assert.equal(cardCalls[0].body.openSpaceId, 'dtv1.card//IM_ROBOT.staff-one');
+  assert.equal(cardCalls[0].body.imRobotOpenDeliverModel.robotCode, 'ding-client');
+  assert.equal(cardCalls[0].body.cardData.cardParamMap.flowStatus, '2');
+  assert.equal(cardCalls[0].body.cardData.cardParamMap.msgContent, '正在处理…');
+  assert.equal(cardCalls[0].body.cardData.cardParamMap.staticMsgContent, '');
+  assert.equal(cardCalls[1].body.content, '正在处理…');
+  assert.equal(cardCalls[2].body.content, '第一行<br>第二行');
+  assert.equal(cardCalls[2].body.isFull, true);
+  assert.equal(cardCalls[2].body.isFinalize, false);
+  assert.equal(cardCalls[3].body.content, '最终回答');
+  assert.equal(cardCalls[3].body.isFinalize, true);
+  assert.deepEqual(cardCalls[4].body, {
+    outTrackId: card.cardInstanceId,
+    cardData: {
+      cardParamMap: {
+        flowStatus: '3',
+        msgContent: '最终回答',
+        staticMsgContent: '',
+        sys_full_json_obj: JSON.stringify({ order: ['msgContent'] }),
+        config: JSON.stringify({ autoLayout: true }),
+      },
+    },
+    cardUpdateOptions: { updateCardDataByKey: true },
+  });
 });
 
 test('AI Cards keep native group mentions through every frame and leave private replies unchanged', async (t) => {
@@ -954,9 +968,15 @@ test('AI Cards keep native group mentions through every frame and leave private 
         assert.equal(Object.hasOwn(calls[0].body, 'cardAtUserIds'), false);
       }
       const deliveries = calls
-        .filter(({ path }) => path.endsWith('/instances/deliver'))
+        .filter(({ path }) => path.endsWith('/instances/createAndDeliver'))
         .map(({ body }) => body);
-      assert.deepEqual(deliveries, [{
+      assert.deepEqual(deliveries.map(({ outTrackId, userIdType, openSpaceId, imGroupOpenDeliverModel, imRobotOpenDeliverModel }) => ({
+        outTrackId,
+        userIdType,
+        openSpaceId,
+        ...(imGroupOpenDeliverModel ? { imGroupOpenDeliverModel } : {}),
+        ...(imRobotOpenDeliverModel ? { imRobotOpenDeliverModel } : {}),
+      })), [{
         outTrackId: card.cardInstanceId,
         userIdType: 1,
         ...scenario.delivery,
@@ -972,11 +992,17 @@ test('AI Cards keep native group mentions through every frame and leave private 
       const states = calls
         .filter(({ path, method }) => path.endsWith('/instances') && method === 'PUT')
         .map(({ body }) => body.cardData.cardParamMap);
-      assert.deepEqual(states.map(({ flowStatus, msgContent }) => ({ flowStatus, msgContent })), [
-        { flowStatus: '2', msgContent: mention + '正在处理…' },
-        { flowStatus: '3', msgContent: mention + '最终回答' },
-        { flowStatus: '5', msgContent: mention + '处理失败' },
+      assert.deepEqual(states.map(({ flowStatus, msgContent, staticMsgContent }) => ({
+        flowStatus,
+        msgContent,
+        staticMsgContent,
+      })), [
+        { flowStatus: '3', msgContent: mention + '最终回答', staticMsgContent: '' },
+        { flowStatus: '5', msgContent: mention + '处理失败', staticMsgContent: '' },
       ]);
+      for (const state of states) {
+        assert.deepEqual(JSON.parse(state.sys_full_json_obj).order, ['msgContent']);
+      }
     });
   }
 });
@@ -1062,18 +1088,14 @@ test('AI Card retries one QPS rejection after the configured backoff', async () 
   assert.deepEqual(waits, [1_000]);
 });
 
-test('AI Card cleanup marks failure while a completed final frame never falls back twice', async () => {
+test('AI Card final-frame failure propagates before publishing a finished instance', async () => {
   const calls = [];
-  let rejectCompletedStatus = true;
   const fetchImpl = async (url, options) => {
     calls.push({ url: url.toString(), options });
     if (url.toString() === `${DINGTALK_API_BASE_URL}v1.0/oauth2/accessToken`) {
       return jsonResponse({ accessToken: 'access-token', expireIn: 7_200 });
     }
-    const body = JSON.parse(options.body);
-    if (rejectCompletedStatus
-      && new URL(url).pathname === '/v1.0/card/instances'
-      && body.cardData?.cardParamMap?.flowStatus === '3') {
+    if (new URL(url).pathname === '/v1.0/card/streaming') {
       return jsonResponse({}, { status: 500 });
     }
     return jsonResponse({});
@@ -1085,19 +1107,49 @@ test('AI Card cleanup marks failure while a completed final frame never falls ba
     cardInstanceId: 'card-one',
   };
 
-  assert.deepEqual(await api.finishAiCard({ ...request, text: '最终答案' }), {
-    delivered: true,
-    completed: false,
-  });
-  rejectCompletedStatus = false;
-  await api.failAiCard({ ...request, text: '处理失败' });
+  await assert.rejects(api.finishAiCard({ ...request, text: '最终答案' }));
 
-  const bodies = calls
+  const cardBodies = calls
     .filter(({ url }) => new URL(url).pathname.startsWith('/v1.0/card/'))
     .map(({ options }) => JSON.parse(options.body));
-  assert.equal(bodies.some((body) => body.isFinalize === true && body.isError === false), true);
-  assert.equal(bodies.some((body) => body.isError === true), true);
-  assert.equal(bodies.some((body) => body.cardData?.cardParamMap?.flowStatus === '5'), true);
+  assert.equal(cardBodies.length, 1);
+  assert.equal(cardBodies[0].isFinalize, true);
+  assert.equal(cardBodies[0].content, '最终答案');
+
+  await api.failAiCard({ ...request, text: '处理失败' });
+  const afterFailure = calls
+    .filter(({ url }) => new URL(url).pathname.startsWith('/v1.0/card/'))
+    .map(({ options }) => JSON.parse(options.body));
+  assert.equal(afterFailure.some((body) => body.isError === true), true);
+  assert.equal(afterFailure.some((body) => body.cardData?.cardParamMap?.flowStatus === '5'), true);
+});
+
+test('AI Card rejects an unpersisted finished state so the bridge can deliver text instead', async () => {
+  const calls = [];
+  const api = createDingtalkApi({
+    cardMinIntervalMs: 0,
+    fetchImpl: async (url, options) => {
+      const path = new URL(url).pathname;
+      if (path === '/v1.0/oauth2/accessToken') {
+        return jsonResponse({ accessToken: 'access-token', expireIn: 7_200 });
+      }
+      const body = JSON.parse(options.body);
+      calls.push({ path, body });
+      return jsonResponse({}, { status: path === '/v1.0/card/instances' ? 500 : 200 });
+    },
+  });
+
+  await assert.rejects(api.finishAiCard({
+    clientId: 'ding-client',
+    clientSecret: 'host-only-secret',
+    cardInstanceId: 'card-one',
+    text: '最终答案',
+  }), { code: 'http-error', status: 500 });
+
+  assert.deepEqual(calls.map(({ path }) => path), ['/v1.0/card/streaming', '/v1.0/card/instances']);
+  assert.equal(calls[0].body.isFinalize, true);
+  assert.equal(calls[1].body.cardData.cardParamMap.flowStatus, '3');
+  assert.equal(calls[1].body.cardData.cardParamMap.msgContent, '最终答案');
 });
 
 test('AI Card creation cleanup preserves group mentions with an independent signal after abort', async () => {
@@ -1109,7 +1161,10 @@ test('AI Card creation cleanup preserves group mentions with an independent sign
     }
     const body = JSON.parse(options.body);
     bodies.push(body);
-    if (options.method === 'PUT' && body.cardData?.cardParamMap?.flowStatus === '2') {
+    // Let createAndDeliver succeed (the card is now live), then abort on the
+    // startup streaming PUT that follows it, so cleanup runs against an
+    // already-delivered card instead of short-circuiting before delivery.
+    if (new URL(url).pathname === '/v1.0/card/streaming' && body.isError !== true) {
       controller.abort(new DOMException('stopped', 'AbortError'));
       throw controller.signal.reason;
     }

@@ -228,12 +228,17 @@ export function createWecomRpcHandler(controller, { encodeQr = qrDataUrl } = {})
 }
 
 export function installWecomRpc(ctx, controller, options, authority) {
+  return installWecomRpcHandler(ctx, createWecomRpcHandler(controller, options), authority);
+}
+
+/** Mount the existing Connection transport before the production controller is ready. */
+export function installWecomRpcHandler(ctx, handler, authority) {
   if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
     throw new TypeError('DSH Host Connection RPC is required');
   }
   return ctx.connection.rpc.handle(
     WECOM_RPC_CHANNEL,
-    createWecomRpcHandler(controller, options),
+    handler,
     { authority: resolveRpcAuthority(authority) },
   );
 }

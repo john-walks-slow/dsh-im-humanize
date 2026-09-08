@@ -1,5 +1,6 @@
 import { createProductionController } from './production.mjs';
-import { installWeixinRpc } from './rpc.mjs';
+import { createWeixinRpcHandler, installWeixinRpc, WEIXIN_RPC_CHANNEL } from './rpc.mjs';
+import { installProductionChannel } from '../shared/startup.mjs';
 
 export const name = 'dsh-weixin-host';
 export const inject = ['connection', 'credentials', 'typertGateway'];
@@ -9,20 +10,12 @@ export async function apply(ctx, config = {}) {
     return installWeixinRpc(ctx, config.controller, config.rpcOptions, config.rpcAuthority);
   }
 
-  const production = await createProductionController(ctx, config, config.internals);
-  const unregisterDelivery = config.deliveryService && production.deliveryAdapter
-    ? config.deliveryService.registerAdapter(production.deliveryAdapter) : undefined;
-  const disposeRpc = installWeixinRpc(
-    ctx,
-    production.controller,
-    config.rpcOptions,
-    config.rpcAuthority,
-  );
-  ctx.effect(() => async () => {
-    await unregisterDelivery?.();
-    await production.close();
-  }, 'dsh-weixin: close account connections');
-  return disposeRpc;
+  return installProductionChannel(ctx, config, {
+    channel: 'weixin',
+    rpcChannel: WEIXIN_RPC_CHANNEL,
+    createProduction: () => createProductionController(ctx, config, config.internals),
+    createHandler: controller => createWeixinRpcHandler(controller, config.rpcOptions),
+  });
 }
 
 export function createWeixinHostPlugin(config) {

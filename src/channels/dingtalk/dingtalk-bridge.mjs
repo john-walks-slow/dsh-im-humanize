@@ -1336,6 +1336,8 @@ export class DingtalkHarnessBridge {
             providerMessageIds: cardStream.providerMessageIds,
           });
         } else {
+          // Failed streams close the card with a notice pointing to a
+          // follow-up message. Deliver the answer through that fallback.
           textReceipt = createDeliveryReceipt({
             deliveryId: messageId,
             presentation: 'dingtalk-text',
@@ -1411,7 +1413,9 @@ export class DingtalkHarnessBridge {
           ? `${errorText}\n\n${batchFailureMessage}`
           : errorText;
         const streamed = cardStarted && await cardStream.finish(visibleError);
-        if (!streamed) await this.#send(sessionWebhook, visibleError, this.#atUsersFor(message));
+        if (!streamed) {
+          await this.#send(sessionWebhook, visibleError, this.#atUsersFor(message));
+        }
       } catch {
         this.#logger.error?.('[dsh-dingtalk] failed to send the safe error reply');
       }

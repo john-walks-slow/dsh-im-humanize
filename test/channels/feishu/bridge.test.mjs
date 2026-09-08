@@ -4389,12 +4389,65 @@ test('issue #86: even without any progress update, the final answer must not pre
   );
 });
 
+test('streamed tool updates between questions do not replay the frozen answer prefix', async () => {
+  const secondAnswerAccepted = deferred();
+  const context = issue86RotationFixture({
+    onInteractionOverride: async (sessionId, options) => {
+      const question = (interactionId, respond) => ({
+        kind: 'question', interactionId, rpcId: interactionId, sessionId,
+        payload: {
+          type: 'question/requested', sessionId,
+          questions: [{ id: 'environment', question: '请选择测试环境', options: [{ label: '测试环境' }] }],
+        },
+        respond,
+      });
+      await options.onUpdate({ type: 'text', text: '最终回答：' });
+      await options.onInteraction(question('question-86', async (result) => {
+        context.submitStarted.resolve(result);
+        await context.answerAccepted.promise;
+        return { accepted: true };
+      }));
+      await context.answerAccepted.promise;
+      await options.onUpdate({ type: 'tool', name: 'read_file' });
+      await options.onInteraction(question('question-followup', async () => {
+        secondAnswerAccepted.resolve();
+        return { accepted: true };
+      }));
+      await secondAnswerAccepted.promise;
+    },
+  });
+  const questions = () => context.timeline.filter(
+    (entry) => entry.kind === 'text-message' && entry.text.includes('请选择测试环境'),
+  );
+  const turn = context.bridge.accept(event('om-86-prompt', '请先提问两次再回答'));
+  await eventually(() => questions().length === 1);
+  const firstReply = context.bridge.accept(event('om-first-answer', '1', {
+    root_id: 'om-86-prompt', parent_id: questions()[0].messageId, thread_id: 'omt-86',
+  }));
+  await context.submitStarted.promise;
+  context.answerAccepted.resolve();
+  await firstReply;
+  await eventually(() => questions().length === 2);
+  await context.bridge.accept(event('om-second-answer', '1', {
+    root_id: 'om-86-prompt', parent_id: questions()[1].messageId, thread_id: 'omt-86',
+  }));
+  await turn;
+  await context.bridge.waitForIdle();
+  const contents = context.timeline.filter((entry) => entry.kind === 'card-content');
+  assert.ok(contents.some((entry) => entry.cardId === 'card-86-2'
+    && entry.content.includes('read_file')), 'the tool status is still presented');
+  assert.equal(contents.at(-1).content, '选择了测试环境');
+});
+
 function issue86RotationFixture({
   postAnswerUpdate = false,
   onInteractionOverride = null,
   failFinalize = false,
   failFinishCardId = null,
   skipInteraction = false,
+  interactionCards = false,
+  questions: questionsOverride = null,
+  patchFails = false,
 } = {}) {
   const fixture = stateFixture([['p2p:ou_user', 'session-issue-86']]);
   const timeline = [];
@@ -4435,15 +4488,33 @@ function issue86RotationFixture({
   client.im.v1.message.reply = async (request) => {
     replySequence += 1;
     const messageId = `om-86-${replySequence}`;
-    const content = JSON.parse(request.data.content);
+    let parsedText = '';
+    let card;
+    try {
+      const content = JSON.parse(request.data.content);
+      parsedText = typeof content.text === 'string' ? content.text : '';
+      if (request.data.msg_type === 'interactive') card = content;
+    } catch {
+      // 保持默认空文本
+    }
     timeline.push({
       kind: request.data.msg_type === 'text' ? 'text-message' : 'card-message',
       messageId,
-      text: typeof content.text === 'string' ? content.text : '',
+      text: parsedText,
+      ...(card ? { card } : {}),
     });
     return { code: 0, data: { message_id: messageId } };
   };
   client.im.v1.message.delete = async () => ({ code: 0 });
+  client.im.v1.message.patch = async (request) => {
+    timeline.push({
+      kind: 'card-patch',
+      messageId: request.path.message_id,
+      content: request.data.content,
+    });
+    if (patchFails) throw new Error('patch failed');
+    return { code: 0 };
+  };
   client.im.v1.messageReaction = {
     create: async () => ({ code: 0, data: { reaction_id: 'reaction-86' } }),
     delete: async () => ({ code: 0 }),
@@ -4455,7 +4526,7 @@ function issue86RotationFixture({
     // issue #86 rotation tests assert the streaming-card flow with the
     // plain-text question reply; the interaction card path is tested
     // separately, so pin the text presentation here.
-    interactionCards: false,
+    interactionCards,
     harness: {
       sessionExists: async () => true,
       currentWorkspace: () => null,
@@ -4478,7 +4549,7 @@ function issue86RotationFixture({
             payload: {
               type: 'question/requested',
               sessionId,
-              questions: [{
+              questions: questionsOverride ?? [{
                 id: 'environment',
                 header: '测试环境',
                 question: '请选择测试环境',
@@ -4532,6 +4603,84 @@ async function bridge_accept_and_answer({ bridge, timeline, submitStarted, answe
   const receipt = await turn;
   await bridge.waitForIdle();
   return { receipt, questionIndex };
+}
+
+function bridge_ask(context) {
+  if (!context.turn) context.turn = context.bridge.accept(event('om-86-prompt', '请先调用 ask_user_question'));
+  return context.turn;
+}
+
+function questionCardEntries(timeline) {
+  return timeline.filter((entry) => entry.kind === 'card-message'
+    && entry.card && JSON.stringify(entry.card).includes('请补充信息'));
+}
+
+async function waitQuestionCard(context) {
+  bridge_ask(context);
+  await eventually(
+    () => questionCardEntries(context.timeline).length > 0,
+    'the question card was not presented',
+  );
+  return questionCardEntries(context.timeline).at(-1);
+}
+
+async function settleAnswer(context, { waitFinal = true } = {}) {
+  if (!waitFinal) return;
+  await Promise.race([
+    context.submitStarted.promise,
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error('the card answer never reached the Harness interaction')),
+      1_000,
+    )),
+  ]);
+  context.answerAccepted.resolve();
+  await context.turn;
+  await context.bridge.waitForIdle();
+}
+
+async function bridge_click_option(context, label, { waitFinal = true, index = 0 } = {}) {
+  const entry = await waitQuestionCard(context);
+  const clicked = context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, `answer:question-86:${index}:${label}`, 'ou_user'),
+  );
+  await settleAnswer(context, { waitFinal });
+  await clicked;
+  const patches = context.timeline.filter((e) => e.kind === 'card-patch');
+  return { timeline: context.timeline, cardPatch: patches.at(-1) ?? null, cardPatchCount: patches.length };
+}
+
+async function bridge_click_custom(context, { waitFinal = true, index = 0 } = {}) {
+  const entry = await waitQuestionCard(context);
+  const clicked = context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, `answerCustom:question-86:${index}`, 'ou_user'),
+  );
+  await settleAnswer(context, { waitFinal });
+  await clicked;
+  return {
+    timeline: context.timeline,
+    replyText: context.timeline.filter((e) => e.kind === 'text-message').at(-1)?.text ?? '',
+  };
+}
+
+async function bridge_answer_by_text(context, text) {
+  const entry = await waitQuestionCard(context);
+  const turn = context.bridge.accept(event('om-86-text-answer', text, {
+    root_id: 'om-86-prompt',
+    parent_id: entry.messageId,
+    thread_id: 'omt-86',
+  }));
+  await Promise.race([
+    context.submitStarted.promise,
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error('the text answer never reached the Harness interaction')),
+      1_000,
+    )),
+  ]);
+  context.answerAccepted.resolve();
+  await turn;
+  await context.bridge.waitForIdle();
+  const patches = context.timeline.filter((e) => e.kind === 'card-patch');
+  return { timeline: context.timeline, cardPatch: patches.at(-1) ?? null };
 }
 
 test('issue #86: post-interaction progress and the final answer land on the rotated card', async () => {
@@ -4609,6 +4758,188 @@ test('issue #86: a failure after rotation still falls back to plain text', async
     ),
     'the final answer must be delivered as fallback text',
   );
+});
+
+test('issue #163: 换卡挂起期的并发进度更新，其落卡必须晚于提问呈现', async () => {
+  const context = issue86RotationFixture({
+    onInteractionOverride: async (sessionId, options) => {
+      const interaction = {
+        kind: 'question',
+        interactionId: 'question-86',
+        rpcId: 'question-86',
+        sessionId,
+        payload: {
+          type: 'question/requested',
+          sessionId,
+          questions: [{
+            id: 'environment',
+            header: '测试环境',
+            question: '请选择测试环境',
+            options: [{ label: '测试环境' }, { label: '生产环境' }],
+          }],
+        },
+        respond: async (result) => {
+          context.submitStarted.resolve(result);
+          await context.answerAccepted.promise;
+          return { accepted: true };
+        },
+      };
+      // 先启动呈现（内部先 rotate 定格再发提问），随后并发到达的进度更新
+      // 处于换卡挂起期：不得在提问呈现完成前建新卡。
+      const presentation = options.onInteraction(interaction);
+      const progress = options.onUpdate({ type: 'tool', name: 'read_file' });
+      await presentation;
+      await progress;
+    },
+  });
+  const { receipt } = await bridge_accept_and_answer(context);
+  const entries = context.timeline;
+  const questionIndex = entries.findIndex((entry) => entry.kind === 'text-message'
+    && entry.text.includes('请选择测试环境'));
+  assert.ok(questionIndex > -1, '提问文本消息必须存在');
+  const newCardCreatedIndex = entries.findIndex((entry) => entry.kind === 'card-created'
+    && entry.cardId === 'card-86-2');
+  assert.ok(newCardCreatedIndex > questionIndex, '换卡后的新卡必须创建在提问呈现之后');
+  const oldCardWrites = entries.filter((e) => e.kind === 'card-content' && e.cardId === 'card-86-1');
+  assert.ok(oldCardWrites.at(-1).content.includes('最终结果见下方'), '旧卡定格后零写回');
+  assert.deepEqual(receipt.providerMessageIds, ['om-86-1', 'om-86-3'], 'receipt 契约不变');
+});
+
+test('issue #162: 点选后原提问卡被 patch 为已答状态卡（内容为卡 JSON 字符串，不双重编码）', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const cardPatch = context.timeline.filter((e) => e.kind === 'card-patch').at(-1);
+  assert.ok(cardPatch, '必须发生已答卡回写');
+  const questionCardEntry = questionCardEntries(context.timeline)[0];
+  assert.equal(cardPatch.messageId, questionCardEntry.messageId, '必须 patch 原提问卡消息');
+  assert.ok(!cardPatch.content.startsWith('"'), 'content 不得是二次序列化的字符串');
+  const card = JSON.parse(cardPatch.content);
+  const json = JSON.stringify(card);
+  assert.ok(json.includes('✅ 已回答') && json.includes('✅ 已选择：生产环境'));
+  assert.ok(!json.includes('"tag":"button"'), '已答卡不得再含按钮');
+});
+
+test('issue #162: 多问题交互第 1 题卡先回写已答，再呈现第 2 题', async () => {
+  const questions = [
+    { id: 'environment', header: '测试环境', question: '请选择测试环境', options: [{ label: '测试环境' }, { label: '生产环境' }] },
+    { id: 'scope', header: '改动范围', question: '请选择改动范围', options: [{ label: '前端' }, { label: '后端' }] },
+  ];
+  const context = issue86RotationFixture({ interactionCards: true, questions });
+  await bridge_click_option(context, '生产环境', { waitFinal: false });
+  await eventually(
+    () => questionCardEntries(context.timeline).length >= 2,
+    '第 2 题提问卡未呈现',
+  );
+  const entries = context.timeline;
+  const cardPatchIndex = entries.findIndex((e) => e.kind === 'card-patch');
+  const nextQuestionIndex = entries.findIndex((e) => e.kind === 'card-message'
+    && e.card && JSON.stringify(e.card).includes('2/2'));
+  assert.ok(cardPatchIndex > -1 && nextQuestionIndex > -1, '回写与第 2 题都必须发生');
+  assert.ok(nextQuestionIndex > cardPatchIndex, '必须先回写第 1 题卡，再呈现第 2 题');
+  await bridge_click_option(context, '前端', { index: 1 });
+});
+
+test('issue #162: 文本答案提交后提问卡同样回写', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  const { cardPatch } = await bridge_answer_by_text(context, '自定义文字回答');
+  assert.ok(cardPatch, '文本路径必须同样回写');
+  assert.ok(JSON.stringify(JSON.parse(cardPatch.content)).includes('✅ 已选择：自定义文字回答'));
+});
+
+test('issue #162: patch 失败时降级为 warn，答案提交不受影响', async () => {
+  const context = issue86RotationFixture({ interactionCards: true, patchFails: true });
+  const { cardPatchCount } = await bridge_click_option(context, '生产环境');
+  assert.equal(cardPatchCount, 1, '仅一次 patch 尝试');
+  assert.ok(context.answerAccepted, 'respond 必须照常成功');
+  assert.ok(
+    !context.timeline.some((e) => e.kind === 'text-message' && e.text.includes('回答提交失败')),
+    '不得误报提交失败',
+  );
+});
+
+test('issue #162: 已答 interaction 的陈旧点击回复「已经回答过了」', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const entry = questionCardEntries(context.timeline)[0];
+  const textCount = context.timeline.filter((e) => e.kind === 'text-message').length;
+  await context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, 'answer:question-86:0:测试环境', 'ou_user'),
+  );
+  await context.bridge.waitForIdle();
+  const textsAfter = context.timeline.filter((e) => e.kind === 'text-message').slice(textCount);
+  assert.ok(textsAfter.some((e) => e.text.includes('已经回答过了')), '必须提示已回答过');
+  assert.ok(textsAfter.every((e) => !e.text.includes('其他客户端')), '不得再弹误导提示');
+});
+
+test('issue #162: answerCustom 校验通过回复引导文本', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  const { replyText } = await bridge_click_custom(context, { waitFinal: false });
+  assert.ok(replyText.includes('直接发送文字'), '引导文案必须与 canClaimInteractionReply 语义一致');
+});
+
+test('issue #162: 已答卡上的 answerCustom 陈旧点击走提示逻辑', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const entry = questionCardEntries(context.timeline)[0];
+  const textCount = context.timeline.filter((e) => e.kind === 'text-message').length;
+  await context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, 'answerCustom:question-86:0', 'ou_user'),
+  );
+  await context.bridge.waitForIdle();
+  const textsAfter = context.timeline.filter((e) => e.kind === 'text-message').slice(textCount);
+  assert.ok(textsAfter.some((e) => e.text.includes('已经回答过了')));
+});
+
+test('issue #162: 未答过的陈旧 interaction 点击保持现有「其他客户端」提示（回归锚）', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  const entry = await waitQuestionCard(context);
+  const textCount = context.timeline.filter((e) => e.kind === 'text-message').length;
+  await context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, 'answer:unknown-86:0:测试环境', 'ou_user'),
+  );
+  const textsAfter = context.timeline.filter((e) => e.kind === 'text-message').slice(textCount);
+  assert.ok(textsAfter.some((e) => e.text.includes('其他客户端')), '未答过的 id 保持现有提示');
+});
+
+test('issue #162: 卡片题后的文本题不再回写前一张卡', async () => {
+  const questions = [
+    { id: 'environment', header: '测试环境', question: '请选择测试环境', options: [{ label: '测试环境' }, { label: '生产环境' }] },
+    { id: 'scope', header: '改动范围', question: '请用文字描述改动范围' },
+  ];
+  const context = issue86RotationFixture({ interactionCards: true, questions });
+  await bridge_click_option(context, '生产环境', { waitFinal: false });
+  await eventually(
+    () => context.timeline.some((e) => e.kind === 'text-message' && e.text.includes('请用文字描述改动范围')),
+    '第 2 题（文本题）未呈现',
+  );
+  const textQuestion = context.timeline.filter(
+    (e) => e.kind === 'text-message' && e.text.includes('请用文字描述改动范围'),
+  ).at(-1);
+  const turn = context.bridge.accept(event('om-86-scope-answer', '后端模块', {
+    root_id: 'om-86-prompt',
+    parent_id: textQuestion.messageId,
+    thread_id: 'omt-86',
+  }));
+  await Promise.race([
+    context.submitStarted.promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('text answer never reached')), 1_000)),
+  ]);
+  context.answerAccepted.resolve();
+  await turn;
+  await context.bridge.waitForIdle();
+  const patches = context.timeline.filter((e) => e.kind === 'card-patch');
+  assert.equal(patches.length, 1, '文本题不得回写任何卡');
+  assert.ok(JSON.stringify(JSON.parse(patches[0].content)).includes('✅ 已选择：生产环境'),
+    '唯一的回执必须是第 1 题的答案');
+});
+
+test('issue #162: 已答回执保留原题文本、标题与说明', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const cardPatch = context.timeline.filter((e) => e.kind === 'card-patch').at(-1);
+  const json = JSON.stringify(JSON.parse(cardPatch.content));
+  assert.ok(json.includes('请选择测试环境'), '原题文本必须保留（不得退化为「请输入你的回答。」）');
+  assert.ok(json.includes('测试环境'), '题头必须保留');
 });
 
 test('issue #86: finalize failure degrades without blocking the interaction', async () => {
@@ -8580,7 +8911,7 @@ function stepPushClockFixture() {
   };
 }
 
-function stepPushChannel({ cardWrites, streamCalls, streamError = null } = {}) {
+function stepPushChannel({ cardWrites, streamCalls, streamError = null, recalls = [], recallFailure = null } = {}) {
   const writes = cardWrites ?? [];
   const calls = streamCalls ?? [];
   return {
@@ -8589,6 +8920,12 @@ function stepPushChannel({ cardWrites, streamCalls, streamError = null } = {}) {
       calls.push({ chatId, options });
       await markdown({ setContent: async (content) => writes.push(content) });
       return { messageId: 'om_step_card' };
+    },
+    // recallMessage 契约：成功返回 true、失败返回 false（bridge 据此保留重试）。
+    recallMessage: async (messageId) => {
+      if (recallFailure?.(messageId)) return false;
+      recalls.push(messageId);
+      return true;
     },
   };
 }
@@ -10408,4 +10745,622 @@ test('step push streaming_card mode: a seal failure falls back to the post ladde
     false,
     'no card claims the answer was visible when its seal failed',
   );
+});
+
+// ── 思考中状态（静默期心跳）────────────────────────────────────────────────
+
+function stepPushPostClient({ onPost, onUpdateMessage, onDelete } = {}) {
+  let sequence = 0;
+  return {
+    im: { v1: { message: {
+      reply: async (request) => {
+        sequence += 1;
+        onPost(request, `om_post_${sequence}`);
+        return { code: 0, data: { message_id: `om_post_${sequence}` } };
+      },
+      create: async (request) => {
+        sequence += 1;
+        onPost(request, `om_post_${sequence}`);
+        return { code: 0, data: { message_id: `om_post_${sequence}` } };
+      },
+      update: async (request) => {
+        onUpdateMessage(request);
+        return { code: 0 };
+      },
+      delete: async (request) => {
+        onDelete?.(request);
+        return { code: 0 };
+      },
+    } } },
+  };
+}
+
+test('step push: silence over the threshold surfaces a thinking heartbeat, recalled at turn end', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const order = [];
+  const recalls = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => {
+        const entry = { kind: 'post', id: messageId, text: stepPushMessageText(request) };
+        order.push(entry);
+        sent.push(entry);
+      },
+      onUpdateMessage: () => {},
+    }),
+    channel: {
+      stream: async () => { throw new Error('not used'); },
+      recallMessage: async (messageId) => {
+        order.push({ kind: 'recall', id: messageId });
+        recalls.push(messageId);
+        return true;
+      },
+    },
+    harness: stepPushHarness(async () => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '思考后的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_1', '想一想'));
+  await bridge.waitForIdle();
+
+  const heartbeat = sent.find((entry) => entry.text.includes('⏳ 正在思考中…'));
+  assert.ok(heartbeat, 'the thinking heartbeat must appear after the silence threshold');
+  assert.deepEqual(recalls, [heartbeat.id], 'the heartbeat must be recalled when the turn ends');
+  const recallOrder = order.findIndex((entry) => entry.kind === 'recall');
+  const finalOrder = order.findIndex((entry) => entry.kind === 'post' && entry.text === '思考后的答案。');
+  assert.ok(recallOrder !== -1 && finalOrder !== -1, 'recall and final answer both delivered');
+  assert.ok(recallOrder < finalOrder, 'the heartbeat recall must precede the final answer post');
+  assert.equal(sent.at(-1).text, '思考后的答案。');
+});
+
+test('step push: the thinking heartbeat refreshes elapsed time in place', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const updates = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: (request) => updates.push({ messageId: request.path.message_id, text: stepPushMessageText(request) }),
+    }),
+    channel: stepPushChannel(),
+    harness: stepPushHarness(async () => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      clock.now += 30_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '思考后的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_2', '想一想'));
+  await bridge.waitForIdle();
+
+  assert.ok(sent.some((entry) => entry.text.includes('⏳ 正在思考中…')), 'the heartbeat appears');
+  assert.equal(updates.length, 1, 'one in-place refresh within the silence window');
+  assert.match(updates[0].text, /已运行 \d+:\d\d/);
+  const heartbeatPostId = sent.find((entry) => entry.text.includes('⏳ 正在思考中…'))?.id;
+  assert.ok(heartbeatPostId, 'the heartbeat post id is captured');
+  assert.equal(updates[0].messageId, heartbeatPostId, 'the refresh must edit the same heartbeat message');
+  assert.deepEqual(sent.at(-1).text, '思考后的答案。');
+});
+
+test('step push: a real event recalls the heartbeat before pushing the step', async () => {
+  const fixture = stateFixture();
+  const order = [];
+  const recalls = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => order.push({ kind: 'post', id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: {
+      stream: async () => { throw new Error('not used'); },
+      recallMessage: async (messageId) => { order.push({ kind: 'recall', id: messageId }); recalls.push(messageId); return true; },
+    },
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      return '工具结果后的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_3', '想一想再查'));
+  await bridge.waitForIdle();
+
+  const heartbeat = order.find((entry) => entry.text?.includes('⏳ 正在思考中…'));
+  assert.ok(heartbeat, 'the heartbeat appeared');
+  const toolIndex = order.findIndex((entry) => entry.text?.includes('✅ bash — ls'));
+  const recallIndex = order.findIndex((entry) => entry.kind === 'recall');
+  assert.ok(recallIndex !== -1, 'the heartbeat must be recalled when a real event lands');
+  assert.ok(recallIndex < toolIndex, 'the recall must happen before the real step pushes');
+  assert.equal(recalls.length, 1, 'exactly one recall');
+});
+
+// ── 思考中状态：评审补充覆盖（关模式/熔断隔离/更新失败/上限/abort 撤回）────
+
+function thinkingClock() {
+  const clock = { now: 1_700_000_000_000 };
+  return {
+    clock,
+    stepPushClock: {
+      now: () => clock.now,
+      delay: async (ms) => { clock.now += ms; },
+    },
+    advance: (ms) => { clock.now += ms; },
+  };
+}
+
+test('thinking status: off mode never pushes a heartbeat', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const cardWrites = [];
+  const think = thinkingClock();
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: stepPushChannel({ cardWrites }),
+    harness: stepPushHarness(async () => {
+      think.advance(30_000);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '关模式答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: false,
+    stepPushClock: think.stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_off', '关模式长任务'));
+  await bridge.waitForIdle();
+
+  assert.ok(
+    !sent.some((entry) => entry.text.includes('⏳ 正在思考中…')),
+    'off mode must never push a thinking heartbeat',
+  );
+  assert.deepEqual(cardWrites, ['关模式答案。'], 'off mode keeps the streaming-card final answer');
+});
+
+test('thinking status: the heartbeat never counts toward the 200-message breaker', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const think = thinkingClock();
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: stepPushChannel(),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      for (let index = 0; index < 200; index += 1) {
+        think.advance(250);
+        await options.onUpdate({ type: 'tool', name: 'bash', arguments: `{"command":"cmd-${index}"}` });
+      }
+      think.advance(25_000);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '熔断后答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock: think.stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_breaker', '两百步任务'));
+  await bridge.waitForIdle();
+
+  const stepMessages = sent.filter((entry) => entry.text.includes('✅ bash'));
+  assert.equal(stepMessages.length, 200, 'every real step must land despite the long turn');
+  assert.ok(
+    sent.some((entry) => entry.text.includes('⏳ 正在思考中…')),
+    'the heartbeat still appears on a turn that outlives the silence threshold',
+  );
+  assert.equal(sent.at(-1).text, '熔断后答案。');
+});
+
+test('thinking status: heartbeat update failure never breaks the turn', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const recalls = [];
+  let updateCalls = 0;
+  const think = thinkingClock();
+  const bridge = new FeishuHarnessBridge({
+    client: {
+      im: { v1: { message: {
+        reply: async (request) => {
+          const text = stepPushMessageText(request);
+          sent.push({ id: `om_r_${sent.length + 1}`, text });
+          return { code: 0, data: { message_id: `om_r_${sent.length}` } };
+        },
+        create: async (request) => {
+          const text = stepPushMessageText(request);
+          sent.push({ id: `om_c_${sent.length + 1}`, text });
+          return { code: 0, data: { message_id: `om_c_${sent.length}` } };
+        },
+        update: async () => {
+          updateCalls += 1;
+          throw new Error('update rejected');
+        },
+      } } },
+    },
+    channel: stepPushChannel({ recalls }),
+    harness: stepPushHarness(async () => {
+      think.advance(25_000);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      think.advance(30_000);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '更新失败回合的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    logger: { debug() {}, error() {}, warn() {} },
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock: think.stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_upd_fail', '更新失败场景'));
+  await bridge.waitForIdle();
+
+  assert.ok(updateCalls >= 1, 'the in-place refresh was attempted');
+  assert.deepEqual(recalls, [sent.find((entry) => entry.text.includes('⏳ 正在思考中…'))?.id],
+    'the heartbeat is still recalled at turn end despite the update failure');
+  assert.deepEqual(sent.at(-1).text, '更新失败回合的答案。', 'the turn completes despite the update failure');
+});
+
+test('thinking status: heartbeat updates stop at the 30-update cap', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let updateCalls = 0;
+  const think = thinkingClock();
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => { updateCalls += 1; },
+    }),
+    channel: stepPushChannel(),
+    harness: stepPushHarness(async () => {
+      think.advance(25_000);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      for (let index = 0; index < 31; index += 1) {
+        think.advance(30_000);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      return '超长静默后的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock: think.stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_cap', '超长静默'));
+  await bridge.waitForIdle();
+
+  assert.ok(updateCalls >= 10 && updateCalls <= 30, 'the in-place refresh respects the 30-update cap');
+  assert.equal(sent.at(-1).text, '超长静默后的答案。');
+});
+
+test('thinking status: abort recalls the live heartbeat', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const recalls = [];
+  const controller = new AbortController();
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: stepPushChannel({ recalls }),
+    harness: stepPushHarness(async () => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      controller.abort();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '中止后的说明。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    signal: controller.signal,
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_abort', 'abort 场景'));
+  await bridge.waitForIdle();
+
+  assert.deepEqual(recalls, ['om_post_1'], 'the live heartbeat must be recalled on abort');
+  assert.equal(sent.at(-1).text, '中止后的说明。');
+});
+
+test('thinking status: breaker-tripped events do not cause heartbeat churn', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const think = thinkingClock();
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: stepPushChannel(),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      // 250 events at 250ms virtual spacing (over the 200 breaker): the
+      // silence window restarts per event, so no heartbeat should appear
+      // mid-stretch and none should be create/recall churned.
+      for (let index = 0; index < 250; index += 1) {
+        think.advance(250);
+        await options.onUpdate({ type: 'tool', name: 'bash', arguments: `{"command":"cmd-${index}"}` });
+      }
+      return '超限回合的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock: think.stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_churn', '超限回合'));
+  await bridge.waitForIdle();
+
+  const heartbeats = sent.filter((entry) => entry.text.includes('⏳ 正在思考中…'));
+  assert.equal(heartbeats.length, 0, 'breaker-tripped events must not churn heartbeats');
+  assert.equal(sent.at(-1).text, '超限回合的答案。');
+});
+
+test('thinking status: two silence periods recall each heartbeat exactly once', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const recalls = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: stepPushChannel({ recalls }),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '两段思考的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_two', '两段思考'));
+  await bridge.waitForIdle();
+
+  const heartbeatIds = sent.filter((entry) => entry.text.includes('⏳ 正在思考中…')).map((entry) => entry.id);
+  assert.equal(heartbeatIds.length, 2, 'two heartbeats created across two silence periods');
+  assert.deepEqual([...recalls].sort(), [...heartbeatIds].sort(), 'each heartbeat recalled exactly once');
+  assert.equal(sent.at(-1).text, '两段思考的答案。');
+});
+
+test('thinking status: a failed recall is retried at the next boundary without duplicating the heartbeat', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const updates = [];
+  const recalls = [];
+  const recallAttempts = [];
+  const stuckId = { current: null };
+  let failedOnce = false;
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: (request) => updates.push({ messageId: request.path.message_id, text: stepPushMessageText(request) }),
+    }),
+    channel: stepPushChannel({
+      recalls,
+      recallFailure: (messageId) => {
+        recallAttempts.push(messageId);
+        if (failedOnce) return false;
+        failedOnce = true;
+        stuckId.current = messageId;
+        return true;
+      },
+    }),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      // 真实事件边界：第一次撤回失败——id 必须保留重试，而不是被清空。
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      clock.now += 30_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '重试撤回的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_retry', '撤回重试'));
+  await bridge.waitForIdle();
+
+  const heartbeat = sent.find((entry) => entry.text.includes('⏳ 正在思考中…'));
+  assert.ok(heartbeat, 'the heartbeat appears');
+  assert.equal(stuckId.current, heartbeat.id, 'the first recall attempt failed for the live heartbeat');
+  assert.deepEqual(recallAttempts, [heartbeat.id, heartbeat.id], 'the failed id is retried at the next boundary (turn end)');
+  assert.deepEqual(recalls, [heartbeat.id], 'the retry succeeds exactly once — no double recall');
+  assert.equal(updates.length, 1, 'while the recall was stuck the watchdog kept refreshing instead of recreating');
+  assert.equal(updates[0].messageId, heartbeat.id, 'the refresh must stay on the same stuck heartbeat');
+  assert.equal(sent.filter((entry) => entry.text.includes('⏳ 正在思考中…')).length, 1, 'no duplicate heartbeat was created');
+  assert.equal(sent.at(-1).text, '重试撤回的答案。');
+});
+
+test('thinking status: a permanently failing recall is retried at most three times', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const recalls = [];
+  const recallAttempts = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: stepPushChannel({
+      recalls,
+      recallFailure: (messageId) => { recallAttempts.push(messageId); return true; },
+    }),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"pwd"}' });
+      return '放弃重试的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_giveup', '撤回放弃'));
+  await bridge.waitForIdle();
+
+  assert.equal(recallAttempts.length, 3, 'exactly three attempts: two real events plus turn end');
+  assert.equal(new Set(recallAttempts).size, 1, 'all attempts target the same stuck heartbeat');
+  assert.deepEqual(recalls, [], 'a permanently failing recall never reports success');
+  assert.ok(sent.some((entry) => entry.text.includes('⏳ 正在思考中…')), 'the heartbeat was created');
+});
+
+test('thinking status: a heartbeat created while a real step pushes is recalled late, not registered', async () => {
+  const fixture = stateFixture();
+  const updates = [];
+  const order = [];
+  const recalls = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  let releaseHeartbeat;
+  const heartbeatInFlight = new Promise((resolve) => { releaseHeartbeat = resolve; });
+  let replyCalls = 0;
+  let lateRecallObservedDuringAsk = false;
+  const bridge = new FeishuHarnessBridge({
+    client: { im: { v1: { message: {
+      reply: async (request) => {
+        replyCalls += 1;
+        const text = stepPushMessageText(request);
+        const id = `om_post_${replyCalls}`;
+        order.push({ kind: 'post', id, text });
+        if (text.includes('⏳ 正在思考中…')) await heartbeatInFlight;
+        return { code: 0, data: { message_id: id } };
+      },
+      update: async (request) => {
+        updates.push(request.path.message_id);
+        return { code: 0 };
+      },
+    } } } },
+    channel: {
+      stream: async () => { throw new Error('not used'); },
+      recallMessage: async (messageId) => {
+        order.push({ kind: 'recall', id: messageId });
+        recalls.push(messageId);
+        return true;
+      },
+    },
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      clock.now += 25_000;
+      // 心跳创建请求已在途并阻塞；此时真实工具步骤到达并直推。
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      releaseHeartbeat();
+      // 留出真实时间让看门狗处理迟到的心跳创建返回。
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const heartbeatIdDuringAsk = order.find((entry) => entry.text.includes('⏳ 正在思考中…'))?.id;
+      lateRecallObservedDuringAsk = heartbeatIdDuringAsk !== undefined
+        && recalls.includes(heartbeatIdDuringAsk);
+      return '并发回合的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_late', '并发心跳'));
+  await bridge.waitForIdle();
+
+  const heartbeatId = order.find((entry) => entry.text.includes('⏳ 正在思考中…'))?.id;
+  assert.ok(heartbeatId, 'the heartbeat post was dispatched');
+  assert.equal(lateRecallObservedDuringAsk, true, 'the late heartbeat must be recalled as soon as its create returns — not parked until turn end');
+  const recallEntries = order.filter((entry) => entry.kind === 'recall' && entry.id === heartbeatId);
+  assert.equal(recallEntries.length, 1, 'the late heartbeat is recalled exactly once');
+  assert.deepEqual(recalls, [heartbeatId], 'the late recall went through the channel');
+  const finalOrder = order.findIndex((entry) => entry.text === '并发回合的答案。');
+  assert.ok(order.findIndex((entry) => entry.kind === 'recall') < finalOrder, 'the late recall precedes the final answer');
+  assert.deepEqual(updates, [], 'the late heartbeat must never be registered for in-place refresh');
+  assert.deepEqual(recalls, [...new Set(recalls)], 'the late heartbeat is not recalled again at turn end');
+  assert.equal(order.at(-1).text, '并发回合的答案。');
 });

@@ -6,6 +6,7 @@ import { apply as applyQq } from './channels/qq/index.mjs';
 import { apply as applySlack } from './channels/slack/index.mjs';
 import { apply as applyTelegram } from './channels/telegram/index.mjs';
 import { apply as applyWecom } from './channels/wecom/index.mjs';
+import { apply as applyWecomApp } from './channels/wecom-app/index.mjs';
 import { apply as applyWeixin } from './channels/weixin/index.mjs';
 import { apply as applyWhatsapp } from './channels/whatsapp/index.mjs';
 import { installOutboundArtifactTool } from '../../src/channels/shared/semantic/artifact.mjs';
@@ -45,6 +46,7 @@ export function createImHostPlugin(internals = {}) {
   const startWeixin = internals.applyWeixin ?? applyWeixin;
   const startDingtalk = internals.applyDingtalk ?? applyDingtalk;
   const startWecom = internals.applyWecom ?? applyWecom;
+  const startWecomApp = internals.applyWecomApp ?? applyWecomApp;
   const startQq = internals.applyQq ?? applyQq;
   const startSlack = internals.applySlack ?? applySlack;
   const startTelegram = internals.applyTelegram ?? applyTelegram;
@@ -56,6 +58,7 @@ export function createImHostPlugin(internals = {}) {
     ['weixin', startWeixin],
     ['dingtalk', startDingtalk],
     ['wecom', startWecom],
+    ['wecomApp', startWecomApp],
     ['qq', startQq],
     ['slack', startSlack],
     ['telegram', startTelegram],
@@ -145,14 +148,16 @@ export function createImHostPlugin(internals = {}) {
       }
     }
     const failures = [];
-    for (const [channel, start] of channels) {
+    // Each channel mounts its management RPC before awaiting initialization.
+    // Start them together so a slow channel cannot leave later routes absent.
+    await Promise.all(channels.map(async ([channel, start]) => {
       try {
         await start(ctx, channelConfig(config, channel, deliveryService));
       } catch (error) {
         failures.push(error);
         logger.error?.(`[dsh-im] failed to activate ${channel}; continuing with the remaining channels`, error);
       }
-    }
+    }));
     if (failures.length === channels.length) {
       throw new AggregateError(failures, 'dsh-im failed to activate every channel');
     }

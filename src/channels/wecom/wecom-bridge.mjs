@@ -1,6 +1,7 @@
 import { createDeferredDeliveryCoordinator, deferredOutcomeText } from '../shared/deferred-delivery-coordinator.mjs';
 import { generateReqId } from '@wecom/aibot-node-sdk';
 import { randomUUID } from 'node:crypto';
+import { wecomSendDiagnostic, wecomSendError } from './send-error.mjs';
 import {
   parseWecomMenu, wecomList, wecomMenu, wecomMenuText, wecomSettings, wecomTemplateCard,
 } from './wecom-cards.mjs';
@@ -54,7 +55,6 @@ import {
   createDeliveryReceipt,
 } from '../shared/semantic/delivery.mjs';
 import {
-  channelDeliveryFailure,
   clearLastMessageFailure,
   messageFailureText,
   setLastMessageFailure,
@@ -616,6 +616,7 @@ export class WecomHarnessBridge {
   }
 
   async #showMain(frame, { welcome = false } = {}) {
+    const previousFailure = this.#status.lastMessageError;
     const key = conversationKey(frame);
     const workspace = this.#harness.currentWorkspace?.();
     const sessionId = this.#state.sessionFor(key);
@@ -650,10 +651,21 @@ export class WecomHarnessBridge {
       presetLabel: settings?.agentPresetCatalog?.items.find((item) => item.id === currentPreset)?.label,
     });
     await this.#sendMenu(frame, settingsMenu, { active: welcome });
-    if (welcome) return;
-    await this.#sendMenu(frame, wecomMenu({ workspace,
-      workspaces: (paths?.paths ?? (workspace ? [workspace] : [])).map((path) => [path, `/workspace ${path}`]),
-    }), { active: true });
+    if (!welcome) {
+      await this.#sendMenu(frame, wecomMenu({ workspace,
+        workspaces: (paths?.paths ?? (workspace ? [workspace] : [])).map((path) => [path, `/workspace ${path}`]),
+      }), { active: true });
+    }
+    this.#clearMenuFailure(previousFailure);
+  }
+
+  #clearMenuFailure(previousFailure) {
+    // Do not clear a model failure or one recorded by a concurrent request.
+    if (previousFailure?.reason === 'WECOM_MENU_DELIVERY'
+      && this.#status.lastMessageError === previousFailure) {
+      clearLastMessageFailure(this.#status);
+      this.#status.lastError = null;
+    }
   }
 
   #rememberMenu(frame, menu) {
@@ -675,6 +687,8 @@ export class WecomHarnessBridge {
     const body = bodyOf(frame);
     const chatId = body.chattype === 'group' ? body.chatid : body.from.userid;
     const card = this.#rememberMenu(frame, menu);
+    const operation = welcome ? 'replyWelcome'
+      : active || this.#cardFrames.has(frame) ? 'sendMessage' : 'replyTemplateCard';
     try {
       if (welcome) {
         await this.#client.replyWelcome(frame, { msgtype: 'template_card', template_card: card });
@@ -683,11 +697,20 @@ export class WecomHarnessBridge {
       } else {
         await this.#client.replyTemplateCard(frame, card);
       }
-    } catch (error) {
-      this.#menus.delete(card.task_id);
-      this.#logger.warn?.('[dsh-im:wecom] menu delivery failed; using text:', error);
+    } catch (cause) {
+      const error = wecomSendError(cause, operation);
+      // A timed-out card may already be visible and must remain usable.
+      if (error.code !== 'channel-delivery-uncertain') this.#menus.delete(card.task_id);
+      // Only a definite card rejection can safely fall back to text.
+      if (error.code !== 'channel-delivery-failed' || error.providerCode === undefined) throw error;
+      this.#logger.warn?.('[dsh-im:wecom] menu delivery failed; using text:', wecomSendDiagnostic(error));
       if (welcome) {
-        await this.#client.replyWelcome(frame, { msgtype: 'text', text: { content: wecomMenuText(menu) } });
+        const content = wecomMenuText(menu);
+        try {
+          await this.#client.replyWelcome(frame, { msgtype: 'text', text: { content } });
+        } catch (cause) {
+          throw wecomSendError(cause, 'replyWelcome');
+        }
       } else {
         await this.#sendImmediate(frame, chatId, wecomMenuText(menu));
       }
@@ -705,7 +728,10 @@ export class WecomHarnessBridge {
     task = this.#processEvent(frame).catch((error) => {
       if (this.#signal?.aborted) return;
       this.#status.lastError = error?.message ?? String(error);
-      this.#logger.warn?.('[dsh-im:wecom] menu event failed:', error);
+      const failure = setLastMessageFailure(this.#status, error, {
+        reason: error?.wecomOperation ? 'wecom-menu-delivery' : undefined,
+      });
+      this.#logger.warn?.(`[dsh-im:wecom] menu event failed [${failure.referenceId}]`, wecomSendDiagnostic(error));
     }).finally(() => {
       this.#eventIds.delete(id);
       this.#commandTasks.delete(task);
@@ -802,6 +828,7 @@ export class WecomHarnessBridge {
     const menu = parseWecomMenu(text);
     const options = { signal: this.#signal };
     if (menu) {
+      const previousFailure = this.#status.lastMessageError;
       let content;
       if (menu.section === 'main') {
         await this.#showMain(frame);
@@ -846,6 +873,7 @@ export class WecomHarnessBridge {
         content = wecomList({ title, entries, description, ...menu });
       }
       await this.#sendMenu(frame, content);
+      this.#clearMenuFailure(previousFailure);
       return { messages: [] };
     }
     const command = text.toLowerCase();
@@ -960,10 +988,15 @@ export class WecomHarnessBridge {
       ).catch((error) => {
         if (error?.code === 'turn-stopped' || this.#signal?.aborted) return;
         this.#status.lastError = error?.message ?? String(error);
-        const failure = setLastMessageFailure(this.#status, error);
+        const failure = setLastMessageFailure(this.#status, error, {
+          reason: parseWecomMenu(commandText) && error?.wecomOperation ? 'wecom-menu-delivery' : undefined,
+        });
         this.#logger.error?.(
           `[dsh-im:wecom] failed to process a command [${failure.referenceId}]`,
+          wecomSendDiagnostic(error),
         );
+        if (this.#cardFrames.has(frame) && error?.wecomOperation
+          && error.code !== 'channel-delivery-failed') return;
         return this.#sendImmediate(frame, chatId, messageFailureText(failure))
           .catch(() => undefined);
       }).finally(() => {
@@ -1149,6 +1182,7 @@ export class WecomHarnessBridge {
   async #processFastCommand(frame, messageId, chatId, key, message, runner) {
     this.#signal?.throwIfAborted();
     if (this.#state.hasSeen(messageId)) return;
+    const previousFailure = this.#status.lastMessageError;
     await this.#state.markSeen(messageId);
     this.#status.messagesReceived += 1;
     this.#status.lastMessageAt = new Date().toISOString();
@@ -1171,17 +1205,24 @@ export class WecomHarnessBridge {
     for (const reply of result?.messages ?? [result?.message]) {
       if (reply) await this.#sendImmediate(frame, chatId, reply);
     }
-    this.#status.lastError = null;
+    if (!this.#status.lastMessageError || this.#status.lastMessageError === previousFailure) {
+      this.#status.lastError = null;
+    }
   }
 
   async #sendActive(chatId, text) {
     const providerMessageIds = [];
     for (const chunk of splitUtf8(text)) {
       this.#signal?.throwIfAborted();
-      const result = await this.#client.sendMessage(
-        chatId,
-        { msgtype: 'markdown', markdown: { content: chunk } },
-      );
+      let result;
+      try {
+        result = await this.#client.sendMessage(
+          chatId,
+          { msgtype: 'markdown', markdown: { content: chunk } },
+        );
+      } catch (error) {
+        throw wecomSendError(error, 'sendMessage');
+      }
       const messageId = providerMessageId(result);
       if (messageId) providerMessageIds.push(messageId);
     }
@@ -1434,7 +1475,7 @@ export class WecomHarnessBridge {
           });
         }
       } catch (error) {
-        textSendError = channelDeliveryFailure(error);
+        textSendError = wecomSendError(error, 'sendMessage');
         this.#logger.warn?.(
           '[dsh-im:wecom] final text delivery failed; continuing with result files:',
           error,
@@ -1491,6 +1532,7 @@ export class WecomHarnessBridge {
       });
       this.#logger.error?.(
         `[dsh-im:wecom] failed to process an inbound message [${failure.referenceId}]`,
+        wecomSendDiagnostic(error),
       );
       const errorText = messageFailureText(failure);
       const visibleError = batchFailureMessage

@@ -7,7 +7,7 @@ import { WecomRuntime } from '../../../src/channels/wecom/wecom-runtime.mjs';
 import { wecomList, wecomTemplateCard } from '../../../src/channels/wecom/wecom-cards.mjs';
 import { COMMAND_PERMISSION_DENIED_MESSAGE, directAccessPolicy } from '../access-policy-fixture.mjs';
 
-function setup({ harness = {}, accessPolicy } = {}) {
+function setup({ harness = {}, accessPolicy, logger = { warn() {} } } = {}) {
   const sent = [];
   const seen = new Set();
   let session = 'session-old';
@@ -28,7 +28,7 @@ function setup({ harness = {}, accessPolicy } = {}) {
       chatId, card: body.template_card, content: body.markdown?.content }),
   });
   harness = { ensureRunning: async () => {}, currentWorkspace: () => process.cwd(), ...harness };
-  const bridge = new WecomHarnessBridge({ client, state, harness, accessPolicy, logger: { warn() {} } });
+  const bridge = new WecomHarnessBridge({ client, state, harness, accessPolicy, logger });
   const frame = (content = '/menu', overrides = {}) => ({
     headers: { req_id: `req-${++sequence}` },
     body: { msgid: `msg-${sequence}`, chattype: 'single', from: { userid: 'member-1' },
@@ -237,11 +237,118 @@ test('menu and new-session buttons respond while a question is running', async (
 
 test('failed card delivery keeps text commands usable', async () => {
   const f = setup();
-  f.client.replyTemplateCard = async () => { throw new Error('card unavailable'); };
-  f.client.sendMessage = async () => { throw new Error('card unavailable'); };
+  f.client.replyTemplateCard = async () => { throw { errcode: -1, errmsg: 'card rejected' }; };
+  f.client.sendMessage = async () => { throw { errcode: -1, errmsg: 'card rejected' }; };
   await f.bridge.accept(f.frame());
   assert.match(f.sent.at(-1).content, /新会话：\/new/);
   assert.match(f.sent.at(-1).content, /\/stop/);
+});
+
+test('reopening a menu reports SDK rate limits and clears the error after recovery', async () => {
+  const errors = [];
+  const f = setup({ logger: { warn() {}, error: (...args) => errors.push(args) } });
+  await f.bridge.accept(f.frame());
+  await f.click('新会话');
+  const card = f.sent.findLast((item) => item.type === 'update').card;
+  const send = f.client.sendMessage;
+  let attempts = 0;
+  f.client.sendMessage = async () => {
+    attempts += 1;
+    throw { errcode: 45009, errmsg: 'private provider payload' };
+  };
+  await f.bridge.acceptEvent(f.clickFrame('重新打开菜单', {}, {}, card));
+  const failure = f.bridge.status.lastMessageError;
+  assert.equal(failure.code, 'CHANNEL_RATE_LIMIT');
+  assert.equal(failure.reason, 'WECOM_MENU_DELIVERY');
+  assert.equal(attempts, 1, 'do not keep sending on the rate-limited active channel');
+  assert.match(errors[0][0], new RegExp(failure.referenceId));
+  assert.equal(errors[0][1].providerCode, 45009);
+  assert.equal(errors[0][1].operation, 'sendMessage');
+  assert.doesNotMatch(JSON.stringify(errors), /private provider/);
+
+  f.client.sendMessage = send;
+  await f.bridge.acceptEvent(f.clickFrame('重新打开菜单', {}, {}, card));
+  assert.equal(f.bridge.status.lastMessageError, null);
+  assert.equal(f.latest().main_title.title, '工作区与任务');
+});
+
+test('a timed-out reopened card is not resent and remains interactive if it was delivered', async () => {
+  const f = setup();
+  await f.bridge.accept(f.frame());
+  await f.click('新会话');
+  const card = f.sent.findLast((item) => item.type === 'update').card;
+  const send = f.client.sendMessage;
+  let attempts = 0;
+  let deliveredCard;
+  f.client.sendMessage = async (_chatId, body) => {
+    attempts += 1;
+    deliveredCard = body.template_card;
+    throw new Error('Reply ack timeout (5000ms) for reqId: timed-out-card');
+  };
+  await f.bridge.acceptEvent(f.clickFrame('重新打开菜单', {}, {}, card));
+  assert.equal(f.bridge.status.lastMessageError.code, 'CHANNEL_DELIVERY_UNCERTAIN');
+  assert.equal(attempts, 1);
+  f.client.sendMessage = send;
+  await f.bridge.acceptEvent(f.clickFrame('应用设置', {}, {}, deliveredCard));
+  assert.equal(f.bridge.status.lastMessageError, null);
+  assert.ok(f.sent.some((item) => item.content === '设置未改变。'));
+});
+
+test('menu card and text rejection retains the final provider code in the failure log', async () => {
+  const errors = [];
+  const f = setup({ logger: { warn() {}, error: (...args) => errors.push(args) } });
+  await f.bridge.accept(f.frame());
+  await f.click('新会话');
+  const card = f.sent.findLast((item) => item.type === 'update').card;
+  const attempts = [];
+  f.client.sendMessage = async (_chatId, body) => {
+    attempts.push(body.msgtype);
+    throw { errcode: body.template_card ? -1 : 48002, errmsg: 'private rejection' };
+  };
+  await f.bridge.acceptEvent(f.clickFrame('重新打开菜单', {}, {}, card));
+  assert.deepEqual(attempts, ['template_card', 'markdown']);
+  assert.equal(f.bridge.status.lastMessageError.code, 'CHANNEL_PERMISSION');
+  assert.equal(errors[0][1].providerCode, 48002);
+});
+
+test('welcome menu delivery failures are structured and recover on a successful menu command', async () => {
+  const f = setup();
+  const welcome = f.client.replyWelcome;
+  f.client.replyWelcome = async () => { throw { errcode: 48002, errmsg: 'denied' }; };
+  await f.bridge.acceptEvent(f.frame('', { msgtype: 'event', event: { eventtype: 'enter_chat' } }));
+  assert.equal(f.bridge.status.lastMessageError.code, 'CHANNEL_PERMISSION');
+  f.client.replyWelcome = welcome;
+  await f.bridge.accept(f.frame('/m'));
+  assert.equal(f.bridge.status.lastMessageError, null);
+});
+
+test('successful menus do not clear Harness failures or errors from concurrent requests', async () => {
+  let release;
+  const f = setup({ harness: {
+    ensureRunning: async () => {
+      throw Object.assign(new Error('Harness offline'), { code: 'harness-connect-failed' });
+    },
+  } });
+  await f.bridge.accept(f.frame('/status'));
+  const harnessFailure = f.bridge.status.lastMessageError;
+  assert.equal(harnessFailure.code, 'HARNESS_CONNECT');
+  await f.bridge.accept(f.frame('/m'));
+  assert.deepEqual(f.bridge.status.lastMessageError, harnessFailure);
+
+  const send = f.client.sendMessage;
+  f.client.sendMessage = async () => { throw { errcode: 45009 }; };
+  await f.bridge.accept(f.frame('/m'));
+  assert.equal(f.bridge.status.lastMessageError.reason, 'WECOM_MENU_DELIVERY');
+  f.client.sendMessage = send;
+  f.harness.listWorkspaceSessions = () => new Promise((resolve) => { release = resolve; });
+  const recovering = f.bridge.accept(f.frame('/m'));
+  while (!release) await new Promise((resolve) => setImmediate(resolve));
+  await f.bridge.accept(f.frame('/status'));
+  const concurrentFailure = f.bridge.status.lastMessageError;
+  release({ sessions: [] });
+  await recovering;
+  assert.deepEqual(f.bridge.status.lastMessageError, concurrentFailure);
+  assert.equal(f.bridge.status.lastError, 'Harness offline');
 });
 
 test('all list pages stay within WeCom button limits', () => {
