@@ -11,6 +11,7 @@ import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } fr
 import { normalizeLastMessageError } from "../../last-message-error.js";
 import { normalizeAccessPolicy } from "../../../../src/channels/shared/access-policy.mjs";
 import { normalizeContextEnhancementConfig } from "../../../../src/channels/shared/context-enhancement.mjs";
+import { normalizeFeishuStepPushMode } from "../../../../src/channels/feishu/step-push-mode.mjs";
 
 export const FEISHU_RPC_CHANNEL = "/feishu";
 
@@ -33,6 +34,7 @@ export const FEISHU_ENDPOINTS = Object.freeze({
   setGroupResponseMode: "bot.group-response-mode.set",
   setGroupTopicReply: "bot.group-topic-reply.set",
   setStepPush: "bot.step-push.set",
+  setStepPushMode: "bot.step-push-mode.set",
   // Kept for rolling upgrades. The multi-bot UI never calls these endpoints.
   testConnection: "connection.test",
   disconnect: "connection.disconnect",
@@ -219,6 +221,7 @@ export function normalizeBotConnection(value, fallbackBotId) {
     groupResponseMode: normalizeGroupResponseMode(value.groupResponseMode),
     groupTopicReply: value.groupTopicReply === true,
     stepPush: value.stepPush === true,
+    stepPushMode: normalizeFeishuStepPushMode(value.stepPushMode),
     groupMessagePermissionGranted: value.groupMessagePermissionGranted === true,
     bot: normalizeBot(value.bot),
     health: normalizeHealth(value.health, connected),

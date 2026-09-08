@@ -464,21 +464,20 @@ function RemoveConfirmation({ bot, busy, onConfirm, onCancel }) {
   );
 }
 
-/** Toggle row for 分步直推, mirroring the group-topic reply toggle pattern. */
-function StepPushEditor({ value = false, disabled = false, onSave }) {
+/** One select for the step-push presentation: off / per-step posts / process card. */
+function StepPushEditor({ value = false, mode = "post", disabled = false, onSave, onModeSave }) {
   const titleId = React.useId();
   const helpId = `${titleId}-help`;
-  const current = value === true ? "on" : "off";
+  const current = value === true ? mode : "off";
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState(null);
 
-  const change = async (event) => {
-    const next = event.target.value === "on";
-    if ((next ? "on" : "off") === current || saving || disabled) return;
+  const save = async (run) => {
+    if (saving || disabled) return;
     setSaving(true);
     setError(null);
     try {
-      await onSave?.(next);
+      await run();
     } catch (cause) {
       setError(cause?.message ?? "分步直推设置保存失败，请重试。");
     } finally {
@@ -486,13 +485,37 @@ function StepPushEditor({ value = false, disabled = false, onSave }) {
     }
   };
 
+  const change = (event) => {
+    const next = event.target.value;
+    if (next === current) return;
+    void save(async () => {
+      if (next === "off") {
+        // Turning off only needs the flag when it was on.
+        if (value === true) await onSave?.(false);
+        return;
+      }
+      const nextMode = next === "streaming_card" ? "streaming_card" : "post";
+      // Enabling (or switching presentation) may need both writes; the flag
+      // must land before the mode so the runtime never sees a mode without
+      // step push enabled.
+      if (value !== true) await onSave?.(true);
+      if (nextMode !== mode) await onModeSave?.(nextMode);
+    });
+  };
+
+  const helpText = current === "off"
+    ? "适合日常问答：执行过程中不显示工具调用等中间步骤，只回复最终结果"
+    : current === "streaming_card"
+      ? "推荐长任务使用：过程与最终答案都在同一张卡片里实时更新，不刷屏"
+      : "每一步都单独发一条消息（含工具调用和过程说明）；注意长任务会连续发送较多消息";
+
   return h("section", {
     className: "dim-feishuGroupControl",
     "aria-labelledby": titleId,
   },
   h("div", { className: "dim-feishuGroupControlHeader" },
     h("div", { className: "dim-presetTitle" },
-      h("h3", { id: titleId }, "分步直推"),
+      h("h3", { id: titleId }, "任务过程展示"),
       h("span", { className: "dim-presetHelp" },
         h("button", {
           type: "button",
@@ -504,7 +527,7 @@ function StepPushEditor({ value = false, disabled = false, onSave }) {
           id: helpId,
           className: "dim-presetTooltip",
           role: "tooltip",
-        }, "开启后逐步推送工具调用与过程说明"))),
+        }, "设置任务执行过程的呈现方式：不显示、实时卡片或逐步消息"))),
     saving
       ? h("span", { className: "dim-feishuGroupControlStatus", role: "status" }, "保存中…")
       : null),
@@ -512,11 +535,13 @@ function StepPushEditor({ value = false, disabled = false, onSave }) {
     className: "dim-feishuGroupSelect",
     value: current,
     disabled: disabled || saving,
-    "aria-label": "分步直推",
-    onChange: (event) => { void change(event); },
+    "aria-label": "任务过程展示",
+    onChange: change,
   },
-  h("option", { value: "off" }, "关闭（保持流式卡模式）"),
-  h("option", { value: "on" }, "开启（逐步推送工具调用与过程说明）")),
+  h("option", { value: "off" }, "不显示过程（只发送最终答案）"),
+  h("option", { value: "streaming_card" }, "实时过程卡（全程一张卡片动态更新）"),
+  h("option", { value: "post" }, "逐步直播（每一步单独发一条消息）")),
+  h("p", { className: "dim-feishuGroupHelp" }, helpText),
   error ? h("p", {
     className: "dim-feishuGroupError",
     role: "alert",
@@ -539,6 +564,7 @@ export function BotCard({
   onAgentPresetSave,
   onContextEnhancementSave,
   onStepPushSave,
+  onStepPushModeSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -627,8 +653,10 @@ export function BotCard({
       }),
       h(StepPushEditor, {
         value: connection.stepPush,
+        mode: connection.stepPushMode,
         disabled: Boolean(busy),
         onSave: onStepPushSave,
+        onModeSave: onStepPushModeSave,
       }),
       provisionContent
         ? h("section", {
@@ -723,6 +751,7 @@ function BotList(props) {
           onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(bot, agentPreset),
           onContextEnhancementSave: (config) => props.onContextEnhancementSave(bot, config),
           onStepPushSave: (stepPush) => props.onStepPushSave(bot, stepPush),
+          onStepPushModeSave: (stepPushMode) => props.onStepPushModeSave(bot, stepPushMode),
           onRequestRemove: () => props.onRequestRemove(bot),
           onConfirmRemove: () => props.onConfirmRemove(bot),
           onCancelRemove: props.onCancelRemove,
@@ -1499,6 +1528,9 @@ export function FeishuSettingsTab({ rpcCall }) {
                   ),
                   onStepPushSave: (connection, stepPush) => saveBotSetting(
                     connection, "step-push", FEISHU_ENDPOINTS.setStepPush, { stepPush },
+                  ),
+                  onStepPushModeSave: (connection, stepPushMode) => saveBotSetting(
+                    connection, "step-push-mode", FEISHU_ENDPOINTS.setStepPushMode, { stepPushMode },
                   ),
                   onRequestRemove: requestRemove,
                   onConfirmRemove: (bot) => void confirmRemove(bot),

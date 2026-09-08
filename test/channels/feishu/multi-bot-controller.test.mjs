@@ -274,6 +274,33 @@ test('stepPush persists and reaches the live runtime without reconnecting', asyn
   await fx.controller.close();
 });
 
+test('stepPushMode persists, normalizes, and reaches the live runtime without reconnecting', async () => {
+  const existing = bot('bot_step_push_mode', 'step_push_mode');
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+  });
+  await fx.controller.initialize();
+
+  // Missing stored values normalize to the default presentation
+  // (the process card), not the legacy post stream.
+  assert.equal(fx.controller.status().bots[0].stepPushMode, 'streaming_card');
+  const runtime = fx.runtimes.get(existing.id)[0];
+  const modes = [];
+  runtime.setStepPushMode = (value) => modes.push(value);
+  const updated = await fx.controller.updateStepPushMode(existing.id, 'streaming_card');
+
+  assert.equal(updated.bots[0].stepPushMode, 'streaming_card');
+  assert.equal(fx.configStore.getBot(existing.id).stepPushMode, 'streaming_card');
+  assert.deepEqual(modes, ['streaming_card']);
+  assert.equal(fx.runtimes.get(existing.id).length, 1);
+  await assert.rejects(
+    fx.controller.updateStepPushMode(existing.id, 'bubble'),
+    /Invalid Feishu step push mode/,
+  );
+  await fx.controller.close();
+});
+
 test('all-message mode requires authorization before direct updates', async () => {
   const existing = bot('bot_response_permission_required', 'response_permission_required');
   const fx = fixture({

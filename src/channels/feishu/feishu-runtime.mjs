@@ -3,6 +3,7 @@ import { FeishuHarnessBridge } from './bridge.mjs';
 import { cardActionProbeCard } from './feishu-cards.mjs';
 import { VerifiedFeishuChannel } from './feishu-channel.mjs';
 import { normalizeFeishuGroupResponseMode } from './group-response-mode.mjs';
+import { normalizeFeishuStepPushMode } from './step-push-mode.mjs';
 import {
   registerSlashCommands,
   SLASH_COMMAND_MANIFEST,
@@ -112,6 +113,7 @@ export class FeishuRuntime {
   #groupResponseMode;
   #groupTopicReply;
   #stepPush;
+  #stepPushMode;
   #ownerOpenIds;
   #harness;
   #state;
@@ -143,6 +145,7 @@ export class FeishuRuntime {
     groupResponseMode,
     groupTopicReply = false,
     stepPush = false,
+    stepPushMode = 'post',
     ownerOpenId,
     ownerOpenIds,
     harness,
@@ -180,6 +183,7 @@ export class FeishuRuntime {
     this.#groupResponseMode = normalizeFeishuGroupResponseMode(groupResponseMode);
     this.#groupTopicReply = groupTopicReply === true;
     this.#stepPush = stepPush === true;
+    this.#stepPushMode = normalizeFeishuStepPushMode(stepPushMode);
     this.#ownerOpenIds = normalizedOwners;
     this.#harness = harness;
     this.#state = state;
@@ -212,6 +216,11 @@ export class FeishuRuntime {
   setStepPush(value) {
     this.#stepPush = value === true;
     this.#bridge?.setStepPush(this.#stepPush);
+  }
+
+  setStepPushMode(value) {
+    this.#stepPushMode = normalizeFeishuStepPushMode(value);
+    this.#bridge?.setStepPushMode(this.#stepPushMode);
   }
 
   async start() {
@@ -304,6 +313,7 @@ export class FeishuRuntime {
         groupResponseMode: this.#groupResponseMode,
         groupTopicReply: this.#groupTopicReply,
         stepPush: this.#stepPush,
+        stepPushMode: this.#stepPushMode,
         repair: this.#repair,
         replyTimeoutMs: this.#replyTimeoutMs,
         // Interaction cards (approval/question buttons) are on by default.

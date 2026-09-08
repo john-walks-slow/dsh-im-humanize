@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { normalizeFeishuGroupResponseMode } from './group-response-mode.mjs';
+import { normalizeFeishuStepPushMode } from './step-push-mode.mjs';
 
 export const LEGACY_FEISHU_SECRET_REF = 'DSH_FEISHU_APP_SECRET';
 
@@ -47,6 +48,7 @@ function normalizeBot(value, { legacy = false } = {}) {
     groupResponseMode: normalizeFeishuGroupResponseMode(value.groupResponseMode),
     groupTopicReply: value.groupTopicReply === true,
     stepPush: value.stepPush === true,
+    stepPushMode: normalizeFeishuStepPushMode(value.stepPushMode),
     groupMessagePermissionGranted: value.groupMessagePermissionGranted === true,
     deletionPending: value.deletionPending === true,
     connectedAt: cleanString(value.connectedAt),
