@@ -1,5 +1,9 @@
 // English translations (wecom area). Keys are exact Chinese literals passed to t().
 export default {
+  '企业微信正在初始化，请稍后重新读取。': 'Enterprise WeChat is initializing. Please reload shortly.',
+  '企业微信配置格式错误。请检查企业微信数据目录中的 config.json 和 workspaces.json，修复后重启 DSH。详细原因请查看启动日志。': 'The Enterprise WeChat configuration is invalid. Check config.json and workspaces.json in its data directory, then restart DSH. See the startup log for details.',
+  '无法读取或写入企业微信配置。请检查企业微信数据目录的访问权限，修复后重启 DSH。详细原因请查看启动日志。': 'The Enterprise WeChat configuration could not be read or written. Check access to its data directory, then restart DSH. See the startup log for details.',
+  '企业微信初始化失败。请查看 DSH 启动日志中 failed to activate wecom 后的错误，修复后重启 DSH。': 'Enterprise WeChat initialization failed. Check the error after "failed to activate wecom" in the DSH startup log, fix it, then restart DSH.',
   '/menu 或 /m  打开可点击的功能菜单': '/menu or /m  Open the interactive menu',
   '保持当前': 'Keep current',
   '会话': 'Session',
