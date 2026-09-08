@@ -464,11 +464,11 @@ function RemoveConfirmation({ bot, busy, onConfirm, onCancel }) {
   );
 }
 
-/** Toggle row for 分步直推, mirroring the group-topic reply toggle pattern. */
+/** One select for the step-push presentation: off / per-step posts / process card. */
 function StepPushEditor({ value = false, mode = "post", disabled = false, onSave, onModeSave }) {
   const titleId = React.useId();
   const helpId = `${titleId}-help`;
-  const current = value === true ? "on" : "off";
+  const current = value === true ? mode : "off";
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState(null);
 
@@ -486,16 +486,28 @@ function StepPushEditor({ value = false, mode = "post", disabled = false, onSave
   };
 
   const change = (event) => {
-    const next = event.target.value === "on";
-    if ((next ? "on" : "off") === current) return;
-    void save(() => onSave?.(next));
+    const next = event.target.value;
+    if (next === current) return;
+    void save(async () => {
+      if (next === "off") {
+        // Turning off only needs the flag when it was on.
+        if (value === true) await onSave?.(false);
+        return;
+      }
+      const nextMode = next === "streaming_card" ? "streaming_card" : "post";
+      // Enabling (or switching presentation) may need both writes; the flag
+      // must land before the mode so the runtime never sees a mode without
+      // step push enabled.
+      if (value !== true) await onSave?.(true);
+      if (nextMode !== mode) await onModeSave?.(nextMode);
+    });
   };
 
-  const changeMode = (event) => {
-    const next = event.target.value;
-    if (next === mode) return;
-    void save(() => onModeSave?.(next));
-  };
+  const helpText = current === "off"
+    ? "关闭时使用原生流式卡，只展示最终答案；开启后可逐步查看执行过程"
+    : current === "streaming_card"
+      ? "思考与工具摘要折叠展示，最终答案在同一张卡片中原地刷新"
+      : "每一步工具调用与过程说明各推一条富文本消息，最终答案单独投递";
 
   return h("section", {
     className: "dim-feishuGroupControl",
@@ -526,23 +538,10 @@ function StepPushEditor({ value = false, mode = "post", disabled = false, onSave
     "aria-label": "分步直推",
     onChange: change,
   },
-  h("option", { value: "off" }, "关闭（保持流式卡模式）"),
-  h("option", { value: "on" }, "开启（逐步推送工具调用与过程说明）")),
-  value === true ? h("select", {
-    className: "dim-feishuGroupSelect",
-    value: mode,
-    disabled: disabled || saving,
-    "aria-label": "分步直推呈现方式",
-    onChange: changeMode,
-  },
+  h("option", { value: "off" }, "关闭（原生流式卡，只看最终答案）"),
   h("option", { value: "post" }, "逐条消息（每步一条富文本消息）"),
-  h("option", { value: "streaming_card" }, "zcode过程卡模式")) : null,
-  h("p", { className: "dim-feishuGroupHelp" },
-    value === true
-      ? (mode === "streaming_card"
-        ? "思考与工具摘要折叠展示，最终答案在同一张卡片中原地刷新"
-        : "开启后逐步推送工具调用与过程说明")
-      : "开启后逐步推送工具调用与过程说明"),
+  h("option", { value: "streaming_card" }, "zcode过程卡（单卡原地刷新）")),
+  h("p", { className: "dim-feishuGroupHelp" }, helpText),
   error ? h("p", {
     className: "dim-feishuGroupError",
     role: "alert",

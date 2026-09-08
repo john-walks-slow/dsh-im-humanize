@@ -584,104 +584,7 @@ test('Feishu keeps its heading controls on one row without a plus icon', async (
   assert.doesNotMatch(styles, /\.bxf-headingTools \.bxf-button \{ margin-left: auto; \}/);
 });
 
-test('Feishu bot settings render the step push toggle and save through the bot setting pipeline', async (t) => {
-  const previousWindow = globalThis.window;
-  let nextTimer = 0;
-  const frames = new Map();
-  globalThis.window = {
-    setInterval() { return ++nextTimer; },
-    clearInterval() {},
-    setTimeout() { return ++nextTimer; },
-    clearTimeout() {},
-    requestAnimationFrame(callback) {
-      const id = ++nextTimer;
-      frames.set(id, callback);
-      queueMicrotask(() => {
-        const pending = frames.get(id);
-        if (!pending) return;
-        frames.delete(id);
-        pending();
-      });
-      return id;
-    },
-    cancelAnimationFrame(id) { frames.delete(id); },
-  };
-  t.after(() => {
-    if (previousWindow === undefined) delete globalThis.window;
-    else globalThis.window = previousWindow;
-  });
-
-  let stepPush = false;
-  const calls = [];
-  const snapshot = () => ({
-    schemaVersion: 2,
-    revision: calls.length + 1,
-    state: 'connected',
-    bots: [{
-      botId: 'bot_step_push',
-      state: 'connected',
-      connected: true,
-      groupResponseMode: 'mention',
-      groupTopicReply: false,
-      stepPush,
-      bot: { name: '分步直推机器人', appIdMasked: 'cli_step••••push' },
-      health: { status: 'healthy', summary: '长连接运行正常' },
-    }],
-  });
-  const rpcCall = async (endpoint, payload) => {
-    calls.push({ endpoint, payload });
-    if (endpoint === FEISHU_ENDPOINTS.status) return { ok: true, value: snapshot() };
-    if (endpoint === FEISHU_ENDPOINTS.setStepPush) {
-      stepPush = payload.stepPush;
-      return { ok: true, value: snapshot() };
-    }
-    throw new Error(`Unexpected endpoint: ${endpoint}`);
-  };
-
-  let renderer;
-  await act(async () => {
-    renderer = create(React.createElement(FeishuSettingsTab, { rpcCall }));
-    await flushTasks();
-  });
-
-  // Rendering: the toggle row shows the「分步直推」label, help tooltip,
-  // and defaults to off.
-  const stepPushSelect = () => renderer.root.findByProps({ 'aria-label': '分步直推' });
-  assert.equal(stepPushSelect().type, 'select');
-  assert.equal(stepPushSelect().props.value, 'off');
-  assert.ok(renderer.root.findAllByType('h3')
-    .some((heading) => nodeText(heading) === '分步直推'));
-  const helpNodes = renderer.root.findAll(
-    (node) => node.props?.className === 'dim-feishuGroupHelp',
-  );
-  assert.equal(helpNodes.length, 0);
-  const helpButton = renderer.root.findByProps({ 'aria-label': '查看分步直推说明' });
-  assert.equal(helpButton.type, 'button');
-  const helpTooltip = renderer.root.findByProps({ id: helpButton.props['aria-describedby'] });
-  assert.equal(helpTooltip.props.role, 'tooltip');
-  assert.equal(nodeText(helpTooltip), '开启后逐步推送工具调用与过程说明');
-  assert.deepEqual(
-    stepPushSelect().findAllByType('option').map((option) => option.props.value),
-    ['off', 'on'],
-  );
-
-  // Saving: switching the select calls the existing save pipeline with
-  // { botId, stepPush } on the step-push endpoint, then reflects the saved
-  // snapshot value.
-  await act(async () => {
-    stepPushSelect().props.onChange({ target: { value: 'on' } });
-    await flushTasks();
-  });
-  assert.ok(calls.some(({ endpoint, payload }) => (
-    endpoint === FEISHU_ENDPOINTS.setStepPush
-      && payload.botId === 'bot_step_push'
-      && payload.stepPush === true
-  )));
-  assert.equal(stepPushSelect().props.value, 'on');
-  await act(async () => renderer.unmount());
-});
-
-test('step push mode select appears only when enabled and saves through the mode endpoint', async (t) => {
+test('Feishu bot settings render one step-push select with three presentations', async (t) => {
   const previousWindow = globalThis.window;
   let nextTimer = 0;
   const frames = new Map();
@@ -716,7 +619,7 @@ test('step push mode select appears only when enabled and saves through the mode
     revision: calls.length + 1,
     state: 'connected',
     bots: [{
-      botId: 'bot_step_push_mode',
+      botId: 'bot_step_push',
       state: 'connected',
       connected: true,
       groupResponseMode: 'mention',
@@ -747,36 +650,66 @@ test('step push mode select appears only when enabled and saves through the mode
     await flushTasks();
   });
 
-  // While step push is off, no mode select is rendered.
+  // Rendering: one select with the three presentations, defaulting to off.
   const stepPushSelect = () => renderer.root.findByProps({ 'aria-label': '分步直推' });
-  assert.equal(
-    renderer.root.findAllByProps({ 'aria-label': '分步直推呈现方式' }).length,
-    0,
-    'the mode select stays hidden while step push is off',
-  );
-
-  await act(async () => {
-    stepPushSelect().props.onChange({ target: { value: 'on' } });
-    await flushTasks();
-  });
-
-  const modeSelect = () => renderer.root.findByProps({ 'aria-label': '分步直推呈现方式' });
+  assert.equal(stepPushSelect().type, 'select');
+  assert.equal(stepPushSelect().props.value, 'off');
+  assert.ok(renderer.root.findAllByType('h3')
+    .some((heading) => nodeText(heading) === '分步直推'));
   assert.deepEqual(
-    modeSelect().findAllByType('option').map((option) => option.props.value),
-    ['post', 'streaming_card'],
+    stepPushSelect().findAllByType('option').map((option) => option.props.value),
+    ['off', 'post', 'streaming_card'],
   );
-  assert.equal(modeSelect().props.value, 'post');
+  const helpNodes = renderer.root.findAll(
+    (node) => node.props?.className === 'dim-feishuGroupHelp',
+  );
+  assert.equal(helpNodes.length, 1);
+  assert.match(nodeText(helpNodes[0]), /原生流式卡/);
 
+  // off -> streaming_card: the flag write must land before the mode write so
+  // the runtime never sees a mode without step push enabled.
   await act(async () => {
-    modeSelect().props.onChange({ target: { value: 'streaming_card' } });
+    stepPushSelect().props.onChange({ target: { value: 'streaming_card' } });
     await flushTasks();
   });
-  assert.ok(calls.some(({ endpoint, payload }) => (
+  const flagIndex = calls.findIndex(({ endpoint, payload }) => (
+    endpoint === FEISHU_ENDPOINTS.setStepPush
+      && payload.botId === 'bot_step_push'
+      && payload.stepPush === true
+  ));
+  const modeIndex = calls.findIndex(({ endpoint, payload }) => (
     endpoint === FEISHU_ENDPOINTS.setStepPushMode
-      && payload.botId === 'bot_step_push_mode'
+      && payload.botId === 'bot_step_push'
       && payload.stepPushMode === 'streaming_card'
-  )));
-  assert.equal(modeSelect().props.value, 'streaming_card');
+  ));
+  assert.ok(flagIndex >= 0, 'the enable flag is saved');
+  assert.ok(modeIndex >= 0, 'the presentation mode is saved');
+  assert.ok(flagIndex < modeIndex, 'the flag must be saved before the mode');
+  assert.equal(stepPushSelect().props.value, 'streaming_card');
+
+  // streaming_card -> post: only the mode endpoint is called.
+  const afterEnable = calls.length;
+  await act(async () => {
+    stepPushSelect().props.onChange({ target: { value: 'post' } });
+    await flushTasks();
+  });
+  const postCalls = calls.slice(afterEnable);
+  assert.equal(postCalls.filter(({ endpoint }) => endpoint === FEISHU_ENDPOINTS.setStepPushMode).length, 1);
+  assert.equal(postCalls.filter(({ endpoint }) => endpoint === FEISHU_ENDPOINTS.setStepPush).length, 0);
+  assert.equal(stepPushSelect().props.value, 'post');
+
+  // post -> off: only the flag endpoint is called, with false.
+  const afterPost = calls.length;
+  await act(async () => {
+    stepPushSelect().props.onChange({ target: { value: 'off' } });
+    await flushTasks();
+  });
+  const offCalls = calls.slice(afterPost);
+  assert.equal(offCalls.filter(({ endpoint, payload }) => (
+    endpoint === FEISHU_ENDPOINTS.setStepPush && payload.stepPush === false
+  )).length, 1);
+  assert.equal(offCalls.filter(({ endpoint }) => endpoint === FEISHU_ENDPOINTS.setStepPushMode).length, 0);
+  assert.equal(stepPushSelect().props.value, 'off');
   await act(async () => renderer.unmount());
 });
 
