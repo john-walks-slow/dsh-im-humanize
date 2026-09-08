@@ -1329,12 +1329,19 @@ export class DingtalkHarnessBridge {
       const deliveryStartedAt = cardStartedAt ?? Date.now();
       try {
         streamed = cardStarted && await cardStream.finish(answerText);
-        if (streamed) {
+        if (streamed || cardStarted) {
+          // The card is already visible in the chat. Never send a second
+          // webhook text here: that would leave the original card behind
+          // (blank, or stuck on its last progress line) alongside a
+          // duplicate plain-text reply.
           textReceipt = createDeliveryReceipt({
             deliveryId: messageId,
             presentation: 'dingtalk-card',
             providerMessageIds: cardStream.providerMessageIds,
           });
+          if (!streamed) {
+            this.#logger.warn?.('[dsh-dingtalk] AI Card finish failed; keeping the delivered card');
+          }
         } else {
           textReceipt = createDeliveryReceipt({
             deliveryId: messageId,
@@ -1411,7 +1418,11 @@ export class DingtalkHarnessBridge {
           ? `${errorText}\n\n${batchFailureMessage}`
           : errorText;
         const streamed = cardStarted && await cardStream.finish(visibleError);
-        if (!streamed) await this.#send(sessionWebhook, visibleError, this.#atUsersFor(message));
+        // Same rule as the happy path: once the card is visible, never send
+        // a second webhook text alongside it, even if finish() failed.
+        if (!streamed && !cardStarted) {
+          await this.#send(sessionWebhook, visibleError, this.#atUsersFor(message));
+        }
       } catch {
         this.#logger.error?.('[dsh-dingtalk] failed to send the safe error reply');
       }
