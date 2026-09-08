@@ -6,6 +6,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.17.0] - 2026-09-09
+
 ### Added / 新增
 
 - 飞书新增实时过程卡，将任务步骤和最终答案在卡片内更新，工具摘要与过程说明可折叠；支持长答案续卡、交互前换卡和停止状态。任务过程展示可选不显示过程、实时过程卡或逐步直播；新接入机器人默认实时过程卡。
