@@ -310,7 +310,7 @@ function QrPane({ provision, now, onRefresh, onCancel, busy }) {
               ? "使用飞书确认群消息权限"
               : "使用飞书扫码创建机器人"),
         h("p", null, repairing
-          ? "扫码会更新现有飞书应用，增量补充当前缺少的卡片按钮回调、读取用户消息内图片或文件所需的 im:message:readonly（飞书显示为“获取单聊、群组消息”）、上传机器人图片或文件所需的 im:resource，以及原生命令面板所需的 application:app_slash_command:read / write；不会创建新应用。确认页只显示当前缺少项，完成后此机器人会短暂重连，其他机器人不受影响。"
+          ? "扫码会更新现有飞书应用，增量补充当前缺少的卡片按钮回调、读取用户消息内图片或文件所需的 im:message:readonly（飞书显示为“获取单聊、群组消息”）、上传机器人图片或文件所需的 im:resource、接收群内其他机器人 @ 当前机器人所需的 im:message.group_at_msg.include_bot:readonly，以及原生命令面板所需的 application:app_slash_command:read / write；不会创建新应用。确认页只显示当前缺少项，完成后此机器人会短暂重连，其他机器人不受影响。"
           : grantingGroupMessages
             ? "扫码会更新现有飞书应用，只增量开通“获取群组中所有消息”权限；不会创建新应用。确认后会自动启用“响应所有群消息”，其他机器人不受影响。"
             : "扫码只会新增一个机器人，已接入的机器人会继续正常收发消息。"),

@@ -1,5 +1,6 @@
 const MAX_PROVIDER_ID_LENGTH = 256;
 const MAX_MODEL_ID_LENGTH = 1_024;
+const MAX_EFFORT_ID_LENGTH = 256;
 const MAX_LABEL_LENGTH = 256;
 const UNSAFE_DISPLAY_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu;
 const UNSAFE_ID_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
@@ -27,7 +28,10 @@ export function normalizeModelSelection(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const provider = cleanId(value.provider, MAX_PROVIDER_ID_LENGTH);
   const model = cleanId(value.model, MAX_MODEL_ID_LENGTH);
-  return provider && model ? { provider, model } : null;
+  const reasoningEffort = value.reasoningEffort === undefined
+    ? undefined : cleanId(value.reasoningEffort, MAX_EFFORT_ID_LENGTH);
+  if (!provider || !model || reasoningEffort === '') return null;
+  return { provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) };
 }
 
 export function validateModelSelection(value) {
@@ -42,7 +46,31 @@ export function validateModelSelection(value) {
 }
 
 export function sameModelSelection(left, right) {
-  return left?.provider === right?.provider && left?.model === right?.model;
+  return left?.provider === right?.provider && left?.model === right?.model
+    && left?.reasoningEffort === right?.reasoningEffort;
+}
+
+// Harness may resolve an omitted effort to the model's default.
+export function confirmsModelSelection(actual, requested) {
+  return actual?.provider === requested?.provider && actual?.model === requested?.model
+    && (requested?.reasoningEffort === undefined
+      || actual?.reasoningEffort === requested.reasoningEffort);
+}
+
+function normalizeReasoning(value) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.efforts)) return undefined;
+  const efforts = [];
+  const seen = new Set();
+  for (const entry of value.efforts) {
+    const id = cleanId(entry?.id, MAX_EFFORT_ID_LENGTH);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const description = cleanLabel(entry.description, '');
+    efforts.push({ id, name: cleanLabel(entry.name, id), ...(description ? { description } : {}) });
+  }
+  if (!efforts.length) return undefined;
+  const defaultEffort = cleanId(value.defaultEffort, MAX_EFFORT_ID_LENGTH);
+  return { efforts, ...(seen.has(defaultEffort) ? { defaultEffort } : {}) };
 }
 
 export function modelSelectionId(value) {
@@ -68,9 +96,13 @@ export function normalizeModelCatalog(value) {
       const key = `${provider}\u0000${model}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      const description = cleanLabel(entry.description, '');
+      const reasoning = normalizeReasoning(entry.reasoning);
       models.push({
         id: model,
         name: cleanLabel(entry.name, model),
+        ...(description ? { description } : {}),
+        ...(reasoning ? { reasoning } : {}),
       });
     }
     if (models.length > 0) {
@@ -91,13 +123,16 @@ export function normalizeModelCatalog(value) {
   return { groups, failures };
 }
 
-export function modelCatalogHas(catalog, selection) {
+export function modelCatalogEntry(catalog, selection) {
   const normalized = normalizeModelSelection(selection);
-  if (!normalized) return false;
-  return normalizeModelCatalog(catalog).groups.some(
-    (group) => group.id === normalized.provider
-      && group.models.some((model) => model.id === normalized.model),
-  );
+  if (!normalized) return undefined;
+  return normalizeModelCatalog(catalog).groups
+    .filter((group) => group.id === normalized.provider)
+    .flatMap((group) => group.models).find((model) => model.id === normalized.model);
+}
+
+export function modelCatalogHas(catalog, selection) {
+  return modelCatalogEntry(catalog, selection) !== undefined;
 }
 
 export async function listModelCatalog(harness, options = {}) {

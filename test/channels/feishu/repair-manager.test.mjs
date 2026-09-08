@@ -44,6 +44,7 @@ test('CallbackRepairManager targets one real app with only the callback and requ
       tenant: [
         FEISHU_MESSAGE_READ_SCOPE,
         FEISHU_RESOURCE_SCOPE,
+        'im:message.group_at_msg.include_bot:readonly',
         ...SLASH_COMMAND_TENANT_SCOPES,
       ],
     },

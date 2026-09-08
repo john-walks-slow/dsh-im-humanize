@@ -76,8 +76,8 @@ export function assertCallbackRepairUrl(value, expectedAppId, domain = 'feishu')
  * shares RegistrationManager's polling/state implementation while fixing the
  * update manifest in one place so callers can add only the card callback, the
  * message-read scope needed to download user-sent media, the resource scope
- * needed to upload bot-sent images/files, and the Slash Command scopes needed
- * for the native command panel, without adding unrelated scopes, events,
+ * needed to upload bot-sent images/files, the group bot-mention scope, and the
+ * Slash Command scopes for the native command panel, without adding unrelated scopes, events,
  * presets, or createOnly.
  */
 export class CallbackRepairManager {
@@ -116,6 +116,7 @@ export class CallbackRepairManager {
           tenant: [
             FEISHU_MESSAGE_READ_SCOPE,
             FEISHU_RESOURCE_SCOPE,
+            'im:message.group_at_msg.include_bot:readonly',
             ...SLASH_COMMAND_TENANT_SCOPES,
           ],
         },

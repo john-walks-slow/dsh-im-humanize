@@ -15,6 +15,7 @@ import { installDeliveryHttp } from './delivery-http.mjs';
 import { createDeliveryService } from './delivery-service.mjs';
 import { installInboundTtlRpc } from './inbound-ttl-rpc.mjs';
 import { installSessionSyncCoordinator } from './session-sync-coordinator.mjs';
+import { installSessionTitlePrefix } from './session-title-prefix.mjs';
 import { installUpdateRpc } from './update-rpc.mjs';
 
 export const name = 'dsh-im-host';
@@ -103,6 +104,19 @@ export function createImHostPlugin(internals = {}) {
 
   async function activateChannels(ctx, config, deliveryService) {
     setImHostLanguage(config.language ?? process.env.DSH_IM_LANGUAGE);
+    const startTitlePrefix = (titleCtx) => {
+      // The installer owns its cleanup through ctx.effect(). Cordis startup
+      // callbacks must not return its controller object as an effect.
+      installSessionTitlePrefix(titleCtx, {
+        logger: typeof titleCtx?.logger === 'function'
+          ? titleCtx.logger('dsh-im:session-title') : (titleCtx?.logger ?? console),
+      });
+    };
+    if (typeof ctx?.inject === 'function') {
+      ctx.inject(['sessions'], startTitlePrefix);
+    } else if (ctx?.sessions && typeof ctx.on === 'function') {
+      startTitlePrefix(ctx);
+    }
     if (typeof ctx?.inject === 'function') {
       ctx.inject(['tools', 'systemPrompt'], (artifactCtx) => {
         installOutboundArtifactTool(artifactCtx);

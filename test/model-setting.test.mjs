@@ -6,11 +6,13 @@ import test from 'node:test';
 
 import {
   EMPTY_MODEL_CATALOG,
+  confirmsModelSelection,
   listModelCatalog,
   modelCatalogHas,
   modelSelectionId,
   normalizeModelCatalog,
   normalizeModelSelection,
+  sameModelSelection,
   validateModelSelection,
 } from '../src/channels/shared/model-setting.mjs';
 import {
@@ -32,13 +34,19 @@ import { createDiscordRpcHandler, DISCORD_ENDPOINTS } from '../plugin-src/host/c
 import { createWhatsappRpcHandler, WHATSAPP_ENDPOINTS } from '../plugin-src/host/channels/whatsapp/rpc.mjs';
 
 const MODEL = Object.freeze({ provider: 'openai', model: 'gpt-5' });
+const REASONING_MODEL = Object.freeze({ ...MODEL, reasoningEffort: 'custom-max' });
+const REASONING = Object.freeze({ efforts: [
+  { id: 'off', name: 'Off', description: 'Fast responses' },
+  { id: 'high', name: 'High' },
+  { id: 'custom-max', name: 'Maximum' },
+], defaultEffort: 'high' });
 const CATALOG = Object.freeze({
   groups: Object.freeze([
     Object.freeze({
       id: 'openai',
       name: 'OpenAI',
       models: Object.freeze([
-        Object.freeze({ id: 'gpt-5', name: 'GPT-5' }),
+        Object.freeze({ id: 'gpt-5', name: 'GPT-5', reasoning: REASONING }),
         Object.freeze({ id: 'gpt-5-mini', name: 'GPT-5 mini' }),
       ]),
     }),
@@ -114,6 +122,12 @@ test('BotWorkspaceStore persists isolated per-bot models without clearing sessio
   const reloaded = await new BotWorkspaceStore(path, { defaultWorkspace: tmpdir() }).load();
   assert.deepEqual(reloaded.modelFor('bot_one'), MODEL);
   assert.equal(reloaded.modelFor('bot_two'), null);
+  await reloaded.setModel('bot_one', REASONING_MODEL);
+  const effortReloaded = await new BotWorkspaceStore(path, { defaultWorkspace: tmpdir() }).load();
+  assert.deepEqual(effortReloaded.modelFor('bot_one'), REASONING_MODEL);
+  assert.equal(effortReloaded.modelFor('bot_two'), null);
+  await reloaded.setModel('bot_one', MODEL);
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).models.bot_one, MODEL);
   await reloaded.setModel('bot_one', null);
   assert.equal(reloaded.modelFor('bot_one'), null);
   assert.equal(Object.hasOwn(JSON.parse(await readFile(path, 'utf8')), 'models'), false);
@@ -146,6 +160,21 @@ test('workspace-aware model setting refreshes the catalog and rejects unavailabl
   assert.deepEqual(selected.bots[0].model, MODEL);
   assert.deepEqual(selected.modelCatalog, CATALOG);
 
+  const withEffort = await controller.updateModel('bot_one', REASONING_MODEL);
+  assert.deepEqual(withEffort.bots[0].model, REASONING_MODEL);
+  for (const model of [{ ...MODEL, reasoningEffort: 'unsupported' },
+    { provider: 'openai', model: 'gpt-5-mini', reasoningEffort: 'high' }]) {
+    await assert.rejects(controller.updateModel('bot_one', model), { code: 'model-reasoning-unavailable' });
+    assert.deepEqual(workspaces.modelFor('bot_one'), REASONING_MODEL);
+  }
+  // The catalog can drop all effort metadata while the saved override remains.
+  catalog = { groups: [{ id: 'openai', models: [{ id: 'gpt-5' }] }], failures: [] };
+  await assert.rejects(controller.updateModel('bot_one', REASONING_MODEL), {
+    code: 'model-reasoning-unavailable',
+  });
+  const restored = await controller.updateModel('bot_one', MODEL);
+  assert.deepEqual(restored.bots[0].model, MODEL);
+
   catalog = { groups: [], failures: [] };
   await assert.rejects(controller.updateModel('bot_one', MODEL), {
     code: 'model-selection-unavailable',
@@ -159,11 +188,15 @@ test('workspace-aware model setting refreshes the catalog and rejects unavailabl
 test('shared model RPC payload accepts only the exact bot.model.set contract', () => {
   assert.equal(SET_MODEL_ENDPOINT, 'bot.model.set');
   assert.equal(validModelPayload({ botId: 'bot_one', model: MODEL }), true);
+  assert.equal(validModelPayload({ botId: 'bot_one', model: REASONING_MODEL }), true);
   assert.equal(validModelPayload({ botId: 'bot_one', model: null }), true);
   assert.equal(validModelPayload({ botId: 'bot_one', model: MODEL, extra: true }), false);
   assert.equal(validModelPayload({ botId: '../bad', model: MODEL }), false);
   assert.equal(validModelPayload({ botId: 'bot_one', model: { ...MODEL, extra: true } }), false);
   assert.equal(validModelPayload({ botId: 'bot_one', provider: 'openai', model: 'gpt-5' }), false);
+  for (const reasoningEffort of ['', ' ', null, 1, [], {}, 'bad\neffort', 'a'.repeat(257)]) {
+    assert.equal(validModelPayload({ botId: 'bot_one', model: { ...MODEL, reasoningEffort } }), false);
+  }
 });
 
 function controllerFixture() {
@@ -219,10 +252,10 @@ test('all nine Host RPCs expose and execute the unified model-setting contract',
     const { controller, calls } = controllerFixture();
     const handler = createHandler(controller);
     assert.equal(endpoints.setModel, SET_MODEL_ENDPOINT, channel);
-    const result = await handler(endpoints.setModel, { botId: 'bot_one', model: MODEL });
+    const result = await handler(endpoints.setModel, { botId: 'bot_one', model: REASONING_MODEL });
     assert.equal(result.ok, true, `${channel}: ${JSON.stringify(result)}`);
-    assert.deepEqual(calls, [{ botId: 'bot_one', model: MODEL }], channel);
-    assert.deepEqual(result.value?.bots?.[0]?.model, MODEL, `${channel} model projection`);
+    assert.deepEqual(calls, [{ botId: 'bot_one', model: REASONING_MODEL }], channel);
+    assert.deepEqual(result.value?.bots?.[0]?.model, REASONING_MODEL, `${channel} model projection`);
     assert.deepEqual(result.value?.modelCatalog, CATALOG, `${channel} catalog projection`);
     const invalid = await handler(endpoints.setModel, {
       botId: 'bot_one', model: { ...MODEL, extra: true },
@@ -230,5 +263,39 @@ test('all nine Host RPCs expose and execute the unified model-setting contract',
     assert.equal(invalid.ok, false, channel);
     assert.equal(invalid.error.code, 'bad-request', channel);
     assert.equal(calls.length, 1, channel);
+    controller.updateModel = async () => {
+      const error = new Error('当前模型不支持所选思考强度，请重新选择。');
+      error.code = 'model-reasoning-unavailable';
+      throw error;
+    };
+    const unavailable = await handler(endpoints.setModel, { botId: 'bot_one', model: REASONING_MODEL });
+    assert.equal(unavailable.ok, false, channel);
+    assert.equal(unavailable.error.code, 'model-reasoning-unavailable', channel);
+    assert.equal(unavailable.error.message, '当前模型不支持所选思考强度，请重新选择。', channel);
   }
+});
+
+test('reasoning catalog exposes sanitized public metadata and preserves opaque effort IDs', () => {
+  const normalized = normalizeModelCatalog({ groups: [{ id: 'provider', models: [{
+    id: 'model', description: ' A model\n description ',
+    reasoning: { secret: 'private', defaultEffort: 'custom-max', efforts: [
+      { id: 'custom-max', name: ' Maximum\n ', description: ' More\n thinking ', secret: 'private' },
+      { id: 'custom-max', name: 'duplicate' },
+      { id: '3', name: 'Third' }, { id: 'off' },
+      { id: 'bad\neffort' }, null, { id: '' },
+    ] },
+  }] }], failures: [] });
+  assert.deepEqual(normalized.groups[0].models[0], {
+    id: 'model', name: 'model', description: 'A model description',
+    reasoning: { defaultEffort: 'custom-max', efforts: [
+      { id: 'custom-max', name: 'Maximum', description: 'More thinking' },
+      { id: '3', name: 'Third' }, { id: 'off', name: 'off' },
+    ] },
+  });
+  assert.deepEqual(normalizeModelCatalog(normalized), normalized);
+  assert.deepEqual(normalizeModelSelection(REASONING_MODEL), REASONING_MODEL);
+  assert.equal(sameModelSelection(MODEL, REASONING_MODEL), false);
+  assert.equal(confirmsModelSelection(REASONING_MODEL, MODEL), true);
+  assert.equal(confirmsModelSelection(MODEL, REASONING_MODEL), false);
+  assert.equal(confirmsModelSelection({ ...MODEL, reasoningEffort: 'high' }, REASONING_MODEL), false);
 });

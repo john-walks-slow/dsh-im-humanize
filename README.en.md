@@ -60,6 +60,8 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 Other IM platforms can be added through the same channel-adapter structure.
 
+Feishu group chats accept messages from other bots that explicitly mention the current bot by default, with no extra setting. Messages without that mention, mentions of only other members or everyone, self-sent messages, and bot DMs are still ignored, even in all-message mode. Group allowlists and command permissions still apply. The app needs the `im:message.group_at_msg.include_bot:readonly` tenant scope. New apps request it through the QR flow; existing or manually connected apps can use **Complete permissions** or `/repair` in a direct chat, scan the QR code, and complete any publication or approval required by Feishu. See the [Feishu message-event permissions](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive).
+
 All nine built-in channels can send JPEG, PNG, and WebP images, plus GIFs sent as image files, with optional captions to Harness. Each image is limited to 5 MB, and images in one message are limited to 20 MB in total. Downloading images or files from Feishu user messages requires the `im:message:readonly` tenant scope, shown on the confirmation page as **Read direct and group messages**; Feishu currently offers no narrower image-only scope for that download endpoint. Apps created through the built-in QR flow request it by default; for existing or manually connected apps, click **Complete permissions** on the IM Bot settings page and scan the QR code to incrementally add that scope, `im:resource` for uploading bot-sent images or files, `application:app_slash_command:read` / `write` for the native command panel, and the card callback.
 
 ### Results after a reply timeout
@@ -130,8 +132,14 @@ Use the proxy URL required by your network and restart the Host after changing i
 | --- | --- |
 | Bot workspace | Each bot stores its workspace independently. New bots start with the Host's current working directory, which can later be changed from the bot card. |
 | Model | Every bot in all nine IM channels can choose a model directly below its workspace, or follow the Host default. A change applies only to later new Sessions; send `/new` and then an ordinary message in the current chat to use it. |
+| Reasoning effort | Explicitly choose an effort supported by the selected model, or follow the model default. Levels, descriptions, and defaults come from DSH. Switching models restores the new model's default effort. Each bot saves its own choice, which applies only to later new Sessions. |
 | Agent Preset | Each bot can choose an Agent Preset on its settings card. When none is chosen, new Sessions follow the Host's `agent-presets.default`. A channel-level `config.agentPreset` is only the default for later new bots on that channel. Changing the preset never modifies or clears existing Sessions; if the current chat already has a Session, send `/new` and then a regular message to create one with the new selection. |
 | Context enhancement | Open settings from a bot card to enable groups and DMs independently. Both switches default to off, including for existing bots after an upgrade. |
+| Session channel identity | Sessions from all nine IM channels and AI Office on the local Host are marked with their source. The Web Session list and search results display channel logos in place of prefixes such as “WeChat ·”, preserving DSH's automatic title generation and updates. Existing Sessions receive the prefix when next loaded. |
+
+Channel prefixes are appended after DSH produces a title, preserving its complete text and automatic/manual source without pinning automatic titles or making additional model calls. Regeneration, refresh, and restarts do not stack prefixes; actual manual renames retain DSH's normal pinning behavior. This feature uses the current Host's Session events; an explicit remote `harnessBaseUrl` requires the plugin on the destination Host.
+
+Logos are a dsh-im browser enhancement and require no changes to DSH. The adapter preserves original text nodes, clicks, menus, and dragging; copied titles, screen readers, and other surfaces retain the textual channel name. Unrecognized DSH page structures, unsupported browsers, or image-loading failures keep the text prefix. Unloading the plugin restores the original display.
 
 ### Proactive delivery
 
@@ -179,7 +187,7 @@ See the [Proactive Delivery Guide](PROACTIVE_DELIVERY.en.md) ([简体中文](PRO
 | `/batch` | Start batch input in a direct chat and collect up to 10 text messages. |
 | `/send` | Submit the collected messages, in order, as one input. |
 | `/cancel` | Cancel batch input and discard its collected messages. |
-| `/repair` | In a Feishu direct chat, incrementally repair the card callback and permissions required for media and the native Slash Command panel. |
+| `/repair` | In a Feishu direct chat, incrementally repair the card callback and permissions required for media, group bot mentions, and the native Slash Command panel. |
 | `/compact` | Immediately compact older context in the Session bound to the current chat. |
 | `/workspace <workspace index or absolute path>`, `/ws <workspace index or absolute path>` | Switch the current bot's Harness workspace by `/workspacelist` index or absolute path. |
 | `/workspacelist`, `/workspaces`, `/wsl` | List workspace absolute paths that still exist on the current Harness Host. |
@@ -200,7 +208,7 @@ DingTalk menus use a shared template built into the plugin; no template setup is
 
 - **Image understanding**: all nine built-in channels can send JPEG, PNG, WebP, and GIF files sent as images to Harness, with an optional text description. Each image is limited to 5 MB, and all images in one message are limited to 20 MB in total.
 - **Switch workspaces from a bot card**: every bot card on the settings page shows its current Harness workspace. Enter an existing absolute directory path directly or open the directory picker. Switching clears only that bot's old chat mappings; it never deletes, empties, or archives old Sessions. Replies already in progress may finish, while later messages use the new workspace.
-- **Choose a model from a bot card**: every bot card in all nine IM channels offers the Host's available models directly below the workspace, plus an option to follow the default. The selection is stored per bot and used only for later new Sessions; existing Sessions and replies already in progress are unchanged.
+- **Choose a model and reasoning effort from a bot card**: every bot card in all nine IM channels offers model and effort controls below the workspace, with DSH-style provider groups, descriptions, and checkmarks. Select an available model and one of its supported efforts, or use the model default. Leaving the model unset follows the Host default. Settings are stored per bot and used only for later new Sessions; existing Sessions and replies already in progress are unchanged.
 - **Choose an Agent Preset from a bot card**: every bot card can select one of the Host's existing Agent Presets, or follow the Host default. The change applies only to that bot and only to later new Sessions; existing Sessions and replies already in progress are left unchanged.
 - **Check the connection and send a test message**: when a bot is online, clicking **Check connection** verifies the platform connection and sends a “DeepSeek Harness connection test succeeded” message to the bot's most recently remembered direct conversation; WhatsApp uses the account's self-chat. The test neither creates a Harness Session nor invokes the model. The bot must have received at least one direct message before it has a remembered test target; otherwise the page reports that no test conversation is available yet.
 - **Retry a connection or remove an integration**: when a bot is offline, its card action changes to **Retry connection**. Use **Remove integration** when the bot is no longer needed. Each action affects only the selected bot and leaves other bots and channels unchanged.
