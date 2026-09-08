@@ -6,6 +6,20 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.17.1] - 2026-09-09
+
+### Fixed / 修复
+
+- 修复原版 DSH `0.1.5-alpha.1` 的 IM 管理接口兼容性，统一通过 Connection 的公开 `/api` Fetch 接口承载十个 IM 渠道、Office、更新、入站 TTL 和主动投递管理，无需修改或重新编译 DSH；继续兼容已支持的四个原版 DSH 版本。
+  Fixed IM management compatibility with unmodified DSH `0.1.5-alpha.1`. Ten IM channels, Office, updates, inbound TTL, and proactive-delivery management now share Connection's public `/api` Fetch interface without modifying or rebuilding DSH, while retaining compatibility with the four previously supported DSH releases.
+- 保留原生请求关联、取消信号和业务错误，并补全旧处理器缺少的错误详情。管理接口继续执行默认回环访问限制；`trusted-host` 复用 DSH 的浏览器认证与 Host／Origin 检查，更新和入站 TTL 管理始终仅允许回环访问。
+  Preserved native request correlation, cancellation, and business errors, filling in error details omitted by older handlers. Management access remains loopback-only by default; `trusted-host` relies on DSH browser authentication and Host/Origin checks, while update and inbound-TTL management always remain loopback-only.
+
+### Documentation / 文档
+
+- 更新中英文兼容说明和元数据，记录五个原版 DSH Web profile 的兼容矩阵，以及飞书、钉钉、企业微信和 Telegram 的真实收发验证。升级插件后需重启 Host 并刷新设置页，使两端加载同一版插件。
+  Updated bilingual compatibility guidance and metadata, documenting the five-version compatibility matrix for unmodified DSH Web profiles and real-message checks for Feishu, DingTalk, WeCom, and Telegram. Restart the Host and refresh settings after upgrading so both sides load the same plugin version.
+
 ## [4.17.0] - 2026-09-09
 
 ### Added / 新增
@@ -838,7 +852,9 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.16.1...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.17.1...HEAD
+[4.17.1]: https://github.com/xmanrui/dsh-im/compare/v4.17.0...v4.17.1
+[4.17.0]: https://github.com/xmanrui/dsh-im/compare/v4.16.1...v4.17.0
 [4.16.1]: https://github.com/xmanrui/dsh-im/compare/v4.16.0...v4.16.1
 [4.16.0]: https://github.com/xmanrui/dsh-im/compare/v4.15.0...v4.16.0
 [4.15.0]: https://github.com/xmanrui/dsh-im/compare/v4.14.0...v4.15.0
