@@ -191,10 +191,8 @@ export class TextHarnessBridge {
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#signal = signal;
-    // messageBreak implies streaming off (mutually exclusive): the stream
-    // finish/reopen dance adds complexity without benefit for human-like chat.
     this.#messageBreak = messageBreak === true;
-    this.#streaming = this.#messageBreak ? false : streaming !== false;
+    this.#streaming = streaming !== false;
     this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#deferred = createDeferredDeliveryCoordinator({ harness, state, signal, logger,
       deliver: (entry, outcome) => this.#deliverDeferredOutcome(entry, outcome),

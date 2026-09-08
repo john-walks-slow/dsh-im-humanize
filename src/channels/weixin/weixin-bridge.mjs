@@ -374,10 +374,8 @@ export class WeixinHarnessBridge {
     this.#maxMessageChars = maxMessageChars;
     this.#typingKeepaliveMs = typingKeepaliveMs;
     this.#signal = signal;
-    // messageBreak implies streaming off (mutually exclusive): the stream
-    // finish/reopen dance adds complexity without benefit for human-like chat.
     this.#messageBreak = messageBreak === true;
-    this.#streaming = this.#messageBreak ? false : streaming !== false;
+    this.#streaming = streaming !== false;
     this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#deferred = createDeferredDeliveryCoordinator({ harness, state, signal, logger,
       deliver: (entry, outcome) => this.#deliverDeferredOutcome(entry, outcome),
@@ -875,6 +873,7 @@ export class WeixinHarnessBridge {
 
       let answer;
       let artifacts = [];
+      let messageBreakHandler = null;
       await this.#startTyping(sender, contextToken);
       try {
         let content = hasImages || hasReply
@@ -894,7 +893,7 @@ export class WeixinHarnessBridge {
         await this.#state.markSeen(messageId);
         promptRecorded = true;
         // Create message_break handler for this turn.
-        const messageBreakHandler = this.#messageBreak
+        messageBreakHandler = this.#messageBreak
           ? createMessageBreakHandler({
             sendSegment: async (segmentText) => {
               await this.#send(sender, segmentText, contextToken, runId);

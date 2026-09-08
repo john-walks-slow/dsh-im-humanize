@@ -609,8 +609,8 @@ export class FeishuHarnessBridge {
   #interactionCards = true;
   /** Streaming toggle (default true). When off, no progressive stream updates. */
   #streaming = true;
-  /** message_break toggle (default false). When on, streaming is forced off. */
-  #messageBreak = false;
+  /** message_break toggle (default true). */
+  #messageBreak = true;
   /** onNewMessage policy: interrupt (default) | queue | steer. */
   #onNewMessage = 'interrupt';
 
@@ -688,7 +688,7 @@ export class FeishuHarnessBridge {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#interactionCards = interactionCards === true;
     this.#messageBreak = messageBreak === true;
-    this.#streaming = this.#messageBreak ? false : streaming !== false;
+    this.#streaming = streaming !== false;
     this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#logger = logger;
     this.#approvals = new HarnessApprovalQueue({ label: 'Feishu', logger });

@@ -489,7 +489,7 @@ export class QqHarnessBridge {
     this.#status = status;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
-    this.#streaming = messageBreak === true ? false : streaming !== false;
+    this.#streaming = streaming !== false;
     this.#messageBreak = messageBreak === true;
     this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#signal = signal;

@@ -15,7 +15,7 @@ export const HUMANIZE_ENDPOINTS = Object.freeze({
 
 export const DEFAULT_HUMANIZE_SETTINGS = Object.freeze({
   streaming: true,
-  messageBreak: false,
+  messageBreak: true,
   onNewMessage: 'interrupt',
 });
 
@@ -30,10 +30,6 @@ export function normalizeHumanizeSettings(partial = {}) {
   }
   if (typeof partial.messageBreak === 'boolean') {
     result.messageBreak = partial.messageBreak;
-  }
-  // messageBreak implies streaming off
-  if (result.messageBreak) {
-    result.streaming = false;
   }
   result.onNewMessage = normalizeOnNewMessage(partial.onNewMessage);
   return result;

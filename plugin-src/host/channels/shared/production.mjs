@@ -59,7 +59,7 @@ export async function createTokenProductionController(ctx, config, internals, de
   // can be added later via the config store.
   const humanizationOptions = {
     streaming: config.streaming !== false,
-    messageBreak: config.messageBreak === true,
+    messageBreak: config.messageBreak !== false,
     onNewMessage: config.onNewMessage ?? 'interrupt',
   };
   const createSupervisor = internals.createConnectionSupervisor ?? createTokenConnectionSupervisor;

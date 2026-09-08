@@ -155,7 +155,7 @@ export class WeixinRuntime {
     this.#accessPolicy = accessPolicy;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
-    this.#streaming = messageBreak === true ? false : streaming !== false;
+    this.#streaming = streaming !== false;
     this.#messageBreak = messageBreak === true;
     this.#onNewMessage = onNewMessage;
     this.#maxMessageChars = maxMessageChars;

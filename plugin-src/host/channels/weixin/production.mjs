@@ -136,7 +136,7 @@ export async function createProductionController(ctx, config = {}, internals = {
         }),
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
         streaming: config.streaming !== false,
-        messageBreak: config.messageBreak === true,
+        messageBreak: config.messageBreak !== false,
         onNewMessage: config.onNewMessage ?? 'interrupt',
         maxMessageChars: config.maxMessageChars ?? DEFAULT_WEIXIN_MAX_MESSAGE_CHARS,
         logger: {

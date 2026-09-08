@@ -542,7 +542,7 @@ export class DingtalkHarnessBridge {
     this.#logger = logger;
     this.#approvals = new HarnessApprovalQueue({ label: 'DingTalk', logger });
     this.#replyTimeoutMs = replyTimeoutMs;
-    this.#streaming = messageBreak === true ? false : streaming !== false;
+    this.#streaming = streaming !== false;
     this.#messageBreak = messageBreak === true;
     this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#reactionTimeoutMs = Number.isFinite(reactionTimeoutMs) && reactionTimeoutMs > 0
