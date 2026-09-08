@@ -59,7 +59,7 @@ test('client normalizes multiple independent bots and derives authoritative tota
         configured: true,
         groupTopicReply: 'stale-truthy', // must normalize to false
         stepPush: 'stale-truthy', // must normalize to false
-        stepPushMode: 'stale-unknown', // must normalize to the post default
+        stepPushMode: 'stale-unknown', // must normalize to the process-card default
         bot: { name: '研发助手', domain: 'lark' },
         health: { status: 'offline', summary: '等待重连' },
         error: { code: 'connection_failed', message: '连接失败' },
@@ -79,7 +79,7 @@ test('client normalizes multiple independent bots and derives authoritative tota
   assert.equal(snapshot.bots[1].groupResponseMode, 'mention');
   assert.equal(snapshot.bots[1].groupTopicReply, false);
   assert.equal(snapshot.bots[1].stepPush, false);
-  assert.equal(snapshot.bots[1].stepPushMode, 'post');
+  assert.equal(snapshot.bots[1].stepPushMode, 'streaming_card');
   assert.equal(snapshot.bots[1].groupMessagePermissionGranted, false);
   assert.equal(snapshot.bots[1].state, 'connecting');
   assert.equal(snapshot.bots[1].bot.domain, 'lark');

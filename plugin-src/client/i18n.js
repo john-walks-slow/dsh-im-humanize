@@ -221,23 +221,16 @@ const EN = Object.freeze({
   '开启（自动开启独立飞书话题）': 'On (auto-open a dedicated Feishu topic)',
   '开启后，群聊中向机器人提问会自动开启独立飞书话题，回复落在话题内；每个话题是 dsh 会话列表里一条独立会话，上下文互不串。私聊不受影响。': 'When enabled, questions to the bot in a group auto-open a dedicated Feishu topic and replies stay inside it. Each topic is an independent conversation in dsh with its own context. Private chats are unaffected.',
   '分步直推': 'Step push',
-<<<<<<< HEAD
   '查看分步直推说明': 'View step push help',
   '开启后逐步推送工具调用与过程说明': 'Push tool calls and process notes step by step',
-  '关闭（原生流式卡，只看最终答案）': 'Off (native streaming card, final answer only)',
-  '逐条消息（每步一条富文本消息）': 'Discrete messages (one rich-text message per step)',
-  'zcode过程卡（单卡原地刷新）': 'ZCode process card (one card refreshed in place)',
-  '关闭时使用原生流式卡，只展示最终答案；开启后可逐步查看执行过程': 'Off keeps the native streaming card with the final answer only; enabling reveals the execution step by step',
-  '每一步工具调用与过程说明各推一条富文本消息，最终答案单独投递': 'Each tool call and process note is pushed as its own rich-text message; the final answer is delivered separately',
-=======
   '任务过程展示': 'Task progress display',
+  '设置任务执行过程的呈现方式：不显示、实时卡片或逐步消息': 'Choose how the execution is presented: hidden, one live card, or step-by-step messages',
   '不显示过程（只发送最终答案）': 'Hide the process (send the final answer only)',
   '实时过程卡（全程一张卡片动态更新）': 'Live process card (one card updated throughout)',
   '逐步直播（每一步单独发一条消息）': 'Step-by-step feed (one message per step)',
   '适合日常问答：执行过程中不显示工具调用等中间步骤，只回复最终结果': 'For everyday Q&A: tool calls and other interim steps stay hidden, only the final result is replied',
   '推荐长任务使用：过程与最终答案都在同一张卡片里实时更新，不刷屏': 'Recommended for long tasks: the process and the final answer update live in one card without flooding the chat',
   '每一步都单独发一条消息（含工具调用和过程说明）；注意长任务会连续发送较多消息': 'Every step is sent as its own message (including tool calls and notes); long tasks may send many messages in a row',
->>>>>>> 94abf05 (refactor(feishu-ui): rename step-push options in user-facing language)
   '分步直推设置保存失败，请重试。': 'Could not save the step push setting. Try again.',
   'zcode过程卡模式': 'ZCode process-card mode',
   '过程说明、工具摘要与最终答案都在同一张卡片中原地刷新':

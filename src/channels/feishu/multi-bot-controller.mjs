@@ -16,6 +16,7 @@ import {
   normalizeFeishuGroupResponseMode,
 } from './group-response-mode.mjs';
 import {
+  DEFAULT_FEISHU_STEP_PUSH_MODE,
   isFeishuStepPushMode,
   normalizeFeishuStepPushMode,
 } from './step-push-mode.mjs';
@@ -1131,6 +1132,11 @@ export class MultiBotDshFeishuController {
         botName: bot.name,
         botOpenId: bot.openId,
         activated: bot.activated,
+        // New connections start with the process-card presentation; existing
+        // bots keep whatever they saved before (the spread above re-applies
+        // their stored values, undefined falls through to the defaults here).
+        stepPush: existing?.stepPush ?? true,
+        stepPushMode: existing?.stepPushMode ?? DEFAULT_FEISHU_STEP_PUSH_MODE,
         deletionPending: false,
         connectedAt: new Date().toISOString(),
         createdAt: existing?.createdAt ?? new Date().toISOString(),

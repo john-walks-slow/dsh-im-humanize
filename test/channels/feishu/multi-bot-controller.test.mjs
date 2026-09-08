@@ -282,7 +282,9 @@ test('stepPushMode persists, normalizes, and reaches the live runtime without re
   });
   await fx.controller.initialize();
 
-  assert.equal(fx.controller.status().bots[0].stepPushMode, 'post');
+  // Missing stored values normalize to the default presentation
+  // (the process card), not the legacy post stream.
+  assert.equal(fx.controller.status().bots[0].stepPushMode, 'streaming_card');
   const runtime = fx.runtimes.get(existing.id)[0];
   const modes = [];
   runtime.setStepPushMode = (value) => modes.push(value);

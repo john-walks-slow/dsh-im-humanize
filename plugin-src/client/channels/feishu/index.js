@@ -514,9 +514,8 @@ function StepPushEditor({ value = false, mode = "post", disabled = false, onSave
     "aria-labelledby": titleId,
   },
   h("div", { className: "dim-feishuGroupControlHeader" },
-<<<<<<< HEAD
     h("div", { className: "dim-presetTitle" },
-      h("h3", { id: titleId }, "分步直推"),
+      h("h3", { id: titleId }, "任务过程展示"),
       h("span", { className: "dim-presetHelp" },
         h("button", {
           type: "button",
@@ -528,10 +527,7 @@ function StepPushEditor({ value = false, mode = "post", disabled = false, onSave
           id: helpId,
           className: "dim-presetTooltip",
           role: "tooltip",
-        }, "开启后逐步推送工具调用与过程说明"))),
-=======
-    h("h3", { id: titleId }, "任务过程展示"),
->>>>>>> 94abf05 (refactor(feishu-ui): rename step-push options in user-facing language)
+        }, "设置任务执行过程的呈现方式：不显示、实时卡片或逐步消息"))),
     saving
       ? h("span", { className: "dim-feishuGroupControlStatus", role: "status" }, "保存中…")
       : null),

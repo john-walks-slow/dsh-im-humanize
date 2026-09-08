@@ -79,7 +79,7 @@ test('PluginConfigStore defaults stepPush off and only persists a literal true',
   await store.clear();
 });
 
-test('PluginConfigStore defaults stepPushMode to post and normalizes unknown values', async () => {
+test('PluginConfigStore defaults stepPushMode to the process card and normalizes unknown values', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-feishu-config-step-push-mode-'));
   const path = join(dir, 'config.json');
   const store = await new PluginConfigStore(path).load();
@@ -88,9 +88,9 @@ test('PluginConfigStore defaults stepPushMode to post and normalizes unknown val
     appId: 'cli_step_push_mode',
     ownerOpenId: 'ou_owner',
     domain: 'feishu',
-    stepPushMode: 'bubble', // unknown values fall back to the post default
+    stepPushMode: 'bubble', // unknown values fall back to the process-card default
   });
-  assert.equal(store.get().stepPushMode, 'post');
+  assert.equal(store.get().stepPushMode, 'streaming_card');
 
   await store.save({ ...store.get(), stepPushMode: 'streaming_card' });
   assert.equal((await new PluginConfigStore(path).load()).get().stepPushMode, 'streaming_card');
