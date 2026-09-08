@@ -221,6 +221,7 @@ const EN = Object.freeze({
   '开启（自动开启独立飞书话题）': 'On (auto-open a dedicated Feishu topic)',
   '开启后，群聊中向机器人提问会自动开启独立飞书话题，回复落在话题内；每个话题是 dsh 会话列表里一条独立会话，上下文互不串。私聊不受影响。': 'When enabled, questions to the bot in a group auto-open a dedicated Feishu topic and replies stay inside it. Each topic is an independent conversation in dsh with its own context. Private chats are unaffected.',
   '分步直推': 'Step push',
+  '查看分步直推说明': 'View step push help',
   '开启后逐步推送工具调用与过程说明': 'Push tool calls and process notes step by step',
   '关闭（保持流式卡模式）': 'Off (keep the streaming card)',
   '开启（逐步推送工具调用与过程说明）': 'On (push tool calls and process notes step by step)',
