@@ -651,20 +651,20 @@ test('Feishu bot settings render one step-push select with three presentations',
   });
 
   // Rendering: one select with the three presentations, defaulting to off.
-  const stepPushSelect = () => renderer.root.findByProps({ 'aria-label': '分步直推' });
+  const stepPushSelect = () => renderer.root.findByProps({ 'aria-label': '任务过程展示' });
   assert.equal(stepPushSelect().type, 'select');
   assert.equal(stepPushSelect().props.value, 'off');
   assert.ok(renderer.root.findAllByType('h3')
-    .some((heading) => nodeText(heading) === '分步直推'));
+    .some((heading) => nodeText(heading) === '任务过程展示'));
   assert.deepEqual(
     stepPushSelect().findAllByType('option').map((option) => option.props.value),
-    ['off', 'post', 'streaming_card'],
+    ['off', 'streaming_card', 'post'],
   );
   const helpNodes = renderer.root.findAll(
     (node) => node.props?.className === 'dim-feishuGroupHelp',
   );
   assert.equal(helpNodes.length, 1);
-  assert.match(nodeText(helpNodes[0]), /原生流式卡/);
+  assert.match(nodeText(helpNodes[0]), /只回复最终结果/);
 
   // off -> streaming_card: the flag write must land before the mode write so
   // the runtime never sees a mode without step push enabled.

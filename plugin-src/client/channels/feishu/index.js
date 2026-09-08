@@ -504,16 +504,17 @@ function StepPushEditor({ value = false, mode = "post", disabled = false, onSave
   };
 
   const helpText = current === "off"
-    ? "关闭时使用原生流式卡，只展示最终答案；开启后可逐步查看执行过程"
+    ? "适合日常问答：执行过程中不显示工具调用等中间步骤，只回复最终结果"
     : current === "streaming_card"
-      ? "思考与工具摘要折叠展示，最终答案在同一张卡片中原地刷新"
-      : "每一步工具调用与过程说明各推一条富文本消息，最终答案单独投递";
+      ? "推荐长任务使用：过程与最终答案都在同一张卡片里实时更新，不刷屏"
+      : "每一步都单独发一条消息（含工具调用和过程说明）；注意长任务会连续发送较多消息";
 
   return h("section", {
     className: "dim-feishuGroupControl",
     "aria-labelledby": titleId,
   },
   h("div", { className: "dim-feishuGroupControlHeader" },
+<<<<<<< HEAD
     h("div", { className: "dim-presetTitle" },
       h("h3", { id: titleId }, "分步直推"),
       h("span", { className: "dim-presetHelp" },
@@ -528,6 +529,9 @@ function StepPushEditor({ value = false, mode = "post", disabled = false, onSave
           className: "dim-presetTooltip",
           role: "tooltip",
         }, "开启后逐步推送工具调用与过程说明"))),
+=======
+    h("h3", { id: titleId }, "任务过程展示"),
+>>>>>>> 94abf05 (refactor(feishu-ui): rename step-push options in user-facing language)
     saving
       ? h("span", { className: "dim-feishuGroupControlStatus", role: "status" }, "保存中…")
       : null),
@@ -535,12 +539,12 @@ function StepPushEditor({ value = false, mode = "post", disabled = false, onSave
     className: "dim-feishuGroupSelect",
     value: current,
     disabled: disabled || saving,
-    "aria-label": "分步直推",
+    "aria-label": "任务过程展示",
     onChange: change,
   },
-  h("option", { value: "off" }, "关闭（原生流式卡，只看最终答案）"),
-  h("option", { value: "post" }, "逐条消息（每步一条富文本消息）"),
-  h("option", { value: "streaming_card" }, "zcode过程卡（单卡原地刷新）")),
+  h("option", { value: "off" }, "不显示过程（只发送最终答案）"),
+  h("option", { value: "streaming_card" }, "实时过程卡（全程一张卡片动态更新）"),
+  h("option", { value: "post" }, "逐步直播（每一步单独发一条消息）")),
   h("p", { className: "dim-feishuGroupHelp" }, helpText),
   error ? h("p", {
     className: "dim-feishuGroupError",
