@@ -900,7 +900,7 @@ const EN = Object.freeze({
   '流式回复': 'Streaming replies',
   '开启后 AI 回复逐字显示。关闭后一次性发送完整回复，更有沉浸感。': 'When enabled, AI replies appear word by word. When disabled, the full reply is sent at once for better immersion.',
   '分步消息 (message_break)': 'Message breaks (message_break)',
-  'AI 调用 message_break 工具在回复中插入断点，每个分段作为独立消息发送。开启后自动关闭流式回复。': 'The AI calls the message_break tool to insert breakpoints, sending each segment as a separate message. Enabling this automatically disables streaming.',
+  'AI 调用 message_break 工具在回复中插入断点，每个分段作为独立消息发送。可与流式回复同时开启。': 'The AI calls the message_break tool to insert breakpoints, sending each segment as a separate message. Can be enabled alongside streaming.',
   '新消息行为': 'New message behavior',
   '生成中收到新消息时的处理方式：打断重发、排队等待、或注入为纠偏指令。交互等待时一律排队。': 'How to handle new messages received during generation: interrupt and resend, queue, or inject as a steering instruction. Pending interactions always queue.',
   '打断重发 (interrupt)': 'Interrupt & resend (interrupt)',
