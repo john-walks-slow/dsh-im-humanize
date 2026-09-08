@@ -921,97 +921,36 @@ export const STEP_STREAM_CARD_MAX_BYTES = 24_000;
  * collapsed "process details" panel so the sealed card stays compact.
  */
 
-/**
- * Merge every tool/thinking block into one `merged` block for finished turns:
- * tool lines come first, then thinking notes, preserving the per-kind order.
- * Byte counts and per-kind `omitted` tallies are preserved so the collapsed
- * panel title can report accurate totals.
- */
-function mergeProcessBlocks(rawBlocks) {
-  const list = Array.isArray(rawBlocks) ? rawBlocks.filter(Boolean) : [];
-  const hasPanel = list.some((block) => block?.kind === 'tools' || block?.kind === 'notes');
-  if (!hasPanel) return list;
-  const toolsLines = [];
-  const notesLines = [];
-  let toolsOmitted = 0;
-  let notesOmitted = 0;
-  for (const block of list) {
-    if (block?.kind !== 'tools' && block?.kind !== 'notes') continue;
-    const lines = (Array.isArray(block.lines) ? block.lines : [])
-      .filter((line) => typeof line === 'string' && line.trim());
-    const omitted = Number(block.omitted) || 0;
-    if (block.kind === 'tools') {
-      toolsLines.push(...lines);
-      toolsOmitted += omitted;
-    } else {
-      notesLines.push(...lines);
-      notesOmitted += omitted;
-    }
-  }
-  const merged = {
-    kind: 'merged',
-    toolsLines,
-    notesLines,
-    toolsCount: toolsLines.length + toolsOmitted,
-    notesCount: notesLines.length + notesOmitted,
-  };
-  // Non-panel blocks (interim markdown notes) stay in their original slots;
-  // panel blocks collapse into the single merged panel at the first panel slot.
-  const output = [];
-  let mergedPlaced = false;
-  for (const block of list) {
-    if (block?.kind === 'tools' || block?.kind === 'notes') {
-      if (!mergedPlaced) {
-        output.push(merged);
-        mergedPlaced = true;
-      }
-      continue;
-    }
-    output.push(block);
-  }
-  if (!mergedPlaced) output.push(merged);
-  return output;
-}
-
 export function stepStreamCard(rawBlocks, { status = 'running' } = {}) {
   const running = status === 'running';
-  const blocks = running ? rawBlocks : mergeProcessBlocks(rawBlocks);
   const elements = [];
-  for (const block of Array.isArray(blocks) ? blocks : []) {
+  const panelElements = [];
+  for (const block of Array.isArray(rawBlocks) ? rawBlocks : []) {
     if (block?.kind === 'tools' || block?.kind === 'notes') {
       const lines = (Array.isArray(block.lines) ? block.lines : [])
         .filter((line) => typeof line === 'string' && line.trim());
       if (lines.length === 0) continue;
       const count = lines.length + (Number(block.omitted) || 0);
-      elements.push(stepPanel(lines, {
+      const panel = stepPanel(lines, {
         title: block.kind === 'tools'
           ? t('🛠️ 工具摘要（{count}）', { count })
           : t('💭 思考过程（{count}）', { count }),
         // Tool summaries stay visible while the turn runs; thinking notes
-        // remain folded at all times.
+        // remain folded at all times. Finished turns keep both panels but
+        // tuck them inside one collapsed "process details" wrapper.
         expanded: block.kind === 'tools' && running,
-      }));
-      continue;
-    }
-    if (block?.kind === 'merged') {
-      // Finished turns: one folded panel holding both sections.
-      const toolLines = (block.toolsLines ?? []).filter((line) => typeof line === 'string' && line.trim());
-      const noteLines = (block.notesLines ?? []).filter((line) => typeof line === 'string' && line.trim());
-      const sections = [];
-      if (toolLines.length > 0) sections.push(`**${t('🛠️ 工具')}**`, ...toolLines);
-      if (noteLines.length > 0) sections.push(`**${t('💭 思考')}**`, ...noteLines);
-      if (sections.length === 0) continue;
-      elements.push(stepPanel(sections, {
-        title: t('📋 过程详情（工具 {tools} · 思考 {notes}）', {
-          tools: block.toolsCount ?? 0,
-          notes: block.notesCount ?? 0,
-        }),
-        expanded: false,
-      }));
+      });
+      if (running) elements.push(panel);
+      else panelElements.push(panel);
       continue;
     }
     const text = typeof block?.text === 'string' ? block.text.trim() : '';
     if (text) elements.push({ tag: 'markdown', content: text });
+  }
+  if (!running && panelElements.length > 0) {
+    // Finished turns: the tool/thinking panels nest inside one collapsed
+    // "process details" wrapper, so the sealed card shows a single line.
+    elements.push(processDetailsPanel(panelElements));
   }
   if (elements.length === 0) elements.push({ tag: 'markdown', content: ' ' });
   if (status !== 'sealed') {
@@ -1022,6 +961,26 @@ export function stepStreamCard(rawBlocks, { status = 'running' } = {}) {
     header: { title: plainText(t('⚙️ 任务过程')), template: 'blue' },
     body: { elements },
   });
+}
+
+/** The collapsed wrapper that holds the per-kind panels on finished turns. */
+function processDetailsPanel(children) {
+  return {
+    tag: 'collapsible_panel',
+    expanded: false,
+    background_color: 'grey-50',
+    border: { color: 'grey', corner_radius: '8px' },
+    padding: '8px 8px 8px 8px',
+    header: {
+      title: { tag: 'plain_text', content: t('📋 过程详情') },
+      vertical_align: 'center',
+      padding: '8px 8px 8px 8px',
+      icon: { tag: 'standard_icon', token: 'down-small-ccm_outlined', color: 'grey', size: '16px 16px' },
+      icon_position: 'right',
+      icon_expanded_angle: -180,
+    },
+    elements: children,
+  };
 }
 
 /** The collapsible grey panel used for tool summaries and thinking notes. */

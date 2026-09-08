@@ -9008,7 +9008,8 @@ test('step push streaming_card mode: an oversized tool panel sheds its oldest li
   await bridge.waitForIdle();
 
   const sealed = JSON.stringify(patches.at(-1)?.content ?? {});
-  assert.ok(sealed.includes('📋 过程详情（工具 150'), 'the merged panel header keeps the full tool count');
+  assert.ok(sealed.includes('工具摘要（150）'), 'the nested tool panel header keeps the full tool count');
+  assert.ok(sealed.includes('📋 过程详情'), 'the finished turn wraps the panels in one details wrapper');
   assert.ok(sealed.includes('面板压测完成'), 'the answer still seals inside the card');
   for (const patch of patches) {
     assert.ok(

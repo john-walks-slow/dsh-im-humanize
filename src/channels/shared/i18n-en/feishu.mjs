@@ -325,6 +325,7 @@ export default {
   '已停止': 'Stopped',
   '运行中': 'Running',
   '⚙️ 任务过程': '⚙️ Task progress',
+  '📋 过程详情': '📋 Process details',
   '🛠️ 工具摘要（{count}）': '🛠️ Tool summary ({count})',
   '💭 思考过程（{count}）': '💭 Thinking ({count})',
   '🛠️ 工具': '🛠️ Tools',
