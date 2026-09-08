@@ -10422,6 +10422,7 @@ test('thinking status: a heartbeat created while a real step pushes is recalled 
   let releaseHeartbeat;
   const heartbeatInFlight = new Promise((resolve) => { releaseHeartbeat = resolve; });
   let replyCalls = 0;
+  let lateRecallObservedDuringAsk = false;
   const bridge = new FeishuHarnessBridge({
     client: { im: { v1: { message: {
       reply: async (request) => {
@@ -10453,6 +10454,9 @@ test('thinking status: a heartbeat created while a real step pushes is recalled 
       releaseHeartbeat();
       // 留出真实时间让看门狗处理迟到的心跳创建返回。
       await new Promise((resolve) => setTimeout(resolve, 60));
+      const heartbeatIdDuringAsk = order.find((entry) => entry.text.includes('⏳ 正在思考中…'))?.id;
+      lateRecallObservedDuringAsk = heartbeatIdDuringAsk !== undefined
+        && recalls.includes(heartbeatIdDuringAsk);
       return '并发回合的答案。';
     }),
     state: fixture.state,
@@ -10467,6 +10471,7 @@ test('thinking status: a heartbeat created while a real step pushes is recalled 
 
   const heartbeatId = order.find((entry) => entry.text.includes('⏳ 正在思考中…'))?.id;
   assert.ok(heartbeatId, 'the heartbeat post was dispatched');
+  assert.equal(lateRecallObservedDuringAsk, true, 'the late heartbeat must be recalled as soon as its create returns — not parked until turn end');
   const recallEntries = order.filter((entry) => entry.kind === 'recall' && entry.id === heartbeatId);
   assert.equal(recallEntries.length, 1, 'the late heartbeat is recalled exactly once');
   assert.deepEqual(recalls, [heartbeatId], 'the late recall went through the channel');
