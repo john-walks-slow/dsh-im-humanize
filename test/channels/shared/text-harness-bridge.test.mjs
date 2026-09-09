@@ -2750,3 +2750,120 @@ test('passes the runtime signal to Harness and safely cancels a pending question
     },
   });
 });
+
+test('shared bridge keepalives a short-lived draft stream and stops the timer on completion', async () => {
+  const fixture = stateFixture();
+  const refreshes = [];
+  const typings = [];
+  let releaseAsk;
+  const gate = new Promise((resolve) => { releaseAsk = resolve; });
+  const bridge = new TextHarnessBridge({
+    descriptor: { key: 'test', label: 'Test' },
+    bot: {
+      sendText: async () => 'done',
+      sendTyping: async () => { typings.push(Date.now()); },
+      openDeliveryStream: async () => ({
+        keepalive: true,
+        refresh: async () => { refreshes.push(Date.now()); },
+        update: async () => undefined,
+        finish: async () => undefined,
+        fail: async () => undefined,
+      }),
+    },
+    harness: {
+      createSession: async () => 'session-keepalive',
+      ask: async () => {
+        await gate;
+        return 'long answer';
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+    keepaliveIntervalMs: 15,
+  });
+
+  const accepted = bridge.accept(message('keepalive-draft', '跑一个长任务'));
+  await eventually(() => refreshes.length >= 2, 2_000);
+  assert.ok(refreshes.length >= 2, 'heartbeat refreshes the draft repeatedly during the long turn');
+  assert.ok(typings.length >= 1, 'heartbeat also refreshes the typing indicator');
+  releaseAsk();
+  await accepted;
+
+  const stoppedAt = refreshes.length;
+  const typingAt = typings.length;
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(refreshes.length, stoppedAt, 'no refresh after the turn ends');
+  assert.equal(typings.length, typingAt, 'no typing after the turn ends');
+});
+
+test('shared bridge clears the keepalive timer when a long turn fails', async () => {
+  const fixture = stateFixture();
+  const refreshes = [];
+  let releaseAsk;
+  const gate = new Promise((resolve) => { releaseAsk = resolve; });
+  const failure = new Error('private provider failure');
+  failure.code = 'harness-turn-failed';
+  const bridge = new TextHarnessBridge({
+    descriptor: { key: 'test', label: 'Test' },
+    bot: {
+      sendText: async () => 'done',
+      openDeliveryStream: async () => ({
+        keepalive: true,
+        refresh: async () => { refreshes.push(Date.now()); },
+        update: async () => undefined,
+        finish: async () => undefined,
+        fail: async () => undefined,
+      }),
+    },
+    harness: {
+      createSession: async () => 'session-keepalive-fail',
+      ask: async () => {
+        await gate;
+        throw failure;
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+    keepaliveIntervalMs: 15,
+  });
+
+  const accepted = bridge.accept(message('keepalive-fail', '会失败的長任务'));
+  await eventually(() => refreshes.length >= 2, 2_000);
+  releaseAsk();
+  await accepted;
+
+  const stoppedAt = refreshes.length;
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(refreshes.length, stoppedAt, 'no refresh leaks after a failed turn');
+});
+
+test('shared bridge never starts a keepalive timer for a non-keepalive stream', async () => {
+  const fixture = stateFixture();
+  const refreshes = [];
+  const typings = [];
+  const bridge = new TextHarnessBridge({
+    descriptor: { key: 'test', label: 'Test' },
+    bot: {
+      sendText: async () => 'done',
+      sendTyping: async () => { typings.push(Date.now()); },
+      openDeliveryStream: async () => ({
+        keepalive: false,
+        refresh: async () => { refreshes.push(Date.now()); },
+        update: async () => undefined,
+        finish: async () => undefined,
+      }),
+    },
+    harness: {
+      createSession: async () => 'session-non-keepalive',
+      ask: async () => 'plain answer',
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+    keepaliveIntervalMs: 10,
+  });
+
+  await bridge.accept(message('non-keepalive', '普通任务'));
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(refreshes.length, 0, 'non-keepalive carriers are never heartbeat-refreshed');
+  assert.equal(typings.length, 1, 'only the initial typing indicator is sent');
+});
