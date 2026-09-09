@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Fixed / 修复
+
+- Telegram 私聊 Rich Draft 在长时间思考或工具执行期间定时刷新，避免临时预览过期；慢网络下跳过尚未完成的心跳，发送最终答案或错误提示前停止调度，避免重复刷新积压拖延收尾。感谢 [@geekyfoxlab](https://github.com/geekyfoxlab) 的贡献（[#175](https://github.com/xmanrui/dsh-im/pull/175)）。
+  Telegram private-chat Rich Drafts stay refreshed during long reasoning or tool calls. Pending heartbeats skip redundant ticks on slow networks, and scheduling stops before final or error delivery so repeated refreshes cannot delay completion. Thanks to [@geekyfoxlab](https://github.com/geekyfoxlab) for [#175](https://github.com/xmanrui/dsh-im/pull/175).
+
 ## [4.18.0] - 2026-09-09
 
 ### Added / 新增

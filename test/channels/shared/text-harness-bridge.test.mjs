@@ -21,6 +21,7 @@ import {
 } from '../../../src/channels/shared/text-harness-bridge.mjs';
 import { SlackHarnessBridge } from '../../../src/channels/slack/slack-bridge.mjs';
 import { TelegramHarnessBridge } from '../../../src/channels/telegram/telegram-bridge.mjs';
+import { TelegramBotClient } from '../../../src/channels/telegram/telegram-runtime.mjs';
 import { WhatsappHarnessBridge } from '../../../src/channels/whatsapp/whatsapp-bridge.mjs';
 
 function deferred() {
@@ -2867,3 +2868,125 @@ test('shared bridge never starts a keepalive timer for a non-keepalive stream', 
   assert.equal(refreshes.length, 0, 'non-keepalive carriers are never heartbeat-refreshed');
   assert.equal(typings.length, 1, 'only the initial typing indicator is sent');
 });
+
+test('slow Telegram heartbeat does not queue redundant drafts ahead of the final answer', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const fixture = stateFixture();
+  const askGate = deferred();
+  const refreshGate = deferred();
+  const drafts = [];
+  const finals = [];
+  let asked = false;
+  const bot = new TelegramBotClient({
+    api: {
+      // A failed typing request must not release the still-pending draft guard.
+      sendChatAction: async () => { throw new Error('typing unavailable'); },
+      sendRichMessageDraft: async (payload) => {
+        drafts.push(payload);
+        if (drafts.length === 2) await refreshGate.promise;
+        return true;
+      },
+      sendRichMessage: async (payload) => {
+        finals.push(payload);
+        return { message_id: 175 };
+      },
+    },
+    logger: { warn() {} },
+  });
+  const bridge = new TelegramHarnessBridge({
+    bot,
+    harness: {
+      createSession: async () => 'session-slow-heartbeat',
+      ask: async () => { asked = true; return askGate.promise; },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+  });
+  const accepted = bridge.accept(message('slow-heartbeat', 'long task', {
+    replyTarget: { chatId: 42, chatType: 'private' },
+  }));
+  t.after(async () => {
+    refreshGate.resolve();
+    askGate.resolve('final answer');
+    await accepted;
+  });
+  await eventually(() => asked);
+  t.mock.timers.tick(4_000);
+  await eventually(() => drafts.length === 2);
+  t.mock.timers.tick(40_000);
+  await new Promise(setImmediate);
+  askGate.resolve('final answer');
+  await new Promise(setImmediate);
+  assert.equal(finals.length, 0, 'the final frame still waits for the in-flight draft');
+  refreshGate.resolve();
+  await accepted;
+  assert.equal(drafts.length, 2, 'only the initial draft and one heartbeat were sent');
+  assert.equal(finals.length, 1);
+  assert.equal(finals[0].richMessage.markdown, 'final answer');
+  t.mock.timers.tick(40_000);
+  await new Promise(setImmediate);
+  assert.equal(drafts.length, 2, 'no heartbeat after final delivery');
+});
+
+for (const outcome of ['success', 'failure']) {
+  test(`heartbeat recovers after rejection and stops before ${outcome} delivery completes`, async (t) => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const fixture = stateFixture();
+    const askGate = deferred();
+    const deliveryGate = deferred();
+    let asked = false;
+    let finalizing = false;
+    let refreshes = 0;
+    let typings = 0;
+    const finalize = async () => {
+      finalizing = true;
+      await deliveryGate.promise;
+      return { deliveryOutcome: 'sent', providerMessageIds: ['175'] };
+    };
+    const bridge = new TextHarnessBridge({
+      descriptor: { key: 'test', label: 'Test' },
+      bot: {
+        sendText: async () => 'done',
+        sendTyping: async () => { typings += 1; },
+        openDeliveryStream: async () => ({
+          keepalive: true,
+          refresh: async () => {
+            refreshes += 1;
+            if (refreshes === 1) throw new Error('temporary refresh failure');
+          },
+          update: async () => undefined,
+          finish: finalize,
+          fail: finalize,
+        }),
+      },
+      harness: {
+        createSession: async () => `session-heartbeat-${outcome}`,
+        ask: async () => { asked = true; return askGate.promise; },
+      },
+      state: fixture.state,
+      logger: { warn() {}, error() {} },
+    });
+    const accepted = bridge.accept(message(`heartbeat-${outcome}`, 'long task'));
+    t.after(async () => {
+      askGate.resolve('answer');
+      deliveryGate.resolve();
+      await accepted;
+    });
+    await eventually(() => asked);
+    t.mock.timers.tick(4_000);
+    await new Promise(setImmediate);
+    t.mock.timers.tick(4_000);
+    await new Promise(setImmediate);
+    assert.equal(refreshes, 2, 'a rejected heartbeat does not disable later refreshes');
+    if (outcome === 'success') askGate.resolve('answer');
+    else askGate.reject(new Error('turn failed'));
+    await eventually(() => finalizing);
+    const typingAt = typings;
+    t.mock.timers.tick(40_000);
+    await new Promise(setImmediate);
+    assert.equal(refreshes, 2, 'no new refresh while final delivery is pending');
+    assert.equal(typings, typingAt, 'no typing while final delivery is pending');
+    deliveryGate.resolve();
+    await accepted;
+  });
+}

@@ -594,6 +594,10 @@ export class TextHarnessBridge {
     // running tool call. Declared outside the try so every exit path (including
     // pre-prompt failures like image parsing) clears the timer.
     let keepaliveTimer = null;
+    const stopKeepalive = () => {
+      if (keepaliveTimer !== null) clearInterval(keepaliveTimer);
+      keepaliveTimer = null;
+    };
     try {
       this.#signal?.throwIfAborted();
       if (message.kind === 'group' && message.addressed !== true) {
@@ -697,9 +701,22 @@ export class TextHarnessBridge {
       // pre-prompt failure (image parsing, context building) cannot leave the
       // timer running; the outermost finally below clears it on every path.
       if (stream && stream.keepalive === true && typeof stream.refresh === 'function') {
-        keepaliveTimer = setInterval(() => {
-          this.#bot.sendTyping?.(target).catch(() => undefined);
-          stream?.refresh?.().catch(() => undefined);
+        let refreshing = false;
+        keepaliveTimer = setInterval(async () => {
+          // Skip ticks while the previous heartbeat is pending so redundant
+          // refreshes cannot queue ahead of the final answer on a slow network.
+          if (refreshing) return;
+          refreshing = true;
+          try {
+            await Promise.allSettled([
+              this.#bot.sendTyping?.(target),
+              stream.refresh(),
+            ]);
+          } catch {
+            // Keepalive is best-effort, including synchronous adapter failures.
+          } finally {
+            refreshing = false;
+          }
         }, this.#keepaliveIntervalMs);
         keepaliveTimer.unref?.();
       }
@@ -737,6 +754,7 @@ export class TextHarnessBridge {
           files: message.files,
         },
       });
+      stopKeepalive();
       if (batchSubmission) {
         this.#batches.complete(conversationKey, batchSubmission.token);
       }
@@ -823,6 +841,7 @@ export class TextHarnessBridge {
       }
       return delivery.receipt;
     } catch (error) {
+      stopKeepalive();
       const turnStopped = error?.code === 'turn-stopped';
       if (batchSubmission && turnStopped) {
         this.#batches.complete(conversationKey, batchSubmission.token);
@@ -893,7 +912,7 @@ export class TextHarnessBridge {
       }
       return error.deliveryReceipt;
     } finally {
-      if (keepaliveTimer !== null) clearInterval(keepaliveTimer);
+      stopKeepalive();
       await Promise.allSettled([
         this.#cancelPendingInteraction(conversationKey),
         this.#approvals.closeRoute(conversationKey),
