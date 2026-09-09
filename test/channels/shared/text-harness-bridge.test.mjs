@@ -561,7 +561,7 @@ test('all four shared text channels expose structured model rate limits without 
 
     const failure = status.lastMessageError;
     assert.equal(failure.code, 'MODEL_RATE_LIMIT', name);
-    assert.equal(failure.reason, 'MODEL_RATE_LIMIT', name);
+    assert.equal(failure.reason, 'HARNESS_TURN_FAILED', name);
     assert.match(failure.referenceId, /^MF-[A-F0-9]{8}$/, name);
     assert.match(sent.at(-1), /模型服务正在限流，本次任务未完成。请稍后重试。/, name);
     assert.equal(sent.at(-1).endsWith(`参考号：${failure.referenceId}`), true, name);

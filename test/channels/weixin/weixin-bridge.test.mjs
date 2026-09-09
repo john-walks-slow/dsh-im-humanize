@@ -11,6 +11,7 @@ import {
 } from '../../../src/channels/weixin/weixin-bridge.mjs';
 import { WeixinStateStore } from '../../../src/channels/weixin/state-store.mjs';
 import { connectionTestTarget } from '../../../src/channels/shared/connection-test.mjs';
+import { HarnessRpcError } from '../../../src/channels/shared/harness-client.mjs';
 import {
   OUTBOUND_ARTIFACT_TOOL,
   OutboundArtifactRegistry,
@@ -2269,6 +2270,45 @@ test('bridge commands are local and internal failures return a safe traceable me
   assert.doesNotMatch(JSON.stringify(status.lastMessageError), /private path|secret|token-shaped/);
 });
 
+test('Weixin reports a missing preset with recovery steps and the same reference in its log', async () => {
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-missing-preset');
+  const sent = [];
+  const logs = [];
+  const error = new HarnessRpcError('session.prompt', {
+    code: 'agent-preset/not-found',
+    message: 'private preset path /secret',
+    details: { agentPreset: 'removed-preset' },
+  });
+  const status = createWeixinBridgeStatus();
+  const bridge = new WeixinHarnessBridge({
+    api: { sendText: async ({ text }) => sent.push(text) },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => { throw error; },
+    },
+    state: fixture.state,
+    status,
+    logger: { error: (...args) => logs.push(args) },
+  });
+
+  await bridge.accept(message('missing-preset', '继续之前的会话'));
+
+  const failure = status.lastMessageError;
+  assert.equal(failure.code, 'PRESET_UNAVAILABLE');
+  assert.equal(failure.reason, 'AGENT_PRESET_NOT_FOUND');
+  assert.match(sent.at(-1), /\/presetlist.*\/preset <序号或 ID>.*\/new/u);
+  assert.equal(sent.at(-1).endsWith(`参考号：${failure.referenceId}`), true);
+  const log = logs.find(([text]) => text.includes(`[${failure.referenceId}]`));
+  assert.ok(log, 'the reply reference must identify the logged failure');
+  assert.equal(log[1], error);
+  assert.equal(error.code, 'agent-preset/not-found');
+  assert.doesNotMatch(JSON.stringify({ failure, sent }), /private|secret|removed-preset/u);
+});
+
 test('Weixin exposes a structured model rate limit without changing connection state', async () => {
   const fixture = stateFixture();
   fixture.sessions.set('p2p:owner-user', 'session-rate-limit');
@@ -2301,7 +2341,7 @@ test('Weixin exposes a structured model rate limit without changing connection s
 
   const failure = status.lastMessageError;
   assert.equal(failure.code, 'MODEL_RATE_LIMIT');
-  assert.equal(failure.reason, 'MODEL_RATE_LIMIT');
+  assert.equal(failure.reason, 'HARNESS_TURN_FAILED');
   assert.match(failure.referenceId, /^MF-[A-F0-9]{8}$/);
   assert.match(sent.at(-1), /模型服务正在限流，本次任务未完成。请稍后重试。/);
   assert.equal(sent.at(-1).endsWith(`参考号：${failure.referenceId}`), true);

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { getImHostLanguage, setImHostLanguage } from '../src/channels/shared/i18n.mjs';
 import {
   classifyMessageFailure,
   messageFailureText,
@@ -8,6 +9,62 @@ import {
 } from '../src/channels/shared/message-failure.mjs';
 
 const options = { referenceId: 'MF-TEST01', at: 123 };
+
+test('preset failures accept both RPC code formats and preserve the underlying reason', () => {
+  for (const suffix of ['not-found', 'invalid', 'locked', 'read-only']) {
+    for (const separator of ['-', '/']) {
+      const code = `agent-preset${separator}${suffix}`;
+      const error = Object.freeze({ code, message: 'private preset path /secret' });
+      const failure = classifyMessageFailure(error, options);
+      assert.equal(failure.code, 'PRESET_UNAVAILABLE', code);
+      assert.equal(failure.reason, `AGENT_PRESET_${suffix.toUpperCase().replaceAll('-', '_')}`);
+      assert.match(failure.message, /\/presetlist.*\/preset <序号或 ID>.*\/new/u);
+      assert.match(failure.message, /继续原会话.*恢复原 Preset/u);
+      assert.doesNotMatch(JSON.stringify(failure), /private|secret/u);
+      assert.equal(error.code, code);
+    }
+  }
+});
+
+test('failure reasons prefer explicit diagnostics and fall back to a safe RPC code', () => {
+  const error = { code: 'agent-preset/not-found' };
+  assert.equal(classifyMessageFailure(error, {
+    ...options, reason: 'preset/recovery-required',
+  }).reason, 'PRESET_RECOVERY_REQUIRED');
+  assert.equal(classifyMessageFailure(error, {
+    ...options, reason: 'private detail with spaces',
+  }).reason, 'AGENT_PRESET_NOT_FOUND');
+
+  for (const code of [undefined, 123, '', 'private detail', 'https://secret', 'x'.repeat(65)]) {
+    const failure = classifyMessageFailure({ code }, options);
+    assert.equal(failure.code, 'INTERNAL_UNKNOWN');
+    assert.equal(failure.reason, 'INTERNAL_UNKNOWN');
+  }
+});
+
+test('diagnostic fallback does not turn an unknown RPC error into invalid input', () => {
+  const error = { code: 'gateway/internal' };
+  const failure = classifyMessageFailure(error, { ...options, userMessage: '请求失败。' });
+  assert.equal(failure.code, 'INTERNAL_UNKNOWN');
+  assert.equal(failure.reason, 'GATEWAY_INTERNAL');
+
+  const imageFailure = classifyMessageFailure(error, {
+    ...options, userMessage: '当前模型不支持图片。', reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES',
+  });
+  assert.equal(imageFailure.code, 'INPUT_INVALID');
+  assert.equal(imageFailure.reason, 'MODEL_DOES_NOT_SUPPORT_IMAGES');
+  assert.equal(classifyMessageFailure({ code: 'image-invalid' }, options).code, 'INPUT_INVALID');
+});
+
+test('English preset failures include all recovery steps', (t) => {
+  const language = getImHostLanguage();
+  t.after(() => setImHostLanguage(language));
+  setImHostLanguage('en');
+  const failure = classifyMessageFailure({ code: 'agent-preset/not-found' }, options);
+  assert.match(failure.message, /\/presetlist.*\/preset <index or ID>.*\/new/u);
+  assert.match(failure.message, /original Session.*restore the original Preset/u);
+  assert.doesNotMatch(failure.message, /[\u4e00-\u9fff]/u);
+});
 
 test('message failures distinguish stable Harness transport errors', () => {
   assert.equal(classifyMessageFailure({
@@ -79,7 +136,7 @@ test('public message failure keeps only bounded safe fields', () => {
     stack: '/private/path',
   }), {
     code: 'SESSION_BUSY',
-    reason: 'SESSION_BUSY',
+    reason: 'AGENT_BUSY',
     message: '当前会话仍在处理上一项任务。请等待完成，或发送 /stop 后重试。',
     referenceId: 'MF-TEST01',
     at: 123,

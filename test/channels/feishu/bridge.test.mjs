@@ -5092,7 +5092,7 @@ test('Feishu exposes a structured model rate limit without changing connection s
 
   const failure = status.lastMessageError;
   assert.equal(failure.code, 'MODEL_RATE_LIMIT');
-  assert.equal(failure.reason, 'MODEL_RATE_LIMIT');
+  assert.equal(failure.reason, 'HARNESS_TURN_FAILED');
   assert.match(failure.referenceId, /^MF-[A-F0-9]{8}$/);
   assert.match(sent.at(-1), /模型服务正在限流，本次任务未完成。请稍后重试。/);
   assert.equal(sent.at(-1).endsWith(`参考号：${failure.referenceId}`), true);

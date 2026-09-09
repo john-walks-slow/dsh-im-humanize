@@ -77,7 +77,7 @@ const FAILURE_MESSAGES = Object.freeze({
   WORKSPACE_UNAVAILABLE:
     '当前工作区不存在或暂不可用。请重新选择工作区后重试。',
   PRESET_UNAVAILABLE:
-    '当前 Agent Preset 不存在或暂不可用。请发送 /presetlist 后重新选择。',
+    '当前 Agent Preset 无法使用。请发送 /presetlist 查看可用项，使用 /preset <序号或 ID> 重新选择，再发送 /new 创建新会话后重试。如需继续原会话，请联系管理员恢复原 Preset。',
   CHANNEL_PERMISSION:
     '回复已经生成，但机器人没有发送权限。请联系管理员检查渠道权限或重新绑定机器人。',
   CHANNEL_RATE_LIMIT:
@@ -133,7 +133,7 @@ function failureCode(error) {
   if (code === 'agent-busy') return 'SESSION_BUSY';
   if (code === 'workspace-session-stale') return 'SESSION_STALE';
   if (code.startsWith('workspace-')) return 'WORKSPACE_UNAVAILABLE';
-  if (code.startsWith('agent-preset-')) return 'PRESET_UNAVAILABLE';
+  if (/^agent-preset[-/]/u.test(code)) return 'PRESET_UNAVAILABLE';
   if (code.startsWith('image-') || code.startsWith('inbound-file-')
     || code === 'attachment-error') return 'INPUT_INVALID';
 
@@ -170,8 +170,8 @@ function safeReferenceId(value) {
 }
 
 function safeFailureReason(value) {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/u.test(value)) return null;
-  return value.toUpperCase().replaceAll('-', '_');
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_/-]{1,64}$/u.test(value)) return null;
+  return value.toUpperCase().replace(/[-/]/gu, '_');
 }
 
 export function classifyMessageFailure(error, {
@@ -190,7 +190,7 @@ export function classifyMessageFailure(error, {
     : classifiedCode;
   return Object.freeze({
     code,
-    reason: safeReason ?? code,
+    reason: safeReason ?? safeFailureReason(error?.code) ?? code,
     message: typeof userMessage === 'string' && userMessage.trim()
       ? userMessage.trim()
       : t(FAILURE_MESSAGES[code]),

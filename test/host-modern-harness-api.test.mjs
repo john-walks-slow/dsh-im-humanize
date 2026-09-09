@@ -4,6 +4,7 @@ import test from 'node:test';
 import { harnessConnection } from '../plugin-src/host/harness-connection.mjs';
 import { modernHarnessApi } from '../plugin-src/host/modern-harness-api.mjs';
 import { HarnessClient, HarnessRpcError } from '../src/channels/shared/harness-client.mjs';
+import { classifyMessageFailure } from '../src/channels/shared/message-failure.mjs';
 
 function asyncValues(...values) {
   return {
@@ -231,6 +232,40 @@ test('modern adapter preserves Typert business failures as Harness RPC errors', 
       && error.code === 'session-not-found'
       && error.details.sessionId === 'missing',
   );
+});
+
+test('modern adapter preserves direct DSH RemoteErrors through message classification', async () => {
+  const sourceError = Object.assign(new Error('preset "removed" not found'), {
+    name: 'RemoteError',
+    isDSHRemoteError: true,
+    code: 'agent-preset/not-found',
+    details: { agentPreset: 'removed', available: ['standard'] },
+  });
+  const { ctx } = fakeContext({
+    async invoke() { throw sourceError; },
+    async stream() { throw new Error('unused'); },
+  });
+  const client = new HarnessClient({ apiProxy: modernHarnessApi(ctx), workspace: '/workspace' });
+  await assert.rejects(() => client.rpc('session.prompt', { sessionId: 'session', text: 'test' }), (error) => {
+    assert.ok(error instanceof HarnessRpcError);
+    assert.equal(error.code, sourceError.code);
+    assert.deepEqual(error.details, sourceError.details);
+    const failure = classifyMessageFailure(error);
+    assert.equal(failure.code, 'PRESET_UNAVAILABLE');
+    assert.equal(failure.reason, 'AGENT_PRESET_NOT_FOUND');
+    return true;
+  });
+});
+
+test('modern adapter keeps unmarked internal errors internal', async () => {
+  const { ctx } = fakeContext({
+    async invoke() { throw Object.assign(new Error('local error'), { code: 'agent-preset/not-found' }); },
+    async stream() { throw new Error('unused'); },
+  });
+  const client = new HarnessClient({ apiProxy: modernHarnessApi(ctx), workspace: '/workspace' });
+  await assert.rejects(() => client.rpc('session.prompt', { sessionId: 'session', text: 'test' }), {
+    code: 'internal',
+  });
 });
 
 test('modern adapter exposes DSH v2 live assistant chunks through legacy history', async () => {

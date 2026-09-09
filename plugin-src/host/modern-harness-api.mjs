@@ -5,7 +5,7 @@ import { hasActiveHarnessInteractionOwner } from '../../src/channels/shared/harn
 const modernApis = new WeakMap();
 
 function failureOf(error) {
-  const failure = error?.failure;
+  const failure = error?.failure ?? (error?.isDSHRemoteError === true ? error : undefined);
   if (failure && typeof failure === 'object'
     && typeof failure.code === 'string'
     && typeof failure.message === 'string') {

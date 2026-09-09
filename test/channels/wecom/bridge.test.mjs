@@ -1186,7 +1186,7 @@ test('Enterprise WeChat exposes a structured model rate limit without changing c
   const failure = status.lastMessageError;
   const visibleError = transport.streamed.at(-1).content;
   assert.equal(failure.code, 'MODEL_RATE_LIMIT');
-  assert.equal(failure.reason, 'MODEL_RATE_LIMIT');
+  assert.equal(failure.reason, 'HARNESS_TURN_FAILED');
   assert.match(failure.referenceId, /^MF-[A-F0-9]{8}$/);
   assert.match(visibleError, /模型服务正在限流，本次任务未完成。请稍后重试。/);
   assert.equal(visibleError.endsWith(`参考号：${failure.referenceId}`), true);
