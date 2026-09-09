@@ -6,7 +6,7 @@ import { inject as hostInject } from '../plugin-src/host/index.mjs';
 
 const IM_CHANNELS = [
   'weixin', 'feishu', 'dingtalk', 'wecom', 'qq',
-  'slack', 'telegram', 'discord', 'whatsapp',
+  'slack', 'telegram', 'discord', 'whatsapp', 'imessage',
 ];
 
 test('Host connections share the current Cordis root without depending on a webServer', () => {

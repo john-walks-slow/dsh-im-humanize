@@ -5,7 +5,7 @@ import { Context } from '@deepseek-ai/cordis';
 
 import { createImHostPlugin, inject, name } from '../plugin-src/host/index.mjs';
 
-test('Host composes nine IM channels and the AI Office connector inside one plugin context', async () => {
+test('Host composes IM channels and the AI Office connector inside one plugin context', async () => {
   const calls = [];
   const deliveryService = { marker: 'shared-delivery-service' };
   const plugin = createImHostPlugin({
@@ -19,6 +19,7 @@ test('Host composes nine IM channels and the AI Office connector inside one plug
     applyTelegram: async (ctx, config) => calls.push(['telegram', ctx, config]),
     applyDiscord: async (ctx, config) => calls.push(['discord', ctx, config]),
     applyWhatsapp: async (ctx, config) => calls.push(['whatsapp', ctx, config]),
+    applyIMessage: async (ctx, config) => calls.push(['imessage', ctx, config]),
     applyOffice: async (ctx, config) => calls.push(['office', ctx, config]),
   });
   const ctx = { marker: 'shared-context' };
@@ -33,6 +34,7 @@ test('Host composes nine IM channels and the AI Office connector inside one plug
     telegram: { replyTimeoutMs: 60_000 },
     discord: { replyTimeoutMs: 60_000 },
     whatsapp: { replyTimeoutMs: 60_000 },
+    imessage: { replyTimeoutMs: 60_000 },
     office: { heartbeatSeconds: 30 },
   };
 
@@ -54,6 +56,7 @@ test('Host composes nine IM channels and the AI Office connector inside one plug
     ['telegram', ctx, { ...config.telegram, rpcAuthority: 'trusted-host', deliveryService }],
     ['discord', ctx, { ...config.discord, rpcAuthority: 'trusted-host', deliveryService }],
     ['whatsapp', ctx, { ...config.whatsapp, rpcAuthority: 'trusted-host', deliveryService }],
+    ['imessage', ctx, { ...config.imessage, rpcAuthority: 'trusted-host', deliveryService }],
     ['office', ctx, { ...config.office, rpcAuthority: 'trusted-host' }],
   ]);
 });
@@ -250,6 +253,7 @@ const CHANNELS = [
   ['telegram', 'applyTelegram'],
   ['discord', 'applyDiscord'],
   ['whatsapp', 'applyWhatsapp'],
+  ['imessage', 'applyIMessage'],
   ['office', 'applyOffice'],
 ];
 

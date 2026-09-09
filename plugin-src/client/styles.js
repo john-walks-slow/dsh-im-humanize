@@ -97,6 +97,7 @@ const CSS = String.raw`
 .dim-logoSlack { color: white; background: #4a154b; }
 .dim-logoSlack svg { width: 21px; height: 21px; }
 .dim-logoWhatsapp { color: white; background: #25d366; }
+.dim-logoIMessage { color: white; background: #32a852; }
 .dim-logoWhatsapp svg { width: 21px; height: 21px; }
 .dim-channelCopy { min-width: 0; display: grid; }
 .dim-channelCopy strong { overflow: hidden; color: inherit; font-size: 14px; line-height: 20px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }

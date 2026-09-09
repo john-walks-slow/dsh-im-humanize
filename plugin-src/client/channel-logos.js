@@ -132,6 +132,16 @@ export function WhatsappLogoGlyph({ size } = {}) {
   }));
 }
 
+export function IMessageLogoGlyph({ size } = {}) {
+  return h('svg', {
+    ...dimensions(size), viewBox: '0 0 24 24', focusable: 'false',
+    'aria-hidden': 'true', 'data-im-channel-logo': 'imessage',
+  }, h('path', {
+    fill: 'currentColor',
+    d: 'M12 2.2c-5.52 0-10 3.75-10 8.38 0 2.63 1.52 4.98 3.9 6.52l-.92 3.43a.5.5 0 0 0 .72.56l3.54-1.96c.87.23 1.8.35 2.76.35 5.52 0 10-3.75 10-8.9S17.52 2.2 12 2.2Zm-3.4 8.2a1.2 1.2 0 1 1 0 2.4 1.2 1.2 0 0 1 0-2.4Zm3.4 0a1.2 1.2 0 1 1 0 2.4 1.2 1.2 0 0 1 0-2.4Zm3.4 0a1.2 1.2 0 1 1 0 2.4 1.2 1.2 0 0 1 0-2.4Z',
+  }));
+}
+
 export function OfficeLogoGlyph({ size } = {}) {
   return h('svg', {
     ...dimensions(size),

@@ -182,7 +182,7 @@ export function createTokenChannelSettings(definition) {
     const [model, setModel] = React.useState({
       phase: 'loading', bots: [], totals: { configured: 0, connected: 0 }, error: null,
       agentPresetCatalog: EMPTY_AGENT_PRESET_CATALOG,
-      modelCatalog: EMPTY_MODEL_CATALOG,
+      modelCatalog: EMPTY_MODEL_CATALOG, permissions: null,
     });
     const [credentialOpen, setCredentialOpen] = React.useState(false);
     const [credentialError, setCredentialError] = React.useState(null);
@@ -221,6 +221,7 @@ export function createTokenChannelSettings(definition) {
           phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
           agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
           modelCatalog: snapshot.modelCatalog ?? EMPTY_MODEL_CATALOG,
+          permissions: snapshot.permissions ?? null,
         });
       } catch (error) {
         if (error?.name !== 'AbortError' && mounted.current && !signal?.aborted
@@ -268,6 +269,7 @@ export function createTokenChannelSettings(definition) {
           phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
           agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
           modelCatalog: snapshot.modelCatalog ?? EMPTY_MODEL_CATALOG,
+          permissions: snapshot.permissions ?? null,
         });
         }
         setCredentialOpen(false);
@@ -418,6 +420,8 @@ export function createTokenChannelSettings(definition) {
         : h(React.Fragment, null,
             credentialOpen ? (CredentialPanel
               ? h(CredentialPanel, {
+                  channel,
+                  permissions: model.permissions,
                   busy,
                   error: credentialError,
                   onSubmit: bindCredentials,

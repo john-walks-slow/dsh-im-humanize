@@ -101,6 +101,7 @@ export function createTokenChannelApi(channel, connectionSummary, {
       totals: { configured: bots.length, connected: bots.filter((bot) => bot.connected).length },
       agentPresetCatalog: normalizeAgentPresetCatalog(source.agentPresetCatalog),
       modelCatalog: normalizeModelCatalog(source.modelCatalog),
+      ...(isRecord(source.permissions) ? { permissions: source.permissions } : {}),
     };
   };
 

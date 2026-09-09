@@ -20,7 +20,7 @@ async function until(predicate, message) {
 const titles = [
   '整理今天的项目进度', '分析本周的客户反馈', '跟进产品发布清单', '汇总团队讨论结果',
   '检查订单处理状态', 'Review the launch checklist', 'Plan the next release',
-  'Summarize community feedback', '确认下周会议安排', '处理跨团队协作任务',
+  'Summarize community feedback', '确认下周会议安排', '处理跨团队协作任务', '测试 iMessage 渠道',
 ];
 const initial = Object.entries(SESSION_CHANNEL_LABELS).map(([channel, labels], index) => ({
   id: channel, title: `${labels[0]} · ${titles[index]}`, channel,
@@ -68,7 +68,7 @@ function render() {
 const title = (id) => document.getElementById(`title-${id}`);
 const mark = 'data-dsh-im-session-channel';
 const text = 'data-dsh-im-session-text';
-const decorated = () => initial.slice(0, 10).every((row) => title(row.id)?.getAttribute(mark) === row.channel);
+const decorated = () => initial.slice(0, -1).every((row) => title(row.id)?.getAttribute(mark) === row.channel);
 
 async function run() {
   render();
@@ -89,7 +89,7 @@ async function run() {
   assert(title('weixin').getBoundingClientRect().height === 20, 'row title height changed');
   await until(() => document.getElementById('search-title').getAttribute(mark) === 'feishu', 'search result is missing its logo');
   assert(document.getElementById('search-title').getBoundingClientRect().width > 100, 'content-sized search title collapsed');
-  checks.push('all ten SVGs, original text/node identity, typography, accessibility CSS, Web/chat exclusion, search');
+  checks.push('all channel SVGs, original text/node identity, typography, accessibility CSS, Web/chat exclusion, search');
 
   title('qq').click();
   await tick();

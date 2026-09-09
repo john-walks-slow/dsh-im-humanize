@@ -69,6 +69,11 @@ export const ACCESS_CHANNEL_DEFINITIONS = Object.freeze({
     groupUserLabel: '群成员电话号码或 JID',
     groupPlaceholder: '8613800000000 或完整 JID',
   }),
+  imessage: Object.freeze({
+    directUserLabel: 'iMessage Chat GUID',
+    directPlaceholder: 'iMessage;+;chat123',
+    groupSupported: false,
+  }),
 });
 
 function clonePolicy(policy) {

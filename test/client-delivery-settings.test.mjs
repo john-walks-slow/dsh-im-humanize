@@ -29,6 +29,7 @@ import { SlackAccountCard } from '../plugin-src/client/channels/slack/index.js';
 import { TelegramAccountCard } from '../plugin-src/client/channels/telegram/index.js';
 import { DiscordAccountCard } from '../plugin-src/client/channels/discord/index.js';
 import { WhatsappAccountCard } from '../plugin-src/client/channels/whatsapp/index.js';
+import { IMessageAccountCard } from '../plugin-src/client/channels/imessage/index.js';
 import { IMSettingsTab } from '../plugin-src/client/index.js';
 
 const { act, create } = TestRenderer;
@@ -117,7 +118,7 @@ test('delivery settings define only the ten supported IM channel routes', () => 
   assert.equal(DELIVERY_RPC_CHANNEL, '/dsh-im-delivery');
   assert.deepEqual(Object.keys(DELIVERY_CHANNEL_DEFINITIONS), [
     'weixin', 'feishu', 'dingtalk', 'wecom', 'wecomApp', 'qq',
-    'slack', 'telegram', 'discord', 'whatsapp',
+    'slack', 'telegram', 'discord', 'whatsapp', 'imessage',
   ]);
   assert.deepEqual(
     DELIVERY_CHANNEL_DEFINITIONS.feishu.fields.user.map((field) => field.key),
@@ -162,6 +163,7 @@ test('all nine robot cards add one accessible settings gear beside existing cont
     ['telegram', TelegramAccountCard, { account }],
     ['discord', DiscordAccountCard, { account }],
     ['whatsapp', WhatsappAccountCard, { account }],
+    ['imessage', IMessageAccountCard, { account }],
   ];
 
   for (const [channel, Card, props] of cards) {
