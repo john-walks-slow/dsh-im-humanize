@@ -10,6 +10,7 @@ const EN = Object.freeze({
   '配置 macOS Messages 权限': 'Configure macOS Messages permissions',
   '配置本机权限': 'Configure local permissions',
   '启用 macOS 原生 iMessage': 'Enable native macOS iMessage',
+  '支持同账号自聊：在 iPhone 或 Mac 上给自己已登录的 iMessage 邮箱或号码发指令。AI 回复以 🤖 DSH 开头，不会再次触发机器人。': 'Self-chat is supported: send instructions from your iPhone or Mac to your signed-in iMessage email or phone number. AI replies start with 🤖 DSH and do not trigger the bot again.',
   '检查权限并启用': 'Check permissions and enable',
   'DeepSeek Harness 通过 macOS Messages.app 收发文本消息。首次使用需要授予以下权限：': 'DeepSeek Harness sends and receives messages through macOS Messages.app. The following permissions are required the first time:',
   '✓ 完全磁盘访问权限已授予': '✓ Full Disk Access granted',

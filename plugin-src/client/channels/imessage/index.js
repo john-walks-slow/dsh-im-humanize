@@ -10,6 +10,7 @@ function PermissionPanel({ permissions, busy, error, onSubmit, onCancel }) {
   const automationReady = permissions?.automation === 'granted';
   return h('section', { className: 'ddt-card dim-surfaceCard dim-imessagePermissionPanel' },
     h('h3', null, '启用 macOS 原生 iMessage'),
+    h('p', null, '支持同账号自聊：在 iPhone 或 Mac 上给自己已登录的 iMessage 邮箱或号码发指令。AI 回复以 🤖 DSH 开头，不会再次触发机器人。'),
     h('p', null, 'DeepSeek Harness 通过 macOS Messages.app 收发文本消息。首次使用需要授予以下权限：'),
     h('ol', { className: 'dim-imessagePermissionSteps' },
       h('li', null,

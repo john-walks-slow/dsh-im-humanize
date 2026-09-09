@@ -4,6 +4,9 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const DEFAULT_DB_PATH = `${process.env.HOME ?? ''}/Library/Messages/chat.db`;
 const DEFAULT_TIMEOUT_MS = 15_000;
+// Self-chat has no separate bot sender. Keep the reply marker in Messages itself
+// so echoes are still recognizable after a Host restart or iCloud resync.
+export const IMESSAGE_BOT_REPLY_PREFIX = '🤖 DSH\n';
 
 function cleanString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -62,6 +65,8 @@ export function normalizeIMessage(value, { botId } = {}) {
   const text = cleanString(value.text);
   const sender = cleanString(value.sender ?? value.handle_id);
   if (!guid || !chatGuid || !text || !sender) return null;
+  if (text.startsWith(IMESSAGE_BOT_REPLY_PREFIX)) return null;
+  if (value.isFromMe === 1 || value.isFromMe === true) return null;
   if (botId && sender === botId) return null;
   return Object.freeze({
     messageId: guid,
@@ -120,8 +125,11 @@ export class MacOSMessagesApi {
     const cursor = Number.isSafeInteger(after) && after >= 0 ? after : 0;
     const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 50));
     const chatFilter = chatGuid ? ` AND c.guid = ${sqlString(normalizeChatGuid(chatGuid))}` : '';
+    // Messages delivers self-chat back as an incoming copy. Read that copy once,
+    // keeping all outgoing rows excluded, and filter bot replies by their marker.
     const query = `SELECT m.ROWID AS rowid, m.guid AS guid, m.text AS text,
       h.id AS sender, c.guid AS chatGuid, c.service_name AS serviceName,
+      m.is_from_me AS isFromMe,
       datetime((m.date / 1000000000) + 978307200, 'unixepoch') AS receivedAt
       FROM message m
       JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
@@ -129,14 +137,7 @@ export class MacOSMessagesApi {
       LEFT JOIN handle h ON h.ROWID = m.handle_id
       WHERE m.ROWID > ${cursor} AND m.is_from_me = 0
         AND m.text IS NOT NULL AND m.text != ''
-        AND c.service_name = 'iMessage'
-        AND NOT (
-          h.id IS NOT NULL AND c.account_login IS NOT NULL AND (
-            h.id = c.account_login
-            OR (c.account_login LIKE 'E:%' AND h.id = '+' || substr(c.account_login, 3))
-            OR (c.account_login LIKE 'P:%' AND h.id = '+' || substr(c.account_login, 3))
-          )
-        )${chatFilter}
+        AND c.service_name = 'iMessage'${chatFilter}
       ORDER BY m.ROWID ASC LIMIT ${boundedLimit};`;
     try {
       const { stdout } = await this.#execFile('/usr/bin/sqlite3', ['-json', this.#dbPath, query], this.#execFileOptions);
@@ -169,12 +170,14 @@ export class MacOSMessagesApi {
     const recipient = address ? normalizeAddress(address) : target.split(';').at(-1) || target;
     const content = cleanString(text);
     if (!content) throw new TypeError('iMessage text is required');
+    const reply = content.startsWith(IMESSAGE_BOT_REPLY_PREFIX)
+      ? content : `${IMESSAGE_BOT_REPLY_PREFIX}${content}`;
     const script = `tell application "Messages"
       set serviceList to every service whose service type = iMessage
       if (count of serviceList) is 0 then error "No iMessage service is available"
       set targetService to item 1 of serviceList
       set targetBuddy to buddy ${appleScriptString(recipient)} of targetService
-      send ${appleScriptString(content)} to targetBuddy
+      send ${appleScriptString(reply)} to targetBuddy
     end tell`;
     try {
       await this.#osascript(script);

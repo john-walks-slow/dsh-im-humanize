@@ -96,7 +96,7 @@ const CHANNELS = Object.freeze([
   { id: 'discord', label: 'Discord' },
   { id: 'whatsapp', label: 'WhatsApp' },
   { id: 'wecomApp', label: '企业微信应用', note: '（实验功能）' },
-  { id: 'imessage', label: 'iMessage' },
+  { id: 'imessage', label: 'iMessage', note: '（实验功能）' },
   { id: 'office', label: 'AI Office', note: '（实验功能）' },
 ]);
 
