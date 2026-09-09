@@ -42,6 +42,23 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 This repository is a fork of `xmanrui/dsh-im` focused on **humanized messaging** for role-play immersion. It keeps every upstream feature and adds settings configured in the **Humanization settings** section under **Settings → IM bots → General settings**; the **send delay** can additionally be overridden per bot on each channel's bot card:
 
+### At a glance: all differences from upstream
+
+| Change | Default | Description |
+| --- | --- | --- |
+| Streaming replies `streaming` | on | When off, sends the complete reply at once instead of pushing output word by word |
+| Message breaks `message_break` | off | Registers a no-op tool; the model calls it to split long replies into multiple messages |
+| New message behavior `onNewMessage` | interrupt | interrupt / queue / steer; upstream only has queue |
+| Status emoji reactions `statusReaction` | on | When off, the six channels send no processing/success/failure emoji |
+| Reply quotes `replyQuote` | on | When off, Telegram/Discord/WhatsApp replies carry no quote header |
+| Send delay `sendDelay` | off | Two-phase read delay + segment gap, with activity boost |
+| Typing indicator `typingIndicator` | burst | off / continuous / burst |
+| QQ messageBreak scoping fix | — | Fixes an upstream `messageBreakHandler` scope defect |
+| QQ typing session rewrite | — | Bridge-managed 55s/50s session replaces the dead SDK middleware |
+| Delay-window double-reply fix | — | Superseded turns are silently cancelled, no double reply |
+
+> Upstream sync note: this branch is a long-lived fork and keeps merging updates from `xmanrui/dsh-im` upstream, staying fully compatible when features get merged. **Message breaks, the streaming toggle, the send delay, and the typing indicator depend on this fork's extension of the Harness reply tracker (HarnessReplyTracker) and channel bridges** and are not available in the upstream repository.
+
 - **Streaming replies (streaming, on by default)**: when disabled, model output is no longer pushed progressively; the complete reply is sent at once when the turn finishes, closer to real human reply pacing. Mutually exclusive with message breaks (enabling message_break turns streaming off automatically).
 - **Message breaks (message_break, off by default)**: the plugin registers a **no-op tool** named `message_break` (it executes nothing; it only marks a break point inside the reply). When the model calls it deliberately in a long reply to "take a breath", the plugin sends the text accumulated before the break as a separate message and then continues with the following segments, so one answer becomes several messages that read like someone typing line by line. Natural spots are between the thinking/tool progress and the final answer, between paragraphs of long answers, and at topic transitions; at most 20 segments per turn, and whitespace-only segments are skipped.
 - **New message behavior (onNewMessage, interrupt by default)**: what happens when the user sends a new message while the model is still generating:
@@ -62,7 +79,7 @@ The send delay splits the human feel into two phases matching the real gaps in h
    - **Length reading term (charsPerSecond)**: longer user messages take longer to "read" (character count divided by a reading speed);
    - **Activity boost (activityBoost)**: right after a quick exchange the bot "replies in seconds", and the delay recedes toward the full range as the conversation goes idle — for `fastWindowMs` (default 1 min) after the previous turn ends, use `fastReplyMs` (default ~1 s) directly; ramp linearly back to the read-delay floor by `minWindowMs` (default 2 min); past `fullWindowMs` (default 5 min) return to the full random range. The first message is never accelerated.
 
-   The total is capped by `maxTotalMs`; **channels without a typing-status API (DingTalk, WeCom, Feishu, Slack, …) cap the read delay at 5 seconds**.
+   The total is capped by `maxTotalMs`; **channels without a typing-status API (DingTalk, WeCom, Feishu, Slack, …) cap the read delay at 5 seconds**. DingTalk segment gaps are additionally floored at 3 seconds (webhook rate limit).
 2. **Segment gap (segmentGap, part of phase 2)**: the "typing the next message" pause between message-break or streamed segments, likewise random within `minMs–maxMs` with an optional per-segment length term.
 
 **Supersede semantics**: if a new message arrives (interrupt mode) or `/stop` runs while the read delay is ticking, the old turn is **silently cancelled** — no generation, no send, no "processing failed" notice, no double reply — and the new message takes over immediately. In queue mode messages are processed one by one and their delays accumulate (each one is "read" in turn).
@@ -77,9 +94,18 @@ How "typing…" is displayed once processing starts, in three modes:
 - **Continuous**: shown continuously while processing;
 - **Bursty (default)**: flickers on and off like a real person — a few seconds on, a second or two dark, then on again — avoiding the bot-like endless glow. The on/off rhythm (typingBurst ranges) is tunable in the config file.
 
-Channel capabilities: Telegram / Discord / WhatsApp (composing presence) support all three modes; WeChat fetches and keeps alive an input ticket once the read delay ends; QQ supports direct chats only (the group API does not exist); DingTalk, WeCom, Feishu, and Slack have no typing API and ignore this setting. The indicator pauses while an interaction (question/approval) is pending and always goes dark when the turn ends (including `/stop` and failures).
+Channel capabilities: Telegram / Discord / WhatsApp (composing presence) support all three modes; WeChat fetches and keeps alive an input ticket once the read delay ends; QQ supports direct chats only (the group API does not exist) and now uses a bridge-managed typing session (55 s display / 50 s renewal) instead of the dead SDK middleware relied on upstream; DingTalk, WeCom, Feishu, and Slack have no typing API and ignore this setting. The indicator pauses while an interaction (question/approval) is pending and always goes dark when the turn ends (including `/stop` and failures).
 
-> Upstream sync note: this branch is a long-lived fork and keeps merging updates from `xmanrui/dsh-im` upstream, staying fully compatible when features get merged. **Message breaks and the streaming toggle depend on this fork's extension of the Harness reply tracker (HarnessReplyTracker)** and are not available in the upstream repository.
+### Bug fixes (upstream defects)
+
+The following issues exist in upstream `xmanrui/dsh-im` v4.13.0 and are fixed in this fork:
+
+- **QQ bridge `messageBreakHandler` scoping bug**: in upstream, any successful turn with message_break enabled threw a `ReferenceError` and misreported a task failure (also the root cause behind 4 baseline test failures). This fork fixes the scoping so message_break works correctly on QQ.
+- **Double replies for turns superseded during the delay window**: when a new message (interrupt) or `/stop` arrives while the read delay is ticking, the old turn is **silently cancelled** — no generation, no send, no "processing failed" notice, no double reply — and the new message takes over immediately. Superseded batch inputs are retained for `/send` retry. Upstream's queue mode was unaffected; this fix covers interrupt mode.
+
+### Configuration migration
+
+- **`readDelay.idleBoost` → `readDelay.activityBoost` (semantic inversion)**: the early "idle boost" (the longer the idle, the slower the reply) is semantically inverted and replaced by "activity boost" (fast replies right after a quick exchange). A stored `idleBoost` key is ignored on load and falls back to the new defaults; if you had tuned the idle boost, re-configure the activity boost in the settings panel.
 
 ## Interface
 

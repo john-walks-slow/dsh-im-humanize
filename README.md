@@ -43,7 +43,24 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 ## 本 Fork 的改动（拟人化）
 
-本仓库是从 `xmanrui/dsh-im` fork 出来的"拟人化"分支，在保留上游全部功能的基础上，新增面向角色扮演沉浸体验的设置。全局项在「设置 → IM机器人 → 通用设置」的**拟人化设置**面板中配置；**发送延迟**还支持在每个渠道的机器人卡片里按机器人单独覆盖：
+本仓库是从 `xmanrui/dsh-im` fork 出来的"拟人化"分支，在保留上游全部功能的基础上，新增面向角色扮演沉浸体验的设置。全局项在「设置 → IM机器人 → 通用设置」的**拟人化设置**面板中配置；**发送延迟**还支持在每个渠道的机器人卡片里按机器人单独覆盖。
+
+### 速览：与上游的全部差异
+
+| 改动 | 默认 | 说明 |
+| --- | --- | --- |
+| 流式回复 `streaming` | 开 | 关闭后一次性发送完整回复，不逐字推送 |
+| 分步消息 `message_break` | 关 | 注册 no-op 工具，模型主动调用拆长回复为多条消息 |
+| 新消息行为 `onNewMessage` | interrupt | interrupt / queue / steer 三档；上游仅 queue |
+| 状态表情回应 `statusReaction` | 开 | 关闭后六渠道停发处理中/成功/失败表情 |
+| 回复引用 `replyQuote` | 开 | 关闭后 Telegram/Discord/WhatsApp 回复不带引用头 |
+| 发送延迟 `sendDelay` | 关 | 阅读延迟 + 分段间隔两阶段，含活跃响应 |
+| 输入状态指示 `typingIndicator` | burst | off / continuous / burst 三档 |
+| QQ 桥接 messageBreak 修复 | — | 修复上游 `messageBreakHandler` 作用域缺陷 |
+| QQ 输入状态会话重写 | — | 桥内自管理 55s/50s 替代失效的 SDK 中间件 |
+| 延迟窗口双回复修复 | — | 被取代回合静默取消，无双回复 |
+
+> 上游同步说明：本分支为长期维护的 fork，会持续合并 `xmanrui/dsh-im` 上游更新；上游修复与功能在合并时保持完全兼容。**分步消息（message_break）、流式开关（streaming）、发送延迟与输入状态指示依赖本 fork 对 Harness 回复追踪（HarnessReplyTracker）与渠道桥接的扩展**，在上游仓库中不可用。
 
 - **流式回复（streaming，默认开启）**：关闭后不再逐字推送模型输出，而是等回合结束后一次性发送完整回复，更接近真人回复节奏。与 message_break 互斥，开启分步消息会自动关闭流式回复。
 - **分步消息（message_break，默认关闭）**：插件会注册一个名为 `message_break` 的 **no-op 工具**（不执行任何操作，仅作为回复中的断点标记）。模型在长回复中主动调用它来"换气"时，插件会把断点之前的文本作为一条独立消息发送，随后继续发送后续分段，整段回答因此变成多条消息，读起来更像真人逐条输入。三个分隔点（思考/工具进度与最终回答之间、长回答的段落之间、前后文切换处）最自然；单回合最多拆分 20 段，纯空白分段会被跳过。
@@ -65,7 +82,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
    - **按消息长度阅读项（charsPerSecond）**：用户消息越长，"读"得越久（按字符数除以阅读速度累加）；
    - **活跃响应（activityBoost）**：刚聊完天时"秒回"，闲置越久延迟越接近完整区间——上一回合结束后 0–`fastWindowMs`（默认 1 分钟）内直接用 `fastReplyMs`（默认约 1 秒）；`minWindowMs`（默认 2 分钟）前线性回升到阅读延迟下限；超过 `fullWindowMs`（默认 5 分钟）回到完整随机区间。首条消息不加速。
 
-   总延迟受 `maxTotalMs` 封顶；**无输入状态接口的渠道（钉钉、企业微信、飞书、Slack 等）阅读延迟封顶 5 秒**。
+   总延迟受 `maxTotalMs` 封顶；**无输入状态接口的渠道（钉钉、企业微信、飞书、Slack 等）阅读延迟封顶 5 秒**。钉钉的分段间隔额外强制 ≥3 秒（webhook 频控）。
 2. **分段间隔（segmentGap，阶段②的一部分）**：分步消息或流式分段的两条消息之间"正在打下一条"的停顿，同样为 `minMs–maxMs` 随机，可按分段长度加项。
 
 **取代（supersede）语义**：阅读延迟期间用户又发来新消息（interrupt 模式）或执行 `/stop` 时，旧回合**静默取消**——不生成、不发送、无"处理失败"提示、无双回复，新消息立即接管。排队（queue）模式下多条消息依次处理，延迟会累积（每条都"被读一遍"）。
@@ -80,9 +97,21 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 - **持续（continuous）**：处理期间持续显示；
 - **断续（burst，默认）**：像真人一样时断时续——显示几秒、熄灭一两秒、再显示，避免长时间挂机的机器人感。断续节奏（typingBurst 的 on/off 区间）可在配置文件中调整。
 
-渠道能力差异：Telegram / Discord / WhatsApp（composing）支持全部三档；微信在阅读延迟结束后拉取输入票据并保活；QQ 仅私聊支持（群聊无此 API）；钉钉、企业微信、飞书、Slack 无输入状态接口，自动忽略此项。交互等待（提问/审批）期间输入状态暂停显示，回合结束（含 `/stop`、出错）后必定熄灭。
+渠道能力差异：Telegram / Discord / WhatsApp（composing）支持全部三档；微信在阅读延迟结束后拉取输入票据并保活；QQ 仅私聊支持（群聊无此 API），且改用桥内自管理的输入状态会话（55 秒显示 / 50 秒续期）替代上游依赖的、已失效的 SDK 中间件；钉钉、企业微信、飞书、Slack 无输入状态接口，自动忽略此项。交互等待（提问/审批）期间输入状态暂停显示，回合结束（含 `/stop`、出错）后必定熄灭。
 
-> 上游同步说明：本分支为长期维护的 fork，会持续合并 `xmanrui/dsh-im` 上游更新；上游修复与功能在合并时保持完全兼容。**消息分段（message_break）与流式开关（streaming）依赖本 fork 对 Harness 回复追踪（HarnessReplyTracker）的扩展**，在上游仓库中不可用。
+### 修复的缺陷（上游 bug）
+
+以下问题在上游 `xmanrui/dsh-im` v4.13.0 中存在，本 fork 已修复：
+
+- **QQ 桥接 `messageBreakHandler` 作用域缺陷**：上游中任何成功回合只要启用 message_break 就会触发 `ReferenceError` 并误报"任务未完成"（也是 4 个基线测试失败的根因）。本 fork 修复了作用域，message_break 在 QQ 渠道正常工作。
+  Fixes a QQ bridge `messageBreakHandler` scoping bug in upstream: any successful turn with message_break enabled threw a `ReferenceError` and misreported a task failure (also the root cause behind 4 baseline test failures).
+- **延迟窗口内被取代回合的双回复**：阅读延迟计时期间用户又发来新消息（interrupt）或执行 `/stop` 时，旧回合会被**静默取消**——不生成、不发送、无"处理失败"提示、无双回复，新消息立即接管。被取代的批量输入保留待 `/send` 重试。上游的 queue 模式无此问题；本修复覆盖 interrupt 模式。
+  Fixes double replies for turns superseded during the delay window: a new message (interrupt) or `/stop` while the read delay is ticking silently cancels the old turn — no generation, no send, no failure notice, no double reply; superseded batch inputs are retained for `/send` retry. Upstream's queue mode was unaffected; this fix covers interrupt mode.
+
+### 配置迁移
+
+- **`readDelay.idleBoost` → `readDelay.activityBoost`（语义反转）**：早期版本的"闲置加成"（闲置越久延迟 ×N）已被语义反转并替换为"活跃响应"（刚聊完天"秒回"）。已存的 `idleBoost` 键在读取时被忽略并回落新默认值——如果你之前调过闲置加成，请在设置面板重配活跃响应。
+  **`readDelay.idleBoost` → `readDelay.activityBoost` (semantic inversion)**: the early "idle boost" (the longer the idle, the slower the reply) is semantically inverted and replaced by "activity boost" (fast replies right after a quick exchange). A stored `idleBoost` key is ignored on load and falls back to the new defaults; if you had tuned the idle boost, re-configure the activity boost in the settings panel.
 
 ## 界面
 
