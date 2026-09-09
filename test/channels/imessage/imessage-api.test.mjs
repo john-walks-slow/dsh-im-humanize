@@ -38,7 +38,10 @@ test('reads Messages database rows after a durable cursor', async () => {
   assert.match(calls[0].args.at(-1), /c\.account_login/);
 });
 
-test('reads the latest iMessage row id for safe first-start cursor initialization', async () => {
+test('reads the latest iMessage row id for safe first-start cursor initialization', async (t) => {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+  t.after(() => Object.defineProperty(process, 'platform', platformDescriptor));
   const api = new MacOSMessagesApi({
     dbPath: '/tmp/chat.db',
     execFileImpl: async (_file, args) => {
