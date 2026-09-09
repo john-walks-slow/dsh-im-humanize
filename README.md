@@ -54,6 +54,9 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
   当回合正在等待用户交互（提问/审批等待、验证码等）时，一律按排队处理，保证交互流程不被新消息打乱。
 
+- **状态表情回应（statusReaction，默认开启）**：机器人在用户消息上用表情标记任务状态（处理中/成功/失败，例如 Telegram 的 👀 → 👍/👎）。关闭后不再发送任何表情，回复照常送达。支持 Telegram、Discord、WhatsApp、Slack、飞书、钉钉。
+- **回复引用（replyQuote，默认开启）**：机器人回复时引用你的消息（回复顶部的引用样式）。关闭后回复以普通消息发出。仅影响 Telegram、Discord、WhatsApp 的引用样式；话题路由（Telegram 话题、Discord Thread、Slack 线程、飞书话题回复）与会话归组不受影响。
+
 ### 发送延迟（两阶段模型）
 
 发送延迟把"真人感"拆成两个阶段，对应真人在 IM 里的两个真实间隙：

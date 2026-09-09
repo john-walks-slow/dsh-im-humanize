@@ -294,6 +294,9 @@ function discordReplyReference(message, loadReply) {
 export function normalizeDiscordMessage(message, botId, {
   fetchImpl = fetch,
   loadReply,
+  // replyQuote=false drops the visual message_reference header on outbound
+  // replies; thread routing (withConversationRoute) is unaffected.
+  replyQuote = true,
 } = {}) {
   if (!message?.id || !message?.channel_id || !message?.author?.id
     || Number(message.type) === 21) return null;
@@ -325,7 +328,7 @@ export function normalizeDiscordMessage(message, botId, {
     addressed,
     replyTarget: {
       channelId: String(message.channel_id),
-      replyToMessageId: String(message.id),
+      ...(replyQuote === false ? {} : { replyToMessageId: String(message.id) }),
     },
     reactionTarget: {
       channelId: String(message.channel_id),
@@ -341,12 +344,14 @@ export async function resolveDiscordMessageRoute(message, botId, {
   fetchImpl = fetch,
   signal,
   onChannel,
+  replyQuote,
 } = {}) {
   const normalized = normalizeDiscordMessage(message, botId, {
     fetchImpl,
     loadReply: typeof api?.getMessage === 'function'
       ? (options) => api.getMessage(options)
       : undefined,
+    ...(replyQuote === undefined ? {} : { replyQuote }),
   });
   if (!normalized || normalized.senderIsBot) return normalized;
   signal?.throwIfAborted();
@@ -846,7 +851,9 @@ export class DiscordRuntime {
   async #acceptMessage(message, bridge) {
     const messageId = String(message?.id ?? '');
     if (!messageId || this.#state.hasSeen(messageId)) return;
-    const preflight = normalizeDiscordMessage(message, this.#config.platformId);
+    const preflight = normalizeDiscordMessage(message, this.#config.platformId, {
+      replyQuote: this.#humanize?.getSettings()?.replyQuote !== false,
+    });
     let accessDecision;
     if (preflight?.kind === 'group' && preflight.addressed === true
       && preflight.senderIsBot !== true) {
@@ -875,6 +882,7 @@ export class DiscordRuntime {
         channel: this.#channels.get(String(message.channel_id)),
         signal: this.#abortController?.signal,
         onChannel: (resolved) => this.#rememberChannel(resolved),
+        replyQuote: this.#humanize?.getSettings()?.replyQuote !== false,
       });
       route = { pendingRoute, contextSnapshot };
       this.#routing.set(messageId, route);

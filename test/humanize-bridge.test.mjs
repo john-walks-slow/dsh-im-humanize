@@ -613,3 +613,76 @@ test('channels without a typing API never start a session and still delay reads'
   assert.ok(askAt - startedAt >= 70, 'the read delay applies without a typing API');
   assert.equal(bot.events.includes('typing'), false, 'no typing events without the API');
 }));
+
+function reactiveBot() {
+  const reactions = [];
+  const bot = recordedBot({ withTyping: false, withStopTyping: true });
+  bot.addReaction = async (target, emoji) => {
+    reactions.push(`add:${emoji}`);
+    return emoji;
+  };
+  bot.removeReaction = async (target, emoji) => {
+    reactions.push(`remove:${emoji}`);
+    return emoji;
+  };
+  bot.reactions = reactions;
+  return bot;
+}
+
+async function waitForReactionTerminal(bot, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (bot.reactions.some((e) => e === 'add:👍' || e === 'add:👎')) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+function reactionDescriptor() {
+  return Object.freeze({
+    key: 'test',
+    label: 'Test',
+    reactions: Object.freeze({ processing: '👀', success: '👍', error: '👎' }),
+    typing: Object.freeze({ refreshMs: 50, darkResidualMs: 0 }),
+  });
+}
+
+test('statusReaction=false silences emoji reactions while the reply still delivers', async () => withKeepAlive(async () => {
+  const bot = reactiveBot();
+  const bridge = createBridge({
+    bot,
+    descriptor: reactionDescriptor(),
+    humanize: humanizeSettings({ statusReaction: false }),
+    harness: {
+      createSession: async () => 'session-reaction-off',
+      ask: async () => '关闭表情后的回答',
+    },
+  });
+  await bridge.accept(message('reaction-off', '不要表情', { reactionTarget: { id: 'reaction-off' } }));
+  // The terminal transition is fire-and-forget; give it a window in
+  // which any stray call would be recorded, then assert none happened.
+  await waitForReactionTerminal(bot, 300);
+  assert.deepEqual(bot.reactions, [], 'no reaction calls at all when disabled');
+  assert.ok(bot.events.some((e) => e === 'text:关闭表情后的回答'),
+    'the reply still delivers');
+}));
+
+test('statusReaction default keeps the processing and terminal emoji lifecycle', async () => withKeepAlive(async () => {
+  const bot = reactiveBot();
+  const bridge = createBridge({
+    bot,
+    descriptor: reactionDescriptor(),
+    humanize: humanizeSettings({}),
+    harness: {
+      createSession: async () => 'session-reaction-on',
+      ask: async () => '保留表情的回答',
+    },
+  });
+  await bridge.accept(message('reaction-on', '要表情', { reactionTarget: { id: 'reaction-on' } }));
+  await waitForReactionTerminal(bot);
+  assert.ok(bot.reactions.includes('add:👀'), 'processing reaction is attached');
+  assert.ok(bot.reactions.includes('remove:👀'), 'processing reaction is removed');
+  assert.ok(bot.reactions.some((e) => e === 'add:👍' || e === 'add:👎'),
+    'a terminal reaction lands');
+  assert.ok(bot.events.some((e) => e === 'text:保留表情的回答'),
+    'the reply still delivers');
+}));

@@ -87,6 +87,8 @@ test('normalizeHumanizeOverride repairs hand-edited sections and drops garbage',
     normalizeHumanizeOverride({
       streaming: 'yes',
       messageBreak: false,
+      statusReaction: 'no',
+      replyQuote: false,
       onNewMessage: 'queue',
       typingIndicator: 'flicker',
       typingBurst: { onMinMs: 1000, onMaxMs: 2000, offMinMs: 500, offMaxMs: 900 },
@@ -94,6 +96,7 @@ test('normalizeHumanizeOverride repairs hand-edited sections and drops garbage',
     }),
     {
       messageBreak: false,
+      replyQuote: false,
       onNewMessage: 'queue',
       typingBurst: { onMinMs: 1000, onMaxMs: 2000, offMinMs: 500, offMaxMs: 900 },
       sendDelay: DEFAULT_SEND_DELAY_CONFIG,
@@ -105,6 +108,10 @@ test('normalizeHumanizeOverride repairs hand-edited sections and drops garbage',
 test('validateHumanizeOverrideSection accepts partial sections and enforces sendDelay completeness', () => {
   assert.equal(validateHumanizeOverrideSection(null), null);
   assert.deepEqual(validateHumanizeOverrideSection({ streaming: false }), { streaming: false });
+  assert.deepEqual(
+    validateHumanizeOverrideSection({ statusReaction: false, replyQuote: true }),
+    { statusReaction: false, replyQuote: true },
+  );
   assert.deepEqual(
     validateHumanizeOverrideSection({ typingIndicator: 'burst', sendDelay: completeSendDelay }),
     {
@@ -122,6 +129,8 @@ test('validateHumanizeOverrideSection accepts partial sections and enforces send
   );
   const cases = [
     [{ streaming: 'no' }, 'humanize.streaming'],
+    [{ statusReaction: 'no' }, 'humanize.statusReaction'],
+    [{ replyQuote: 1 }, 'humanize.replyQuote'],
     [{ onNewMessage: 'shout' }, 'humanize.onNewMessage'],
     [{ typingIndicator: 'flicker' }, 'humanize.typingIndicator'],
     [{ unknown: 1 }, 'humanize.unknown'],
@@ -296,11 +305,16 @@ for (const [channel, createHandler, endpoints] of CHANNELS) {
 
     const saved = await handler(endpoints.setHumanize, {
       botId,
-      humanize: { typingIndicator: 'continuous', sendDelay: completeSendDelay },
+      humanize: {
+        typingIndicator: 'continuous',
+        statusReaction: false,
+        sendDelay: completeSendDelay,
+      },
     });
     assert.equal(saved.ok, true);
     assert.equal(saved.value.bots.length, 2);
     assert.equal(saved.value.bots[0].humanize.typingIndicator, 'continuous');
+    assert.equal(saved.value.bots[0].humanize.statusReaction, false);
     assert.equal(saved.value.bots[1].humanize, null);
     assert.deepEqual(store.humanizeFor(botId).sendDelay.readDelay, {
       ...completeSendDelay.readDelay,
@@ -311,6 +325,8 @@ for (const [channel, createHandler, endpoints] of CHANNELS) {
     const diskBefore = await readFile(path, 'utf8');
     for (const bad of [
       { streaming: 'no' },
+      { statusReaction: 'no' },
+      { replyQuote: 'yes' },
       { sendDelay: { enabled: true, readDelay: { minMs: 5000 } } }, // incomplete
       { sendDelay: { segmentGap: { maxMs: -1 } } },
       {},

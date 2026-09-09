@@ -22,6 +22,8 @@ const SETTABLE_KEYS = new Set([
   'sendDelay',
   'typingIndicator',
   'typingBurst',
+  'statusReaction',
+  'replyQuote',
 ]);
 
 export function validHumanizePayload(endpoint, payload) {

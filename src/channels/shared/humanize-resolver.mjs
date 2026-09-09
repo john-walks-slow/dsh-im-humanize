@@ -32,5 +32,7 @@ export function resolveHumanizeSettings({
     sendDelay: normalizeSendDelayConfig(source.sendDelay),
     typingIndicator: normalizeTypingIndicator(source.typingIndicator),
     typingBurst: normalizeTypingBurst(source.typingBurst),
+    statusReaction: typeof source.statusReaction === 'boolean' ? source.statusReaction : true,
+    replyQuote: typeof source.replyQuote === 'boolean' ? source.replyQuote : true,
   };
 }

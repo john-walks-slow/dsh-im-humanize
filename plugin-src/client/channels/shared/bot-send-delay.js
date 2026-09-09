@@ -42,7 +42,7 @@ export const TYPING_CAPABILITY = Object.freeze({
   none: 'none',
 });
 
-const OVERRIDE_KEYS = ['streaming', 'messageBreak', 'onNewMessage', 'typingIndicator', 'typingBurst'];
+const OVERRIDE_KEYS = ['streaming', 'messageBreak', 'statusReaction', 'replyQuote', 'onNewMessage', 'typingIndicator', 'typingBurst'];
 
 function sendDelayOverride(humanize) {
   return humanize && typeof humanize === 'object'

@@ -1,7 +1,8 @@
 /**
  * Humanization settings store for the dsh-im-humanize fork.
  * Persists streaming, messageBreak, onNewMessage, sendDelay,
- * typingIndicator, and typingBurst to a JSON file.
+ * typingIndicator, typingBurst, statusReaction, and replyQuote
+ * to a JSON file.
  */
 import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -34,6 +35,8 @@ export const DEFAULT_HUMANIZE_SETTINGS = Object.freeze({
   sendDelay: DEFAULT_SEND_DELAY_CONFIG,
   typingIndicator: DEFAULT_TYPING_INDICATOR,
   typingBurst: DEFAULT_TYPING_BURST,
+  statusReaction: true,
+  replyQuote: true,
 });
 
 /**
@@ -50,6 +53,12 @@ export function normalizeHumanizeSettings(partial = {}) {
   }
   if (typeof partial.messageBreak === 'boolean') {
     result.messageBreak = partial.messageBreak;
+  }
+  if (typeof partial.statusReaction === 'boolean') {
+    result.statusReaction = partial.statusReaction;
+  }
+  if (typeof partial.replyQuote === 'boolean') {
+    result.replyQuote = partial.replyQuote;
   }
   result.onNewMessage = normalizeOnNewMessage(partial.onNewMessage);
   result.sendDelay = normalizeSendDelayConfig(partial.sendDelay);
@@ -76,6 +85,12 @@ export function validateHumanizeUpdate(partial) {
   }
   if (partial.messageBreak !== undefined && typeof partial.messageBreak !== 'boolean') {
     throw invalidField('messageBreak', 'messageBreak must be a boolean.');
+  }
+  if (partial.statusReaction !== undefined && typeof partial.statusReaction !== 'boolean') {
+    throw invalidField('statusReaction', 'statusReaction must be a boolean.');
+  }
+  if (partial.replyQuote !== undefined && typeof partial.replyQuote !== 'boolean') {
+    throw invalidField('replyQuote', 'replyQuote must be a boolean.');
   }
   if (partial.onNewMessage !== undefined
     && !['interrupt', 'queue', 'steer'].includes(partial.onNewMessage)) {

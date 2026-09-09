@@ -36,6 +36,8 @@ const HUMANIZE_CONFIG_KEYS = [
   'sendDelay',
   'typingIndicator',
   'typingBurst',
+  'statusReaction',
+  'replyQuote',
 ];
 
 function channelConfig(config, name, deliveryService) {

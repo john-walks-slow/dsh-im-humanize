@@ -279,7 +279,9 @@ export class TextHarnessBridge {
       target: normalized.kind === 'direct' || normalized.addressed === true
         ? normalized.reactionTarget
         : null,
-      reactions: this.#descriptor.reactions,
+      reactions: this.#humanizeSettings().statusReaction === false
+        ? undefined
+        : this.#descriptor.reactions,
       status: this.#status,
       logger: this.#logger,
       label: this.#descriptor.key,

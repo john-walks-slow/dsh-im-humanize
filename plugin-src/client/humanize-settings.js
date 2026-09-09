@@ -320,6 +320,32 @@ export function HumanizeSettingsPanel({ rpcCall }) {
           'AI 调用 message_break 工具在回复中插入断点，每个分段作为独立消息发送。可与流式回复同时开启。'),
       ),
 
+      // Status reaction toggle
+      h('label', { className: 'dim-humanizeField' },
+        h('span', { className: 'dim-humanizeFieldRow' },
+          h('input', {
+            type: 'checkbox',
+            checked: settings.statusReaction !== false,
+            onChange: (e) => updateField('statusReaction', e.target.checked),
+          }),
+          h('span', { className: 'dim-humanizeFieldName' }, '状态表情回应')),
+        h('span', { className: 'dim-humanizeFieldHint' },
+          '处理任务时用表情标记状态（处理中/成功/失败）。关闭后不再发送表情，回复照常送达。支持 Telegram、Discord、WhatsApp、Slack、飞书、钉钉。'),
+      ),
+
+      // Reply quote toggle
+      h('label', { className: 'dim-humanizeField' },
+        h('span', { className: 'dim-humanizeFieldRow' },
+          h('input', {
+            type: 'checkbox',
+            checked: settings.replyQuote !== false,
+            onChange: (e) => updateField('replyQuote', e.target.checked),
+          }),
+          h('span', { className: 'dim-humanizeFieldName' }, '回复引用')),
+        h('span', { className: 'dim-humanizeFieldHint' },
+          '回复时引用你的消息（引用样式）。关闭后回复以普通消息发出。仅影响 Telegram、Discord、WhatsApp 的引用样式；话题、Thread 归组不受影响。'),
+      ),
+
       // onNewMessage dropdown
       h('label', { className: 'dim-humanizeField' },
         h('span', { className: 'dim-humanizeFieldName' }, '新消息行为'),

@@ -445,12 +445,14 @@ export class WhatsappBotClient {
   #abortController = new AbortController();
   #mediaUploadTimeoutMs;
   #logger;
+  #humanize;
   #streams = new Set();
 
   constructor(socket, outboundIds, {
     signal,
     mediaUploadTimeoutMs = WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS,
     logger = console,
+    humanize = null,
   } = {}) {
     this.#socket = socket;
     this.#outboundIds = outboundIds;
@@ -459,6 +461,15 @@ export class WhatsappBotClient {
       : this.#abortController.signal;
     this.#mediaUploadTimeoutMs = mediaUploadTimeoutMs;
     this.#logger = logger;
+    this.#humanize = humanize;
+  }
+
+  // replyQuote=false drops the visual quote header on outbound messages.
+  // Gated here at the send layer on purpose: target.quoted also feeds
+  // read receipts (sendTyping) and the addressed detection in normalize,
+  // so the inbound message shape must stay intact.
+  #replyQuote() {
+    return this.#humanize?.getSettings()?.replyQuote !== false;
   }
 
   async sendText(target, text) {
@@ -485,7 +496,12 @@ export class WhatsappBotClient {
     const pending = this.#socket.sendMessage(
       target.jid,
       { text, ...(edit ? { edit } : {}) },
-      { ...(quote && !edit && target.quoted ? { quoted: target.quoted } : {}), messageId },
+      {
+        ...(quote && !edit && this.#replyQuote() && target.quoted
+          ? { quoted: target.quoted }
+          : {}),
+        messageId,
+      },
     );
     const result = await waitWithSignal(pending, this.#signal);
     this.#outboundIds.remember(result?.key?.id);
@@ -596,7 +612,7 @@ export class WhatsappBotClient {
       ? createHash('sha256').update(messageIdSeed).digest('hex').slice(0, 20).toUpperCase()
       : undefined;
     const options = {
-      ...(target.quoted ? { quoted: target.quoted } : {}),
+      ...(this.#replyQuote() && target.quoted ? { quoted: target.quoted } : {}),
       ...(messageId ? { messageId } : {}),
       mediaUploadTimeoutMs: this.#mediaUploadTimeoutMs,
     };
@@ -803,6 +819,7 @@ export class WhatsappRuntime {
         signal: controller.signal,
         mediaUploadTimeoutMs: this.#mediaUploadTimeoutMs,
         logger: this.#logger,
+        humanize: this.#humanize,
       });
       this.#client = client;
       this.#bridge = new WhatsappHarnessBridge({
