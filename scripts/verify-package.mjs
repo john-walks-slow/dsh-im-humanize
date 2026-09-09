@@ -154,7 +154,7 @@ const botSendDelaySource = await readFile(resolve(root, 'plugin-src/client/chann
 const auditedSources = [
   ['context-enhancement.js', contextEditorSource, { checkbox: 2, switch: 1 }],
   ['delivery-settings.js', deliverySettingsSource, { checkbox: 1, switch: 0 }],
-  ['humanize-settings.js', humanizeSettingsSource, { checkbox: 4, switch: 0 }],
+  ['humanize-settings.js', humanizeSettingsSource, { checkbox: 6, switch: 0 }],
   ['bot-send-delay.js', botSendDelaySource, { checkbox: 2, switch: 0 }],
 ];
 let expectedCheckboxes = 0;

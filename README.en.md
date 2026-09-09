@@ -51,6 +51,9 @@ This repository is a fork of `xmanrui/dsh-im` focused on **humanized messaging**
 
   When the turn is waiting for user interaction (question/approval pending, verification, etc.), the message is always queued so the interaction flow is never disturbed by new input.
 
+- **Status emoji reactions (statusReaction, on by default)**: the bot marks task status with emoji reactions on the user's message (processing/success/failure — 👀 → 👍/👎 on Telegram, for example). Turn it off to send no reactions at all; replies still deliver. Applies to Telegram, Discord, WhatsApp, Slack, Feishu, and DingTalk.
+- **Reply quotes (replyQuote, on by default)**: the bot quotes the user's message when replying (the quote header at the top of a reply). Turn it off and replies go out as plain messages. Only affects the quote style on Telegram, Discord, and WhatsApp; topic routing (Telegram topics, Discord threads, Slack threads, Feishu reply-in-thread) and conversation grouping are unaffected.
+
 ### Send delay (two-phase model)
 
 The send delay splits the human feel into two phases matching the real gaps in human messaging:

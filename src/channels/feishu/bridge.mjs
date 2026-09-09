@@ -4937,7 +4937,9 @@ export class FeishuHarnessBridge {
     return beginStatusReaction({
       adapter: this.#channel,
       target: messageId,
-      reactions: { processing: 'OnIt', success: 'DONE', error: 'ERROR' },
+      reactions: this.#humanizeSettings().statusReaction === false
+        ? undefined
+        : { processing: 'OnIt', success: 'DONE', error: 'ERROR' },
       status: this.#status,
       logger: this.#logger,
       label: 'feishu',

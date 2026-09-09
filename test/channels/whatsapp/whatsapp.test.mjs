@@ -933,6 +933,70 @@ test('WhatsApp runtime sends result files with native metadata, quote, stable id
   assert.equal(calls.indexOf(textCall) < calls.indexOf(fileCall), true);
 });
 
+test('WhatsApp replyQuote=false keeps read receipts but drops the quote from all sends', async (t) => {
+  const { artifact } = await committedArtifact(t, {
+    suffix: 'no-quote-file',
+    fileName: 'report.txt',
+    content: 'unquoted WhatsApp artifact',
+  });
+  let callbacks;
+  const calls = [];
+  const readKeys = [];
+  const socket = {
+    sendPresenceUpdate: async () => {},
+    readMessages: async (keys) => {
+      readKeys.push(...keys);
+    },
+    sendMessage: async (jid, content, options) => {
+      calls.push({ jid, content, options });
+      return { key: { id: content.document ? 'file-message-no-quote' : 'text-message-no-quote' } };
+    },
+  };
+  const runtime = new WhatsappRuntime({
+    config: linkedConfig(),
+    authDir: '/tmp/test-whatsapp-no-quote',
+    harness: {
+      ensureRunning: async () => {},
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '无引用回复';
+      },
+    },
+    state: artifactState('session-whatsapp-no-quote'),
+    humanize: { getSettings: () => ({ replyQuote: false }) },
+    createSession: async (options) => {
+      callbacks = options;
+      return {
+        socket,
+        ready: Promise.resolve({ accountJid: ACCOUNT_JID, name: 'Harness WhatsApp' }),
+        close: async () => {},
+        logout: async () => {},
+      };
+    },
+  });
+  t.after(() => runtime.stop());
+  await runtime.start();
+  const inbound = {
+    key: { remoteJid: '16505550999@s.whatsapp.net', id: 'no-quote-1', fromMe: false },
+    message: { conversation: '生成结果文件，但不要引用' },
+  };
+
+  await callbacks.onMessage(inbound);
+  await eventually(() => calls.some((call) => call.content.document));
+
+  for (const call of calls) {
+    assert.equal(call.options.quoted, undefined, `send must not quote: ${JSON.stringify(Object.keys(call.content))}`);
+  }
+  const textCall = calls.find((call) => call.content.text === '无引用回复');
+  const fileCall = calls.find((call) => call.content.document);
+  assert.ok(textCall, 'the text reply still delivers');
+  assert.ok(fileCall, 'the artifact still delivers');
+  assert.ok(readKeys.length >= 1, 'the read receipt still fires');
+  assert.equal(readKeys.every((key) => key === inbound.key), true,
+    'every read receipt comes from the inbound key (typing refreshes may repeat it)');
+});
+
 test('WhatsApp bot client sends native images with stable id and early echo suppression', async () => {
   const remembered = [];
   const calls = [];

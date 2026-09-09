@@ -789,6 +789,70 @@ test('bridge maps a Feishu conversation to a persistent Harness session and repl
   assert.equal(status.messagesRejected, 1);
 });
 
+test('statusReaction=false silences the Feishu emoji lifecycle while replies continue', async () => {
+  const reactions = [];
+  const removedReactions = [];
+  const streamed = [];
+  const sessions = new Map();
+  const seen = new Set();
+  const asked = [];
+  const client = {
+    im: { v1: { message: { create: async () => ({ code: 0 }) } } },
+  };
+  const channel = {
+    addReaction: async (messageId, emojiType) => {
+      reactions.push({ messageId, emojiType });
+      return `reaction-${emojiType}`;
+    },
+    removeReaction: async (messageId, reactionId) => {
+      removedReactions.push({ messageId, reactionId });
+    },
+    stream: async (chatId, input, options) => {
+      const updates = [];
+      await input.markdown({
+        setContent: async (content) => updates.push(content),
+      });
+      streamed.push({ chatId, options, updates });
+      return { messageId: 'om_reply' };
+    },
+  };
+  const harness = {
+    ensureRunning: async () => true,
+    sessionExists: async (sessionId) => sessionId === 'session-test',
+    createSession: async () => 'session-test',
+    ask: async (sessionId, text, options) => {
+      asked.push({ sessionId, text });
+      await options.onUpdate({ type: 'text', text: 'Harness' });
+      return 'Harness reply';
+    },
+  };
+  const state = {
+    hasSeen: (id) => seen.has(id),
+    markSeen: async (id) => seen.add(id),
+    sessionFor: (key) => sessions.get(key) ?? null,
+    setSession: async (key, sessionId) => sessions.set(key, sessionId),
+    clearSession: async (key) => sessions.delete(key),
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel,
+    harness,
+    state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    humanize: { getSettings: () => ({ statusReaction: false }) },
+  });
+
+  bridge.accept(event('om_off', '你好'));
+  await bridge.waitForIdle();
+
+  assert.deepEqual(asked, [{ sessionId: 'session-test', text: '你好' }],
+    'the turn still runs');
+  assert.equal(streamed.length, 1, 'the streamed reply still delivers');
+  assert.deepEqual(reactions, [], 'no emoji is attached');
+  assert.deepEqual(removedReactions, [], 'no emoji is removed');
+});
+
 test('mention response mode ignores unaddressed groups and only accepts this bot mention', async () => {
   const fixture = stateFixture([['group:oc_group_mentions', 'session-group-mentions']]);
   const asked = [];

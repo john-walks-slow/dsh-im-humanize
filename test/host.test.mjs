@@ -70,6 +70,8 @@ test('Host composes nine IM channels and the AI Office connector inside one plug
     sendDelay: DEFAULT_SEND_DELAY_CONFIG,
     typingIndicator: DEFAULT_TYPING_INDICATOR,
     typingBurst: DEFAULT_TYPING_BURST,
+    statusReaction: true,
+    replyQuote: true,
   };
   assert.deepEqual(calls.map(([channel]) => channel), [
     'feishu', 'weixin', 'dingtalk', 'wecom', 'qq',
@@ -346,13 +348,22 @@ test('humanizeDefaults resolves channel priority and reflects live store updates
     slackDefaults('telegram').sendDelay,
     DEFAULT_SEND_DELAY_CONFIG,
   );
+  // New keys ride the same forwarding: absent everywhere means true, and a
+  // channel sub-object override wins over the live store.
+  assert.equal(slackDefaults('slack').statusReaction, true);
+  assert.equal(slackDefaults('slack').replyQuote, true);
 
   // A panel write through the humanize RPC updates the store live: the
   // next turn's accessor read sees it without a plugin restart.
   assert.ok(humanizeHandler, 'humanize RPC handler registered');
-  const result = await humanizeHandler('humanize.set', { typingIndicator: 'burst' });
+  const result = await humanizeHandler('humanize.set', {
+    typingIndicator: 'burst',
+    statusReaction: false,
+  });
   assert.equal(result.ok, true);
   assert.equal(slackDefaults('slack').typingIndicator, 'burst');
+  assert.equal(slackDefaults('slack').statusReaction, false);
+  assert.equal(slackDefaults('slack').replyQuote, true, 'untouched new keys keep their default');
   assert.equal(slackDefaults('slack').streaming, false, 'untouched keys keep their values');
 
   // Malformed writes are rejected with field information.

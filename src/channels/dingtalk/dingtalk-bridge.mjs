@@ -1009,6 +1009,7 @@ export class DingtalkHarnessBridge {
   }
 
   #startStatusReaction(message) {
+    if (this.#humanizeSettings().statusReaction === false) return null;
     if (typeof this.#api.addReaction !== 'function'
       || typeof this.#api.recallReaction !== 'function') return null;
     const messageId = nonEmptyString(message?.msgId);

@@ -40,6 +40,8 @@ export function normalizeHumanizeOverride(value) {
   const out = {};
   if (typeof value.streaming === 'boolean') out.streaming = value.streaming;
   if (typeof value.messageBreak === 'boolean') out.messageBreak = value.messageBreak;
+  if (typeof value.statusReaction === 'boolean') out.statusReaction = value.statusReaction;
+  if (typeof value.replyQuote === 'boolean') out.replyQuote = value.replyQuote;
   if (ON_NEW_MESSAGE_VALUES.includes(value.onNewMessage)) out.onNewMessage = value.onNewMessage;
   if (TYPING_INDICATOR_VALUES.includes(value.typingIndicator)) {
     out.typingIndicator = value.typingIndicator;
@@ -105,6 +107,18 @@ export function validateHumanizeOverrideSection(value, { sendDelayBase = null } 
     }
     out.messageBreak = value.messageBreak;
   }
+  if (value.statusReaction !== undefined) {
+    if (typeof value.statusReaction !== 'boolean') {
+      throw invalid('humanize.statusReaction', 'statusReaction must be a boolean.');
+    }
+    out.statusReaction = value.statusReaction;
+  }
+  if (value.replyQuote !== undefined) {
+    if (typeof value.replyQuote !== 'boolean') {
+      throw invalid('humanize.replyQuote', 'replyQuote must be a boolean.');
+    }
+    out.replyQuote = value.replyQuote;
+  }
   if (value.onNewMessage !== undefined) {
     if (!ON_NEW_MESSAGE_VALUES.includes(value.onNewMessage)) {
       throw invalid('humanize.onNewMessage', 'onNewMessage must be one of interrupt, queue, steer.');
@@ -130,7 +144,7 @@ export function validateHumanizeOverrideSection(value, { sendDelayBase = null } 
       inheritSendDelayBase(value.sendDelay, sendDelayBase));
   }
   for (const key of Object.keys(value)) {
-    if (!['streaming', 'messageBreak', 'onNewMessage', 'typingIndicator', 'typingBurst', 'sendDelay'].includes(key)) {
+    if (!['streaming', 'messageBreak', 'statusReaction', 'replyQuote', 'onNewMessage', 'typingIndicator', 'typingBurst', 'sendDelay'].includes(key)) {
       throw invalid(`humanize.${key}`, `Unknown humanization key: ${key}.`);
     }
   }

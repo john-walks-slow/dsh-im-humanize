@@ -224,6 +224,11 @@ export function normalizeTelegramUpdate(update, {
   loadFile = async () => { throw new Error('Telegram file downloader is unavailable'); },
   loadFileStream = loadFile,
   loadReplyContent,
+  // replyQuote=false drops the visual reply header: the bot's replies stop
+  // quoting the user's message while topic routing (messageThreadId)
+  // stays intact. Outbound only — inbound quote parsing (replyTo) is
+  // unaffected.
+  replyQuote = true,
 }) {
   const message = update?.message;
   const chatId = message?.chat?.id;
@@ -279,7 +284,7 @@ export function normalizeTelegramUpdate(update, {
     replyTarget: {
       chatId,
       chatType: message.chat.type,
-      replyToMessageId: messageId,
+      ...(replyQuote === false ? {} : { replyToMessageId: messageId }),
       messageThreadId,
     },
     connectionTestTarget: { chatId, messageThreadId },
@@ -996,6 +1001,7 @@ export class TelegramRuntime {
           loadFile: (fileId, options) => this.#api.downloadFile({ fileId, ...options }),
           loadFileStream: (fileId, options) => this.#api.downloadFileStream({ fileId, ...options }),
           loadReplyContent: (reference, options) => this.#loadReplyContent(reference, options),
+          replyQuote: this.#humanize?.getSettings()?.replyQuote !== false,
         });
         if (message) {
           void this.#bridge.accept(message, { contextSnapshot }).catch((error) => {

@@ -399,6 +399,50 @@ test('Telegram plain delivery keeps the 4000 boundary, reply, topic, and content
   assert.deepEqual(receipt.providerMessageIds, ['601', '602']);
 });
 
+test('Telegram replyQuote=false drops the outbound quote header but keeps topic routing', async () => {
+  const update = {
+    update_id: 14,
+    message: {
+      message_id: 8,
+      message_thread_id: 300,
+      chat: { id: -1001, type: 'supergroup' },
+      from: { id: 43, is_bot: false },
+      text: '@HarnessBot no quote',
+      entities: [{ type: 'mention', offset: 0, length: 11 }],
+    },
+  };
+  const options = { botId: '123456789', username: 'HarnessBot' };
+
+  const quoted = normalizeTelegramUpdate(update, options);
+  assert.equal(quoted.replyTarget.replyToMessageId, 8);
+
+  const unquoted = normalizeTelegramUpdate(update, { ...options, replyQuote: false });
+  assert.equal(Object.hasOwn(unquoted.replyTarget, 'replyToMessageId'), false,
+    'the quote header is absent, not merely falsy');
+  assert.equal(unquoted.replyTarget.chatId, -1001);
+  assert.equal(unquoted.replyTarget.chatType, 'supergroup');
+  assert.equal(unquoted.replyTarget.messageThreadId, 300, 'topic routing survives');
+  assert.deepEqual(unquoted.reactionTarget, { chatId: -1001, messageId: 8 },
+    'reaction targeting is unaffected');
+  assert.equal(unquoted.conversationId, '-1001:300');
+
+  // The stripped target flows through the bot client: no reply_parameters
+  // on the wire while the topic id is preserved.
+  const calls = [];
+  const client = new TelegramBotClient({
+    api: {
+      sendMessage: async (payload) => {
+        calls.push(payload);
+        return { message_id: 700 };
+      },
+    },
+  });
+  await client.sendText(unquoted.replyTarget, '回答');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].replyToMessageId, undefined);
+  assert.equal(calls[0].messageThreadId, 300);
+});
+
 test('Telegram API uploads a result file as a native document in the same topic and reply chain', async () => {
   let request;
   const api = new TelegramApi({

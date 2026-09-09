@@ -1259,6 +1259,41 @@ test('bridge replaces the native thinking reaction with done after a successful 
   assert.equal(bridge.status.reactionErrors, 0);
 });
 
+test('statusReaction=false skips the native thinking reaction while the reply still delivers', async () => {
+  const fixture = stateFixture();
+  const events = [];
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      addReaction: async (request) => {
+        events.push(['add', request.reactionName, request.messageId]);
+      },
+      recallReaction: async (request) => {
+        events.push(['recall', request.reactionName, request.messageId]);
+      },
+      sendText: async ({ text }) => events.push(['reply', text]),
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => false,
+      createSession: async () => 'session-reaction-off',
+      ask: async () => '静默回答',
+    },
+    state: fixture.state,
+    humanize: { getSettings: () => ({ statusReaction: false }) },
+  });
+
+  await bridge.accept(message('reaction-off', '请回答', {
+    robotCode: 'robot-from-callback',
+  }));
+
+  assert.deepEqual(events, [['reply', '静默回答']],
+    'the reply delivers and no reaction call happens');
+  assert.equal(bridge.status.messagesReplied, 1);
+  assert.equal(bridge.status.reactionsAdded, 0);
+  assert.equal(bridge.status.reactionsRemoved, 0);
+});
+
 test('bridge reacts only to safe, addressed, non-duplicate messages', async () => {
   const fixture = stateFixture();
   const reactions = [];

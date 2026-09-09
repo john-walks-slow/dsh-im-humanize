@@ -103,12 +103,34 @@ test('humanize global panel renders send-delay fields and typing indicator selec
   await act(async () => {
     actFast.props.onChange({ target: { value: '2.5' } });
   });
+
+  // New toggles render checked from the stored settings and round-trip.
+  // Each toggle is label.dim-humanizeField > row > [input, name span].
+  const checkboxByFieldName = (name) => renderer.root
+    .findAll((node) => node.props?.type === 'checkbox')
+    .find((node) => {
+      const labelNode = node.parent?.children?.find((child) =>
+        child?.props?.className === 'dim-humanizeFieldName');
+      return labelNode?.children?.[0] === name;
+    });
+  const reactionToggle = checkboxByFieldName('状态表情回应');
+  const quoteToggle = checkboxByFieldName('回复引用');
+  assert.ok(reactionToggle, 'status reaction toggle renders');
+  assert.ok(quoteToggle, 'reply quote toggle renders');
+  assert.equal(reactionToggle.props.checked, true, 'statusReaction defaults on');
+  assert.equal(quoteToggle.props.checked, true, 'replyQuote defaults on');
+  await act(async () => {
+    reactionToggle.props.onChange({ target: { checked: false } });
+  });
+
   const save = renderer.root.findByProps({ 'data-kind': 'primary' });
   await act(async () => {
     await save.props.onClick();
   });
   const setCall = calls.find((call) => call.endpoint === 'humanize.set');
   assert.ok(setCall, 'saving calls humanize.set');
+  assert.equal(setCall.payload.statusReaction, false, 'toggled key is saved');
+  assert.equal(setCall.payload.replyQuote, true, 'untouched new key keeps its value');
   assert.equal(setCall.payload.sendDelay.readDelay.maxMs, 8500);
   assert.equal(setCall.payload.sendDelay.readDelay.minMs, 1000);
   assert.equal(setCall.payload.sendDelay.readDelay.activityBoost.fastReplyMs, 2500);
@@ -184,6 +206,8 @@ test('BotSendDelayEditor preserves sibling override keys and clears on follow-gl
   const saved = [];
   const humanize = {
     typingIndicator: 'off',
+    statusReaction: false,
+    replyQuote: false,
     sendDelay: {
       enabled: true,
       readDelay: {
@@ -220,6 +244,8 @@ test('BotSendDelayEditor preserves sibling override keys and clears on follow-gl
   });
   assert.equal(saved.length, 1);
   assert.equal(saved[0].typingIndicator, 'off');
+  assert.equal(saved[0].statusReaction, false, 'new override keys survive the save');
+  assert.equal(saved[0].replyQuote, false, 'new override keys survive the save');
   assert.equal(saved[0].sendDelay.readDelay.minMs, 3500);
 
   const followRadio = findUncheckedRadio(renderer);
