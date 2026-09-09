@@ -1,7 +1,7 @@
 {
   "name": "@xmanrui/dsh-im",
-  "version": "4.17.1",
-  "description": "把十种 IM 机器人和公网 AI Office 接入本机 DeepSeek Harness。 Connect ten IM channels and a public AI Office to a local DeepSeek Harness.",
+  "version": "4.18.0",
+  "description": "把十一种 IM 渠道和公网 AI Office 接入本机 DeepSeek Harness。 Connect eleven IM channels and a public AI Office to a local DeepSeek Harness.",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -44,6 +44,10 @@
     {
       "name": "masucc",
       "url": "https://github.com/masucc"
+    },
+    {
+      "name": "cherryFloris",
+      "url": "https://github.com/cherryFloris"
     }
   ],
   "license": "MIT",

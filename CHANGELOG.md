@@ -6,6 +6,25 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.18.0] - 2026-09-09
+
+### Added / 新增
+
+- 新增 macOS 原生 iMessage 渠道，通过本机 Messages.app 收发文本私聊，无需 BlueBubbles 或第三方网关；支持权限检查、连接管理、独立联系人会话和主动文字投递。每个 macOS 用户仅提供一个本机身份，需手动授予完全磁盘访问和 Messages 自动化权限；首版不支持群聊、图片或附件。接入说明见 [iMessage 指南](docs/imessage.md)。感谢 [@cherryFloris](https://github.com/cherryFloris) 的贡献（[#183](https://github.com/xmanrui/dsh-im/pull/183)）。
+  Added a native macOS iMessage channel for text DMs through the local Messages.app, without BlueBubbles or a third-party gateway. It includes permission checks, connection management, separate contact Sessions, and proactive text delivery. Each macOS user has one local identity and must manually grant Full Disk Access and Messages automation permissions; the MVP does not support groups, images, or attachments. See the [iMessage guide](docs/imessage.md). Thanks to [@cherryFloris](https://github.com/cherryFloris) for [#183](https://github.com/xmanrui/dsh-im/pull/183).
+
+### Fixed / 修复
+
+- iMessage 支持同一 Apple ID 自聊指令，只处理已投递回本机的接收副本；回复统一携带持久化的 `🤖 DSH` 标记并跳过机器人回声，避免重复处理和重启后的回复循环。首次启用从最新消息游标开始，避免回放旧消息。
+  iMessage supports self-chat commands under the same Apple ID by processing only incoming copies delivered to the Mac. Replies carry a persistent `🤖 DSH` marker, and bot echoes are ignored to prevent duplicate processing and reply loops after restarts. First-time activation starts at the latest message cursor instead of replaying old messages.
+- 正确识别斜杠分隔的 Agent Preset 错误码，保留安全诊断原因，并在现代 Harness 适配层透传直接返回的 DSH RemoteError；中英文提示明确说明通过 `/presetlist`、`/preset` 和 `/new` 重选并新建会话，或恢复原 Preset 后继续旧会话。
+  Recognized slash-separated Agent Preset error codes, retained safe diagnostic reasons, and preserved direct DSH RemoteErrors through the modern Harness adapter. Bilingual guidance explains how to select an available preset with `/presetlist` and `/preset`, then start a new Session with `/new`, or restore the original preset to continue an existing Session.
+
+### Known limitations / 已知限制
+
+- 原版 DSH `0.1.5-alpha.1` 恢复旧会话时仍可能将 Preset 错误包装为 `gateway/internal`，导致插件无法按结构化错误码分类；企业微信相关日志的附加诊断仍有缺口。本版不宣称完整解决 [#184](https://github.com/xmanrui/dsh-im/issues/184)。
+  Unmodified DSH `0.1.5-alpha.1` can still wrap preset failures during existing-Session recovery as `gateway/internal`, preventing classification from structured error codes. Related WeCom logs still lack some diagnostic details. This release does not fully resolve [#184](https://github.com/xmanrui/dsh-im/issues/184).
+
 ## [4.17.1] - 2026-09-09
 
 ### Fixed / 修复
@@ -852,7 +871,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.17.1...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.18.0...HEAD
+[4.18.0]: https://github.com/xmanrui/dsh-im/compare/v4.17.1...v4.18.0
 [4.17.1]: https://github.com/xmanrui/dsh-im/compare/v4.17.0...v4.17.1
 [4.17.0]: https://github.com/xmanrui/dsh-im/compare/v4.16.1...v4.17.0
 [4.16.1]: https://github.com/xmanrui/dsh-im/compare/v4.16.0...v4.16.1
