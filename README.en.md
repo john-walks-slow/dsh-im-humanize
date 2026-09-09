@@ -143,6 +143,8 @@ All nine built-in channels can return any file readable by Harness as a native c
 
 After the model calls the file-return tool, the plugin hands the specified file to the channel's native API. Images prefer native image messages; if a channel does not support or definitively rejects image delivery, the plugin falls back to a file attachment, while an uncertain result never triggers a duplicate fallback. The plugin adds no rules for file origin, creation time, workspace boundary, extension, content, count, size, or lifetime; the file only needs to exist and be readable. A channel may still reject delivery according to its own permissions, quota, file capability, or account tier, and the plugin reports that provider result.
 
+Animated GIFs render according to each channel's native capability and differ: Telegram sends `.gif` via the native animation message (`sendAnimation`), so the client plays it inline on loop; the WeChat (iLink) protocol only offers image messages and has no separate emoji/animation message type, so a GIF sent as an image shows only the static first frame and cannot animate inline (a protocol-level limit, not something the plugin can fix). Other channels follow whatever their native image message does with GIF. The file name must carry a `.gif` extension to take the image/animation path; a GIF without the extension is sent as an ordinary file.
+
 | Channel | Platform requirements |
 | --- | --- |
 | WeChat | The current binding protocol and conversation must support native file messages; the WeChat API response determines the actual range. |

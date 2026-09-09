@@ -265,6 +265,21 @@ export class TelegramApi {
     });
   }
 
+  /**
+   * Send an animation (GIF or soundless H.264) so the client plays it inline.
+   * `sendPhoto` strips GIF animation to a static first frame; only the native
+   * animation message type animates. Used for `image/gif` artifacts.
+   */
+  async sendAnimation({ chatId, file, replyToMessageId, messageThreadId, signal }) {
+    return this.#sendArtifact('sendAnimation', 'animation', 'animation', {
+      chatId,
+      file,
+      replyToMessageId,
+      messageThreadId,
+      signal,
+    });
+  }
+
   async #sendArtifact(method, fieldName, mediaLabel, {
     chatId,
     file,

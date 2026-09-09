@@ -517,6 +517,41 @@ test('Telegram API uploads a result image as a native photo in the same topic an
   assert.equal(Buffer.from(await photo.arrayBuffer()).toString(), 'telegram-image');
 });
 
+test('Telegram API uploads a GIF animation through the native animation method', async () => {
+  let request;
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return jsonResponse({ ok: true, result: { message_id: 904 } });
+    },
+  });
+  const result = await api.sendAnimation({
+    chatId: -100123,
+    replyToMessageId: 44,
+    messageThreadId: 55,
+    file: {
+      fileName: 'blob.gif',
+      mediaType: 'image/gif',
+      bytes: Buffer.from('telegram-gif'),
+    },
+  });
+
+  assert.equal(result.message_id, 904);
+  assert.match(request.url.pathname, /sendAnimation$/);
+  assert.ok(request.options.body instanceof FormData);
+  assert.equal(request.options.body.get('chat_id'), '-100123');
+  assert.equal(request.options.body.get('message_thread_id'), '55');
+  assert.deepEqual(JSON.parse(request.options.body.get('reply_parameters')), {
+    message_id: 44,
+    allow_sending_without_reply: true,
+  });
+  const animation = request.options.body.get('animation');
+  assert.equal(animation.name, 'blob.gif');
+  assert.equal(animation.type, 'image/gif');
+  assert.equal(Buffer.from(await animation.arrayBuffer()).toString(), 'telegram-gif');
+});
+
 test('Telegram bot client routes images through sendPhoto with the existing reply context', async () => {
   let request;
   const controller = new AbortController();
@@ -545,6 +580,51 @@ test('Telegram bot client routes images through sendPhoto with the existing repl
   assert.equal(request.replyToMessageId, 66);
   assert.equal(request.messageThreadId, 77);
   assert.equal(request.signal, controller.signal);
+});
+
+test('Telegram bot client routes GIF artifacts through sendAnimation and other images through sendPhoto', async () => {
+  const controller = new AbortController();
+  const calls = [];
+  const client = new TelegramBotClient({
+    api: {
+      sendPhoto: async (value) => {
+        calls.push(['sendPhoto', value]);
+        return { message_id: 910 };
+      },
+      sendAnimation: async (value) => {
+        calls.push(['sendAnimation', value]);
+        return { message_id: 911 };
+      },
+    },
+    signal: controller.signal,
+  });
+  const target = { chatId: -100456, replyToMessageId: 66, messageThreadId: 77 };
+
+  const gif = {
+    fileName: 'blob.gif',
+    mediaType: 'image/gif',
+    bytes: Buffer.from('gif'),
+  };
+  const png = {
+    fileName: 'result.png',
+    mediaType: 'image/png',
+    bytes: Buffer.from('png'),
+  };
+
+  assert.deepEqual(await client.sendImage(target, gif), { message_id: 911 });
+  assert.deepEqual(await client.sendImage(target, png), { message_id: 910 });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][0], 'sendAnimation');
+  assert.equal(calls[0][1].file, gif);
+  assert.equal(calls[1][0], 'sendPhoto');
+  assert.equal(calls[1][1].file, png);
+  for (const [, value] of calls) {
+    assert.equal(value.chatId, -100456);
+    assert.equal(value.replyToMessageId, 66);
+    assert.equal(value.messageThreadId, 77);
+    assert.equal(value.signal, controller.signal);
+  }
 });
 
 test('Telegram photo delivery reuses stable artifact error mapping', async () => {

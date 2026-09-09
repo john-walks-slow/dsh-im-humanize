@@ -457,6 +457,18 @@ export class TelegramBotClient {
   }
 
   sendImage(target, file) {
+    // Telegram `sendPhoto` renders a GIF as a static first frame. Only the
+    // native animation message (`sendAnimation`) plays GIFs inline, so route
+    // `image/gif` artifacts there; other image types stay on `sendPhoto`.
+    if (file?.mediaType === 'image/gif') {
+      return this.#api.sendAnimation({
+        chatId: target.chatId,
+        file,
+        replyToMessageId: target.replyToMessageId,
+        messageThreadId: target.messageThreadId,
+        signal: this.#signal,
+      });
+    }
     return this.#api.sendPhoto({
       chatId: target.chatId,
       file,
