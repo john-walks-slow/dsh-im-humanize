@@ -56,6 +56,10 @@ import {
   WhatsappSettingsTab,
 } from '../plugin-src/client/channels/whatsapp/index.js';
 import {
+  IMessageAccountCard,
+  IMessageSettingsTab,
+} from '../plugin-src/client/channels/imessage/index.js';
+import {
   en,
   IM_LOCALE_NAMESPACE,
   localizeText,
@@ -182,7 +186,7 @@ test('removing the first account preserves collapse styles and toggling for rema
   }
 });
 
-test('IM settings renders ten IM channels plus the AI Office connector', async () => {
+test('IM settings renders eleven IM channels plus the AI Office connector', async () => {
   const { default: packageMetadata } = await import('../package.json', {
     with: { type: 'json' },
   });
@@ -199,6 +203,7 @@ test('IM settings renders ten IM channels plus the AI Office connector', async (
     telegramRpcCall: async () => ({ ok: true, value: {} }),
     discordRpcCall: async () => ({ ok: true, value: {} }),
     whatsappRpcCall: async () => ({ ok: true, value: {} }),
+    imessageRpcCall: async () => ({ ok: true, value: {} }),
     officeRpcCall: async () => ({ ok: true, value: {} }),
   }));
 
@@ -261,6 +266,7 @@ test('IM settings renders ten IM channels plus the AI Office connector', async (
   assert.match(markup, />Telegram</);
   assert.match(markup, />Discord</);
   assert.match(markup, />WhatsApp</);
+  assert.match(markup, />iMessage</);
   assert.match(markup, />AI Office<\/strong><small class="dim-channelNote">（实验功能）<\/small>/);
   assert.match(markup, /dim-logoWeixin/);
   assert.match(markup, /dim-logoFeishu/);
@@ -271,9 +277,10 @@ test('IM settings renders ten IM channels plus the AI Office connector', async (
   assert.match(markup, /dim-logoTelegram/);
   assert.match(markup, /dim-logoDiscord/);
   assert.match(markup, /dim-logoWhatsapp/);
+  assert.match(markup, /dim-logoIMessage/);
   assert.match(markup, /dim-logoOffice/);
   assert.match(styles, /\.dim-logoFeishu svg \{ width: 28px; height: 28px; \}/);
-  assert.equal((markup.match(/role="tab"/g) ?? []).length, 11);
+  assert.equal((markup.match(/role="tab"/g) ?? []).length, 12);
   assert.equal((markup.match(/aria-selected="true"/g) ?? []).length, 1);
   assert.doesNotMatch(markup, /role="switch"|type="checkbox"/);
   assert.doesNotMatch(markup, /dim-chevron|扫码绑定<\/small>|扫码接入<\/small>/);
@@ -1233,9 +1240,11 @@ test('client registers one top-level bilingual IM settings section with a direct
     const signal = new AbortController().signal;
     await injected.updateRpcCall('update.status', {}, signal);
     await injected.globalSettingsRpcCall('settings.inbound-ttl.get', {}, signal);
+    await injected.imessageRpcCall('connection.status', {}, signal);
     assert.deepEqual(rpcCalls, [
       ['/api', 'dsh-im/dsh-im', { method: 'update.status', payload: {} }, signal],
       ['/api', `dsh-im${GLOBAL_SETTINGS_RPC_CHANNEL}`, { method: 'settings.inbound-ttl.get', payload: {} }, signal],
+      ['/api', 'dsh-im/imessage', { method: 'connection.status', payload: {} }, signal],
     ]);
     assert.deepEqual(
       await injected.workspaceDirectoryPicker.listDirectory('/workspace/current', signal),
@@ -1372,6 +1381,7 @@ test('all nine channel settings and connected cards render English copy', () => 
       TelegramSettingsTab,
       DiscordSettingsTab,
       WhatsappSettingsTab,
+      IMessageSettingsTab,
     ];
     const pageMarkup = pages.map((Component) =>
       renderToStaticMarkup(React.createElement(Component, { rpcCall }))).join('\n');
@@ -1387,6 +1397,7 @@ test('all nine channel settings and connected cards render English copy', () => 
     assert.match(pageMarkup, /Loading Telegram bot status/);
     assert.match(pageMarkup, /Loading Discord bot status/);
     assert.match(pageMarkup, /Loading WhatsApp bot status/);
+    assert.match(pageMarkup, /Loading iMessage bot status/);
     assert.doesNotMatch(pageMarkup, /[\p{Script=Han}]/u);
 
     const sharedCardProps = {
@@ -1406,6 +1417,7 @@ test('all nine channel settings and connected cards render English copy', () => 
       React.createElement(TelegramAccountCard, { ...sharedCardProps, account }),
       React.createElement(DiscordAccountCard, { ...sharedCardProps, account }),
       React.createElement(WhatsappAccountCard, { ...sharedCardProps, account }),
+      React.createElement(IMessageAccountCard, { ...sharedCardProps, account }),
     ];
     const cardMarkup = cards.map(renderToStaticMarkup).join('\n');
     assert.match(cardMarkup, /Connected/);

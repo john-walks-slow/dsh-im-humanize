@@ -13,6 +13,7 @@ import {
   WecomLogoGlyph,
   WeixinLogoGlyph,
   WhatsappLogoGlyph,
+  IMessageLogoGlyph,
 } from './channel-logos.js';
 import { DINGTALK_RPC_CHANNEL } from './channels/dingtalk/api.js';
 import { DingtalkSettingsTab } from './channels/dingtalk/index.js';
@@ -46,6 +47,9 @@ import { installWeixinStyles } from './channels/weixin/styles.js';
 import { WHATSAPP_RPC_CHANNEL } from './channels/whatsapp/api.js';
 import { WhatsappSettingsTab } from './channels/whatsapp/index.js';
 import { installWhatsappStyles } from './channels/whatsapp/styles.js';
+import { IMESSAGE_RPC_CHANNEL } from './channels/imessage/api.js';
+import { IMessageSettingsTab } from './channels/imessage/index.js';
+import { installIMessageStyles } from './channels/imessage/styles.js';
 import { en, h, IM_LOCALE_NAMESPACE, setImTranslator, zh } from './i18n.js';
 import { BotSettingsContext } from './channel-card-meta.js';
 import {
@@ -92,6 +96,7 @@ const CHANNELS = Object.freeze([
   { id: 'discord', label: 'Discord' },
   { id: 'whatsapp', label: 'WhatsApp' },
   { id: 'wecomApp', label: '企业微信应用', note: '（实验功能）' },
+  { id: 'imessage', label: 'iMessage' },
   { id: 'office', label: 'AI Office', note: '（实验功能）' },
 ]);
 
@@ -142,6 +147,11 @@ function WhatsappLogo() {
     h(WhatsappLogoGlyph));
 }
 
+function IMessageLogo() {
+  return h('span', { className: 'dim-logo dim-logoIMessage', 'aria-hidden': 'true' },
+    h(IMessageLogoGlyph));
+}
+
 function OfficeLogo() {
   return h('span', { className: 'dim-logo dim-logoOffice', 'aria-hidden': 'true' },
     h(OfficeLogoGlyph));
@@ -158,6 +168,7 @@ function ChannelLogo({ channel }) {
   if (channel === 'telegram') return h(TelegramLogo);
   if (channel === 'discord') return h(DiscordLogo);
   if (channel === 'whatsapp') return h(WhatsappLogo);
+  if (channel === 'imessage') return h(IMessageLogo);
   return h(OfficeLogo);
 }
 
@@ -181,6 +192,7 @@ export function IMSettingsTab({
   dingtalkRpcCall,
   discordRpcCall,
   feishuRpcCall,
+  imessageRpcCall,
   qqRpcCall,
   slackRpcCall,
   telegramRpcCall,
@@ -231,6 +243,7 @@ export function IMSettingsTab({
     updateRpcCall,
     deliveryRpcCall,
     globalSettingsRpcCall,
+    imessageRpcCall,
   }, {
     location: browserLocation,
     onRecovery: reportLoopbackRecovery,
@@ -241,6 +254,7 @@ export function IMSettingsTab({
     deliveryRpcCall,
     feishuRpcCall,
     globalSettingsRpcCall,
+    imessageRpcCall,
     officeRpcCall,
     qqRpcCall,
     reportLoopbackRecovery,
@@ -369,6 +383,8 @@ export function IMSettingsTab({
                         ? h(DiscordSettingsTab, { rpcCall: rpcCalls.discordRpcCall })
                         : active.id === 'whatsapp'
                           ? h(WhatsappSettingsTab, { rpcCall: rpcCalls.whatsappRpcCall })
+                          : active.id === 'imessage'
+                            ? h(IMessageSettingsTab, { rpcCall: rpcCalls.imessageRpcCall })
                           : h(OfficeSettingsTab, { rpcCall: rpcCalls.officeRpcCall }))),
     ),
   ));
@@ -395,6 +411,7 @@ export function apply(ctx) {
       installTelegramStyles(),
       installDiscordStyles(),
       installWhatsappStyles(),
+      installIMessageStyles(),
       installOfficeStyles(),
       installImStyles(),
     ];
@@ -421,6 +438,8 @@ export function apply(ctx) {
     callManagementRpc(ctx.connection, DISCORD_RPC_CHANNEL, endpoint, payload, signal);
   const whatsappRpcCall = (endpoint, payload, signal) =>
     callManagementRpc(ctx.connection, WHATSAPP_RPC_CHANNEL, endpoint, payload, signal);
+  const imessageRpcCall = (endpoint, payload, signal) =>
+    callManagementRpc(ctx.connection, IMESSAGE_RPC_CHANNEL, endpoint, payload, signal);
   const slackRpcCall = (endpoint, payload, signal) =>
     callManagementRpc(ctx.connection, SLACK_RPC_CHANNEL, endpoint, payload, signal);
   const officeRpcCall = (endpoint, payload, signal) =>
@@ -454,6 +473,7 @@ export function apply(ctx) {
       wecomAppRpcCall,
       weixinRpcCall,
       whatsappRpcCall,
+      imessageRpcCall,
       officeRpcCall,
       updateRpcCall,
       deliveryRpcCall,

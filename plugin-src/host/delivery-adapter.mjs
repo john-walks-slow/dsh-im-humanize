@@ -15,6 +15,7 @@ const CHANNELS = new Set([
   'telegram',
   'discord',
   'whatsapp',
+  'imessage',
 ]);
 
 export function supportsDeliveryChannel(channel) {
@@ -122,6 +123,9 @@ function normalizeRoute(channel, kind, route) {
       }
       return normalized;
     }
+    case 'imessage':
+      oneOf(kind, ['user']);
+      return routeWithStrings(route, ['chatGuid']);
     default:
       throw new TypeError(`Unsupported delivery channel: ${channel}`);
   }

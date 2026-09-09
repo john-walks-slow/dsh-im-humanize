@@ -115,6 +115,11 @@ const CHANNEL_DEFINITIONS = Object.freeze({
       group: [{ key: 'jid', label: '群 JID', placeholder: '1234567890@g.us' }],
     },
   },
+  imessage: {
+    label: 'iMessage',
+    kinds: [{ value: 'user', label: '私聊' }],
+    fields: { user: [{ key: 'chatGuid', label: 'Chat GUID', placeholder: 'iMessage;+;chat123' }] },
+  },
 });
 
 export const DELIVERY_CHANNEL_DEFINITIONS = CHANNEL_DEFINITIONS;

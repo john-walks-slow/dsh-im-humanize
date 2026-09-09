@@ -2,6 +2,7 @@ import { parseSessionChannelTitle } from '../../src/channels/shared/session-chan
 import {
   WeixinLogoGlyph, FeishuLogoGlyph, DingtalkLogoGlyph, WecomLogoGlyph, QqLogoGlyph,
   SlackLogoGlyph, TelegramLogoGlyph, DiscordLogoGlyph, WhatsappLogoGlyph, OfficeLogoGlyph,
+  IMessageLogoGlyph,
 } from './channel-logos.js';
 
 const GLYPHS = Object.freeze({
@@ -14,6 +15,7 @@ const GLYPHS = Object.freeze({
   telegram: [TelegramLogoGlyph, '#229ed9'],
   discord: [DiscordLogoGlyph, '#5865f2'],
   whatsapp: [WhatsappLogoGlyph, '#25d366'],
+  imessage: [IMessageLogoGlyph, '#3478f6'],
   office: [OfficeLogoGlyph, '#f97316'],
 });
 const CHANNEL_ATTR = 'data-dsh-im-session-channel';
