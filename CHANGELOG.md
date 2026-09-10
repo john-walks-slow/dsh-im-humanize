@@ -6,6 +6,22 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.19.0] - 2026-09-10
+
+### Added / 新增
+
+- 十一个 IM 渠道的机器人卡片均支持自定义别名，点击名称旁的铅笔即可编辑；保存后立即显示，无需重启或重连，也不会清除会话绑定。原平台名称始终保留，清空别名或点击恢复即可还原；别名仅影响本机设置页，不会修改平台上的机器人名称（[#188](https://github.com/xmanrui/dsh-im/issues/188)）。
+  Bot cards across all eleven IM channels support custom aliases through the pencil beside the name. Changes appear immediately without restarting, reconnecting, or clearing Session bindings. The original platform name is retained and can be restored by clearing or resetting the alias; aliases affect only the local settings UI, not the bot's platform identity ([#188](https://github.com/xmanrui/dsh-im/issues/188)).
+- 已开启「会话双向同步」的飞书私聊可用实时过程卡展示当前 Session 中的 Web／CLI 回合，包含用户提问引用、思考与工具过程、长答案续卡和最终收尾；按投递目标避免重复发送最终文字，其他同步目标保留原有投递。感谢 [@C3H3-AI](https://github.com/C3H3-AI) 的贡献（[#186](https://github.com/xmanrui/dsh-im/pull/186)）。
+  Feishu DMs with two-way Session sync enabled can mirror Web/CLI turns in the current Session as live process cards, including the quoted question, reasoning and tool progress, continuation cards for long answers, and final sealing. Final-text deduplication is scoped to the mirrored delivery target, preserving delivery to other synced targets. Thanks to [@C3H3-AI](https://github.com/C3H3-AI) for [#186](https://github.com/xmanrui/dsh-im/pull/186).
+
+### Fixed / 修复
+
+- 修复机器人保存的模型已失效且聊天尚未绑定 Session 时，连 `/model` 也无法切换的问题：显式选模创建 Session 时不再继承旧模型与思考强度，仍在核验所选模型后绑定会话；普通消息和已有 Session 的行为保持不变（[#192](https://github.com/xmanrui/dsh-im/issues/192)）。
+  Fixed `/model` being blocked by an unavailable saved bot model when the chat has no bound Session. Explicit model selection creates the Session without inheriting the old model or reasoning level, then verifies the selection before binding. Normal messages and existing-Session behavior remain unchanged ([#192](https://github.com/xmanrui/dsh-im/issues/192)).
+- 同时识别旧版 `model-unavailable` 和新版 `session/model-unavailable` 错误，并补全中英文恢复指引：先用 `/models` 查询，再用 `/model <序号>` 修复当前聊天。此操作不会改写机器人的默认模型；若要修复之后新建的 Session，仍需在机器人卡片中更新默认模型。
+  Recognized both legacy `model-unavailable` and current `session/model-unavailable` errors with bilingual recovery guidance: list available models using `/models`, then recover the current chat with `/model <index>`. This does not rewrite the bot's default model; update the bot card to fix future Sessions as well.
+
 ## [4.18.1] - 2026-09-10
 
 ### Changed / 变更
@@ -888,7 +904,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.18.1...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.19.0...HEAD
+[4.19.0]: https://github.com/xmanrui/dsh-im/compare/v4.18.1...v4.19.0
 [4.18.1]: https://github.com/xmanrui/dsh-im/compare/v4.18.0...v4.18.1
 [4.18.0]: https://github.com/xmanrui/dsh-im/compare/v4.17.1...v4.18.0
 [4.17.1]: https://github.com/xmanrui/dsh-im/compare/v4.17.0...v4.17.1
