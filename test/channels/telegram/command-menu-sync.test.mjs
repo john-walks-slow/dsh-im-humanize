@@ -27,11 +27,14 @@ function memoryState() {
 
 function server({ failMethod, updates = [], identity = '123456789', webhook = '' } = {}) {
   const calls = [];
+  // Mutable so a test can start a healthy bot and then fail one later call.
+  const faults = { failMethod };
   let delivered = false;
   let resolveReply;
   const reply = new Promise((resolve) => { resolveReply = resolve; });
   return {
     calls,
+    faults,
     reply,
     createHttpTransport: () => ({
       destroy: async () => {},
@@ -39,7 +42,7 @@ function server({ failMethod, updates = [], identity = '123456789', webhook = ''
         const method = url.pathname.split('/').at(-1);
         const body = JSON.parse(options.body);
         calls.push({ method, body });
-        if (method === failMethod) {
+        if (method === faults.failMethod) {
           return new Response(JSON.stringify({ ok: false, error_code: 502, description: 'Test failure' }));
         }
         let result = true;
@@ -105,6 +108,127 @@ test('runtime sends the complete localized production catalog before menu button
   setImHostLanguage('zh');
   await runtime.start();
   assert.deepEqual(menuCalls(apiServer)[1].body, { commands: telegramCommandMenu() });
+});
+
+test('a live interface language switch re-sends the command menu without a reconnect', async (t) => {
+  const previous = getImHostLanguage();
+  t.after(() => setImHostLanguage(previous));
+  setImHostLanguage('zh');
+  const apiServer = server();
+  const runtime = runtimeFor(t, apiServer);
+  await runtime.start();
+  assert.equal(menuCalls(apiServer).length, 1);
+  assert.equal(menuCalls(apiServer)[0].body.commands.find((item) => item.command === 'history').description,
+    '查看最近历史消息（仅私聊）');
+
+  setImHostLanguage('en');
+  assert.equal(await runtime.refreshCommandMenu(), true);
+  assert.equal(menuCalls(apiServer).length, 2);
+  const refreshed = menuCalls(apiServer)[1].body.commands;
+  assert.deepEqual(refreshed, telegramCommandMenu());
+  assert.equal(refreshed.find((item) => item.command === 'history').description,
+    'Show recent history (private chats only)');
+  // The menu button belongs to connect; a language refresh only replaces text.
+  assert.equal(apiServer.calls.filter(({ method }) => method === 'setChatMenuButton').length, 1);
+  assert.equal(runtime.status.ready, true);
+
+  // An empty catalog clears the list on refresh exactly as it does on connect.
+  const emptyServer = server();
+  const emptyRuntime = runtimeFor(t, emptyServer, { commandCatalog: [] });
+  await emptyRuntime.start();
+  setImHostLanguage('zh');
+  assert.equal(await emptyRuntime.refreshCommandMenu(), true);
+  assert.deepEqual(menuCalls(emptyServer).map(({ method }) => method),
+    ['deleteMyCommands', 'deleteMyCommands']);
+});
+
+test('refreshing the menu of a bot that is not connected changes nothing', async (t) => {
+  const apiServer = server();
+  const runtime = runtimeFor(t, apiServer);
+  assert.equal(await runtime.refreshCommandMenu(), false, 'never started');
+  assert.equal(apiServer.calls.length, 0);
+  await runtime.start();
+  await runtime.stop();
+  assert.equal(await runtime.refreshCommandMenu(), false, 'already stopped');
+  assert.equal(menuCalls(apiServer).length, 1);
+});
+
+test('a failed menu refresh warns, reports failure and leaves the bot connected', async (t) => {
+  const previous = getImHostLanguage();
+  t.after(() => setImHostLanguage(previous));
+  setImHostLanguage('zh');
+  const apiServer = server();
+  const warnings = [];
+  const runtime = runtimeFor(t, apiServer, {
+    logger: { warn: (...args) => warnings.push(args), error() {} },
+  });
+  await runtime.start();
+  apiServer.faults.failMethod = 'setMyCommands';
+  setImHostLanguage('en');
+  assert.equal(await runtime.refreshCommandMenu(), false);
+  assert.equal(runtime.status.ready, true);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0][0], /command menu refresh failed/);
+
+  // A later healthy refresh still succeeds; the failure is not sticky.
+  apiServer.faults.failMethod = undefined;
+  assert.equal(await runtime.refreshCommandMenu(), true);
+  assert.deepEqual(menuCalls(apiServer).at(-1).body, { commands: telegramCommandMenu() });
+});
+
+test('the controller fans a language refresh out to every bot and contains one failure', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-im-command-fanout-'));
+  const configStore = await new TelegramConfigStore(join(directory, 'config.json')).load();
+  const values = new Map();
+  const credentials = {
+    resolve: async (ref) => values.has(ref) ? { value: values.get(ref) } : undefined,
+    set: async (ref, value) => { values.set(ref, value); },
+    unset: async (ref) => { values.delete(ref); },
+  };
+  const runtimes = [];
+  const warnings = [];
+  const controller = new TelegramController({
+    credentials,
+    configStore,
+    logger: { warn: (...args) => warnings.push(args), error() {} },
+    inspectToken: async (token) => ({
+      platformId: token.split(':')[0], name: 'Menu test', username: CONFIG.username,
+    }),
+    createRuntime: async ({ config }) => {
+      const runtime = {
+        platformId: config.platformId,
+        refreshes: 0,
+        status: { ready: true, connectionState: 'connected', harnessReachable: true },
+        async start() { return this.status; },
+        async stop() { this.status = { ready: false }; },
+        async refreshCommandMenu() {
+          this.refreshes += 1;
+          if (config.platformId === '222222222') throw new Error('private-menu-failure');
+          return true;
+        },
+      };
+      runtimes.push(runtime);
+      return runtime;
+    },
+  });
+  t.after(async () => {
+    await controller.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  await controller.bindCredentials({ token: TOKEN });
+  await controller.bindCredentials({ token: `222222222:${TOKEN.split(':')[1]}` });
+  assert.equal(runtimes.length, 2);
+
+  assert.equal(await controller.refreshCommandMenus(), 1, 'only the healthy bot reports success');
+  assert.deepEqual(runtimes.map((runtime) => runtime.refreshes), [1, 1]);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0][0], /command menu refresh failed/);
+  assert.doesNotMatch(JSON.stringify(warnings[0][0]), /private/);
+
+  // A stopped bot is skipped rather than restarted by a language change.
+  await controller.close();
+  assert.equal(await controller.refreshCommandMenus(), 0);
+  assert.deepEqual(runtimes.map((runtime) => runtime.refreshes), [1, 1]);
 });
 
 test('controller reconnect rebuilds runtime and replaces removed, hidden and empty menus', async (t) => {
