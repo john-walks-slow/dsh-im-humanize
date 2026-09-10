@@ -6,6 +6,8 @@ import { after, test } from 'node:test';
 
 import {
   getImHostLanguage,
+  normalizeImHostLanguage,
+  onImHostLanguageChange,
   setImHostLanguage,
   t,
 } from '../../../src/channels/shared/i18n.mjs';
@@ -34,6 +36,62 @@ test('setImHostLanguage accepts English spellings and falls back to Chinese', ()
     setImHostLanguage(value);
     assert.equal(getImHostLanguage(), 'zh', `expected ${value} to select Chinese`);
   }
+});
+
+test('normalizeImHostLanguage resolves a tag without changing the active language', () => {
+  setImHostLanguage('zh');
+  assert.equal(normalizeImHostLanguage('en-GB'), 'en');
+  assert.equal(normalizeImHostLanguage('zh-CN'), 'zh');
+  assert.equal(normalizeImHostLanguage(undefined), 'zh');
+  assert.equal(getImHostLanguage(), 'zh');
+});
+
+test('subscribers are notified only when the resolved host language changes', () => {
+  setImHostLanguage('zh');
+  const seen = [];
+  const stop = onImHostLanguageChange((next, previous) => seen.push([next, previous]));
+  try {
+    setImHostLanguage('en');
+    // Different spellings of the same resolved language must stay silent.
+    setImHostLanguage('en-US');
+    setImHostLanguage(' english ');
+    // An unrecognized tag falls back to Chinese, which is a real change.
+    setImHostLanguage('fr');
+  } finally {
+    stop();
+  }
+  setImHostLanguage('en');
+  assert.deepEqual(seen, [['en', 'zh'], ['zh', 'en']]);
+});
+
+test('a failing subscriber cannot block later subscribers or the language switch', () => {
+  setImHostLanguage('zh');
+  const seen = [];
+  const stopFirst = onImHostLanguageChange(() => {
+    throw new Error('subscriber failure');
+  });
+  const stopSecond = onImHostLanguageChange((next) => seen.push(next));
+  try {
+    setImHostLanguage('en');
+  } finally {
+    stopFirst();
+    stopSecond();
+  }
+  assert.deepEqual(seen, ['en']);
+  assert.equal(getImHostLanguage(), 'en');
+});
+
+test('onImHostLanguageChange rejects non-subscribers and disposes idempotently', () => {
+  for (const value of [undefined, null, 'en', {}]) {
+    assert.throws(() => onImHostLanguageChange(value), TypeError);
+  }
+  setImHostLanguage('zh');
+  let calls = 0;
+  const stop = onImHostLanguageChange(() => { calls += 1; });
+  stop();
+  stop();
+  setImHostLanguage('en');
+  assert.equal(calls, 0);
 });
 
 test('t() translates known keys and fills placeholders in English mode', () => {
