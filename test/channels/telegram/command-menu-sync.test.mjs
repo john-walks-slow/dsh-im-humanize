@@ -25,10 +25,13 @@ function memoryState() {
   };
 }
 
-function server({ failMethod, updates = [], identity = '123456789', webhook = '' } = {}) {
+function server({ failMethod, updates = [], identity = '123456789', webhook = '', gates = {} } = {}) {
   const calls = [];
   // Mutable so a test can start a healthy bot and then fail one later call.
   const faults = { failMethod };
+  // Hold one method's response open until the test releases it, so a language
+  // switch can be interleaved inside a partially-completed startup.
+  const gatePromises = new Map(Object.entries(gates).map(([method, promise]) => [method, promise]));
   let delivered = false;
   let resolveReply;
   const reply = new Promise((resolve) => { resolveReply = resolve; });
@@ -44,6 +47,10 @@ function server({ failMethod, updates = [], identity = '123456789', webhook = ''
         calls.push({ method, body });
         if (method === faults.failMethod) {
           return new Response(JSON.stringify({ ok: false, error_code: 502, description: 'Test failure' }));
+        }
+        if (gatePromises.has(method)) {
+          await gatePromises.get(method);
+          gatePromises.delete(method);
         }
         let result = true;
         if (method === 'getMe') result = { id: identity, is_bot: true };
@@ -140,6 +147,44 @@ test('a live interface language switch re-sends the command menu without a recon
   assert.equal(await emptyRuntime.refreshCommandMenu(), true);
   assert.deepEqual(menuCalls(emptyServer).map(({ method }) => method),
     ['deleteMyCommands', 'deleteMyCommands']);
+});
+
+test('a language switch during connection is reconciled once the bot is ready', async (t) => {
+  const previous = getImHostLanguage();
+  t.after(() => setImHostLanguage(previous));
+  setImHostLanguage('zh');
+  const gate = Promise.withResolvers();
+  const apiServer = server({ gates: { setMyCommands: gate.promise } });
+  const runtime = runtimeFor(t, apiServer);
+
+  // Start in Chinese. The initial setMyCommands is held open.
+  const starting = runtime.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(runtime.status.ready, false, 'startup must still be connecting');
+
+  // Switch to English while connecting. refresh has nothing to push yet, so it
+  // returns false -- but it must not be dropped.
+  setImHostLanguage('en');
+  assert.equal(await runtime.refreshCommandMenu(), false);
+
+  // A second switch before the catch-up must win; only the latest counts.
+  setImHostLanguage('zh');
+  assert.equal(await runtime.refreshCommandMenu(), false);
+
+  // Release the initial menu send and let startup finish.
+  gate.resolve();
+  await starting;
+  assert.equal(runtime.status.ready, true);
+
+  const menus = menuCalls(apiServer);
+  assert.equal(menus.length, 2, 'the initial menu plus one catch-up re-send');
+  const initial = menus[0].body.commands;
+  const caughtUp = menus[1].body.commands;
+  assert.equal(initial.find((item) => item.command === 'help').description, '显示帮助',
+    'the initial menu was sent in the language in force when it started');
+  assert.deepEqual(caughtUp, telegramCommandMenu());
+  assert.equal(caughtUp.find((item) => item.command === 'help').description, '显示帮助',
+    'the catch-up must end on the latest language, not the one current at the first send');
 });
 
 test('refreshing the menu of a bot that is not connected changes nothing', async (t) => {

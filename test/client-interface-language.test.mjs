@@ -33,13 +33,16 @@ function fakeCtx(active) {
   };
 }
 
-function recorder({ fail = () => false } = {}) {
+function recorder({ fail = () => false, failResult = () => false } = {}) {
   const calls = [];
   return {
     calls,
     rpcCall: async (endpoint, payload, signal) => {
       calls.push({ endpoint, payload, signal });
       if (fail(calls.length)) throw new Error('mirror unavailable');
+      if (failResult(calls.length)) {
+        return { ok: false, error: { code: 'interface-language-unavailable', message: 'interface-language-unavailable' } };
+      }
       return { ok: true, value: { language: payload.locale } };
     },
   };
@@ -110,6 +113,33 @@ test('the mirror reports the effective interface locale and follows every switch
   ctx.emit('locale/change', ctx.locale.getLocale());
   await flush();
   assert.equal(calls.length, 2, 'a disposed mirror stops reporting');
+});
+
+test('a resolved { ok: false } mirror result retries exactly like a rejected promise', async () => {
+  // Connection resolves failed business results normally: the Host returns
+  // ok:false when it could not persist the mirror, and that must not be
+  // mistaken for a successful report.
+  const ctx = fakeCtx('en');
+  const timers = fakeTimers();
+  const { calls, rpcCall } = recorder({ failResult: (count) => count <= 2 });
+  const dispose = installInterfaceLanguageMirror(ctx, {
+    rpcCall,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn,
+    retryDelaysMs: [1_000, 4_000, 15_000],
+  });
+  await flush();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(timers.delays, [1_000], 'an ok:false response schedules a retry');
+
+  assert.equal(await timers.runNext(), true);
+  assert.deepEqual(calls.map(({ payload }) => payload.locale), ['en', 'en']);
+  assert.deepEqual(timers.delays, [4_000], 'the retry delay widens');
+
+  assert.equal(await timers.runNext(), true);
+  assert.deepEqual(calls.map(({ payload }) => payload.locale), ['en', 'en', 'en']);
+  assert.equal(timers.size, 0, 'a landed report schedules nothing further');
+  dispose();
 });
 
 test('a mirror that fails at plugin load retries until it lands, with no locale change', async () => {

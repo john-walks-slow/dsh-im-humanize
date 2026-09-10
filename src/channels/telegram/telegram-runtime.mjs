@@ -824,6 +824,14 @@ export class TelegramRuntime {
   #abortController = null;
   #pollTask = null;
   #starting = null;
+  // True only while #start() is between "started connecting" and "ready",
+  // which is the one window a skipped refresh must be reconciled. A refresh on
+  // a never-started or already-stopped runtime stays a no-op.
+  #connecting = false;
+  // True when a language switch arrived while the runtime was connecting, so a
+  // refreshCommandMenu() had nothing to push. Reconciled once startup
+  // completes, so the platform always ends up with the latest language.
+  #menuDirty = false;
 
   constructor({
     config,
@@ -902,6 +910,7 @@ export class TelegramRuntime {
 
   async #start() {
     await this.stop();
+    this.#connecting = true;
     this.#status.startedAt = new Date().toISOString();
     this.#status.connectionState = 'connecting';
     this.#status.lastError = null;
@@ -966,6 +975,21 @@ export class TelegramRuntime {
       this.#status.connectionState = 'connected';
       this.#status.lastCheckedAt = now;
       this.#status.lastConnectedAt = now;
+      // A language switch that landed while we were connecting was skipped by
+      // refreshCommandMenu(); re-send the menu now that the API is usable, so
+      // the platform ends with the latest language instead of the one that was
+      // current when #sendCommandMenu first ran.
+      if (this.#menuDirty) {
+        this.#menuDirty = false;
+        try {
+          await this.#sendCommandMenu(api, controller.signal);
+        } catch (error) {
+          this.#logger.warn?.(
+            `[dsh-im:telegram] bot ${this.#config.botId} command menu catch-up failed:`,
+            error,
+          );
+        }
+      }
       this.#pollTask = this.#poll(cursor, controller.signal);
       this.#pollTask.catch((error) => {
         if (controller.signal.aborted) return;
@@ -981,6 +1005,13 @@ export class TelegramRuntime {
       this.#status.lastError = error?.message ?? String(error);
       await this.stop();
       throw error;
+    } finally {
+      // Whether the bot is now ready or the attempt failed, the connecting
+      // window is over. A failed attempt also drops any unreconciled dirty
+      // flag: a later retry re-sends the menu from scratch in the current
+      // language anyway.
+      this.#connecting = false;
+      this.#menuDirty = false;
     }
   }
 
@@ -1003,7 +1034,13 @@ export class TelegramRuntime {
   async refreshCommandMenu() {
     const api = this.#api;
     const signal = this.#abortController?.signal;
-    if (!this.#status.ready || !api || !signal || signal.aborted) return false;
+    if (!this.#status.ready || !api || !signal || signal.aborted) {
+      // A refresh during an in-progress connection must not be lost: mark the
+      // menu dirty so #start() reconciles it the moment the bot is ready. A
+      // never-started or stopped runtime stays a no-op, as before.
+      if (this.#connecting) this.#menuDirty = true;
+      return false;
+    }
     try {
       await this.#sendCommandMenu(api, signal);
       return true;

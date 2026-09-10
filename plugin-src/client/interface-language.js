@@ -23,7 +23,9 @@ const RETRY_DELAYS_MS = Object.freeze([1_000, 4_000, 15_000]);
  *
  * The first report runs at plugin load, when the Connection may not be
  * established yet, so a failed report is retried on a widening delay rather
- * than waiting for a locale change that may never come.
+ * than waiting for a locale change that may never come. A failure is both a
+ * rejected promise and a resolved `{ ok: false }` envelope — the Host returns
+ * the latter when it could not persist the mirror, and that must retry too.
  *
  * @param ctx - client cordis context providing `locale` and the event bus.
  * @param options.rpcCall - management RPC caller for HOST_LANGUAGE_RPC_CHANNEL.
@@ -43,23 +45,31 @@ export function installInterfaceLanguageMirror(ctx, {
   let mirrored = null;
   let attempt = 0;
 
+  const retry = (active) => {
+    // Leave the tag unmirrored so the retry re-sends it. A Host that cannot
+    // persist the mirror still answers in its stored language; there is
+    // nothing for the reader to act on here.
+    if (mirrored === active) mirrored = null;
+    scheduler.schedule(report, delays[Math.min(attempt, delays.length - 1)]);
+    attempt += 1;
+  };
+
   const report = () => {
     if (scheduler.disposed) return;
     const active = normalizeInterfaceLanguageTag(ctx.locale.getLocale()?.active);
     if (active === null || active === mirrored) return;
     mirrored = active;
     Promise.resolve(rpcCall(HOST_LANGUAGE_ENDPOINTS.mirror, { locale: active })).then(
-      () => {
-        attempt = 0;
+      (result) => {
+        // Connection resolves failed business results normally; only a
+        // resolved ok envelope proves the Host actually persisted the mirror.
+        if (result?.ok === true) {
+          attempt = 0;
+          return;
+        }
+        retry(active);
       },
-      () => {
-        // Leave the tag unmirrored so the retry re-sends it. A Host that
-        // cannot persist the mirror still answers in its stored language;
-        // there is nothing for the reader to act on here.
-        if (mirrored === active) mirrored = null;
-        scheduler.schedule(report, delays[Math.min(attempt, delays.length - 1)]);
-        attempt += 1;
-      },
+      () => retry(active),
     );
   };
 
