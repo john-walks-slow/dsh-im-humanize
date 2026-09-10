@@ -53,7 +53,7 @@ async function rpcFixture(controller) {
   };
 }
 
-test('Host plugin registers the public management Fetch route as loopback-only', async () => {
+test('Host plugin accepts Harness-admitted LAN requests on the public management Fetch route by default', async () => {
   const controller = {
     status: async () => status(),
     startRegistration: async () => status(),
@@ -64,7 +64,9 @@ test('Host plugin registers the public management Fetch route as loopback-only',
 
   assert.equal(fx.registration.channel, '/feishu');
   assert.equal(fx.registration.options.path, '/api/dsh-im/feishu');
-  await assert.rejects(fx.registration.handler(FEISHU_ENDPOINTS.status, {}, undefined, { host: 'remote.example' }), /HTTP 403/);
+  assert.equal((await fx.registration.handler(FEISHU_ENDPOINTS.status, {}, undefined, {
+    host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
+  })).ok, true);
   const result = await fx.registration.handler(FEISHU_ENDPOINTS.status, {}, signal());
   assert.equal(result.ok, true);
   assert.equal(result.value.state, 'disconnected');

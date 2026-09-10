@@ -243,15 +243,19 @@ node bin/dsh-im.mjs install --source .
 
 `npm run check` 运行单元测试、构建 Host/Client 产物，并验证发布包不包含凭据或独立渠道设置页注册。
 
-IM 管理 RPC 默认仅接受回环浏览器。如果 Web profile 在受信任的局域网内对外提供服务，可在该 profile 的 `cordis.patch.yml` 中显式开放给 Connection 已信任的 Host authority：
+IM 管理接口默认沿用 Harness 的浏览器认证和 Host／Origin 信任检查。只要 Harness 已允许并认证当前局域网访问，便可直接查看和配置 IM 机器人，无需额外修改 dsh-im 配置。
+
+如需将 IM 管理额外限制为仅本机访问，可在当前 Web profile 的 `cordis.patch.yml` 中设置：
 
 ```yaml
 - id: xmanrui-dsh-im
   config:
-    rpcAuthority: trusted-host
+    rpcAuthority: loopback
 ```
 
-`trusted-host` 允许已通过 Harness 浏览器认证和 Host／Origin 检查的受信任地址访问 IM 管理接口。默认 `loopback` 还要求回环 Host 和 Origin；更新与入站 TTL 管理始终仅允许回环访问。
+`rpcAuthority` 默认为 `trusted-host`；显式设置 `loopback` 会额外要求回环 Host 和 Origin。更新与入站 TTL 管理始终仅允许回环访问。
+
+局域网管理的 HTTP 集成测试可在构建插件后运行 `node scripts/verify-lan-management.mjs /path/to/built/deepseek-harness`。脚本启动原版 DSH CLI，使用独立临时 profile 和空机器人配置，检查默认访问、登录认证、Host／Origin 检查以及显式 `loopback` 策略，结束后停止服务并清理临时目录。测试通过回环 TCP 发送局域网 Host／Origin，不替代跨设备浏览器验收；原版 `0.1.5-alpha.1` CLI 本身拒绝 `--host 0.0.0.0`，跨设备测试需使用支持局域网访问的 Harness 环境。
 
 ### 聊天消息语言
 

@@ -44,7 +44,7 @@ function controllerFixture() {
   return controller;
 }
 
-test('Host plugin registers the Weixin RPC channel as loopback-only', async () => {
+test('Host plugin accepts Harness-admitted LAN requests on the Weixin RPC channel by default', async () => {
   let registration;
   const dispose = async () => {};
   const ctx = {
@@ -57,10 +57,12 @@ test('Host plugin registers the Weixin RPC channel as loopback-only', async () =
   assert.equal(returned, dispose);
   assert.equal(registration.channel, '/weixin');
   assert.equal(registration.options.path, '/api/dsh-im/weixin');
-  await assert.rejects(registration.handler('connection.status', {}, undefined, { host: 'remote.example' }), /HTTP 403/);
+  assert.equal((await registration.handler('connection.status', {}, undefined, {
+    host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
+  })).ok, true);
 });
 
-test('Host plugin opts the Weixin RPC channel into trusted Host authorities', async () => {
+test('Host plugin preserves an explicit loopback restriction on the Weixin RPC channel', async () => {
   let registration;
   const ctx = {
     connection: { fetch: managementFetch((channel, handler, options) => {
@@ -70,9 +72,12 @@ test('Host plugin opts the Weixin RPC channel into trusted Host authorities', as
   };
   await apply(ctx, {
     controller: controllerFixture(),
-    rpcAuthority: 'trusted-host',
+    rpcAuthority: 'loopback',
   });
-  assert.equal((await registration.handler('connection.status', {}, undefined, { host: 'trusted.example' })).ok, true);
+  await assert.rejects(registration.handler('connection.status', {}, undefined, {
+    host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
+  }), /HTTP 403/);
+  assert.equal((await registration.handler('connection.status', {})).ok, true);
 });
 
 test('RPC returns QR data and verification states without exposing secret-shaped fields', async () => {

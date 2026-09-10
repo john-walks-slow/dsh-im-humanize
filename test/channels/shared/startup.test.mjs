@@ -86,17 +86,19 @@ for (const { id, apply, Store, api } of channels) {
     class ConfigStore extends Store {
       async load() { loading.resolve(); await gate.promise; return super.load(); }
     }
-    const fiber = f.start(apply, f.config(id, { rpcAuthority: 'trusted-host', internals: { ConfigStore } }));
+    const fiber = f.start(apply, f.config(id, { internals: { ConfigStore } }));
     try {
       await loading.promise;
       const route = f.routes.get(`/${id}`);
       assert.deepEqual(route.options.methods, ['POST']);
-      assert.equal((await route.handler('connection.status', {}, undefined, { host: 'trusted.example' })).error.code, `${id}-initializing`);
+      const lanHeaders = { host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080' };
+      assert.equal((await route.handler('connection.status', {}, undefined, lanHeaders)).error.code, `${id}-initializing`);
       assert.equal((await f.call(id)).error.code, `${id}-initializing`);
       assert.equal((await f.call(id, 'bot.delete', { confirm: true })).error.code, `${id}-initializing`);
       gate.resolve();
       await fiber.await();
       assert.equal((await f.call(id)).ok, true);
+      assert.equal((await route.handler('connection.status', {}, undefined, lanHeaders)).ok, true);
       assert.equal(f.routes.get(`/${id}`), route);
       // The original handler still validates payloads; do not coerce null to {}.
       assert.equal((await f.call(id, 'connection.status', null)).error.code, 'bad-request');
@@ -138,7 +140,9 @@ for (const { id, apply, Store, api } of channels) {
         else assert.match(message, /workspaces\.json/);
         return true;
       });
-      await assert.rejects(f.routes.get(`/${id}`).handler('connection.status', {}, undefined, { host: 'remote.example' }), /HTTP 403/);
+      assert.deepEqual(await f.routes.get(`/${id}`).handler('connection.status', {}, undefined, {
+        host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
+      }), result);
       assert.equal((await f.call(id, 'bot.bind-credentials', { token: 'must-not-be-saved' })).error.code, result.error.code);
       assert.equal((await f.call(id, 'connection.status', {}, AbortSignal.abort())).error.code, 'cancelled');
       await fiber.dispose();

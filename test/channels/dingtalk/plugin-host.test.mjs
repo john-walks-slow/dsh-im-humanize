@@ -26,7 +26,7 @@ test('Host exports the DingTalk plugin identity and required services', () => {
   assert.deepEqual(plugin.inject, inject);
 });
 
-test('Host installs loopback RPC for an injected controller', async () => {
+test('Host installs RPC for an injected controller that accepts Harness-admitted LAN requests by default', async () => {
   const calls = [];
   const dispose = () => {};
   const ctx = {
@@ -42,5 +42,7 @@ test('Host installs loopback RPC for an injected controller', async () => {
   assert.equal(calls[0][0], '/dingtalk');
   assert.equal(calls[0][2].path, '/api/dsh-im/dingtalk');
   assert.equal((await calls[0][1]('connection.status', {})).ok, true);
-  await assert.rejects(calls[0][1]('connection.status', {}, undefined, { host: 'remote.example' }), /HTTP 403/);
+  assert.equal((await calls[0][1]('connection.status', {}, undefined, {
+    host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
+  })).ok, true);
 });

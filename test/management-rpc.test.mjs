@@ -78,23 +78,32 @@ test('invalid envelopes never reach a business handler', async () => {
   assert.equal(calls, 0);
 });
 
-test('loopback policy uses original Host headers instead of the internal carrier URL', async () => {
+test('explicit loopback policy uses original Host headers instead of the internal carrier URL', async () => {
   let calls = 0;
-  const route = fixture(async () => { calls += 1; return { ok: true, value: {} }; });
+  const route = fixture(async () => { calls += 1; return { ok: true, value: {} }; }, { authority: 'loopback' });
   for (const host of ['localhost', 'localhost:3080', '127.0.0.1:3080', '127.0.0.2', '[::1]:3080']) {
     assert.equal((await route.fetch(request({ headers: { host, origin: `http://${host}` } }))).status, 200);
   }
   for (const headers of [
-    { host: 'trusted.example' }, { host: 'localhost.evil.test' }, { host: '' },
+    { host: '192.168.1.100:3080' }, { host: 'trusted.example' }, { host: 'localhost.evil.test' }, { host: '' },
     { host: 'user@localhost' }, { host: 'localhost/path' },
-    { origin: 'https://remote.example' }, { origin: 'null' }, { origin: 'invalid' },
+    { origin: 'http://192.168.1.100:3080' }, { origin: 'https://remote.example' }, { origin: 'null' }, { origin: 'invalid' },
   ]) assert.equal((await route.fetch(request({ headers }))).status, 403);
   assert.equal(calls, 5);
 });
 
-test('trusted-host policy leaves the physical carrier responsible for authentication and trust', async () => {
-  const route = fixture(async () => ({ ok: true, value: {} }), { authority: 'trusted-host' });
-  assert.equal((await route.fetch(request({ headers: { host: 'trusted.example', origin: 'https://trusted.example' } }))).status, 200);
+test('default and explicit trusted-host policies accept LAN requests already admitted by Harness', async () => {
+  for (const authority of [undefined, 'trusted-host']) {
+    let calls = 0;
+    const route = fixture(async () => { calls += 1; return { ok: true, value: {} }; }, { authority });
+    // This fixture starts after Harness browser authentication and Host/Origin checks.
+    for (const host of ['localhost:3080', '192.168.1.100:3080', '10.0.0.10:3080', '[fd00::1]:3080', 'trusted.example']) {
+      const response = await route.fetch(request({ headers: { host, origin: `http://${host}` } }));
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).result.ok, true);
+    }
+    assert.equal(calls, 5);
+  }
   assert.throws(() => fixture(async () => {}, { authority: 'anyone' }), /rpcAuthority/);
 });
 
@@ -125,14 +134,18 @@ test('unexpected handler exceptions do not expose secrets', async () => {
   assert.doesNotMatch(await response.text(), /private-secret/);
 });
 
-test('inbound TTL remains loopback-only when the plugin config allows trusted hosts', async () => {
-  let route;
-  installInboundTtlRpc({ connection: { fetch: { register(value) { route = value; return () => {}; } } } }, {
-    config: { rpcAuthority: 'trusted-host' },
-    runtime: {
-      store: { getTtlHours() { return 24; }, async setTtlHours() {} },
-      service: { async sweepNow() {} },
-    },
-  });
-  assert.equal((await route.fetch(request({ headers: { host: 'trusted.example' } }))).status, 403);
+test('inbound TTL remains loopback-only with default and explicit trusted-host policies', async () => {
+  for (const config of [{}, { rpcAuthority: 'trusted-host' }]) {
+    let route;
+    installInboundTtlRpc({ connection: { fetch: { register(value) { route = value; return () => {}; } } } }, {
+      config,
+      runtime: {
+        store: { getTtlHours() { return 24; }, async setTtlHours() {} },
+        service: { async sweepNow() {} },
+      },
+    });
+    assert.equal((await route.fetch(request({ headers: {
+      host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
+    } }))).status, 403);
+  }
 });

@@ -240,15 +240,19 @@ node bin/dsh-im.mjs install --source .
 
 `npm run check` runs unit tests, builds the Host and Client artifacts, and verifies that the published package contains neither credentials nor standalone channel settings-page registrations.
 
-IM management RPCs accept loopback browsers by default. When a Web profile is deliberately served on a trusted LAN, opt the plugin into the Host authorities already trusted by Connection in that profile's `cordis.patch.yml`:
+IM management uses Harness browser authentication and Host/Origin trust checks by default. Once Harness allows and authenticates access from your LAN address, you can view and configure IM bots without any extra dsh-im configuration.
+
+To additionally restrict IM management to local access, set the following in the active Web profile's `cordis.patch.yml`:
 
 ```yaml
 - id: xmanrui-dsh-im
   config:
-    rpcAuthority: trusted-host
+    rpcAuthority: loopback
 ```
 
-`trusted-host` allows trusted authorities to reach IM management after Harness browser authentication and Host/Origin checks. The default `loopback` policy additionally requires loopback Host and Origin values; update and inbound TTL management always remain loopback-only.
+`rpcAuthority` defaults to `trusted-host`; explicitly selecting `loopback` additionally requires loopback Host and Origin values. Update and inbound TTL management always remain loopback-only.
+
+After building the plugin, run `node scripts/verify-lan-management.mjs /path/to/built/deepseek-harness` for the LAN management HTTP integration check. It starts the original DSH CLI with an isolated temporary profile and no bot credentials, checks default access, authentication, Host/Origin checks, and explicit `loopback` restrictions, then stops the server and removes the temporary directory. Requests carry LAN Host/Origin values over loopback TCP; a browser on a second device requires separate verification. The original `0.1.5-alpha.1` CLI rejects `--host 0.0.0.0`, so that browser check needs a Harness environment that supports LAN access.
 
 ### Bot chat message language
 

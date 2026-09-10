@@ -120,7 +120,7 @@ test('RPC returns only the safe connection diagnostic projection', async () => {
   assert.doesNotMatch(JSON.stringify(result), /must-not-leak|clientSecret|cause/);
 });
 
-test('RPC is registered for loopback clients only', async () => {
+test('RPC honors an explicit loopback-only restriction', async () => {
   const registrations = [];
   const dispose = () => {};
   const ctx = {
@@ -132,7 +132,7 @@ test('RPC is registered for loopback clients only', async () => {
     },
   };
 
-  assert.equal(installDingtalkRpc(ctx, controller()), dispose);
+  assert.equal(installDingtalkRpc(ctx, controller(), undefined, 'loopback'), dispose);
   assert.equal(registrations[0][0], '/dingtalk');
   assert.equal(registrations[0][2].path, '/api/dsh-im/dingtalk');
   await assert.rejects(registrations[0][1]('connection.status', {}, undefined, { host: 'remote.example' }), /HTTP 403/);

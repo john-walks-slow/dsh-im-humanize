@@ -129,13 +129,15 @@ test('delivery RPC returns only stable public errors and handles pre-cancelled c
   });
 });
 
-test('delivery RPC uses its own channel and the configured management authority', async () => {
+test('delivery RPC uses its own channel and accepts Harness-admitted LAN requests by default', async () => {
   const { service } = serviceFixture();
   const calls = [];
   installDeliveryRpc({
     connection: { fetch: managementFetch((...args) => calls.push(args)) },
-  }, service, { authority: 'trusted-host' });
+  }, service);
   assert.equal(calls[0][0], DELIVERY_RPC_CHANNEL);
   assert.equal(typeof calls[0][1], 'function');
-  assert.deepEqual(await calls[0][1]('target.list', { botId: 'bot_one' }, undefined, { host: 'trusted.example' }), { ok: true, value: { method: 'listTargets' } });
+  assert.deepEqual(await calls[0][1]('target.list', { botId: 'bot_one' }, undefined, {
+    host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
+  }), { ok: true, value: { method: 'listTargets' } });
 });
