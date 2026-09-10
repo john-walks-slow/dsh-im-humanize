@@ -113,6 +113,11 @@ test('t() translates known keys and fills placeholders in English mode', () => {
   // Text a reader sees before any model output, so an untranslated literal
   // here is the first thing that looks broken (see issue #185).
   assert.equal(t('正在处理…'), 'Processing…');
+  // Terminal status rewritten over a rejected Telegram placeholder: the last
+  // thing a reader sees on a degraded reply.
+  assert.equal(t('回复已发送。'), 'The reply was sent.');
+  assert.equal(t('回复发送结果未能确认。'), 'The reply delivery result could not be confirmed.');
+  assert.equal(t('消息发送失败，请稍后重试。'), 'The message could not be sent. Try again later.');
   assert.equal(
     t('Thread 创建结果暂时无法确认。若已创建，请在对应 Thread 中重试；若未创建，请稍后重新 @机器人。'),
     'The Thread creation result cannot be confirmed yet. If the Thread was created,'

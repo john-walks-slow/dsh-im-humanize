@@ -524,10 +524,10 @@ export class TelegramBotClient {
 
         const fallback = await this.#sendPlain(target, text);
         const terminalText = fallback.deliveryOutcome === 'sent'
-          ? '回复已发送。'
+          ? t('回复已发送。')
           : fallback.deliveryOutcome === 'unknown'
-            ? '回复发送结果未能确认。'
-            : '消息发送失败，请稍后重试。';
+            ? t('回复发送结果未能确认。')
+            : t('消息发送失败，请稍后重试。');
         try {
           await this.#api.editMessageText({
             chatId: target.chatId,
