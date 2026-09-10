@@ -6,10 +6,22 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.18.1] - 2026-09-10
+
+### Changed / 变更
+
+- IM 管理接口的默认 `rpcAuthority` 从 `loopback` 改为 `trusted-host`，沿用 Harness 的浏览器认证与 Host／Origin 信任检查，修复已认证的受信任局域网访问仍被插件拒绝的问题（[#187](https://github.com/xmanrui/dsh-im/issues/187)）。显式配置的 `loopback` 继续生效；插件更新和入站 TTL 管理仍始终仅限本机。需要保持原默认限制的用户可设置 `rpcAuthority: loopback`。
+  Changed the default IM management `rpcAuthority` from `loopback` to `trusted-host`, relying on Harness browser authentication and Host/Origin trust checks so authenticated, trusted LAN access is no longer rejected by the plugin ([#187](https://github.com/xmanrui/dsh-im/issues/187)). Explicit `loopback` settings remain effective, and plugin updates and inbound-TTL management stay local-only. Set `rpcAuthority: loopback` to retain the previous default restriction.
+
 ### Fixed / 修复
 
 - Telegram 私聊 Rich Draft 在长时间思考或工具执行期间定时刷新，避免临时预览过期；慢网络下跳过尚未完成的心跳，发送最终答案或错误提示前停止调度，避免重复刷新积压拖延收尾。感谢 [@geekyfoxlab](https://github.com/geekyfoxlab) 的贡献（[#175](https://github.com/xmanrui/dsh-im/pull/175)）。
   Telegram private-chat Rich Drafts stay refreshed during long reasoning or tool calls. Pending heartbeats skip redundant ticks on slow networks, and scheduling stops before final or error delivery so repeated refreshes cannot delay completion. Thanks to [@geekyfoxlab](https://github.com/geekyfoxlab) for [#175](https://github.com/xmanrui/dsh-im/pull/175).
+
+### Documentation / 文档
+
+- 更新中英文管理访问说明，并新增使用原版 DSH、独立临时 profile 和空机器人配置的 HTTP 集成验证脚本，覆盖登录、Host／Origin 检查、默认访问和显式回环限制。该测试经回环 TCP 模拟局域网 Host／Origin，不替代跨设备浏览器验收。
+  Updated bilingual management-access guidance and added an HTTP integration check using unmodified DSH, an isolated temporary profile, and no bot credentials. It covers login, Host/Origin checks, default access, and explicit loopback restrictions. LAN Host/Origin values are exercised over loopback TCP; this does not replace a browser check from another device.
 
 ## [4.18.0] - 2026-09-09
 
@@ -876,7 +888,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.18.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.18.1...HEAD
+[4.18.1]: https://github.com/xmanrui/dsh-im/compare/v4.18.0...v4.18.1
 [4.18.0]: https://github.com/xmanrui/dsh-im/compare/v4.17.1...v4.18.0
 [4.17.1]: https://github.com/xmanrui/dsh-im/compare/v4.17.0...v4.17.1
 [4.17.0]: https://github.com/xmanrui/dsh-im/compare/v4.16.1...v4.17.0
