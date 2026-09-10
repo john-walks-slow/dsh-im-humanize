@@ -3,10 +3,7 @@ import {
   consumeDshImInputOrigin,
   textFromHarnessContent,
 } from '../../src/channels/shared/harness-client.mjs';
-import {
-  isSessionSyncMirrored,
-  releaseSessionSyncMirror,
-} from '../../src/channels/shared/session-sync-registry.mjs';
+import { deliverSessionSyncMirror } from '../../src/channels/shared/session-sync-registry.mjs';
 
 const DSH_USER_PREFIX = '[来自 DSH]\n';
 const DSH_ASSISTANT_PREFIX = '[DSH 助手]\n';
@@ -159,15 +156,19 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
     turns.delete(sessionId);
     if (state.origin !== 'dsh' || !completedTurn(event.data?.reason)
       || !state.recipients?.size || !state.assistant.text) return;
-    // Per-target suppression: targets whose process-card mirror delivered
-    // the answer are skipped; every other synced target still gets the text.
-    const mirrored = [];
-    const plain = [];
-    for (const target of state.recipients.values()) {
-      if (isSessionSyncMirrored(sessionId, target.targetId, state.turn)) mirrored.push(target);
-      else plain.push(target);
-    }
-    for (const target of mirrored) releaseSessionSyncMirror(sessionId, target.targetId);
+    // A pending card is not proof of delivery. Only suppress this target's
+    // text after its renderer confirms the complete final answer is visible.
+    // Targets without a renderer retain the original text delivery path.
+    const recipients = [...state.recipients.values()];
+    const rendered = await Promise.all(recipients.map(async (target) => {
+      try {
+        return await deliverSessionSyncMirror(target, sessionId, state.turn, state.assistant.text);
+      } catch (error) {
+        logFailure('card delivery', target, error);
+        return false;
+      }
+    }));
+    const plain = recipients.filter((_target, index) => !rendered[index]);
     if (plain.length === 0) return;
     await deliver(
       sessionId,
