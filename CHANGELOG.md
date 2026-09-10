@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Fixed / 修复
+
+- 机器人消息语言改为跟随 DeepSeek Harness 的界面语言，不再需要在 Host 配置中手动设置 `language`（[#185](https://github.com/xmanrui/dsh-im/issues/185)）。语言按「插件 `language` 配置 → DSH 语言设置项 → 设置页实际生效的界面语言」顺序解析，并把最后一项持久化到 `~/.dsh/integrations/dsh-im/interface-language.json`，因此界面语言来自浏览器语言列表、以及 Host 重启后尚无浏览器连接时，机器人仍以该语言回复。切换语言即时生效：无需重启 Host，Telegram 命令菜单也会重新下发，无需重连机器人。中文仍是兜底语言，已显式配置 `language` 的用户行为不变。
+  Bot message language now follows the DeepSeek Harness interface language instead of requiring a manual `language` entry in the Host config ([#185](https://github.com/xmanrui/dsh-im/issues/185)). It resolves from the plugin's `language` option, then DSH's Language setting, then the interface language the settings page is actually rendered in, and it persists that last layer to `~/.dsh/integrations/dsh-im/interface-language.json` — so a browser-derived interface language, and a Host restart before any browser connects, both keep answering in the reader's language. Switching applies live: no Host restart, and the Telegram command menu is re-sent without reconnecting the bot. Chinese remains the fallback, and an explicitly configured `language` behaves exactly as before.
+
 ## [4.18.1] - 2026-09-10
 
 ### Changed / 变更

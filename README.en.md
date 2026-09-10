@@ -223,7 +223,7 @@ DingTalk menus use a shared template built into the plugin; no template setup is
 
 - Registers one top-level **IM Bot** settings page containing the built-in IM channels and one AI Office Connector.
 - Maintains the Host, client, and runtime sources for the built-in channels and the Office Connector in this repository without external standalone plugins.
-- Follows the DeepSeek Harness language preference and switches the settings UI live between Chinese and English. Bot chat messages follow the Host's `language` config (Chinese by default; `en` switches them to English), with Chinese always as the fallback so untranslated text is sent verbatim.
+- Follows the DeepSeek Harness language preference and switches the settings UI live between Chinese and English. Bot chat messages, command help, and the Telegram command menu follow the same interface language and switch live, with Chinese always as the fallback so untranslated text is sent verbatim.
 - Uses logos for WeChat, Feishu, DingTalk, WeCom, QQ, Slack, Telegram, Discord, WhatsApp, iMessage, and AI Office navigation without enable/disable switches.
 - Keeps RPC endpoints, credentials, connection supervision, and session mappings isolated by IM channel; the Office Connector separately owns Device credentials, Job leases, approval waits, and concurrency limits.
 - Returns only QR codes, the public Slack Manifest, redacted status data, and access modes or allowlist identifiers explicitly saved for the current Telegram or WhatsApp bot. Manually entered secrets and Tokens travel one way to the local Host; no RPC response returns App Secrets, `bot_token`, DingTalk `client_secret`, WeCom Secrets, QQ `app_secret`, Slack Bot/App Tokens, Telegram/Discord Bot Tokens, WhatsApp linked-device keys, AI Office Device Tokens, or other raw user identifiers observed from platform messages.
@@ -256,15 +256,23 @@ After building the plugin, run `node scripts/verify-lan-management.mjs /path/to/
 
 ### Bot chat message language
 
-Bot chat messages are in Chinese by default. To switch them to English, set `language: en` in the plugin config (also accepts `en-US` or `english`), or set the `DSH_IM_LANGUAGE=en` environment variable:
+**Nothing to configure.** Bot chat messages, command help, and the Telegram command menu follow the DeepSeek Harness interface language. Set DSH to English in **Settings → General → Language** and the bot answers in English — the change applies live, with no Host restart and no bot reconnect.
+
+The language is resolved from the first of these that names one:
+
+1. The plugin's own `language` option (or the `DSH_IM_LANGUAGE` environment variable). This is the operator override described below; when it is set, DSH's interface language is ignored.
+2. The explicit selection in DSH's **Language** row, read from the Host user-settings document. This is what "DSH is set to English" means, and it applies to every channel.
+3. The interface language the settings page is actually rendered in. DSH stores no preference when the language came from the browser's language list, so dsh-im mirrors the effective language to the Host and keeps it in `~/.dsh/integrations/dsh-im/interface-language.json`. That way bots keep answering in your language after a Host restart, before any browser has connected.
+
+Chinese is always the fallback language — any text missing from the English dictionary is sent verbatim in Chinese, so this never changes the behavior of existing Chinese users.
+
+To pin one language regardless of who is reading the interface, set `language` in the plugin config (also accepts `en-US` or `english`), or set the `DSH_IM_LANGUAGE=en` environment variable:
 
 ```yaml
 - id: xmanrui-dsh-im
   config:
     language: en
 ```
-
-Without a setting, Chinese is used. Chinese is always the fallback language — any text missing from the English dictionary is sent verbatim in Chinese, so this feature never changes the behavior of existing Chinese users.
 
 ---
 
