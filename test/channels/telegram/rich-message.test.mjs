@@ -243,6 +243,41 @@ test('Telegram sends no Chinese in English mode, on the Draft and placeholder pa
   assert.ok(outbound.includes('Processing…'), `expected a translated placeholder, got ${JSON.stringify(outbound)}`);
 });
 
+test('the Telegram placeholder follows a language switch in both directions, per message', async (t) => {
+  const previous = getImHostLanguage();
+  t.after(() => setImHostLanguage(previous));
+  const placeholders = [];
+  const client = new TelegramBotClient({
+    api: {
+      sendMessage: async (payload) => {
+        placeholders.push(payload.text);
+        return { message_id: 700 + placeholders.length };
+      },
+      editMessageText: async () => true,
+    },
+    logger: { warn() {} },
+  });
+
+  // Unlike the command menu -- which the platform stores and Telegram clients
+  // cache -- the placeholder is message content, read from t() at send time.
+  // So it must track the current language on every single message, with no
+  // reconnect and no cache to invalidate, in both directions and repeatedly.
+  const sequence = ['zh', 'en', 'zh', 'en', 'en', 'zh'];
+  for (const language of sequence) {
+    setImHostLanguage(language);
+    await client.openDeliveryStream({ chatId: 44, chatType: 'group' });
+  }
+
+  assert.deepEqual(placeholders, [
+    '正在处理…',
+    'Processing…',
+    '正在处理…',
+    'Processing…',
+    'Processing…',
+    '正在处理…',
+  ], 'every message must use the language in force when it was sent');
+});
+
 test('Telegram private stream reuses one non-zero Draft id and persists one Rich final', async () => {
   const drafts = [];
   const finals = [];
