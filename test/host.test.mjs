@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { Context } from '@deepseek-ai/cordis';
 
+import { setImHostLanguage } from '../src/channels/shared/i18n.mjs';
 import { createImHostPlugin, inject, name } from '../plugin-src/host/index.mjs';
 
 const NO_CHANNELS = Object.freeze({
@@ -234,6 +235,8 @@ test('Host waits for apiProxy on legacy Harness and Controllers on modern Harnes
 });
 
 test('Host installs channel prefixes through the real Cordis sessions dependency', async (t) => {
+  const previousLanguage = setImHostLanguage('zh');
+  t.after(() => setImHostLanguage(previousLanguage));
   const ctx = new Context();
   ctx.provide('connection', { fetch: { register: () => () => {} } });
   ctx.provide('credentials', {});
@@ -252,6 +255,11 @@ test('Host installs channel prefixes through the real Cordis sessions dependency
   Object.assign(internals, {
     installUpdateRpc: () => {}, installInboundTtlRpc: () => {},
     installDeliveryRpc: () => {}, installSessionSyncCoordinator: () => {},
+    // The language test is about session-title prefixes, not the interface
+    // language: keep it off the real ~/.dsh mirror so a language a tester set
+    // locally cannot leak into this assertion.
+    installHostLanguage: () => ({ ready: Promise.resolve() }),
+    installHostLanguageRpc: () => {},
   });
   const host = ctx.plugin(createImHostPlugin(internals));
   t.after(() => host.dispose());

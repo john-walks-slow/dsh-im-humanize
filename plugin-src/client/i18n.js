@@ -4,6 +4,16 @@ export const IM_LOCALE_NAMESPACE = 'dsh-im';
 
 const EN = Object.freeze({
   '$locale': 'en',
+  '修改别名': 'Edit alias',
+  '关闭修改别名': 'Close alias editor',
+  '原名称': 'Original name',
+  '别名': 'Alias',
+  '恢复原名称': 'Restore original name',
+  '例如：客服助手': 'e.g. Customer support',
+  '仅更改显示名称，留空则显示原名称。': 'Only changes the display name. Leave blank to use the original name.',
+  '别名保存失败，请重试。': 'Could not save the alias. Try again.',
+  '别名不能包含换行或控制字符，且最多 80 个字符。': 'Use at most 80 characters without line breaks or control characters.',
+  '请输入有效的别名（最多 80 个字符）。': 'Enter a valid alias (up to 80 characters).',
   ' macOS Messages 连接': ' macOS Messages connection',
   '接入 iMessage': 'Connect iMessage',
   '先在 macOS 系统设置中授予 Messages 权限。': 'Grant Messages permissions in macOS System Settings first.',

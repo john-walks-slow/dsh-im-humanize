@@ -1,3 +1,4 @@
+import { normalizeBotAlias } from '../../../../src/channels/shared/bot-alias.mjs';
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
 import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } from '../../model-setting.js';
 import { normalizeLastMessageError } from '../../last-message-error.js';
@@ -14,6 +15,7 @@ export const WHATSAPP_ENDPOINTS = Object.freeze({
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
   setAccessPolicy: 'bot.access-policy.set',
+  setAlias: 'bot.alias.set',
   setWorkspace: 'bot.workspace.set',
   setModel: SET_MODEL_ENDPOINT,
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
@@ -99,6 +101,7 @@ function normalizeBot(value) {
       ? { accessPolicy: normalizeAccessPolicy(value.accessPolicy) }
       : {}),
     bot: {
+      ...normalizeBotAlias(value.bot),
       name: text(value.bot?.name, 'WhatsApp机器人', 100),
       idMasked: text(value.bot?.idMasked, 'WhatsApp账号', 140),
     },
