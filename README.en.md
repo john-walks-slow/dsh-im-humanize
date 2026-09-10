@@ -322,7 +322,7 @@ Thank you to everyone who helps dsh-im grow! This project follows the [All Contr
 
 The initial list is based on user accounts in [GitHub Contributors](https://github.com/xmanrui/dsh-im/graphs/contributors), excluding accounts marked as `Bot` by GitHub, and sorted by username. Contribution types are based on Git commits; click an emoji to view a corresponding record.
 
-[Contribution types](https://allcontributors.org/en/reference/emoji-key/): 💻 Code · 📖 Documentation · ⚠️ Tests · 🚇 Infrastructure · 🌍 Translation.
+[Contribution types](https://allcontributors.org/en/reference/emoji-key/): 💻 Code · 📖 Documentation · ⚠️ Tests · 🚇 Infrastructure · 🌍 Translation · 🤔 Ideas & Planning.
 
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
 <!-- prettier-ignore-start -->

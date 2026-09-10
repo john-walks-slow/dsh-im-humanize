@@ -325,7 +325,7 @@ IM 管理接口默认沿用 Harness 的浏览器认证和 Host／Origin 信任�
 
 以下名单以 [GitHub Contributors](https://github.com/xmanrui/dsh-im/graphs/contributors) 中的用户账号为基础，排除 GitHub 标记为 `Bot` 的账号，并按用户名排序；贡献类型依据 Git 提交记录标注，点击 emoji 可查看对应记录。
 
-[贡献类型说明](https://allcontributors.org/en/reference/emoji-key/)：💻 代码 · 📖 文档 · ⚠️ 测试 · 🚇 基础设施 · 🌍 翻译。
+[贡献类型说明](https://allcontributors.org/en/reference/emoji-key/)：💻 代码 · 📖 文档 · ⚠️ 测试 · 🚇 基础设施 · 🌍 翻译 · 🤔 想法与规划。
 
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
 <!-- prettier-ignore-start -->
