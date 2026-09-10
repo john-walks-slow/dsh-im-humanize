@@ -196,7 +196,8 @@ test('the composed host serves other real channels while Feishu is loading and a
     return [key, f.config(id, { internals: { ConfigStore } })];
   }));
   const internals = Object.fromEntries([
-    'installUpdateRpc', 'installInboundTtlRpc', 'installDeliveryRpc', 'installDeliveryHttp', 'installSessionSyncCoordinator',
+    'installUpdateRpc', 'installInboundTtlRpc', 'installDeliveryRpc', 'installDeliveryHttp',
+    'installSessionSyncCoordinator', 'installHostLanguage', 'installHostLanguageRpc',
   ].map(name => [name, () => {}]));
   const fiber = f.start(createImHostPlugin(internals).apply, config);
   try {
