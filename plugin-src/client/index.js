@@ -51,6 +51,10 @@ import { IMESSAGE_RPC_CHANNEL } from './channels/imessage/api.js';
 import { IMessageSettingsTab } from './channels/imessage/index.js';
 import { installIMessageStyles } from './channels/imessage/styles.js';
 import { en, h, IM_LOCALE_NAMESPACE, setImTranslator, zh } from './i18n.js';
+import {
+  HOST_LANGUAGE_RPC_CHANNEL,
+  installInterfaceLanguageMirror,
+} from './interface-language.js';
 import { BotSettingsContext } from './channel-card-meta.js';
 import {
   DELIVERY_RPC_CHANNEL,
@@ -397,6 +401,17 @@ export function apply(ctx) {
   );
   const t = ctx.locale.bind(IM_LOCALE_NAMESPACE);
   setImTranslator(t);
+
+  // The settings page is the only place that knows the locale the interface is
+  // actually rendered in: DSH stores nothing when it came from the browser's
+  // language list. Report it so bot messages follow the same language.
+  ctx.effect(
+    () => installInterfaceLanguageMirror(ctx, {
+      rpcCall: (endpoint, payload, signal) =>
+        callManagementRpc(ctx.connection, HOST_LANGUAGE_RPC_CHANNEL, endpoint, payload, signal),
+    }),
+    'im-settings: mirror the DSH interface language',
+  );
 
   ctx.effect(() => installSessionChannelLogos(), 'im-settings: Session channel logos');
 
