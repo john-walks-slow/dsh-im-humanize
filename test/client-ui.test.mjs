@@ -560,7 +560,7 @@ test('Feishu bot cards place the application identifier under the bot name', asy
     onCancelRemove() {},
   }));
 
-  assert.match(markup, /<h3[^>]*>今天是牢梁<\/h3><p[^>]*>cli_aaf4••••1234<\/p>/);
+  assert.match(markup, /<div class="dim-aliasName"><h3[^>]*>今天是牢梁<\/h3>[^]*?<\/div><p[^>]*>cli_aaf4••••1234<\/p>/);
   assert.match(markup, /data-im-channel-logo="feishu"/);
   assert.match(markup, /class="bxf-card bxf-botCard dim-botCard"/);
   assert.match(markup, /class="bxf-healthPill dim-botHealth"/);

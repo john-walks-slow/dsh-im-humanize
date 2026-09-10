@@ -1,3 +1,4 @@
+import { normalizeBotAlias } from '../../../../src/channels/shared/bot-alias.mjs';
 /**
  * Browser-safe contract for the Feishu Host plugin.
  *
@@ -31,6 +32,7 @@ export const FEISHU_ENDPOINTS = Object.freeze({
   setAgentPreset: "bot.preset.set",
   setContextEnhancement: "bot.context-enhancement.set",
   setAccessPolicy: "bot.access-policy.set",
+  setAlias: 'bot.alias.set',
   setGroupResponseMode: "bot.group-response-mode.set",
   setGroupTopicReply: "bot.group-topic-reply.set",
   setStepPush: "bot.step-push.set",
@@ -157,6 +159,7 @@ export function normalizeProvisioning(value, now = Date.now()) {
 function normalizeBot(value) {
   const source = isRecord(value) ? value : {};
   return {
+    ...normalizeBotAlias(source),
     name: optionalString(source.name) ?? "飞书机器人",
     avatarUrl: optionalString(source.avatarUrl),
     appIdMasked: optionalString(source.appIdMasked),

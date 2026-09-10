@@ -1,3 +1,4 @@
+import { SET_ALIAS_ENDPOINT, validAliasPayload } from './bot-alias-rpc.mjs';
 import { registerManagementRpc } from '../../../management-rpc.mjs';
 import { SET_CONTEXT_ENHANCEMENT_ENDPOINT, validContextEnhancementPayload } from './context-enhancement-rpc.mjs';
 import { SET_ACCESS_POLICY_ENDPOINT, validAccessPolicyPayload } from './access-policy-rpc.mjs';
@@ -24,6 +25,7 @@ export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
   setContextEnhancement: SET_CONTEXT_ENHANCEMENT_ENDPOINT,
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
+  setAlias: SET_ALIAS_ENDPOINT,
 });
 
 const ENDPOINTS = Object.freeze(Object.values(TOKEN_BOT_ENDPOINTS));
@@ -89,6 +91,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === TOKEN_BOT_ENDPOINTS.setAccessPolicy) {
     return validAccessPolicyPayload(payload)
       ? null : '请提交有效的访问设置。';
+  }
+  if (endpoint === TOKEN_BOT_ENDPOINTS.setAlias) {
+    return validAliasPayload(payload)
+      ? null : '请输入有效的别名（最多 80 个字符）。';
   }
   return 'Unknown bot endpoint.';
 }
@@ -177,6 +183,9 @@ export function createTokenBotRpcHandler(controller, { channel }) {
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.setContextEnhancement) {
         if (typeof controller.updateContextEnhancement !== 'function') throw new Error('Context enhancement update is unavailable');
         value = await controller.updateContextEnhancement(payload.botId, payload.config);
+      } else if (endpoint === TOKEN_BOT_ENDPOINTS.setAlias) {
+        if (typeof controller.updateAlias !== 'function') throw new Error('Alias update is unavailable');
+        value = await controller.updateAlias(payload.botId, payload.alias);
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.setAccessPolicy) {
         if (typeof controller.updateAccessPolicy !== 'function') throw new Error('Access policy update is unavailable');
         value = await controller.updateAccessPolicy(payload.botId, payload.policy);

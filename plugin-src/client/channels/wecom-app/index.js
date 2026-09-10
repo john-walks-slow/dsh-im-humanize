@@ -1,3 +1,4 @@
+import { BotName } from '../../bot-alias.js';
 import * as React from 'react';
 
 import { WecomLogoGlyph } from '../../channel-logos.js';
@@ -246,6 +247,7 @@ export function AccountCard({
   onSettingsSave,
   onSecretReset,
   onWorkspaceSave,
+  onAliasSave,
   onModelSave,
   onAgentPresetSave,
   onContextEnhancementSave,
@@ -265,7 +267,7 @@ export function AccountCard({
         h('div', { className: 'ddt-accountIdentity dim-botIdentity' },
           h('div', { className: 'ddt-avatar dim-botAvatar dwecomapp-avatar', 'aria-hidden': 'true' }, h(WecomLogoGlyph, { size: 29 })),
           h('div', { className: 'dim-botName' },
-            h('h3', null, account.bot.name),
+            h(BotName, { bot: account.bot, disabled: Boolean(busy), onSave: onAliasSave }),
             h('p', null, `${account.bot.corpIdMasked} · AgentId ${account.bot.agentId}`))),
         h('div', {
             className: 'dim-botCardTools',
@@ -551,6 +553,12 @@ export function WecomAppSettingsTab({ rpcCall }) {
               'workspace',
               WECOM_APP_ENDPOINTS.setWorkspace,
               { botId: account.botId, workspace },
+            ),
+            onAliasSave: (alias) => botAction(
+              account,
+              'alias',
+              WECOM_APP_ENDPOINTS.setAlias,
+              { botId: account.botId, alias },
             ),
             onModelSave: (selectedModel) => botAction(
               account,

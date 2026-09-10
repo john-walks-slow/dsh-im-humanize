@@ -1,3 +1,4 @@
+import { normalizeBotAlias } from '../../../../src/channels/shared/bot-alias.mjs';
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
 import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } from '../../model-setting.js';
 import { normalizeLastMessageError } from '../../last-message-error.js';
@@ -19,6 +20,7 @@ export const DINGTALK_ENDPOINTS = Object.freeze({
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
   setContextEnhancement: 'bot.context-enhancement.set',
   setAccessPolicy: 'bot.access-policy.set',
+  setAlias: 'bot.alias.set',
 });
 
 const ACCOUNT_STATES = new Set(['connected', 'connecting', 'offline', 'error']);
@@ -190,6 +192,7 @@ function normalizeBot(value) {
       ? { accessPolicy: normalizeAccessPolicy(value.accessPolicy) }
       : {}),
     bot: {
+      ...normalizeBotAlias(bot),
       name: optionalString(bot.name, 100) ?? '钉钉机器人',
       clientIdMasked: optionalString(bot.clientIdMasked, 140) ?? '已安全保存',
     },

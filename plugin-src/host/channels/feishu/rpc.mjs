@@ -1,3 +1,5 @@
+import { normalizeBotAlias } from '../../../../src/channels/shared/bot-alias.mjs';
+import { SET_ALIAS_ENDPOINT, validAliasPayload } from '../shared/bot-alias-rpc.mjs';
 import { registerManagementRpc } from '../../../management-rpc.mjs';
 import QRCode from 'qrcode';
 import {
@@ -34,6 +36,7 @@ import {
 export const FEISHU_ENDPOINTS = Object.freeze({
   ...FEISHU_CLIENT_ENDPOINTS,
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
+  setAlias: SET_ALIAS_ENDPOINT,
 });
 export { FEISHU_RPC_CHANNEL };
 export const FEISHU_MULTI_ENDPOINTS = Object.freeze({
@@ -214,6 +217,7 @@ function connectionFacts(connection) {
 function publicBot(bot) {
   const source = bot && typeof bot === 'object' ? bot : {};
   const result = {
+    ...normalizeBotAlias(source),
     name: typeof source.name === 'string' && source.name.length > 0 ? source.name : '飞书机器人',
   };
   if (typeof source.avatarUrl === 'string') result.avatarUrl = source.avatarUrl;
@@ -450,6 +454,10 @@ function validPayload(endpoint, payload) {
   if (endpoint === FEISHU_ENDPOINTS.setAccessPolicy) {
     return validAccessPolicyPayload(payload)
       ? null : '请提交有效的访问设置。';
+  }
+  if (endpoint === FEISHU_ENDPOINTS.setAlias) {
+    return validAliasPayload(payload)
+      ? null : '请输入有效的别名（最多 80 个字符）。';
   }
   if (endpoint === FEISHU_ENDPOINTS.setGroupResponseMode) {
     return hasOnlyKeys(payload, new Set(['botId', 'groupResponseMode']))
@@ -733,6 +741,12 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
         if (typeof controller.updateContextEnhancement !== 'function') throw new Error('Context enhancement update is unavailable');
         value = await controller.updateContextEnhancement(
           payload.botId, payload.config,
+          (status) => toPublicFeishuStatus(status, { encodeQr: cachedEncodeQr }),
+        );
+      } else if (endpoint === FEISHU_ENDPOINTS.setAlias) {
+        if (typeof controller.updateAlias !== 'function') throw new Error('Alias update is unavailable');
+        value = await controller.updateAlias(
+          payload.botId, payload.alias,
           (status) => toPublicFeishuStatus(status, { encodeQr: cachedEncodeQr }),
         );
       } else if (endpoint === FEISHU_ENDPOINTS.setAccessPolicy) {

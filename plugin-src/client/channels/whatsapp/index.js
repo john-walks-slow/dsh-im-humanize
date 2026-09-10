@@ -1,3 +1,4 @@
+import { BotName } from '../../bot-alias.js';
 import * as React from 'react';
 
 import { WhatsappLogoGlyph } from '../../channel-logos.js';
@@ -191,6 +192,7 @@ export function WhatsappAccountCard({
   removing,
   onReconnect,
   onWorkspaceSave,
+  onAliasSave,
   onModelSave,
   onAgentPresetSave,
   onContextEnhancementSave,
@@ -213,7 +215,7 @@ export function WhatsappAccountCard({
             'aria-hidden': 'true',
           }, h(WhatsappLogoGlyph, { size: 29 })),
           h('div', { className: 'dim-botName' },
-            h('h3', null, account.bot.name), h('p', null, account.bot.idMasked))),
+            h(BotName, { bot: account.bot, disabled: Boolean(busy), onSave: onAliasSave }), h('p', null, account.bot.idMasked))),
         h('div', {
             className: 'dim-botCardTools',
             // The header is the collapse toggle; keep inner controls clickable.
@@ -511,6 +513,12 @@ export function WhatsappSettingsTab({ rpcCall }) {
               'workspace',
               WHATSAPP_ENDPOINTS.setWorkspace,
               { botId: account.botId, workspace },
+            ),
+            onAliasSave: (alias) => botAction(
+              account,
+              'alias',
+              WHATSAPP_ENDPOINTS.setAlias,
+              { botId: account.botId, alias },
             ),
             onModelSave: (selectedModel) => botAction(
               account,

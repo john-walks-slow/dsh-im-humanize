@@ -134,6 +134,7 @@ Use the proxy URL required by your network and restart the Host after changing i
 
 | Default behavior | Description |
 | --- | --- |
+| Bot alias | Click the pencil beside a bot name to set an alias. Saving updates the display immediately, without restarting or reconnecting. The original name is retained; choose “Restore original name” or save an empty alias to restore it. Aliases only affect names shown in the local settings page. |
 | Bot workspace | Each bot stores its workspace independently. New bots start with the Host's current working directory, which can later be changed from the bot card. |
 | Model | Every bot in each IM channel can choose a model directly below its workspace, or follow the Host default. A change applies only to later new Sessions; send `/new` and then an ordinary message in the current chat to use it. |
 | Reasoning effort | Explicitly choose an effort supported by the selected model, or follow the model default. Levels, descriptions, and defaults come from DSH. Switching models restores the new model's default effort. Each bot saves its own choice, which applies only to later new Sessions. |

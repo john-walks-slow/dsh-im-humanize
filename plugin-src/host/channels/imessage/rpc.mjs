@@ -15,6 +15,7 @@ export const IMESSAGE_ENDPOINTS = Object.freeze({
   setAgentPreset: 'bot.agent-preset.set',
   setContextEnhancement: 'bot.context-enhancement.set',
   setAccessPolicy: 'bot.access-policy.set',
+  setAlias: 'bot.alias.set',
 });
 export const IMESSAGE_RPC_ENDPOINTS = Object.freeze(Object.values(IMESSAGE_ENDPOINTS));
 

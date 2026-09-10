@@ -1,3 +1,4 @@
+import { SET_ALIAS_ENDPOINT, validAliasPayload } from '../shared/bot-alias-rpc.mjs';
 import { registerManagementRpc } from '../../../management-rpc.mjs';
 import QRCode from 'qrcode';
 
@@ -18,6 +19,7 @@ export const WHATSAPP_ENDPOINTS = Object.freeze({
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
+  setAlias: SET_ALIAS_ENDPOINT,
   setWorkspace: SET_WORKSPACE_ENDPOINT,
   setModel: SET_MODEL_ENDPOINT,
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
@@ -60,6 +62,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === WHATSAPP_ENDPOINTS.setAccessPolicy) {
     return validAccessPolicyPayload(payload)
       ? null : '请提交有效的访问设置。';
+  }
+  if (endpoint === WHATSAPP_ENDPOINTS.setAlias) {
+    return validAliasPayload(payload)
+      ? null : '请输入有效的别名（最多 80 个字符）。';
   }
   if (endpoint === WHATSAPP_ENDPOINTS.setWorkspace) {
     return validWorkspacePayload(payload)
@@ -194,6 +200,13 @@ export function createWhatsappRpcHandler(controller, { encodeQr = qrDataUrl } = 
         value = await publicStatus(
           await controller.updateAgentPreset(payload.botId, payload.agentPreset),
           cachedEncode,
+        );
+      } else if (endpoint === WHATSAPP_ENDPOINTS.setAlias) {
+        if (typeof controller.updateAlias !== 'function') throw new Error('Alias update is unavailable');
+        value = await controller.updateAlias(
+          payload.botId,
+          payload.alias,
+          (status) => publicStatus(status, cachedEncode),
         );
       } else if (endpoint === WHATSAPP_ENDPOINTS.setAccessPolicy) {
         if (typeof controller.updateAccessPolicy !== 'function') throw new Error('Access policy update is unavailable');

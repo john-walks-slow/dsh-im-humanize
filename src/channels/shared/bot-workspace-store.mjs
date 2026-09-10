@@ -1,3 +1,4 @@
+import { validateBotAlias, withBotAlias } from './bot-alias.mjs';
 import {
   mkdir,
   readFile,
@@ -264,6 +265,16 @@ function normalizeDocument(value) {
   if (value.version === 1 && value.deliveryTargets !== undefined) return null;
   const deliveryTargets = normalizeDeliveryTargets(value.deliveryTargets, { version: value.version });
   if (!deliveryTargets) return null;
+  const aliases = Object.create(null);
+  if (value.aliases && typeof value.aliases === 'object' && !Array.isArray(value.aliases)) {
+    for (const [botId, alias] of Object.entries(value.aliases)) {
+      try {
+        botIdOf(botId);
+        const normalized = validateBotAlias(alias);
+        if (normalized) aliases[botId] = normalized;
+      } catch { /* A damaged display name must not disable the bot. */ }
+    }
+  }
   const accessPolicies = normalizeAccessPolicies(value.accessPolicies, workspaces);
   const version = Math.max(
     value.version,
@@ -279,6 +290,7 @@ function normalizeDocument(value) {
     contextEnhancement,
     deliveryTargets,
     accessPolicies,
+    aliases,
   };
 }
 
@@ -290,8 +302,10 @@ function storedDocument({
   contextEnhancement,
   deliveryTargets,
   accessPolicies,
+  aliases,
 }) {
   const document = { version, workspaces };
+  if (Object.keys(aliases).length > 0) document.aliases = aliases;
   if (Object.keys(agentPresets).length > 0) document.agentPresets = agentPresets;
   if (Object.keys(models).length > 0) document.models = models;
   if (Object.keys(contextEnhancement).length > 0) {
@@ -346,6 +360,7 @@ export class BotWorkspaceStore {
   #workspaces = {};
   #agentPresets = {};
   #models = {};
+  #aliases = Object.create(null);
   #contextEnhancement = {};
   #deliveryTargets = Object.create(null);
   #accessPolicies = Object.create(null);
@@ -373,6 +388,7 @@ export class BotWorkspaceStore {
       this.#workspaces = normalized.workspaces;
       this.#agentPresets = normalized.agentPresets;
       this.#models = normalized.models;
+      this.#aliases = normalized.aliases;
       this.#contextEnhancement = normalized.contextEnhancement;
       this.#deliveryTargets = normalized.deliveryTargets;
       this.#accessPolicies = normalized.accessPolicies;
@@ -382,6 +398,7 @@ export class BotWorkspaceStore {
       this.#workspaces = {};
       this.#agentPresets = {};
       this.#models = {};
+      this.#aliases = Object.create(null);
       this.#contextEnhancement = {};
       this.#deliveryTargets = Object.create(null);
       this.#accessPolicies = Object.create(null);
@@ -425,6 +442,11 @@ export class BotWorkspaceStore {
   modelFor(botId) {
     const selection = this.#models[botIdOf(botId)];
     return selection ? { ...selection } : null;
+  }
+
+  aliasFor(botId) {
+    const id = botIdOf(botId);
+    return this.has(id) && Object.hasOwn(this.#aliases, id) ? this.#aliases[id] : '';
   }
 
   contextEnhancementFor(botId) {
@@ -745,6 +767,26 @@ export class BotWorkspaceStore {
     });
   }
 
+  async setAlias(botId, value, { incarnation } = {}) {
+    const id = botIdOf(botId);
+    const expectedIncarnation = incarnation === undefined ? this.incarnationFor(id) : incarnation;
+    const alias = validateBotAlias(value);
+    return this.#enqueue(id, async () => {
+      if (!this.has(id) || expectedIncarnation !== this.incarnationFor(id)) {
+        const error = new Error('找不到要修改的机器人。');
+        error.code = 'workspace-bot-not-found';
+        throw error;
+      }
+      const next = { ...this.#aliases };
+      if (alias) next[id] = alias;
+      else delete next[id];
+      await this.#persist(this.#contextEnhancement, this.#deliveryTargets,
+        this.#version, this.#accessPolicies, next);
+      this.#aliases = next;
+      return alias;
+    });
+  }
+
   async setContextEnhancement(botId, value, { incarnation } = {}) {
     const id = botIdOf(botId);
     const expectedIncarnation = incarnation === undefined ? this.incarnationFor(id) : incarnation;
@@ -945,6 +987,7 @@ export class BotWorkspaceStore {
       ...Object.keys(this.#workspaces),
       ...Object.keys(this.#agentPresets),
       ...Object.keys(this.#models),
+      ...Object.keys(this.#aliases),
       ...Object.keys(this.#contextEnhancement),
       ...Object.keys(this.#deliveryTargets),
       ...Object.keys(this.#accessPolicies),
@@ -962,6 +1005,7 @@ export class BotWorkspaceStore {
       bots: status.bots.map((bot) => bot?.botId
         ? {
           ...bot,
+          ...(this.aliasFor(bot.botId) ? { bot: withBotAlias(bot.bot, this.aliasFor(bot.botId)) } : {}),
           workspace: this.workspaceFor(bot.botId),
           agentPreset: this.agentPresetFor(bot.botId),
           model: this.modelFor(bot.botId),
@@ -997,14 +1041,16 @@ export class BotWorkspaceStore {
     const hadWorkspace = Object.hasOwn(this.#workspaces, id);
     const hadPreset = Object.hasOwn(this.#agentPresets, id);
     const hadModel = Object.hasOwn(this.#models, id);
+    const hadAlias = Object.hasOwn(this.#aliases, id);
     const hadContextEnhancement = Object.hasOwn(this.#contextEnhancement, id);
     const hadDeliveryTargets = Object.hasOwn(this.#deliveryTargets, id);
     const hadAccessPolicy = Object.hasOwn(this.#accessPolicies, id);
-    const needsCleanup = hadWorkspace || hadPreset || hadModel || hadContextEnhancement
+    const needsCleanup = hadWorkspace || hadPreset || hadModel || hadAlias || hadContextEnhancement
       || hadDeliveryTargets || hadAccessPolicy || this.#dirtyRemovals.has(id);
     delete this.#workspaces[id];
     delete this.#agentPresets[id];
     delete this.#models[id];
+    delete this.#aliases[id];
     delete this.#contextEnhancement[id];
     delete this.#deliveryTargets[id];
     delete this.#accessPolicies[id];
@@ -1042,6 +1088,7 @@ export class BotWorkspaceStore {
     deliveryTargets = this.#deliveryTargets,
     version = this.#version,
     accessPolicies = this.#accessPolicies,
+    aliases = this.#aliases,
   ) {
     await writeStoredDocument(this.#path, storedDocument({
       version,
@@ -1051,6 +1098,7 @@ export class BotWorkspaceStore {
       contextEnhancement,
       deliveryTargets,
       accessPolicies,
+      aliases,
     }));
     this.#dirtyRemovals.clear();
   }
@@ -1059,6 +1107,7 @@ export class BotWorkspaceStore {
     if (Object.keys(this.#workspaces).length > 0
       || Object.keys(this.#agentPresets).length > 0
       || Object.keys(this.#models).length > 0
+      || Object.keys(this.#aliases).length > 0
       || Object.keys(this.#contextEnhancement).length > 0
       || Object.keys(this.#deliveryTargets).length > 0
       || Object.keys(this.#accessPolicies).length > 0) {
@@ -1645,6 +1694,23 @@ export function createWorkspaceAwareController(controller, {
       );
     });
   };
+  const updateAlias = (botId, value, projectStatus) => {
+    const incarnation = workspaces.incarnationFor(botId);
+    const alias = validateBotAlias(value);
+    return withBotTransition(botId, async () => {
+      const snapshot = await decorate(await controller.status());
+      if (!snapshot?.bots?.some((bot) => bot?.botId === botId)) {
+        const error = new Error('找不到要修改的机器人。');
+        error.code = 'workspace-bot-not-found';
+        throw error;
+      }
+      const updated = { ...snapshot, bots: snapshot.bots.map((bot) => bot.botId === botId
+        ? { ...bot, bot: withBotAlias(bot.bot, alias) } : bot) };
+      const result = projectStatus ? await projectStatus(updated) : updated;
+      await workspaces.setAlias(botId, alias, { incarnation });
+      return result;
+    });
+  };
   const updateContextEnhancement = (botId, value, projectStatus) => {
     const incarnation = workspaces.incarnationFor(botId);
     const config = validateContextEnhancementConfig(value);
@@ -1743,6 +1809,7 @@ export function createWorkspaceAwareController(controller, {
       if (property === 'updateWorkspace') return updateWorkspace;
       if (property === 'updateAgentPreset') return updateAgentPreset;
       if (property === 'updateModel') return updateModel;
+      if (property === 'updateAlias') return updateAlias;
       if (property === 'updateContextEnhancement') return updateContextEnhancement;
       if (property === 'updateAccessPolicy') return updateAccessPolicy;
       const value = Reflect.get(target, property, target);

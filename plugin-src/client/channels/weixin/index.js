@@ -1,3 +1,4 @@
+import { BotName } from '../../bot-alias.js';
 import * as React from 'react';
 
 import { WeixinLogoGlyph } from '../../channel-logos.js';
@@ -214,6 +215,7 @@ export function AccountCard({
   removing,
   onReconnect,
   onWorkspaceSave,
+  onAliasSave,
   onModelSave,
   onAgentPresetSave,
   onContextEnhancementSave,
@@ -231,7 +233,7 @@ export function AccountCard({
         header: h('div', { className: 'dxw-accountTop dim-botCardTop' },
         h('div', { className: 'dxw-accountIdentity dim-botIdentity' },
           h('div', { className: 'dxw-avatar dim-botAvatar', 'aria-hidden': 'true' }, h(WeixinLogoGlyph, { size: 27 })),
-          h('div', { className: 'dim-botName' }, h('h3', null, account.bot.name), h('p', null, account.bot.accountIdMasked))),
+          h('div', { className: 'dim-botName' }, h(BotName, { bot: account.bot, disabled: Boolean(busy), onSave: onAliasSave }), h('p', null, account.bot.accountIdMasked))),
         h('div', {
             className: 'dim-botCardTools',
             // The header is the collapse toggle; keep inner controls clickable.
@@ -318,6 +320,7 @@ function AccountList(props) {
         removing: props.removeTarget === account.botId,
         onReconnect: () => props.onReconnect(account),
         onWorkspaceSave: (workspace) => props.onWorkspaceSave(account, workspace),
+        onAliasSave: (alias) => props.onAliasSave(account, alias),
         onModelSave: (model) => props.onModelSave(account, model),
         onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(account, agentPreset),
         onContextEnhancementSave: (config) => props.onContextEnhancementSave(account, config),
@@ -752,6 +755,9 @@ export function WeixinSettingsTab({ rpcCall }) {
                   removeTarget,
                   onReconnect: (account) => void reconnect(account),
                   onWorkspaceSave: saveWorkspace,
+                  onAliasSave: (account, alias) => saveBotSetting(
+                    account, 'alias', WEIXIN_ENDPOINTS.setAlias, { alias },
+                  ),
                   onModelSave: (account, selectedModel) => saveBotSetting(
                     account, 'model', WEIXIN_ENDPOINTS.setModel, { model: selectedModel },
                   ),

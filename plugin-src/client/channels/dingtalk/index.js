@@ -1,3 +1,4 @@
+import { BotName } from '../../bot-alias.js';
 import * as React from 'react';
 
 import { CredentialActionIcon, CredentialBindingPanel, QrActionIcon } from '../../credential-binding.js';
@@ -244,6 +245,7 @@ export function AccountCard({
   removing,
   onReconnect,
   onWorkspaceSave,
+  onAliasSave,
   onModelSave,
   onAgentPresetSave,
   onContextEnhancementSave,
@@ -263,7 +265,7 @@ export function AccountCard({
         h('div', { className: 'ddt-accountIdentity dim-botIdentity' },
           h('div', { className: 'ddt-avatar dim-botAvatar', 'aria-hidden': 'true' }, h(DingtalkIcon, { size: 29 })),
           h('div', { className: 'dim-botName' },
-            h('h3', { title: account.bot.name }, account.bot.name),
+            h(BotName, { bot: account.bot, disabled: Boolean(busy), onSave: onAliasSave }),
             h('p', { title: account.bot.clientIdMasked }, account.bot.clientIdMasked))),
         h('div', {
             className: 'dim-botCardTools',
@@ -349,6 +351,7 @@ function AccountList(props) {
         removing: props.removeTarget === account.botId,
         onReconnect: () => props.onReconnect(account),
         onWorkspaceSave: (workspace) => props.onWorkspaceSave(account, workspace),
+        onAliasSave: (alias) => props.onAliasSave(account, alias),
         onModelSave: (model) => props.onModelSave(account, model),
         onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(account, agentPreset),
         onContextEnhancementSave: (config) => props.onContextEnhancementSave(account, config),
@@ -928,6 +931,9 @@ export function DingtalkSettingsTab({ rpcCall }) {
                   removeTarget,
                   onReconnect: (account) => void reconnect(account),
                   onWorkspaceSave: saveWorkspace,
+                  onAliasSave: (account, alias) => saveBotSetting(
+                    account, 'alias', DINGTALK_ENDPOINTS.setAlias, { alias },
+                  ),
                   onModelSave: (account, selectedModel) => saveBotSetting(
                     account, 'model', DINGTALK_ENDPOINTS.setModel, { model: selectedModel },
                   ),
