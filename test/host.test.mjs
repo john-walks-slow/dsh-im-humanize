@@ -3,7 +3,52 @@ import test from 'node:test';
 
 import { Context } from '@deepseek-ai/cordis';
 
+import { setImHostLanguage } from '../src/channels/shared/i18n.mjs';
 import { createImHostPlugin, inject, name } from '../plugin-src/host/index.mjs';
+
+const NO_CHANNELS = Object.freeze({
+  applyFeishu: async () => {}, applyWeixin: async () => {}, applyDingtalk: async () => {},
+  applyWecom: async () => {}, applyWecomApp: async () => {}, applyQq: async () => {},
+  applySlack: async () => {}, applyDiscord: async () => {}, applyWhatsapp: async () => {},
+  applyIMessage: async () => {}, applyOffice: async () => {},
+});
+
+test('Host resolves the bot message language before channels start and serves its RPC', async () => {
+  const order = [];
+  let resolved = false;
+  const controller = {
+    apply: () => ({}),
+    snapshot: () => ({}),
+    mirror: async () => ({}),
+    ready: Promise.resolve().then(() => { resolved = true; }),
+  };
+  const plugin = createImHostPlugin({
+    ...NO_CHANNELS,
+    createDeliveryService: () => ({}),
+    installUpdateRpc: () => {}, installInboundTtlRpc: () => {},
+    installDeliveryRpc: () => {}, installDeliveryHttp: () => {},
+    installSessionSyncCoordinator: () => {},
+    installHostLanguage: (_ctx, config) => {
+      order.push(['language', config.language]);
+      return controller;
+    },
+    installHostLanguageRpc: (_ctx, given, authority) => {
+      order.push(['language-rpc', given === controller, authority]);
+    },
+    applyTelegram: async () => { order.push(['telegram', resolved]); },
+  });
+
+  await plugin.apply({ connection: { fetch: {} } }, {
+    language: 'en',
+    rpcAuthority: 'trusted-host',
+    telegram: {},
+  });
+
+  assert.deepEqual(order[0], ['language', 'en']);
+  assert.deepEqual(order.find(([kind]) => kind === 'language-rpc'),
+    ['language-rpc', true, 'trusted-host']);
+  assert.deepEqual(order.find(([kind]) => kind === 'telegram'), ['telegram', true]);
+});
 
 test('Host composes IM channels and the AI Office connector inside one plugin context', async () => {
   const calls = [];
@@ -190,6 +235,8 @@ test('Host waits for apiProxy on legacy Harness and Controllers on modern Harnes
 });
 
 test('Host installs channel prefixes through the real Cordis sessions dependency', async (t) => {
+  const previousLanguage = setImHostLanguage('zh');
+  t.after(() => setImHostLanguage(previousLanguage));
   const ctx = new Context();
   ctx.provide('connection', { fetch: { register: () => () => {} } });
   ctx.provide('credentials', {});
@@ -208,6 +255,11 @@ test('Host installs channel prefixes through the real Cordis sessions dependency
   Object.assign(internals, {
     installUpdateRpc: () => {}, installInboundTtlRpc: () => {},
     installDeliveryRpc: () => {}, installSessionSyncCoordinator: () => {},
+    // The language test is about session-title prefixes, not the interface
+    // language: keep it off the real ~/.dsh mirror so a language a tester set
+    // locally cannot leak into this assertion.
+    installHostLanguage: () => ({ ready: Promise.resolve() }),
+    installHostLanguageRpc: () => {},
   });
   const host = ctx.plugin(createImHostPlugin(internals));
   t.after(() => host.dispose());

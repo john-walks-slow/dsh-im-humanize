@@ -1,6 +1,28 @@
 import { registerManagementRpc } from '../../../management-rpc.mjs';
+import { onImHostLanguageChange } from '../../../../src/channels/shared/i18n.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicChannelInitializing, publicChannelStartupError } from './startup-error.mjs';
+
+/**
+ * Keep a channel's platform-side command menu in the current host message
+ * language. Menus are registered with the platform when a bot connects, so a
+ * later language change has to re-send them; channels that publish no menu
+ * expose no refresh hook and are left alone.
+ */
+function followHostLanguage(ctx, channel, controller, logger) {
+  if (typeof controller?.refreshCommandMenus !== 'function') return;
+  const unsubscribe = onImHostLanguageChange(() => {
+    // Never run a slow or failing platform call inside the language switch:
+    // subscribers are synchronous and must not delay or break one another.
+    void Promise.resolve()
+      .then(() => controller.refreshCommandMenus())
+      .catch((error) => logger.warn?.(
+        `[dsh-im] failed to re-send the ${channel} command menu after a language change`,
+        error,
+      ));
+  });
+  ctx.effect(() => unsubscribe, `dsh-im: follow the host language for ${channel} command menus`);
+}
 
 /** Mount the native management RPC before any fallible production initialization. */
 export async function installProductionChannel(ctx, config, {
@@ -31,6 +53,7 @@ export async function installProductionChannel(ctx, config, {
       ? config.deliveryService.registerAdapter(production.deliveryAdapter) : undefined;
     const readyHandler = createHandler(production.controller);
     ctx.effect(() => closeProduction, `dsh-im: close ${channel} connections`);
+    followHostLanguage(ctx, channel, production.controller, logger);
     handler = readyHandler;
   } catch (error) {
     startupError = publicChannelStartupError(channel, error);

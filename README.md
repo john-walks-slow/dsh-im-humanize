@@ -227,7 +227,7 @@ Logo 由 dsh-im 的浏览器适配显示，无需修改 DSH。适配保留原始
 
 - Harness 一级设置菜单中只注册一个「IM机器人」设置页，其中包含内置 IM 渠道和一个 AI Office Connector；
 - 内置渠道及 Office Connector 的 Host、客户端与运行时源码都在本仓库维护，不依赖外部独立插件；
-- 设置页跟随 DeepSeek Harness 的语言选择，在中文和 English 之间即时切换；机器人发出的聊天消息跟随 Host 的 `language` 配置（默认中文；设为 `en` 即为英文），中文始终为兜底，未收录的文案原样输出；
+- 设置页跟随 DeepSeek Harness 的语言选择，在中文和 English 之间即时切换；机器人发出的聊天消息、命令帮助和 Telegram 命令菜单同样跟随该界面语言并即时切换，中文始终为兜底，未收录的文案原样输出；
 - 左侧使用 Logo 切换微信、飞书、钉钉、企业微信、企业微信应用、QQ、Slack、Telegram、Discord、WhatsApp、iMessage 和 AI Office，不使用启用/停用开关；
 - 各 IM 渠道保持独立的 RPC、凭据、连接监督和会话映射；Office Connector 另行维护设备凭据、Job 租约、审批等待与并发上限；
 - 浏览器只获得二维码、Manifest、脱敏状态，以及用户为当前 Telegram 或 WhatsApp 机器人主动保存的访问模式和白名单标识；手动输入的 Secret 或 Token 仅单向提交给本机 Host，任何 RPC 响应都不会返回 App Secret、`bot_token`、钉钉 `client_secret`、企业微信 Secret、QQ `app_secret`、Slack Bot/App Token、Telegram/Discord Bot Token、WhatsApp 关联设备密钥、AI Office Device Token，或从平台消息中观察到的其他原始用户标识。
@@ -260,15 +260,29 @@ IM 管理接口默认沿用 Harness 的浏览器认证和 Host／Origin 信任�
 
 ### 聊天消息语言
 
-机器人发出的聊天消息默认使用中文。要切换为英文，在插件配置中设置 `language: en`（也接受 `en-US`、`english`），或设置环境变量 `DSH_IM_LANGUAGE=en`：
+**无需配置。** 机器人发出的聊天消息、命令帮助和 Telegram 命令菜单跟随 DeepSeek Harness 的界面语言。在 **设置 → 通用 → 语言** 中把 DSH 切换为 English，机器人即以英文回复；切换即时生效，无需重启 Host，也无需重连机器人。
+
+语言按以下顺序取第一个有效值：
+
+1. 插件自身的 `language` 配置（或环境变量 `DSH_IM_LANGUAGE`）。这是下文的运维级固定值；一旦设置，就不再跟随 DSH 的界面语言。
+2. DSH「语言」设置项中的显式选择，从 Host 用户设置文档读取。这就是「DSH 设为 English」的含义，对所有渠道生效。
+3. 设置页实际渲染所用的界面语言。当界面语言来自浏览器语言列表时 DSH 不会存储任何偏好，因此 dsh-im 会把生效语言回传 Host 并保存在 `~/.dsh/integrations/dsh-im/interface-language.json`，这样 Host 重启后、尚无浏览器连接时机器人仍以该语言回复。
+
+中文始终是兜底语言，任何未收录到英文词典的文案都会原样以中文输出，因此该功能不会改变现有中文用户的行为。
+
+聊天消息从下一条起即切换语言。Telegram 命令菜单会立即重新下发，但 **Telegram 客户端会缓存 `/` 菜单**，因此即使 Telegram 侧已保存新语言，你自己的客户端仍可能在一段时间内显示切换前的语言；重开客户端即可刷新，`getMyCommands` 始终反映实际存储的内容。
+
+输入框旁的蓝色 **Menu 按钮**不受机器人控制，也不会跟随该设置：dsh-im 将其设为 `MenuButtonCommands`，而 Bot API 中该类型没有文本字段，因此按钮文案由 Telegram 按**阅读者客户端自身的语言**渲染。只有 `MenuButtonWebApp` 带有文本字段，但它需要一个 Web App URL。
+
+端到端验证可运行 `node scripts/verify-interface-language.mjs /path/to/deepseek-harness`：脚本使用原版 DSH CLI 与独立临时 home，通过真实 `/api` 通道逐层校验语言解析顺序，并验证重启后与运维固定 `language` 时的行为。设置 `DSH_IM_TELEGRAM_TOKEN` 可额外接入真实机器人，断言 Telegram 侧实际存储的命令菜单，检查结束后会恢复其原有菜单。
+
+如需固定一种语言、不随阅读者的界面语言变化，可在插件配置中设置 `language`（也接受 `en-US`、`english`），或设置环境变量 `DSH_IM_LANGUAGE=en`：
 
 ```yaml
 - id: xmanrui-dsh-im
   config:
     language: en
 ```
-
-未设置时保持中文；中文始终是兜底语言，任何未收录到英文词典的文案都会原样以中文输出，因此该功能不会改变现有中文用户的行为。
 
 ---
 

@@ -10,6 +10,7 @@ import {
   createOutboundArtifactTool,
   releaseOutboundArtifact,
 } from '../../../src/channels/shared/semantic/artifact.mjs';
+import { getImHostLanguage, setImHostLanguage } from '../../../src/channels/shared/i18n.mjs';
 import { TelegramApi } from '../../../src/channels/telegram/telegram-api.mjs';
 import { TelegramHarnessBridge } from '../../../src/channels/telegram/telegram-bridge.mjs';
 import {
@@ -196,6 +197,85 @@ test('Telegram API uses the documented Rich Message, Draft, and rich edit fields
     draftId: 0,
     richMessage: { markdown: 'draft' },
   }), /non-zero integer/);
+});
+
+test('Telegram sends no Chinese in English mode, on the Draft and placeholder paths', async (t) => {
+  const previous = getImHostLanguage();
+  t.after(() => setImHostLanguage(previous));
+  setImHostLanguage('en');
+  const outbound = [];
+  const client = new TelegramBotClient({
+    api: {
+      sendRichMessageDraft: async (payload) => {
+        outbound.push(payload.richMessage?.markdown ?? '');
+        return true;
+      },
+      sendRichMessage: async (payload) => {
+        outbound.push(payload.richMessage?.markdown ?? '');
+        return { message_id: 801 };
+      },
+      sendMessage: async (payload) => {
+        outbound.push(payload.text);
+        return { message_id: 802 };
+      },
+      editMessageText: async (payload) => {
+        outbound.push(payload.text);
+        return true;
+      },
+    },
+    logger: { warn() {} },
+  });
+
+  // The private path opens a Rich Draft; the group path sends a plain
+  // placeholder. Both emit the "working on it" text before any model output,
+  // which is the first thing a reader ever sees from the bot.
+  const privateStream = await client.openDeliveryStream({ chatId: 42, chatType: 'private' });
+  await privateStream.finish({ kind: 'text', text: '# done', format: 'markdown' });
+  const groupStream = await client.openDeliveryStream({ chatId: 43, chatType: 'group' });
+  await groupStream.finish({ kind: 'text', text: 'done', format: 'plain' });
+
+  assert.ok(outbound.length >= 4, `expected both paths to emit, got ${JSON.stringify(outbound)}`);
+  assert.equal(
+    outbound.filter((text) => /[\p{Script=Han}]/u.test(text)).join(' | '),
+    '',
+    'no message sent to Telegram may contain Chinese while the host language is English',
+  );
+  assert.ok(outbound.includes('Processing…'), `expected a translated placeholder, got ${JSON.stringify(outbound)}`);
+});
+
+test('the Telegram placeholder follows a language switch in both directions, per message', async (t) => {
+  const previous = getImHostLanguage();
+  t.after(() => setImHostLanguage(previous));
+  const placeholders = [];
+  const client = new TelegramBotClient({
+    api: {
+      sendMessage: async (payload) => {
+        placeholders.push(payload.text);
+        return { message_id: 700 + placeholders.length };
+      },
+      editMessageText: async () => true,
+    },
+    logger: { warn() {} },
+  });
+
+  // Unlike the command menu -- which the platform stores and Telegram clients
+  // cache -- the placeholder is message content, read from t() at send time.
+  // So it must track the current language on every single message, with no
+  // reconnect and no cache to invalidate, in both directions and repeatedly.
+  const sequence = ['zh', 'en', 'zh', 'en', 'en', 'zh'];
+  for (const language of sequence) {
+    setImHostLanguage(language);
+    await client.openDeliveryStream({ chatId: 44, chatType: 'group' });
+  }
+
+  assert.deepEqual(placeholders, [
+    '正在处理…',
+    'Processing…',
+    '正在处理…',
+    'Processing…',
+    'Processing…',
+    '正在处理…',
+  ], 'every message must use the language in force when it was sent');
 });
 
 test('Telegram private stream reuses one non-zero Draft id and persists one Rich final', async () => {

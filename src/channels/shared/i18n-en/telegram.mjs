@@ -1,5 +1,10 @@
 // English translations (telegram area). Keys are exact Chinese literals passed to t().
 export default {
+  // Terminal status written back over a placeholder whose in-place edit was
+  // rejected, so it is the last thing a reader sees on a degraded reply.
+  '回复已发送。': 'The reply was sent.',
+  '回复发送结果未能确认。': 'The reply delivery result could not be confirmed.',
+  '消息发送失败，请稍后重试。': 'The message could not be sent. Try again later.',
   '开启一个全新会话': 'Start a brand-new Session',
   '压缩当前会话的较早上下文': 'Compact the earlier context of the current Session',
   '切换工作区': 'Switch Workspace',
