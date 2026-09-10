@@ -930,14 +930,7 @@ export class TelegramRuntime {
         throw error;
       }
       try {
-        const commands = telegramCommandMenu(this.#commandCatalog);
-        // Both operations use the existing default scope and language. Sending
-        // the full list replaces old entries; an empty catalog clears that list.
-        if (commands.length > 0) {
-          await api.setMyCommands({ commands, signal: controller.signal });
-        } else {
-          await api.deleteMyCommands({ signal: controller.signal });
-        }
+        await this.#sendCommandMenu(api, controller.signal);
         await api.setChatMenuButton({ menuButton: COMMANDS_MENU_BUTTON, signal: controller.signal });
       } catch (error) {
         this.#logger.warn?.(
@@ -988,6 +981,38 @@ export class TelegramRuntime {
       this.#status.lastError = error?.message ?? String(error);
       await this.stop();
       throw error;
+    }
+  }
+
+  // Both operations use the existing default scope and language. Sending the
+  // full list replaces old entries; an empty catalog clears that list.
+  async #sendCommandMenu(api, signal) {
+    const commands = telegramCommandMenu(this.#commandCatalog);
+    if (commands.length > 0) await api.setMyCommands({ commands, signal });
+    else await api.deleteMyCommands({ signal });
+  }
+
+  /**
+   * Re-send the command menu in the current host message language.
+   *
+   * The menu Telegram shows is registered once per connection, so a language
+   * change would otherwise stay invisible until the bot reconnected. This
+   * replaces the text only: the chat menu button is owned by connect.
+   * @returns whether a connected bot accepted the refreshed menu.
+   */
+  async refreshCommandMenu() {
+    const api = this.#api;
+    const signal = this.#abortController?.signal;
+    if (!this.#status.ready || !api || !signal || signal.aborted) return false;
+    try {
+      await this.#sendCommandMenu(api, signal);
+      return true;
+    } catch (error) {
+      this.#logger.warn?.(
+        `[dsh-im:telegram] bot ${this.#config.botId} command menu refresh failed:`,
+        error,
+      );
+      return false;
     }
   }
 
