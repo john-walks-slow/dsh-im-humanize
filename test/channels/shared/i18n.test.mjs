@@ -110,6 +110,14 @@ test('t() translates known keys and fills placeholders in English mode', () => {
     t('卡片已结束，请查看后续消息。'),
     'This card has ended. Please check the next message.',
   );
+  // Text a reader sees before any model output, so an untranslated literal
+  // here is the first thing that looks broken (see issue #185).
+  assert.equal(t('正在处理…'), 'Processing…');
+  assert.equal(
+    t('Thread 创建结果暂时无法确认。若已创建，请在对应 Thread 中重试；若未创建，请稍后重新 @机器人。'),
+    'The Thread creation result cannot be confirmed yet. If the Thread was created,'
+    + ' retry inside it; if it was not, mention the bot again shortly.',
+  );
   assert.equal(
     t('工具调用「{name}」未成功，请检查工具配置或稍后重试。', { name: 'search' }),
     'Tool call "search" did not succeed. Check the tool configuration or try again later.',

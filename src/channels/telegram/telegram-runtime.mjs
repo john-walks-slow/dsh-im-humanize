@@ -717,13 +717,13 @@ export class TelegramBotClient {
         keepalive: true,
         logger: this.#logger,
       });
-      await stream.update(createTextDeliveryBlock('正在处理…', 'plain'));
+      await stream.update(createTextDeliveryBlock(t('正在处理…'), 'plain'));
       return stream;
     }
 
     const placeholder = await this.#api.sendMessage({
       chatId: target.chatId,
-      text: '正在处理…',
+      text: t('正在处理…'),
       replyToMessageId: target.replyToMessageId,
       messageThreadId: target.messageThreadId,
       signal: this.#signal,
