@@ -268,6 +268,8 @@ Chinese is always the fallback language — any text missing from the English di
 
 Bot messages switch from the next message onward. The Telegram command menu is re-sent to Telegram right away, but **Telegram clients cache the `/` menu**, so your own app can keep showing the previous language for a while even though Telegram already holds the new one. Reopening the app refreshes it, and `getMyCommands` always shows what was actually stored.
 
+One Telegram label is outside a bot's control and does not follow this setting: the blue **Menu** button beside the input box. dsh-im sets it to `MenuButtonCommands`, which the Bot API defines with no text field, so Telegram renders that label in the *reader's own app language*. Only `MenuButtonWebApp` carries text, and it requires a Web App URL.
+
 Run `node scripts/verify-interface-language.mjs /path/to/deepseek-harness` to verify this end to end against an unmodified DSH CLI: it uses an isolated temporary home, asserts each resolution layer over the real `/api` carrier, and checks that a restart and an operator-pinned `language` both behave. Set `DSH_IM_TELEGRAM_TOKEN` to additionally bind a real bot and assert the command menu Telegram itself stores, which is restored when the check finishes.
 
 To pin one language regardless of who is reading the interface, set `language` in the plugin config (also accepts `en-US` or `english`), or set the `DSH_IM_LANGUAGE=en` environment variable:

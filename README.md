@@ -271,6 +271,8 @@ IM 管理接口默认沿用 Harness 的浏览器认证和 Host／Origin 信任�
 
 聊天消息从下一条起即切换语言。Telegram 命令菜单会立即重新下发，但 **Telegram 客户端会缓存 `/` 菜单**，因此即使 Telegram 侧已保存新语言，你自己的客户端仍可能在一段时间内显示切换前的语言；重开客户端即可刷新，`getMyCommands` 始终反映实际存储的内容。
 
+输入框旁的蓝色 **Menu 按钮**不受机器人控制，也不会跟随该设置：dsh-im 将其设为 `MenuButtonCommands`，而 Bot API 中该类型没有文本字段，因此按钮文案由 Telegram 按**阅读者客户端自身的语言**渲染。只有 `MenuButtonWebApp` 带有文本字段，但它需要一个 Web App URL。
+
 端到端验证可运行 `node scripts/verify-interface-language.mjs /path/to/deepseek-harness`：脚本使用原版 DSH CLI 与独立临时 home，通过真实 `/api` 通道逐层校验语言解析顺序，并验证重启后与运维固定 `language` 时的行为。设置 `DSH_IM_TELEGRAM_TOKEN` 可额外接入真实机器人，断言 Telegram 侧实际存储的命令菜单，检查结束后会恢复其原有菜单。
 
 如需固定一种语言、不随阅读者的界面语言变化，可在插件配置中设置 `language`（也接受 `en-US`、`english`），或设置环境变量 `DSH_IM_LANGUAGE=en`：
