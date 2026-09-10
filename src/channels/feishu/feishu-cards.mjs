@@ -1003,7 +1003,7 @@ function stepPanel(lines, { title, expanded }) {
   };
 }
 
-function stepStatusText(status) {
+export function stepStatusText(status) {
   if (status === 'completed') return t('已完成');
   if (status === 'stopped') return t('已停止');
   return t('运行中');
