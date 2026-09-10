@@ -393,7 +393,7 @@ function modelErrorMessage(error, action) {
   if (code === 'session-not-found') {
     return t('当前聊天绑定的会话已不存在，请重试。');
   }
-  if (code === 'model-unavailable') {
+  if (code === 'model-unavailable' || code === 'session/model-unavailable') {
     if (action === 'reasoning-select') {
       return t('无法切换推理等级。当前模型或推理等级不可用。');
     }
@@ -704,7 +704,8 @@ export async function runModelCommand(text, harness, state, key, options = {}) {
           || typeof state?.setSession !== 'function') {
           throw new TypeError('Harness cannot create a conversation session');
         }
-        const sessionId = await harness.createSession(requestOptions);
+        // An explicit choice must remain usable even when the saved bot model expires.
+        const sessionId = await harness.createSession({ ...requestOptions, inheritBotModel: false });
         if (typeof sessionId !== 'string' || !sessionId) {
           throw new TypeError('Harness returned an invalid session id');
         }

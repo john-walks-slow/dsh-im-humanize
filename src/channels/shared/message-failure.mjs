@@ -47,7 +47,7 @@ const FAILURE_MESSAGES = Object.freeze({
   MODEL_CONTEXT_LIMIT:
     '当前会话内容超过模型上下文上限。请发送 /compact 或 /new 后重试。',
   MODEL_UNAVAILABLE:
-    '当前模型不存在或不支持所选配置。请发送 /models，并使用 /model 重新选择。',
+    '当前模型不存在或不支持所选配置。请发送 /models，再用 /model <序号> 为当前聊天重新选择。若要修改后续新会话的默认模型，请到 DSH 设置 → IM机器人 → 对应机器人卡片修改。',
   MODEL_CONFIG:
     '当前模型不支持这类内容或所选配置。请调整内容、模型或推理等级后重试。',
   MODEL_TIMEOUT:
@@ -125,6 +125,7 @@ function failureCode(error) {
   }
   if (code === 'harness-turn-failed') return 'INTERNAL_UNKNOWN';
   if (['harness-http-failed', 'harness-rpc-rejected'].includes(code)) return 'HARNESS_SERVICE';
+  if (code === 'model-unavailable' || code === 'session/model-unavailable') return 'MODEL_UNAVAILABLE';
   if (code === 'model-empty-response') return 'MODEL_EMPTY_REPLY';
   if (code === 'model-max-tokens') return 'MODEL_OUTPUT_LIMIT';
   if (code === 'turn-blocked') return 'TURN_BLOCKED';
