@@ -70,6 +70,10 @@ import {
   GLOBAL_SETTINGS_RPC_CHANNEL,
   GlobalSettingsPanel,
 } from '../plugin-src/client/global-settings.js';
+import {
+  HOST_LANGUAGE_ENDPOINTS,
+  HOST_LANGUAGE_RPC_CHANNEL,
+} from '../plugin-src/client/interface-language.js';
 
 const STYLES_URL = new URL('../plugin-src/client/styles.js', import.meta.url);
 const FEISHU_STYLES_URL = new URL(
@@ -1182,9 +1186,15 @@ test('client registers one top-level bilingual IM settings section with a direct
     rpcCalls.push(args);
     return { ok: true, value: {} };
   };
+  const localeListeners = new Set();
   const ctx = {
     effect(install, label) {
       effects.push({ install, label });
+    },
+    on(event, listener) {
+      assert.equal(event, 'locale/change');
+      localeListeners.add(listener);
+      return () => localeListeners.delete(listener);
     },
     locale: {
       bind(namespace) {
@@ -1194,6 +1204,9 @@ test('client registers one top-level bilingual IM settings section with a direct
       register(namespace, value) {
         dictionaries.push({ namespace, value });
         return () => {};
+      },
+      getLocale() {
+        return { active: 'en', locales: [], revision: 1 };
       },
     },
     connection: { rpc: { call: rpcCall } },
@@ -1260,6 +1273,22 @@ test('client registers one top-level bilingual IM settings section with a direct
       registrations[0].component,
       injected,
     ));
+    // A browser-derived interface locale reaches the Host only through this
+    // mirror, so the settings section must report it while it is mounted.
+    const mirrorEffect = effects.find((entry) =>
+      entry.label === 'im-settings: mirror the DSH interface language');
+    assert.ok(mirrorEffect, 'the interface language mirror is installed');
+    const before = rpcCalls.length;
+    const disposeMirror = mirrorEffect.install();
+    assert.deepEqual(rpcCalls.slice(before), [
+      ['/api', `dsh-im${HOST_LANGUAGE_RPC_CHANNEL}`, {
+        method: HOST_LANGUAGE_ENDPOINTS.mirror, payload: { locale: 'en' },
+      }, undefined],
+    ]);
+    assert.equal(localeListeners.size, 1);
+    disposeMirror();
+    assert.equal(localeListeners.size, 0);
+
     assert.match(markup, /Connecting DeepSeek Harness/);
     assert.match(markup, new RegExp(
       `class="dim-brandVersion">v${IM_PLUGIN_VERSION.replaceAll('.', '\\.')}<\\/span>`,
