@@ -129,7 +129,19 @@ async function login(launchUrl) {
   assert.equal(response.status, 303, 'Harness must exchange its launch token for a browser cookie');
   const cookie = response.headers['set-cookie']?.map(value => value.split(';', 1)[0]).join('; ');
   assert.ok(cookie, 'Harness did not issue a browser cookie');
-  return { origin: launchUrl.origin, cookie };
+  const browser = { origin: launchUrl.origin, cookie };
+  // HTTP readiness precedes asynchronous plugin activation, notably after
+  // restart. Wait only for the route to appear; other failures stay fatal.
+  await waitFor('the plugin language route becomes ready after HTTP startup', async () => {
+    try {
+      const result = await rpc(browser, 'dsh-im-language', 'settings.language.get');
+      return result.ok === true;
+    } catch (error) {
+      if (error.code === 'ERR_ASSERTION' && error.actual === 404) return false;
+      throw error;
+    }
+  });
+  return browser;
 }
 
 async function rpc(browser, channel, method, payload = {}) {

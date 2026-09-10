@@ -6,6 +6,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.19.2] - 2026-09-11
+
 ### Fixed / 修复
 
 - 机器人消息语言改为跟随 DeepSeek Harness 的界面语言，不再需要在 Host 配置中手动设置 `language`（[#185](https://github.com/xmanrui/dsh-im/issues/185)）。语言按「插件 `language` 配置 → DSH 语言设置项 → 设置页实际生效的界面语言」顺序解析，并把最后一项持久化到 `~/.dsh/integrations/dsh-im/interface-language.json`，因此界面语言来自浏览器语言列表、以及 Host 重启后尚无浏览器连接时，机器人仍以该语言回复。切换语言即时生效：无需重启 Host，Telegram 命令菜单也会重新下发，无需重连机器人。中文仍是兜底语言，已显式配置 `language` 的用户行为不变。
@@ -13,10 +15,20 @@ This file records the notable changes in each dsh-im release. Its format follows
 
   感谢 [@grloper](https://github.com/grloper) 的贡献（[#189](https://github.com/xmanrui/dsh-im/pull/189)）。Thanks to [@grloper](https://github.com/grloper) for [#189](https://github.com/xmanrui/dsh-im/pull/189).
 
+- 界面语言回传在连接尚未就绪或 Host 持久化失败时自动重试，渠道启动前先完成语言解析；Telegram 连接期间发生的语言切换会在就绪后补发命令菜单。补齐 Telegram 思考占位、降级投递状态和 Discord 新线程提示的英文翻译。
+  Interface-language reporting retries when the Connection is not ready or Host persistence fails, and language resolution completes before channels start. Telegram catches up on command-menu changes made while connecting. Added English translations for Telegram thinking placeholders and fallback-delivery status, plus Discord's new-thread notice.
+
+### Known limitations / 已知限制
+
+- Telegram 客户端可能缓存旧的 `/` 命令菜单；重新打开客户端可刷新。输入框旁的 Menu 按钮由 Telegram 客户端自身语言决定，不随 DSH 语言设置改变。
+  Telegram clients may cache the previous `/` command menu; reopen the client to refresh it. The Menu button beside the input follows Telegram's own client language, not the DSH language setting.
+
 ### Documentation / 文档
 
 - 新增 `scripts/verify-interface-language.mjs`：使用原版 DSH CLI 与独立临时 home，通过真实 `/api` 通道端到端验证界面语言解析顺序、即时切换、重启后行为与运维固定值；提供机器人 Token 时还会断言 Telegram 侧实际存储的命令菜单，并在结束后恢复原菜单。
   Added `scripts/verify-interface-language.mjs`, an end-to-end check running the unmodified DSH CLI with an isolated temporary home. It asserts each interface-language resolution layer over the real `/api` carrier, live switching, restart behavior, and the operator pin. Given a bot token it also asserts the command menu Telegram itself stores, and restores the original menu afterwards.
+- 验证脚本在 HTTP 启动后有界等待语言接口就绪，避免插件异步加载期间的临时 `404` 导致重启检查误报失败。
+  The verification script waits for language-route readiness with a bounded timeout after HTTP startup, avoiding false restart failures from temporary `404` responses during asynchronous plugin activation.
 
 ## [4.19.1] - 2026-09-11
 
@@ -932,7 +944,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.19.1...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.19.2...HEAD
+[4.19.2]: https://github.com/xmanrui/dsh-im/compare/v4.19.1...v4.19.2
 [4.19.1]: https://github.com/xmanrui/dsh-im/compare/v4.19.0...v4.19.1
 [4.19.0]: https://github.com/xmanrui/dsh-im/compare/v4.18.1...v4.19.0
 [4.18.1]: https://github.com/xmanrui/dsh-im/compare/v4.18.0...v4.18.1
