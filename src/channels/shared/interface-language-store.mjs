@@ -41,6 +41,9 @@ async function writeSettingsDocument(path, document) {
 export class InterfaceLanguageStore {
   #path;
   #tag = null;
+  // Whether the document on disk is known to already say what #tag says. False
+  // for a missing or unreadable document, so the next report repairs it.
+  #stored = false;
 
   constructor(path) {
     if (typeof path !== 'string' || !path) {
@@ -56,10 +59,13 @@ export class InterfaceLanguageStore {
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
       this.#tag = null;
+      this.#stored = false;
       await this.#removeStaleTemporaries();
       return this;
     }
-    this.#tag = this.#readTag(raw);
+    const read = this.#readTag(raw);
+    this.#tag = read === undefined ? null : read;
+    this.#stored = read !== undefined;
     await this.#removeStaleTemporaries();
     return this;
   }
@@ -79,16 +85,19 @@ export class InterfaceLanguageStore {
     }
   }
 
+  // Returns the mirrored tag (null when the document mirrors nothing), or
+  // undefined when the document is damaged or from an unknown future version.
   #readTag(raw) {
     let document;
     try {
       document = JSON.parse(raw);
     } catch {
-      return null;
+      return undefined;
     }
-    if (!document || typeof document !== 'object' || Array.isArray(document)) return null;
-    if (document.version !== DOCUMENT_VERSION) return null;
-    return normalizeInterfaceLanguageTag(document.interfaceLanguage);
+    if (!document || typeof document !== 'object' || Array.isArray(document)) return undefined;
+    if (document.version !== DOCUMENT_VERSION) return undefined;
+    if (document.interfaceLanguage === undefined) return null;
+    return normalizeInterfaceLanguageTag(document.interfaceLanguage) ?? undefined;
   }
 
   getLanguageTag() {
@@ -97,21 +106,22 @@ export class InterfaceLanguageStore {
 
   /**
    * Record the interface language reported by the settings UI. Passing null
-   * clears the mirror, returning resolution to the layers above it.
+   * clears the mirror, returning resolution to the layers above it. The
+   * settings page reports its locale on every mount, so an unchanged value is
+   * accepted without rewriting the document.
    */
   async setLanguageTag(value) {
-    if (value === null || value === undefined) {
-      await writeSettingsDocument(this.#path, { version: DOCUMENT_VERSION });
-      this.#tag = null;
-      return null;
-    }
-    const tag = normalizeInterfaceLanguageTag(value);
-    if (tag === null) throw invalidTagError();
+    const tag = value === null || value === undefined
+      ? null
+      : normalizeInterfaceLanguageTag(value);
+    if (tag === null && value !== null && value !== undefined) throw invalidTagError();
+    if (tag === this.#tag && this.#stored) return tag;
     await writeSettingsDocument(this.#path, {
       version: DOCUMENT_VERSION,
-      interfaceLanguage: tag,
+      ...(tag === null ? {} : { interfaceLanguage: tag }),
     });
     this.#tag = tag;
+    this.#stored = true;
     return tag;
   }
 }

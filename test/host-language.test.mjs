@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -87,8 +87,17 @@ test('InterfaceLanguageStore persists the mirrored tag and survives a damaged do
   });
   assert.equal((await new InterfaceLanguageStore(path).load()).getLanguageTag(), 'en-US');
 
+  // The settings page reports its locale on every mount, so an unchanged
+  // value must not rewrite the document.
+  const stamp = (await stat(path)).mtimeMs;
+  assert.equal(await store.setLanguageTag('en-US'), 'en-US');
+  assert.equal((await stat(path)).mtimeMs, stamp, 'an unchanged mirror is not rewritten');
+
   assert.equal(await store.setLanguageTag(null), null, 'a cleared mirror returns to the lower layers');
   assert.equal((await new InterfaceLanguageStore(path).load()).getLanguageTag(), null);
+  const cleared = (await stat(path)).mtimeMs;
+  assert.equal(await store.setLanguageTag(null), null);
+  assert.equal((await stat(path)).mtimeMs, cleared, 'clearing an empty mirror is not rewritten');
   await assert.rejects(() => store.setLanguageTag('en_US'), (error) => {
     assert.equal(error.code, 'interface-language-invalid');
     return true;
