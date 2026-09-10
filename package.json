@@ -1,6 +1,6 @@
 {
   "name": "@xmanrui/dsh-im",
-  "version": "4.18.1",
+  "version": "4.19.1",
   "description": "把十一种 IM 渠道和公网 AI Office 接入本机 DeepSeek Harness。 Connect eleven IM channels and a public AI Office to a local DeepSeek Harness.",
   "keywords": [
     "deepseek-harness",
@@ -52,6 +52,10 @@
     {
       "name": "geekyfoxlab",
       "url": "https://github.com/geekyfoxlab"
+    },
+    {
+      "name": "grloper",
+      "url": "https://github.com/grloper"
     }
   ],
   "license": "MIT",

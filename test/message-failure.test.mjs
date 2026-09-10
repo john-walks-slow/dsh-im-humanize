@@ -10,6 +10,29 @@ import {
 
 const options = { referenceId: 'MF-TEST01', at: 123 };
 
+for (const code of ['model-unavailable', 'session/model-unavailable'])
+test(`${code} RPC failures provide conversation and bot-default recovery paths`, () => {
+  const failure = classifyMessageFailure({
+    code, message: 'private provider detail',
+  }, options);
+  assert.equal(failure.code, 'MODEL_UNAVAILABLE');
+  assert.equal(failure.reason, code.toUpperCase().replaceAll('-', '_').replaceAll('/', '_'));
+  assert.match(failure.message, /\/models.*\/model <序号>.*当前聊天/u);
+  assert.match(failure.message, /后续新会话.*DSH 设置.*IM机器人/u);
+  assert.doesNotMatch(JSON.stringify(failure), /private provider detail/u);
+});
+
+test('English model failures distinguish the current conversation from bot defaults', (t) => {
+  const language = getImHostLanguage();
+  t.after(() => setImHostLanguage(language));
+  setImHostLanguage('en');
+  const failure = classifyMessageFailure({ code: 'session/model-unavailable' }, options);
+  assert.equal(failure.code, 'MODEL_UNAVAILABLE');
+  assert.match(failure.message, /\/models.*\/model <index>.*current conversation/u);
+  assert.match(failure.message, /new conversations.*DSH Settings.*IM Bots/u);
+  assert.doesNotMatch(failure.message, /[\u4e00-\u9fff]/u);
+});
+
 test('preset failures accept both RPC code formats and preserve the underlying reason', () => {
   for (const suffix of ['not-found', 'invalid', 'locked', 'read-only']) {
     for (const separator of ['-', '/']) {

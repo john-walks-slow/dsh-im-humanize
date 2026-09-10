@@ -1074,8 +1074,8 @@ test('all channel bot cards use the DingTalk card treatment', async () => {
   const styles = await readFile(STYLES_URL, 'utf8');
 
   assert.match(styles, /\.dim-panel \.dim-botCard \{[^}]*border-radius: 14px;[^}]*background: var\(--dsw-alias-bg-layer-1, #fff\);[^}]*box-shadow: 0 1px 2px/);
-  assert.match(styles, /\.dim-panel \.dim-botCardBody \{[^}]*padding: 12px;/);
-  assert.match(styles, /\.dim-panel \.dim-botCardTop \{[^}]*align-items: flex-start;[^}]*gap: 12px;/);
+  assert.match(styles, /\.dim-panel \.dim-botCardBody \{[^}]*padding: 12px 8px;/);
+  assert.match(styles, /\.dim-panel \.dim-botCardTop \{[^}]*align-items: flex-start;[^}]*gap: 6px;/);
   assert.match(styles, /\.dim-panel \.dim-botAvatar \{[^}]*width: 38px;[^}]*height: 38px;[^}]*border-radius: 11px;/);
   assert.match(styles, /\.dim-panel \.dim-botName h3 \{[^}]*font-size: 15px;/);
   assert.match(styles, /\.dim-panel \.dim-botHealthGroup \{[^}]*display: grid;[^}]*justify-items: end;[^}]*gap: 5px;/);

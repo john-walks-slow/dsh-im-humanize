@@ -3,9 +3,15 @@ export const IM_STYLE_ID = 'xmanrui-dsh-im-settings';
 const CSS = String.raw`
 .dim-aliasName { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .dim-aliasName h3 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dim-aliasName h3:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #3370ff); outline-offset: 2px; border-radius: 3px; }
+.dim-botNameTooltip { position: fixed; z-index: 1000; box-sizing: border-box; width: max-content; max-width: min(320px, calc(100vw - 16px)); padding: 6px 9px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 7px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-layer-3, #fff); box-shadow: 0 8px 24px rgb(31 35 41 / 14%); font: 500 12px/18px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; white-space: normal; overflow-wrap: anywhere; pointer-events: none; animation: dim-botNameTooltip-in .15s ease; }
+@keyframes dim-botNameTooltip-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .dim-botNameTooltip { animation: none; } }
 .dim-aliasEntry { display: inline-flex; flex: none; }
-.dim-aliasEdit { display: grid; place-items: center; width: 28px; height: 28px; padding: 4px; border: 0; border-radius: 5px; color: var(--dsw-alias-label-secondary, #646a73); background: transparent; cursor: pointer; }
-.dim-aliasEdit:hover:not(:disabled) { color: var(--dsw-alias-state-business-primary, #3370ff); background: var(--dsw-alias-interactive-bg-hover, #f7f8fa); }
+.dim-aliasEdit { display: grid; place-items: center; width: 28px; height: 28px; padding: 4px; border: 0; border-radius: 5px; color: var(--dsw-alias-label-tertiary, #8f959e); background: transparent; cursor: pointer; }
+.dim-aliasEdit svg { opacity: .55; transition: opacity .15s ease; }
+.dim-aliasName:hover .dim-aliasEdit:not(:disabled) svg, .dim-aliasEdit:focus-visible svg { opacity: 1; }
+.dim-aliasEdit:hover:not(:disabled), .dim-aliasEdit:focus-visible { color: var(--dsw-alias-state-business-primary, #3370ff); background: var(--dsw-alias-interactive-bg-hover, #f7f8fa); }
 .dim-aliasDialog { box-sizing: border-box; width: min(380px, calc(100% - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; padding: 22px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 12px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-layer-3, #fff); box-shadow: 0 12px 36px rgb(0 0 0 / 18%); font: 13px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 .dim-aliasDialog * { box-sizing: border-box; }
 .dim-aliasDialog::backdrop { background: rgb(15 17 21 / 30%); }
@@ -401,9 +407,9 @@ const CSS = String.raw`
 /* Header tooltips may extend beyond the card; the collapsible body clips its own content. */
 .dim-panel .dim-botCard { position: relative; min-width: 0; width: 100%; max-width: 100%; overflow: visible; border: 1px solid var(--dsw-alias-border-l2, #e5e6eb); border-radius: 14px; background: var(--dsw-alias-bg-layer-1, #fff); box-shadow: 0 1px 2px rgb(31 35 41 / 3%); }
 .dim-panel .dim-botCard::before { display: none; }
-.dim-panel .dim-botCardBody { position: relative; min-width: 0; width: 100%; max-width: 100%; padding: 12px; }
+.dim-panel .dim-botCardBody { position: relative; min-width: 0; width: 100%; max-width: 100%; padding: 12px 8px; }
 .dim-collapsibleAccount { min-width: 0; display: flex; flex-direction: column; }
-.dim-collapsibleHead { min-width: 0; display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+.dim-collapsibleHead { min-width: 0; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; -webkit-user-select: none; }
 .dim-collapsibleHead:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #3370ff); outline-offset: 2px; border-radius: 8px; }
 .dim-collapsibleHeaderContent { min-width: 0; flex: 1 1 auto; display: flex; align-items: center; }
 .dim-collapsibleChevron { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 9px; height: 9px; border-right: 1.6px solid var(--dsw-alias-label-tertiary, #8f959e); border-bottom: 1.6px solid var(--dsw-alias-label-tertiary, #8f959e); transform: rotate(-45deg); transition: transform .22s cubic-bezier(.4, 0, .2, 1); transform-origin: 50% 50%; }
@@ -413,14 +419,17 @@ const CSS = String.raw`
 .dim-collapsibleAccount.is-open > .dim-collapsibleBody { grid-template-rows: 1fr; }
 .dim-collapsibleBodyInner { min-height: 0; overflow: hidden; }
 .dim-collapsibleAccount:not(.is-open) .dim-collapsibleBodyInner { visibility: hidden; }
-.dim-panel .dim-botCardTop { min-width: 0; max-width: 100%; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.dim-panel .dim-botIdentity { min-width: 0; flex: 1 1 0; display: flex; align-items: center; gap: 10px; }
+/* Reclaim horizontal spacing for names while keeping status on the same row,
+   including when a channel's mobile stylesheet requests a column layout. */
+.dim-panel .dim-botCardTop { min-width: 0; width: 100%; max-width: 100%; display: flex; flex-direction: row; flex-wrap: nowrap; align-items: flex-start; justify-content: space-between; gap: 6px; }
+.dim-panel .dim-botIdentity { min-width: 0; flex: 1 1 0; display: flex; align-items: center; gap: 6px; }
 .dim-panel .dim-botAvatar { flex: none; width: 38px; height: 38px; display: grid; place-items: center; overflow: hidden; border-radius: 11px; box-shadow: none; }
 .dim-panel .dim-botAvatar svg { width: 27px; height: 27px; }
-.dim-panel .dim-botName { min-width: 0; }
+.dim-panel .dim-botName { min-width: 0; flex: 1; }
+.dim-panel .dim-aliasName { gap: 2px; }
 .dim-panel .dim-botName h3 { overflow: hidden; margin: 0; color: var(--dsw-alias-label-primary, #1f2329); font-size: 15px; font-weight: 650; line-height: normal; text-overflow: ellipsis; white-space: nowrap; }
 .dim-panel .dim-botName p { overflow: hidden; margin: 4px 0 0; color: var(--dsw-alias-label-secondary, #646a73); font: 12px ui-monospace, SFMono-Regular, monospace; line-height: normal; text-overflow: ellipsis; white-space: nowrap; }
-.dim-panel .dim-botCardTools { flex: none; display: flex; align-items: flex-start; gap: 8px; }
+.dim-panel .dim-botCardTools { flex: none; display: flex; align-items: flex-start; gap: 4px; }
 .dim-panel .dim-botHealthGroup { min-width: 0; max-width: 100%; flex: none; display: grid; justify-items: end; gap: 5px; }
 .dim-panel .dim-botCard .dim-botHealth { flex: none; min-height: 0; display: inline-flex; align-items: center; gap: 7px; padding: 0; border: 0; border-radius: 0; color: var(--dsw-alias-label-secondary, #646a73); background: transparent; font: inherit; font-size: 12px; font-weight: 400; line-height: normal; white-space: nowrap; }
 .dim-panel .dim-lastChecked { display: inline-flex; align-items: baseline; gap: 4px; color: var(--dsw-alias-label-tertiary, #8f959e); font: inherit; font-size: 11px; font-weight: 400; line-height: normal; white-space: nowrap; }

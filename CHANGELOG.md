@@ -11,10 +11,44 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 机器人消息语言改为跟随 DeepSeek Harness 的界面语言，不再需要在 Host 配置中手动设置 `language`（[#185](https://github.com/xmanrui/dsh-im/issues/185)）。语言按「插件 `language` 配置 → DSH 语言设置项 → 设置页实际生效的界面语言」顺序解析，并把最后一项持久化到 `~/.dsh/integrations/dsh-im/interface-language.json`，因此界面语言来自浏览器语言列表、以及 Host 重启后尚无浏览器连接时，机器人仍以该语言回复。切换语言即时生效：无需重启 Host，Telegram 命令菜单也会重新下发，无需重连机器人。中文仍是兜底语言，已显式配置 `language` 的用户行为不变。
   Bot message language now follows the DeepSeek Harness interface language instead of requiring a manual `language` entry in the Host config ([#185](https://github.com/xmanrui/dsh-im/issues/185)). It resolves from the plugin's `language` option, then DSH's Language setting, then the interface language the settings page is actually rendered in, and it persists that last layer to `~/.dsh/integrations/dsh-im/interface-language.json` — so a browser-derived interface language, and a Host restart before any browser connects, both keep answering in the reader's language. Switching applies live: no Host restart, and the Telegram command menu is re-sent without reconnecting the bot. Chinese remains the fallback, and an explicitly configured `language` behaves exactly as before.
 
+  感谢 [@grloper](https://github.com/grloper) 的贡献（[#189](https://github.com/xmanrui/dsh-im/pull/189)）。Thanks to [@grloper](https://github.com/grloper) for [#189](https://github.com/xmanrui/dsh-im/pull/189).
+
 ### Documentation / 文档
 
 - 新增 `scripts/verify-interface-language.mjs`：使用原版 DSH CLI 与独立临时 home，通过真实 `/api` 通道端到端验证界面语言解析顺序、即时切换、重启后行为与运维固定值；提供机器人 Token 时还会断言 Telegram 侧实际存储的命令菜单，并在结束后恢复原菜单。
   Added `scripts/verify-interface-language.mjs`, an end-to-end check running the unmodified DSH CLI with an isolated temporary home. It asserts each interface-language resolution layer over the real `/api` carrier, live switching, restart behavior, and the operator pin. Given a bot token it also asserts the command menu Telegram itself stores, and restores the original menu afterwards.
+
+## [4.19.1] - 2026-09-11
+
+### Fixed / 修复
+
+- 飞书 Web／CLI 会话同步按真实 Session 和回合区分过程卡，修复连续提问共用卡片或答案被覆盖的问题；长时间思考或工具执行不再因静默 90 秒被误判完成，改为通过真实结束事件或历史记录确认收尾。
+  Feishu Web/CLI Session sync now separates process cards by Session and turn, preserving answers across consecutive prompts. Long reasoning or tool calls are no longer treated as completed after 90 seconds of silence; completion requires a real terminal event or a matching history record.
+- 同步协调器等待完整答案实际写入卡片后才跳过该目标的最终文字；卡片创建或最后更新失败时保留文字兜底，并按渠道、机器人和目标隔离，避免同名目标相互影响。普通 IM 回合在事件入队前记录归属，避免额外生成同步卡片。
+  The sync coordinator suppresses final text for a target only after its complete answer is successfully delivered to the card. Card creation or final-update failures retain text fallback, with channel, bot, and target isolation preventing same-named targets from interfering. IM-origin ownership is captured before event queuing to avoid unwanted mirror cards.
+- 飞书同步卡片每次成功更新后保存最新快照与内容块，插件重载后沿用原卡片，并从历史读取最终答案，保留已封存的长答案分片；恢复投递失败保留记录重试，成功后才清理。缺少回合信息的旧记录保留原样，不以空卡片覆盖已有内容。
+  Feishu sync cards persist their latest successful snapshot and content blocks. After plugin reload, recovery reuses the original card and reads the final answer from history while retaining sealed continuation chunks. Failed recovery keeps records for retry; cleanup follows successful delivery. Legacy records without turn information are left untouched instead of overwriting existing content with empty cards.
+
+### Changed / 变更
+
+- 优化机器人卡片的名称区域：截断的长名称支持悬停或键盘聚焦查看完整提示，提示避开视口边缘并可用 Escape 关闭；收紧横向间距，窄屏下名称与状态保持同一行。别名编辑图标默认更淡，悬停或聚焦时突出显示。
+  Improved bot-card name presentation: truncated names expose a full tooltip on hover or keyboard focus, kept within the viewport and dismissible with Escape. Tighter horizontal spacing keeps names and status on one row on narrow screens. Alias-edit icons are subtler at rest and highlighted on hover or focus.
+
+## [4.19.0] - 2026-09-10
+
+### Added / 新增
+
+- 十一个 IM 渠道的机器人卡片均支持自定义别名，点击名称旁的铅笔即可编辑；保存后立即显示，无需重启或重连，也不会清除会话绑定。原平台名称始终保留，清空别名或点击恢复即可还原；别名仅影响本机设置页，不会修改平台上的机器人名称（[#188](https://github.com/xmanrui/dsh-im/issues/188)）。
+  Bot cards across all eleven IM channels support custom aliases through the pencil beside the name. Changes appear immediately without restarting, reconnecting, or clearing Session bindings. The original platform name is retained and can be restored by clearing or resetting the alias; aliases affect only the local settings UI, not the bot's platform identity ([#188](https://github.com/xmanrui/dsh-im/issues/188)).
+- 已开启「会话双向同步」的飞书私聊可用实时过程卡展示当前 Session 中的 Web／CLI 回合，包含用户提问引用、思考与工具过程、长答案续卡和最终收尾；按投递目标避免重复发送最终文字，其他同步目标保留原有投递。感谢 [@C3H3-AI](https://github.com/C3H3-AI) 的贡献（[#186](https://github.com/xmanrui/dsh-im/pull/186)）。
+  Feishu DMs with two-way Session sync enabled can mirror Web/CLI turns in the current Session as live process cards, including the quoted question, reasoning and tool progress, continuation cards for long answers, and final sealing. Final-text deduplication is scoped to the mirrored delivery target, preserving delivery to other synced targets. Thanks to [@C3H3-AI](https://github.com/C3H3-AI) for [#186](https://github.com/xmanrui/dsh-im/pull/186).
+
+### Fixed / 修复
+
+- 修复机器人保存的模型已失效且聊天尚未绑定 Session 时，连 `/model` 也无法切换的问题：显式选模创建 Session 时不再继承旧模型与思考强度，仍在核验所选模型后绑定会话；普通消息和已有 Session 的行为保持不变（[#192](https://github.com/xmanrui/dsh-im/issues/192)）。
+  Fixed `/model` being blocked by an unavailable saved bot model when the chat has no bound Session. Explicit model selection creates the Session without inheriting the old model or reasoning level, then verifies the selection before binding. Normal messages and existing-Session behavior remain unchanged ([#192](https://github.com/xmanrui/dsh-im/issues/192)).
+- 同时识别旧版 `model-unavailable` 和新版 `session/model-unavailable` 错误，并补全中英文恢复指引：先用 `/models` 查询，再用 `/model <序号>` 修复当前聊天。此操作不会改写机器人的默认模型；若要修复之后新建的 Session，仍需在机器人卡片中更新默认模型。
+  Recognized both legacy `model-unavailable` and current `session/model-unavailable` errors with bilingual recovery guidance: list available models using `/models`, then recover the current chat with `/model <index>`. This does not rewrite the bot's default model; update the bot card to fix future Sessions as well.
 
 ## [4.18.1] - 2026-09-10
 
@@ -898,7 +932,9 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.18.1...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.19.1...HEAD
+[4.19.1]: https://github.com/xmanrui/dsh-im/compare/v4.19.0...v4.19.1
+[4.19.0]: https://github.com/xmanrui/dsh-im/compare/v4.18.1...v4.19.0
 [4.18.1]: https://github.com/xmanrui/dsh-im/compare/v4.18.0...v4.18.1
 [4.18.0]: https://github.com/xmanrui/dsh-im/compare/v4.17.1...v4.18.0
 [4.17.1]: https://github.com/xmanrui/dsh-im/compare/v4.17.0...v4.17.1

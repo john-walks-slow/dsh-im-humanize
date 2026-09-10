@@ -11375,3 +11375,107 @@ test('thinking status: a heartbeat created while a real step pushes is recalled 
   assert.deepEqual(recalls, [...new Set(recalls)], 'the late heartbeat is not recalled again at turn end');
   assert.equal(order.at(-1).text, '并发回合的答案。');
 });
+
+test('StateStore mirrors survive a fresh store without a state file', async () => {
+  const { StateStore } = await import('../../../src/channels/feishu/state-store.mjs');
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-feishu-mirrors-'));
+  const path = join(dir, 'state.json');
+  try {
+    const store = await new StateStore(path).load();
+    // A brand-new store must accept mirror writes (regression: setMirror
+    // used to throw TypeError because mirrors was not initialized).
+    await store.setMirror('session-m', { chatId: 'ou_1', cardIds: ['om_1'], claimedAt: Date.now(), lastContent: '{}' });
+    assert.deepEqual(store.mirrorEntries(), [['session-m', { chatId: 'ou_1', cardIds: ['om_1'], claimedAt: store.mirrorEntries()[0][1].claimedAt, lastContent: '{}' }]]);
+    await store.clearMirror('session-m');
+    assert.deepEqual(store.mirrorEntries(), []);
+    // The persisted file must round-trip the mirror through a reload.
+    await store.setMirror('session-m2', { chatId: 'ou_2', cardIds: ['om_2'], claimedAt: 5, lastContent: '{}' });
+    const reloaded = await new StateStore(path).load();
+    assert.deepEqual(reloaded.mirrorEntries().map(([k]) => k), ['session-m2']);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test('plain IM process cards never write session-sync mirror state', async () => {
+  const fixture = stateFixture();
+  const { client, interactiveCreates, patches, ids } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const mirrorWrites = [];
+  const stateWithMirrorCapture = {
+    ...fixture.state,
+    setMirror: async (sessionId, entry) => mirrorWrites.push({ sessionId, entry }),
+    clearMirror: async (sessionId) => {
+      const index = mirrorWrites.findIndex((write) => write.sessionId === sessionId);
+      if (index >= 0) mirrorWrites.splice(index, 1);
+    },
+    mirrorEntries: () => mirrorWrites.map((write) => [write.sessionId, write.entry]),
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: stepPushChannel({ streamCalls: [] }),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      return 'IM 答案';
+    }),
+    state: stateWithMirrorCapture,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_imirror_1', 'IM 提问'));
+  await bridge.waitForIdle();
+
+  assert.ok(interactiveCreates.length >= 1, 'the IM process card is created');
+  // Regression: renderStepCardNow used to persist every card (with an empty
+  // session key) into the mirror state, so a later restart wiped finished
+  // IM cards. Plain IM cards must leave no mirror entries behind.
+  assert.deepEqual(
+    mirrorWrites.filter((write) => write.sessionId === '').map((write) => write.sessionId),
+    [],
+    'no empty-session mirror entries may be written for IM cards',
+  );
+  assert.deepEqual(mirrorWrites, [], 'IM cards write no mirror entries at all');
+});
+
+test('plain IM replies (stepPush off) register the in-flight turn and never open a mirror', async () => {
+  const fixture = stateFixture();
+  const { client, interactiveCreates, text } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const mirrorWrites = [];
+  const stateWithMirrorCapture = {
+    ...fixture.state,
+    setMirror: async (sessionId, entry) => mirrorWrites.push({ sessionId, entry }),
+    clearMirror: async () => {},
+    mirrorEntries: () => mirrorWrites.map((write) => [write.sessionId, write.entry]),
+  };
+  const streamCalls = [];
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: stepPushChannel({ streamCalls }),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      return '普通回答';
+    }),
+    state: stateWithMirrorCapture,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    // stepPush defaults to false: the plain reply path handles the turn.
+    sessionSyncTargetsFor: async (sessionId) => (
+      sessionId === 'session-plain-im'
+        ? [{ openId: 'ou_user', botId: 'bot_test', targetId: 'tgt_plain' }]
+        : []),
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_plain_1', '普通 IM 提问'));
+  await bridge.waitForIdle();
+
+  // Regression: imTurnKeys were only registered on the stepPush path, so the
+  // mirror adopted plain IM turns and double-delivered their answers.
+  assert.deepEqual(mirrorWrites, [], 'plain IM replies must never open a mirror card');
+  assert.ok(streamCalls.length >= 1, 'the plain reply still delivers via the stream channel');
+});

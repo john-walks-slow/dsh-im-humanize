@@ -57,8 +57,8 @@ export default {
     'This conversation exceeds the model context limit. Send /compact or /new, then try again.',
   '当前模型不存在或暂不可用。请发送 /models 查看并使用 /model 切换模型。':
     'The current model does not exist or is unavailable. Send /models and use /model to switch models.',
-  '当前模型不存在或不支持所选配置。请发送 /models，并使用 /model 重新选择。':
-    'The current model does not exist or does not support the selected settings. Send /models and use /model to choose again.',
+  '当前模型不存在或不支持所选配置。请发送 /models，再用 /model <序号> 为当前聊天重新选择。若要修改后续新会话的默认模型，请到 DSH 设置 → IM机器人 → 对应机器人卡片修改。':
+    'The current model does not exist or does not support the selected settings. Send /models, then use /model <index> to choose a model for the current conversation. To change the default model for new conversations, open DSH Settings → IM Bots → the corresponding bot card.',
   '当前模型不支持这类内容或所选配置。请调整内容、模型或推理等级后重试。':
     'The current model does not support this content or the selected settings. Adjust the content, model, or reasoning effort and try again.',
   '当前模型不支持所选配置。请切换模型或推理等级后重试。':

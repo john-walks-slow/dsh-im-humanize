@@ -1399,6 +1399,7 @@ export function createBotWorkspaceScope(
       }
       if (property === 'createSession') {
         return async (options = {}) => {
+          const { inheritBotModel = true, ...createOptions } = options;
           await workspaces.whenBotIdle(botId);
           if (!isCurrentScope()) {
             const error = new Error('找不到要修改的机器人。');
@@ -1407,9 +1408,9 @@ export function createBotWorkspaceScope(
           }
           const generation = workspaces.generationFor(botId);
           const agentPreset = workspaces.agentPresetFor(botId);
-          const model = workspaces.modelFor(botId);
+          const model = inheritBotModel === false ? null : workspaces.modelFor(botId);
           const sessionId = await target.createSession({
-            ...options,
+            ...createOptions,
             workspace: workspaces.workspaceFor(botId),
             ...(agentPreset == null ? {} : { agentPreset }),
           });

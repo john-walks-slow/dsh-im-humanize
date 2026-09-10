@@ -72,10 +72,87 @@ function AliasDialog({ bot, onSave, onClose }) {
   return globalThis.document?.body ? createPortal(content, document.body) : content;
 }
 
+function BotNameTooltip({ anchorRef, id, name, onDismiss }) {
+  const tooltipRef = React.useRef(null);
+  const [position, setPosition] = React.useState(null);
+  React.useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    const tooltip = tooltipRef.current;
+    if (!anchor || !tooltip) return undefined;
+    const document = anchor.ownerDocument;
+    const view = document.defaultView;
+    const place = () => {
+      const rect = anchor.getBoundingClientRect();
+      const { width, height } = tooltip.getBoundingClientRect();
+      const viewport = document.documentElement;
+      const margin = 8;
+      const below = rect.bottom + 6;
+      setPosition({
+        left: Math.max(margin, Math.min(rect.left, viewport.clientWidth - width - margin)),
+        top: Math.max(margin, Math.min(
+          below + height <= viewport.clientHeight - margin ? below : rect.top - height - 6,
+          viewport.clientHeight - height - margin,
+        )),
+      });
+    };
+    const dismiss = (event) => {
+      if (event.key === 'Escape') { event.stopPropagation(); onDismiss(); }
+    };
+    place();
+    view.addEventListener('resize', place);
+    // Capture nested scrolling containers as well as page scrolling.
+    document.addEventListener('scroll', onDismiss, true);
+    document.addEventListener('keydown', dismiss, true);
+    return () => {
+      view.removeEventListener('resize', place);
+      document.removeEventListener('scroll', onDismiss, true);
+      document.removeEventListener('keydown', dismiss, true);
+    };
+  }, [anchorRef, name, onDismiss]);
+  const body = anchorRef.current?.ownerDocument.body;
+  return body ? createPortal(h('span', {
+    ref: tooltipRef, id, role: 'tooltip', className: 'dim-botNameTooltip',
+    style: position ?? { visibility: 'hidden' },
+  }, name), body) : null;
+}
+
 export function BotName({ bot, id, disabled = false, onSave }) {
   const [open, setOpen] = React.useState(false);
+  const nameRef = React.useRef(null);
+  const tooltipId = React.useId();
+  const [truncated, setTruncated] = React.useState(false);
+  const [hovered, setHovered] = React.useState(false);
+  const [focused, setFocused] = React.useState(false);
+  const [dismissed, setDismissed] = React.useState(false);
+  const dismissTooltip = React.useCallback(() => setDismissed(true), []);
+  const measure = React.useCallback(() => {
+    const node = nameRef.current;
+    setTruncated(Boolean(node && node.scrollWidth > node.clientWidth));
+  }, []);
+  React.useEffect(() => {
+    const node = nameRef.current;
+    if (!node) return undefined;
+    measure();
+    const view = node.ownerDocument.defaultView;
+    const observer = view.ResizeObserver ? new view.ResizeObserver(measure) : null;
+    observer?.observe(node);
+    view.addEventListener('resize', measure);
+    return () => { observer?.disconnect(); view.removeEventListener('resize', measure); };
+  }, [bot.name, measure]);
+  const showTooltip = truncated && !dismissed && !open && (hovered || focused);
   return h('div', { className: 'dim-aliasName' },
-    h('h3', { id, title: bot.name }, bot.name),
+    h('h3', {
+      id, ref: nameRef, tabIndex: truncated ? 0 : undefined,
+      'aria-describedby': showTooltip ? tooltipId : undefined,
+      onMouseEnter: () => { measure(); setHovered(true); setDismissed(false); },
+      onMouseLeave: () => setHovered(false),
+      onFocus: () => { measure(); setFocused(true); setDismissed(false); },
+      onBlur: () => setFocused(false),
+      onClick: dismissTooltip,
+    }, bot.name),
+    showTooltip ? h(BotNameTooltip, {
+      anchorRef: nameRef, id: tooltipId, name: bot.name, onDismiss: dismissTooltip,
+    }) : null,
     h('span', {
       className: 'dim-aliasEntry',
       onClick: (event) => event.stopPropagation(),

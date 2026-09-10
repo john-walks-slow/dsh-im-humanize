@@ -162,6 +162,27 @@ export async function createProductionController(ctx, config = {}, internals = {
     if (!botConfig) throw new Error('Unknown Feishu bot');
     return stateFor(botConfig);
   };
+  // Session-sync mirror targets: which synced DMs (openId) belong to a
+  // Session. Resolved lazily per turn start so rebinding a delivery target
+  // takes effect without a restart.
+  const sessionSyncTargetsFor = async (sessionId) => {
+    if (typeof workspaces.listSessionSyncTargets !== 'function') return [];
+    const matches = [];
+    for (const entry of workspaces.listSessionSyncTargets()) {
+      let state;
+      try {
+        state = await stateForBotId(entry.botId);
+      } catch {
+        continue;
+      }
+      const bound = state?.snapshot?.().sessions?.[entry.conversationKey];
+      if (bound !== sessionId) continue;
+      const target = workspaces.deliveryTargetFor(entry.botId, entry.targetId);
+      const openId = target?.route?.openId;
+      if (openId) matches.push({ openId, botId: entry.botId, targetId: entry.targetId });
+    }
+    return matches;
+  };
   const commandExecutor = createHarnessCommandExecutor(ctx, internals.commandExecutor);
   const inboundTtl = internals.inboundTtl ?? getInboundTtlRuntime(ctx, config);
   const inboundTtlService = inboundTtl?.service ?? inboundTtl;
@@ -220,6 +241,7 @@ export async function createProductionController(ctx, config = {}, internals = {
         groupTopicReply: botConfig.groupTopicReply,
         stepPush: botConfig.stepPush,
         stepPushMode: botConfig.stepPushMode,
+        sessionSyncTargetsFor: sessionSyncTargetsFor,
         ownerOpenIds: botConfig.ownerOpenIds ?? [botConfig.ownerOpenId],
         harness: workspaceScope.harness,
         state: workspaceScope.state,

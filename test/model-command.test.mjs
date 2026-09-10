@@ -975,9 +975,10 @@ test('a missing bound Session is cleared and /models falls back to the global ca
   assert.equal(calls.some(([name]) => name === 'listModels'), true);
 });
 
-test('model command failures use safe user-facing messages', async () => {
+for (const code of ['model-unavailable', 'session/model-unavailable'])
+test(`model command failures use safe user-facing messages for ${code}`, async () => {
   const privateError = new Error('provider leaked API key sk-private');
-  privateError.code = 'model-unavailable';
+  privateError.code = code;
   const selection = fixture({
     initialSessionId: 'session-one',
     selectionError: privateError,

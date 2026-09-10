@@ -3,6 +3,7 @@ import {
   consumeDshImInputOrigin,
   textFromHarnessContent,
 } from '../../src/channels/shared/harness-client.mjs';
+import { deliverSessionSyncMirror } from '../../src/channels/shared/session-sync-registry.mjs';
 
 const DSH_USER_PREFIX = '[来自 DSH]\n';
 const DSH_ASSISTANT_PREFIX = '[DSH 助手]\n';
@@ -111,6 +112,10 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
       if (event.surfaceOp !== 'append') return;
       if (state.origin === 'unknown') state.origin = origin;
       if (state.origin !== 'dsh' || origin !== 'dsh') return;
+      // The user echo stays as plain text even when the mirror owns the
+      // turn: the card also quotes the question, but keeping the echo here
+      // guarantees recipients are established so a failed mirror can still
+      // fall back to the final-answer text delivery.
       const text = textFromHarnessContent(event.data?.content);
       if (!text) return;
 
@@ -151,9 +156,23 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
     turns.delete(sessionId);
     if (state.origin !== 'dsh' || !completedTurn(event.data?.reason)
       || !state.recipients?.size || !state.assistant.text) return;
+    // A pending card is not proof of delivery. Only suppress this target's
+    // text after its renderer confirms the complete final answer is visible.
+    // Targets without a renderer retain the original text delivery path.
+    const recipients = [...state.recipients.values()];
+    const rendered = await Promise.all(recipients.map(async (target) => {
+      try {
+        return await deliverSessionSyncMirror(target, sessionId, state.turn, state.assistant.text);
+      } catch (error) {
+        logFailure('card delivery', target, error);
+        return false;
+      }
+    }));
+    const plain = recipients.filter((_target, index) => !rendered[index]);
+    if (plain.length === 0) return;
     await deliver(
       sessionId,
-      state.recipients.values(),
+      plain,
       `${DSH_ASSISTANT_PREFIX}${state.assistant.text}`,
       'assistant delivery',
     );
