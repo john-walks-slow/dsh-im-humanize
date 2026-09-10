@@ -6,6 +6,22 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.19.1] - 2026-09-11
+
+### Fixed / 修复
+
+- 飞书 Web／CLI 会话同步按真实 Session 和回合区分过程卡，修复连续提问共用卡片或答案被覆盖的问题；长时间思考或工具执行不再因静默 90 秒被误判完成，改为通过真实结束事件或历史记录确认收尾。
+  Feishu Web/CLI Session sync now separates process cards by Session and turn, preserving answers across consecutive prompts. Long reasoning or tool calls are no longer treated as completed after 90 seconds of silence; completion requires a real terminal event or a matching history record.
+- 同步协调器等待完整答案实际写入卡片后才跳过该目标的最终文字；卡片创建或最后更新失败时保留文字兜底，并按渠道、机器人和目标隔离，避免同名目标相互影响。普通 IM 回合在事件入队前记录归属，避免额外生成同步卡片。
+  The sync coordinator suppresses final text for a target only after its complete answer is successfully delivered to the card. Card creation or final-update failures retain text fallback, with channel, bot, and target isolation preventing same-named targets from interfering. IM-origin ownership is captured before event queuing to avoid unwanted mirror cards.
+- 飞书同步卡片每次成功更新后保存最新快照与内容块，插件重载后沿用原卡片，并从历史读取最终答案，保留已封存的长答案分片；恢复投递失败保留记录重试，成功后才清理。缺少回合信息的旧记录保留原样，不以空卡片覆盖已有内容。
+  Feishu sync cards persist their latest successful snapshot and content blocks. After plugin reload, recovery reuses the original card and reads the final answer from history while retaining sealed continuation chunks. Failed recovery keeps records for retry; cleanup follows successful delivery. Legacy records without turn information are left untouched instead of overwriting existing content with empty cards.
+
+### Changed / 变更
+
+- 优化机器人卡片的名称区域：截断的长名称支持悬停或键盘聚焦查看完整提示，提示避开视口边缘并可用 Escape 关闭；收紧横向间距，窄屏下名称与状态保持同一行。别名编辑图标默认更淡，悬停或聚焦时突出显示。
+  Improved bot-card name presentation: truncated names expose a full tooltip on hover or keyboard focus, kept within the viewport and dismissible with Escape. Tighter horizontal spacing keeps names and status on one row on narrow screens. Alias-edit icons are subtler at rest and highlighted on hover or focus.
+
 ## [4.19.0] - 2026-09-10
 
 ### Added / 新增
@@ -904,7 +920,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.19.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.19.1...HEAD
+[4.19.1]: https://github.com/xmanrui/dsh-im/compare/v4.19.0...v4.19.1
 [4.19.0]: https://github.com/xmanrui/dsh-im/compare/v4.18.1...v4.19.0
 [4.18.1]: https://github.com/xmanrui/dsh-im/compare/v4.18.0...v4.18.1
 [4.18.0]: https://github.com/xmanrui/dsh-im/compare/v4.17.1...v4.18.0
