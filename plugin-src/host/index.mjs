@@ -140,10 +140,12 @@ export function createImHostPlugin(internals = {}) {
       ? ctx.logger(name)
       : (ctx?.logger ?? console);
     if (ctx?.connection?.fetch) {
-      try {
-        startHostLanguageRpc(ctx, hostLanguage, config.rpcAuthority);
-      } catch (error) {
-        logger.error?.('[dsh-im] failed to activate interface language mirroring; continuing with channels', error);
+      if (hostLanguage) {
+        try {
+          startHostLanguageRpc(ctx, hostLanguage, config.rpcAuthority);
+        } catch (error) {
+          logger.error?.('[dsh-im] failed to activate interface language mirroring; continuing with channels', error);
+        }
       }
       try {
         startUpdate(ctx);

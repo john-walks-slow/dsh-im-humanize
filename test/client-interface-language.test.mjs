@@ -45,6 +45,37 @@ function recorder({ fail = () => false } = {}) {
   };
 }
 
+function fakeTimers() {
+  let nextId = 1;
+  const pending = new Map();
+  return {
+    setTimeoutFn(callback, delayMs) {
+      const id = nextId;
+      nextId += 1;
+      pending.set(id, { callback, delayMs });
+      return id;
+    },
+    clearTimeoutFn(id) {
+      pending.delete(id);
+    },
+    get delays() {
+      return [...pending.values()].map(({ delayMs }) => delayMs);
+    },
+    get size() {
+      return pending.size;
+    },
+    async runNext() {
+      const entry = pending.entries().next().value;
+      if (!entry) return false;
+      const [id, { callback }] = entry;
+      pending.delete(id);
+      callback();
+      await flush();
+      return true;
+    },
+  };
+}
+
 test('the mirror channel and endpoint match the Host language RPC', () => {
   assert.equal(HOST_LANGUAGE_RPC_CHANNEL, '/dsh-im-language');
   assert.equal(HOST_LANGUAGE_ENDPOINTS.mirror, 'settings.language.mirror');
@@ -79,6 +110,59 @@ test('the mirror reports the effective interface locale and follows every switch
   ctx.emit('locale/change', ctx.locale.getLocale());
   await flush();
   assert.equal(calls.length, 2, 'a disposed mirror stops reporting');
+});
+
+test('a mirror that fails at plugin load retries until it lands, with no locale change', async () => {
+  // The Connection is not necessarily established when the settings plugin
+  // loads. A reader whose language never changes again must still be followed,
+  // so the initial report cannot depend on a later locale/change event.
+  const ctx = fakeCtx('en');
+  const timers = fakeTimers();
+  const { calls, rpcCall } = recorder({ fail: (count) => count <= 2 });
+  const dispose = installInterfaceLanguageMirror(ctx, {
+    rpcCall,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn,
+    retryDelaysMs: [1_000, 4_000, 15_000],
+  });
+  await flush();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(timers.delays, [1_000], 'the first failure schedules a retry');
+
+  assert.equal(await timers.runNext(), true);
+  assert.deepEqual(calls.map(({ payload }) => payload.locale), ['en', 'en']);
+  assert.deepEqual(timers.delays, [4_000], 'the retry delay widens');
+
+  assert.equal(await timers.runNext(), true);
+  assert.deepEqual(calls.map(({ payload }) => payload.locale), ['en', 'en', 'en']);
+  assert.equal(timers.size, 0, 'a landed report schedules nothing further');
+  dispose();
+});
+
+test('the retry delay is capped and a pending retry is cancelled on dispose', async () => {
+  const ctx = fakeCtx('en');
+  const timers = fakeTimers();
+  const { calls, rpcCall } = recorder({ fail: () => true });
+  const dispose = installInterfaceLanguageMirror(ctx, {
+    rpcCall,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn,
+    retryDelaysMs: [1_000, 4_000],
+  });
+  await flush();
+  assert.deepEqual(timers.delays, [1_000]);
+  await timers.runNext();
+  assert.deepEqual(timers.delays, [4_000]);
+  await timers.runNext();
+  assert.deepEqual(timers.delays, [4_000], 'the last delay is the cap, not an escalation');
+
+  dispose();
+  assert.equal(timers.size, 0, 'dispose cancels the pending retry');
+  const settled = calls.length;
+  ctx.locale.active = 'zh';
+  ctx.emit('locale/change', ctx.locale.getLocale());
+  await flush();
+  assert.equal(calls.length, settled, 'a disposed mirror reports nothing');
 });
 
 test('a failed mirror is retried on the next switch instead of being latched', async () => {

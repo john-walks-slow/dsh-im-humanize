@@ -125,9 +125,14 @@ export function installHostLanguage(ctx, config = {}, internals = {}) {
     config: config.language ?? process.env.DSH_IM_LANGUAGE,
     logger,
   });
-  // Apply the pinned layer synchronously so a channel that starts before the
-  // mirror is read still sees an explicitly configured language.
-  controller.apply();
+  // Read an already-attached settings service synchronously: channels start
+  // inside the same activation, and waiting for the injection callback would
+  // let the first bot register its command menu in the previous language and
+  // then need a second push. The injection below keeps it live afterwards and
+  // covers a provider that attaches later.
+  controller.observeSettings(
+    () => ctx?.settings?.get?.(DSH_LOCALE_NAMESPACE)?.[DSH_LOCALE_PREFERENCE_FIELD],
+  );
   const ready = Promise.resolve()
     .then(() => store.load?.())
     .then(() => controller.apply(), (error) => {

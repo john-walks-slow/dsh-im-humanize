@@ -197,10 +197,19 @@ test('installHostLanguage follows the DSH locale preference live and tolerates a
     get: (namespace) => (namespace === DSH_LOCALE_NAMESPACE ? section : undefined),
   });
   let language;
+  let atInstall;
   const fiber = ctx.plugin({
-    apply: (pluginCtx) => { language = installHostLanguage(pluginCtx, { dshHome: home }); },
+    apply: (pluginCtx) => {
+      language = installHostLanguage(pluginCtx, { dshHome: home });
+      // Channels start inside this same activation, so an already-attached
+      // settings service has to be read synchronously; waiting for the
+      // injection callback would let the first bot register its command menu
+      // in the previous language and then need a second push.
+      atInstall = language.snapshot();
+    },
   });
   await fiber.await();
+  assert.deepEqual(atInstall, { language: 'zh', tag: 'zh', source: 'settings', pinned: false });
   await language.ready;
   assert.equal(getImHostLanguage(), 'zh', 'an explicit Chinese selection outranks the English mirror');
 
