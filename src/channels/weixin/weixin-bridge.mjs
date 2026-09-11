@@ -567,9 +567,10 @@ export class WeixinHarnessBridge {
     ].find(Number.isSafeInteger);
     if (quotedAt === undefined) return { unavailableReason: 'not-delivered' };
     const sender = nonEmptyString(reference?.toUserId);
-    const sessionId = sender ? this.#state.sessionFor(conversationKey(sender)) : null;
+    const key = sender ? conversationKey(sender) : null;
+    const sessionId = key ? this.#state.sessionFor(key) : null;
     const session = typeof sessionId === 'string' && sessionId
-      ? this.#harness.workspaceSession?.(sessionId)
+      ? this.#harness.workspaceSession?.(sessionId, key)
       : null;
     if (typeof session?.readHistory !== 'function') {
       return { unavailableReason: 'not-delivered' };

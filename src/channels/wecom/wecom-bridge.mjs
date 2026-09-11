@@ -628,7 +628,7 @@ export class WecomHarnessBridge {
       workspacePathSnapshot(this.#harness, options),
       this.#harness.listWorkspaceSessions?.(workspace, options),
       (async () => {
-        const session = sessionId ? this.#harness.workspaceSession?.(sessionId) : null;
+        const session = sessionId ? this.#harness.workspaceSession?.(sessionId, key) : null;
         return typeof session?.models === 'function'
           ? session.models(options) : this.#harness.listModels?.(options);
       })(),
@@ -852,7 +852,7 @@ export class WecomHarnessBridge {
         } else if (menu.section === 'models') {
           title = t('🧠 切换模型');
           const sessionId = this.#state.sessionFor(key);
-          const session = sessionId ? this.#harness.workspaceSession?.(sessionId) : null;
+          const session = sessionId ? this.#harness.workspaceSession?.(sessionId, key) : null;
           const catalog = typeof session?.models === 'function'
             ? await session.models(options) : await this.#harness.listModels(options);
           entries = catalog.groups.flatMap((group) => group.models.map((model) => [

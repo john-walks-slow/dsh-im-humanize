@@ -35,6 +35,11 @@ export const SHARED_COMMAND_CATALOG = Object.freeze([
   defineCatalogCommand('workspace', '切换工作区', [
     '/workspace 工作区序号或绝对路径  切换工作区',
   ], { aliases: ['ws'] }),
+  defineCatalogCommand('conv', '设置当前对话专属工作区', [
+    '/conv 或 /conversation  查看当前对话工作区',
+    '/conv 工作区绝对路径或序号  设置当前对话专属工作区',
+    '/conv clear  清除专属工作区，回到 bot 默认工作区',
+  ], { aliases: ['conversation', 'thread'] }),
   defineCatalogCommand('workspacelist', '列出工作区绝对路径', [
     '/workspacelist  列出工作区绝对路径',
     '/ws、/wsl、/workspaces  工作区命令别名',

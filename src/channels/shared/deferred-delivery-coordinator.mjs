@@ -128,7 +128,7 @@ export function createDeferredDeliveryCoordinator({
           entry = { ...entry, turn: outcome.turn };
         }
         if (stopping) {
-          const session = harness.workspaceSession?.(entry.sessionId);
+          const session = harness.workspaceSession?.(entry.sessionId, entry.key);
           const stopped = typeof session?.stopDeferredTurn === 'function'
             ? await session.stopDeferredTurn({ turn: entry.turn, promptRpcId: entry.promptRpcId }, {
                 signal: activeSignal, isCurrent: () => bound(entry),

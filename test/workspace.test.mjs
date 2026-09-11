@@ -2019,3 +2019,312 @@ test('old bot scopes cannot read or update Agent Presets after same-id rebinding
   await assert.rejects(updating, { code: 'workspace-bot-not-found' });
   assert.equal(workspaces.agentPresetFor('bot_preset_rebind'), null);
 });
+
+test('conversation workspace override persists and resolves over the bot default', async (t) => {
+  const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const store = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await store.ensure('bot_conv');
+
+  assert.equal(store.conversationWorkspaceFor('bot_conv', 'group:1'), defaultWorkspace);
+  await store.setConversationWorkspace('bot_conv', 'group:1', alternateWorkspace);
+
+  assert.equal(store.conversationWorkspaceFor('bot_conv', 'group:1'), alternateWorkspace);
+  assert.equal(store.conversationWorkspaceFor('bot_conv', 'group:2'), defaultWorkspace);
+  assert.equal(store.workspaceFor('bot_conv'), defaultWorkspace, 'bot default is unchanged');
+
+  const saved = JSON.parse(await readFile(path, 'utf8'));
+  assert.deepEqual(saved.conversationWorkspaces, { bot_conv: { 'group:1': alternateWorkspace } });
+
+  const reloaded = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  assert.equal(reloaded.conversationWorkspaceFor('bot_conv', 'group:1'), alternateWorkspace);
+  assert.equal(reloaded.conversationWorkspaceFor('bot_conv', 'group:2'), defaultWorkspace);
+});
+
+test('conversation workspace override clears back to the bot default', async (t) => {
+  const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const store = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await store.ensure('bot_conv_clear');
+  await store.setConversationWorkspace('bot_conv_clear', 'group:1', alternateWorkspace);
+
+  assert.equal(await store.setConversationWorkspace('bot_conv_clear', 'group:1', null), defaultWorkspace);
+  assert.equal(store.conversationWorkspaceFor('bot_conv_clear', 'group:1'), defaultWorkspace);
+
+  const saved = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(saved.conversationWorkspaces, undefined, 'no override means no persisted section');
+});
+
+test('conversation workspace override validates its conversation key and path', async (t) => {
+  const { path, defaultWorkspace, alternateWorkspace, root } = await fixture(t);
+  const store = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await store.ensure('bot_conv_validate');
+
+  await assert.rejects(store.setConversationWorkspace('bot_conv_validate', '  ', alternateWorkspace), TypeError);
+  await assert.rejects(store.setConversationWorkspace('bot_conv_validate', 'group:1', 'relative/path'), {
+    code: 'workspace-not-absolute',
+  });
+  await assert.rejects(store.setConversationWorkspace('bot_conv_validate', 'group:1', join(root, 'missing')), {
+    code: 'workspace-not-found',
+  });
+});
+
+test('bot-scoped Harness creates a conversation session in its override workspace', async (t) => {
+  const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await workspaces.ensure('bot_conv_scope');
+  await workspaces.setConversationWorkspace('bot_conv_scope', 'group:1', alternateWorkspace);
+  const calls = [];
+  const harness = {
+    async createSession(options) { calls.push(options); return 'session-1'; },
+    async ensureRunning() { return true; },
+  };
+  const state = { async clearSessions() {}, async clearSession() {} };
+  const scope = createBotScopedHarness(harness, { botId: 'bot_conv_scope', workspaces, state });
+
+  await scope.createSession({ conversationKey: 'group:1' });
+  await scope.createSession({ conversationKey: 'group:2' });
+
+  assert.deepEqual(calls.map((call) => call.workspace), [alternateWorkspace, defaultWorkspace]);
+});
+
+test('switching a conversation workspace clears only that conversation session', async (t) => {
+  const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await workspaces.ensure('bot_conv_switch');
+  const cleared = [];
+  const state = {
+    async clearSessions() { cleared.push('*'); },
+    async clearSession(key) { cleared.push(key); },
+  };
+  const harness = { async createSession() { return 'session-1'; } };
+  const scope = createBotScopedHarness(harness, { botId: 'bot_conv_switch', workspaces, state });
+
+  assert.equal(await scope.switchConversationWorkspace('group:1', alternateWorkspace), alternateWorkspace);
+  assert.deepEqual(cleared, ['group:1'], 'only the target conversation session is cleared');
+  assert.equal(scope.currentConversationWorkspace('group:1'), alternateWorkspace);
+  assert.equal(scope.currentConversationWorkspace('group:2'), defaultWorkspace);
+
+  assert.equal(await scope.clearConversationWorkspace('group:1'), defaultWorkspace);
+  assert.deepEqual(cleared, ['group:1', 'group:1']);
+  assert.equal(scope.currentConversationWorkspace('group:1'), defaultWorkspace);
+});
+
+test('/conv command shows, sets, and clears the conversation workspace', async (t) => {
+  const { defaultWorkspace, alternateWorkspace } = await fixture(t);
+  let override = null;
+  const harness = {
+    currentConversationWorkspace() { return override ?? defaultWorkspace; },
+    async switchConversationWorkspace(_key, workspace) { override = workspace; return workspace; },
+    async clearConversationWorkspace() { override = null; return defaultWorkspace; },
+    async listWorkspaces() { return [defaultWorkspace, alternateWorkspace]; },
+    currentWorkspace() { return defaultWorkspace; },
+    assertWorkspaceScope() {},
+  };
+  const key = 'group:1';
+
+  const show = await runWorkspaceCommand('/conv', harness, key);
+  assert.ok(show.message.includes('当前对话工作区'));
+  assert.ok(show.message.includes(defaultWorkspace));
+  assert.ok(show.message.includes('/conv'), '帮助文案里应显示 /conv');
+  // 无参数时应顺带列出现有工作区（带序号），方便直接 /conv <序号> 切换
+  assert.ok(show.message.includes('可切换的工作区'), '应列出可切换的工作区');
+  assert.ok(show.message.includes(alternateWorkspace), '列表应包含其他工作区');
+  assert.match(show.message, /1\. /, '列表应带序号');
+
+  const set = await runWorkspaceCommand('/conv 2', harness, key);
+  assert.ok(set.message.includes('已切换为'), '应支持按序号切换');
+  assert.equal(override, alternateWorkspace);
+
+  const setByPath = await runWorkspaceCommand(`/conv ${alternateWorkspace}`, harness, key);
+  assert.ok(setByPath.message.includes('已切换为'));
+  assert.equal(override, alternateWorkspace);
+
+  const clear = await runWorkspaceCommand('/conv clear', harness, key);
+  assert.ok(clear.message.includes('已清除'));
+  assert.equal(override, null);
+});
+
+test('/conversation and /thread aliases still drive the conversation workspace', async (t) => {
+  const { defaultWorkspace, alternateWorkspace } = await fixture(t);
+  let override = null;
+  const harness = {
+    currentConversationWorkspace() { return override ?? defaultWorkspace; },
+    async switchConversationWorkspace(_key, workspace) { override = workspace; return workspace; },
+    async clearConversationWorkspace() { override = null; return defaultWorkspace; },
+    assertWorkspaceScope() {},
+  };
+  const key = 'group:1';
+
+  for (const command of ['/conversation', '/thread']) {
+    override = null;
+    const show = await runWorkspaceCommand(command, harness, key);
+    assert.ok(show?.message.includes('当前对话工作区'), `${command} 应能查看`);
+    const set = await runWorkspaceCommand(`${command} ${alternateWorkspace}`, harness, key);
+    assert.ok(set?.message.includes('已切换为'), `${command} 应能设置`);
+    assert.equal(override, alternateWorkspace);
+    const clear = await runWorkspaceCommand(`${command} clear`, harness, key);
+    assert.ok(clear?.message.includes('已清除'), `${command} 应能清除`);
+    assert.equal(override, null);
+  }
+});
+
+test('binding a conversation to the current bot default is persisted, not a no-op', async (t) => {
+  const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const store = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await store.ensure('bot_conv_default');
+  assert.equal(store.hasConversationWorkspaceOverride('bot_conv_default', 'group:1'), false);
+
+  // The chat pins the workspace it already uses: this must still be a real
+  // binding, otherwise a later bot-default change would silently move it.
+  assert.equal(
+    await store.setConversationWorkspace('bot_conv_default', 'group:1', defaultWorkspace),
+    defaultWorkspace,
+  );
+  assert.equal(store.hasConversationWorkspaceOverride('bot_conv_default', 'group:1'), true);
+
+  const saved = JSON.parse(await readFile(path, 'utf8'));
+  assert.deepEqual(saved.conversationWorkspaces, {
+    bot_conv_default: { 'group:1': defaultWorkspace },
+  });
+
+  // Change the bot default afterwards: the conversation keeps its own binding.
+  await store.setWorkspace('bot_conv_default', alternateWorkspace);
+  assert.equal(store.workspaceFor('bot_conv_default'), alternateWorkspace);
+  assert.equal(store.conversationWorkspaceFor('bot_conv_default', 'group:1'), defaultWorkspace);
+  assert.equal(store.conversationWorkspaceFor('bot_conv_default', 'group:2'), alternateWorkspace);
+
+  const reloaded = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  assert.equal(reloaded.conversationWorkspaceFor('bot_conv_default', 'group:1'), defaultWorkspace);
+
+  // Clearing hands the conversation back to whatever the bot default is then.
+  assert.equal(
+    await reloaded.setConversationWorkspace('bot_conv_default', 'group:1', null),
+    alternateWorkspace,
+  );
+  assert.equal(reloaded.hasConversationWorkspaceOverride('bot_conv_default', 'group:1'), false);
+});
+
+test('a conversation workspace switch fences a session binding that raced it', async (t) => {
+  const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await workspaces.ensure('bot_conv_race');
+  const sessions = new Map();
+  const state = {
+    sessionFor: (key) => sessions.get(key) ?? null,
+    async setSession(key, sessionId) { sessions.set(key, sessionId); },
+    async clearSession(key) { sessions.delete(key); },
+    async clearSessions() { sessions.clear(); },
+  };
+  const created = [];
+  let sessionSeq = 0;
+  const harness = {
+    async createSession(options) {
+      created.push(options);
+      sessionSeq += 1;
+      return `session-${sessionSeq}`;
+    },
+    ask: async () => 'answered',
+  };
+  const scope = createBotWorkspaceScope(harness, {
+    botId: 'bot_conv_race', workspaces, state,
+  });
+  const key = 'group:1';
+
+  // The /model path: create the session, then commit the mapping. A /conv that
+  // starts (and commits) in between must win - the stale mapping may not be
+  // resurrected, which is what used to send the next message into the old
+  // workspace.
+  const sessionId = await scope.harness.createSession({ conversationKey: key });
+  assert.equal(sessions.has(key), false);
+  const pendingSwitch = scope.harness.switchConversationWorkspace(key, alternateWorkspace);
+  const accepted = await scope.state.setSession(key, sessionId);
+  await pendingSwitch;
+  assert.notEqual(accepted, true, '过期会话不得重新写回该对话');
+  assert.equal(sessions.has(key), false);
+  assert.equal(scope.harness.currentConversationWorkspace(key), alternateWorkspace);
+
+  // The next message resolves a fresh session in the new workspace.
+  const binding = await askInWorkspaceSession({
+    harness: scope.harness,
+    state: scope.state,
+    key,
+    text: 'hello',
+  });
+  assert.equal(binding.answer, 'answered');
+  assert.equal(created.at(-1).workspace, alternateWorkspace);
+  assert.equal(scope.harness.currentConversationWorkspace(key), alternateWorkspace);
+  assert.equal(await scope.state.sessionFor(key), binding.sessionId);
+});
+
+test('a conversation switch in flight cannot send a prompt into the old workspace', async (t) => {
+  const { path, defaultWorkspace, alternateWorkspace } = await fixture(t);
+  const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace }).load();
+  await workspaces.ensure('bot_conv_send_race');
+  const sessions = new Map();
+  const asked = [];
+  const state = {
+    sessionFor: (key) => sessions.get(key) ?? null,
+    async setSession(key, sessionId) { sessions.set(key, sessionId); },
+    async clearSession(key) { sessions.delete(key); },
+    async clearSessions() { sessions.clear(); },
+  };
+  const harness = {
+    async sessionExists() { return true; },
+    async createSession() { return 'session-created'; },
+    async ask(sessionId) { asked.push(sessionId); return 'answered'; },
+  };
+  const scope = createBotWorkspaceScope(harness, {
+    botId: 'bot_conv_send_race', workspaces, state,
+  });
+  const key = 'group:1';
+  sessions.set(key, 'session-old');
+
+  // /conv and an inbound message can overlap. The switch publishes its fence
+  // synchronously, so a message that starts right after it must not ask through
+  // the session of the workspace being left behind.
+  const pendingSwitch = scope.harness.switchConversationWorkspace(key, alternateWorkspace);
+  assert.equal(sessions.has(key), true, '切换尚未提交时会话映射仍在');
+  const binding = await askInWorkspaceSession({
+    harness: scope.harness,
+    state: scope.state,
+    key,
+    text: 'hello',
+  });
+  await pendingSwitch;
+
+  assert.equal(binding.answer, 'answered');
+  assert.ok(asked.length > 0, '消息必须被发送');
+  assert.ok(!asked.includes('session-old'), '不得把消息发进切换前的工作区会话');
+  assert.equal(scope.harness.currentConversationWorkspace(key), alternateWorkspace);
+  assert.deepEqual(asked, asked.map(() => binding.sessionId));
+});
+
+test('/sessionlist follows the conversation workspace unless a workspace is given', async (t) => {
+  const { defaultWorkspace, alternateWorkspace } = await fixture(t);
+  let override = null;
+  const listed = [];
+  const harness = {
+    currentWorkspace() { return defaultWorkspace; },
+    currentConversationWorkspace() { return override ?? defaultWorkspace; },
+    async listWorkspaceSessions(workspace) {
+      listed.push(workspace);
+      return { workspace, sessions: [{ sessionId: `s-${listed.length}`, title: 't', time: Date.now() }] };
+    },
+    assertWorkspaceScope() {},
+  };
+  const key = 'group:1';
+
+  const before = await runWorkspaceCommand('/sessionlist', harness, key);
+  assert.match(before.message, new RegExp(defaultWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+  override = alternateWorkspace;
+  const after = await runWorkspaceCommand('/sessionlist', harness, key);
+  assert.match(after.message, new RegExp(alternateWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(after.message, new RegExp(defaultWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.deepEqual(listed, [defaultWorkspace, alternateWorkspace]);
+
+  // An explicit workspace argument still wins over the conversation workspace.
+  override = alternateWorkspace;
+  await runWorkspaceCommand(`/sessionlist ${defaultWorkspace}`, harness, key);
+  assert.equal(listed.at(-1), defaultWorkspace);
+  assert.equal(listed.filter((path) => path === defaultWorkspace).length, 2);
+});

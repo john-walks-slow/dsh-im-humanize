@@ -66,8 +66,9 @@ function fixture({ sessionId = 'hist42', events = dialogue(), read } = {}) {
     steerActiveTurn: forbidden('steerActiveTurn'),
   };
   const harness = {
-    workspaceSession(id) {
+    workspaceSession(id, key) {
       assert.equal(id, sessionId, 'only the originally bound Session may be read');
+      assert.equal(key, KEY, 'history must retain the originating conversation fence');
       return session;
     },
     createSession: forbidden('createSession'),

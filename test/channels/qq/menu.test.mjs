@@ -65,6 +65,7 @@ async function fixture(t, { rejection, policy, group = false } = {}) {
     executeCommand: async (id, cmd) => { calls.push(['compact', id, cmd]); return { result: { kind: 'success', text: 'Compacted 4 history items (~500 tokens).' } }; },
     workspaceSession: (id) => ({
       ask: (text, options) => harness.ask(id, text, options),
+      executeCommand: (command, options) => harness.executeCommand(id, command, options),
       sessionExists: async () => true, models: async () => catalog(), isRunning: async () => false, hasActiveTurn: async () => false,
       selectModel: async (selection) => { calls.push(['model', selection]); selected = selection; return { selected }; },
       stopActiveTurn: async (control) => { calls.push(['stop', control.key]); return true; },

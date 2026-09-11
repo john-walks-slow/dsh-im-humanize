@@ -1062,7 +1062,7 @@ export class TelegramRuntime {
     }
     const sessionId = this.#state.sessionFor(key);
     const session = typeof sessionId === 'string' && sessionId
-      ? this.#harness.workspaceSession?.(sessionId)
+      ? this.#harness.workspaceSession?.(sessionId, key)
       : null;
     const text = await recoverAssistantTextByTimestamp({ session, quotedAt, signal });
     return text ? { content: text } : { unavailableReason: 'not-delivered' };

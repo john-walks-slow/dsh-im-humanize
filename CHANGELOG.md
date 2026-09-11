@@ -6,6 +6,28 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Added / 新增
+
+- 新增会话级工作区覆盖：每个会话（群线程 / 私聊）可绑定专属 DSH 工作区，未设置时回落到 bot 默认工作区。新增 `/conv` 命令（别名 `/conversation`、`/thread`）用于查看、设置、清除当前会话专属工作区，无参数时会显示当前是「显式绑定」还是「跟随 bot 默认」，并顺带列出现有工作区及序号，可直接用 `/conv <序号>` 切换；`/workspace` 保持 bot 默认级不变。主命令取 `/conv` 而非 `/thread`，是因为 Discord 客户端注册了同名原生斜杠命令，会抢占输入框。覆盖以可选增量字段 `conversationWorkspaces` 持久化到 `workspaces.json`，读取时逐条做破坏隔离，损坏时安全降级为 bot 默认。
+  Added per-conversation workspace overrides: each conversation (group thread / DM) can pin its own DSH workspace, falling back to the bot default when unset. A new `/conv` command (aliases `/conversation`, `/thread`) shows, sets, or clears the current conversation's workspace; with no argument it reports whether the conversation is explicitly bound or following the bot default, and also lists the existing workspaces with their indexes so `/conv <index>` can switch directly. `/workspace` remains bot-default. The primary name is `/conv` rather than `/thread` because Discord registers a native slash command of that name and would capture the input box. Overrides persist as the optional additive `conversationWorkspaces` field in `workspaces.json`, with per-entry damage isolation and safe fallback to the bot default.
+
+### Fixed / 修复
+
+- `/session ID` 绑定时在同一事务内清除与目标 Session 工作区冲突的对话覆盖，保留匹配的显式覆盖和原有 bot 默认工作区语义；重复 `/conv` 会核验遗留 Session 的目录归属，避免提示切换成功却在其他项目执行。补齐持久化失败、并发切换和符号链接路径的回归测试。
+  `/session ID` now clears a conflicting conversation override in the binding transaction, preserving matching explicit pins and existing bot-default behavior. Repeated `/conv` verifies legacy Session ownership instead of reporting success while retaining a Session from another project. Regression tests cover persistence failures, concurrent switches, and symbolic-link paths.
+- 飞书 `/sessionlist` 卡片及主菜单、钉钉会话选择器和 QQ 会话列表改用当前对话的有效工作区；工作区设置菜单仍管理 bot 默认工作区。切换后旧会话选择菜单失效，避免旧选项把新工作区切回，并新增实际渠道入口回归测试。
+  Feishu `/sessionlist` cards and main-menu sessions, the DingTalk session selector, and QQ session lists now use the conversation's effective workspace. Workspace settings remain bot-default. Stale session-selection menus are rejected after a conversation workspace change, with regression tests covering channel entry points.
+- 补齐会话工作区切换的提交校验：显式绑定统一记录会话代际，读取已有 Session 前捕获代际，`/model` 的既有会话与新会话路径都保留对话上下文，防止异步选模或绑定把旧工作区 Session 写回。`/session N` 与 `/sessionlist` 共用对话有效工作区，`/conv` 正确区分显式绑定与跟随默认；共享 Session 的其他对话不受单个对话切换影响。
+  Completed conversation-workspace commit fencing: explicit bindings retain structured generation records, adoption captures the conversation generation before asynchronous lookups, and both `/model` paths preserve the conversation context. Delayed model selection or binding cannot restore a Session from the old workspace. `/session N` and `/sessionlist` resolve the same effective workspace, `/conv` reports explicit overrides correctly, and switching one conversation preserves other conversations sharing the Session.
+- 修复对话工作区切换与消息处理并发时可能把后续消息发进旧工作区的问题：`/conv` 在开始提交时就发布代际栅栏，已在途的会话绑定会被拒绝并重新解析，消息也不会再经由切换前的会话发送；`/session` 显式绑定同样受该栅栏保护。
+  Fixed messages sometimes running in the previous workspace when a conversation workspace switch overlapped message processing. `/conv` now publishes its generation fence as soon as it starts committing, so an in-flight Session binding is rejected and re-resolved and the prompt is never sent through the Session of the workspace being left behind. Explicit `/session` bindings are fenced the same way.
+- 修复把对话绑定到当前 bot 默认工作区时未落盘的问题：`/conv <当前默认路径>` 现在会写入显式覆盖，之后修改 bot 默认工作区不再连带改变该对话；`/conv clear` 才回到跟随默认。
+  Fixed binding a conversation to the bot's current default workspace not being persisted: `/conv <current default path>` now records an explicit override, so a later bot-default change no longer moves that conversation; only `/conv clear` goes back to following the default.
+- `/sessionlist` 不带工作区参数时改为列出当前对话的有效工作区（显式传入工作区序号或绝对路径时仍以参数为准），避免在对话专属工作区里选到 bot 默认工作区的会话。
+  `/sessionlist` without a workspace argument now lists the workspace the conversation effectively uses (an explicit index or absolute path still wins), so sessions from the bot default are no longer offered inside a conversation-specific workspace.
+- 补齐 `/conv` 与相关提示的英文翻译，并让 Telegram 命令菜单、`/help` 与对应测试跟随命令目录自动更新。
+  Added the missing English translations for `/conv` and its messages, and let the Telegram command menu, `/help`, and their tests follow the command catalog automatically.
+
 ## [4.19.2] - 2026-09-11
 
 ### Fixed / 修复

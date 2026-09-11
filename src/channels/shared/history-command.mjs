@@ -124,7 +124,7 @@ export async function runHistoryCommand(text, harness, state, key, {
   }
 
   try {
-    const session = harness?.workspaceSession?.(sessionId);
+    const session = harness?.workspaceSession?.(sessionId, key);
     if (typeof session?.readHistory !== 'function') {
       return commandResult(t('当前 Harness 暂不支持读取会话历史。'));
     }

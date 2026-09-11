@@ -3,9 +3,45 @@ import { initialSessionTitle } from './session-title.mjs';
 
 export const WORKSPACE_SESSION_STALE = 'workspace-session-stale';
 
-function workspaceSession(harness, sessionId) {
+function workspaceSessionStaleError() {
+  const error = new Error('The conversation workspace changed before the prompt was sent.');
+  error.code = WORKSPACE_SESSION_STALE;
+  return error;
+}
+
+/**
+ * Read the conversation's effective-workspace generation. A bot-scoped Harness
+ * exposes it; anything else (plain fixtures, older Harnesses) yields null and
+ * disables the conversation-level fence without changing existing behavior.
+ */
+function readConversationGeneration(harness, conversationKey) {
+  return typeof harness?.conversationWorkspaceGeneration === 'function'
+    ? harness.conversationWorkspaceGeneration(conversationKey) ?? null
+    : null;
+}
+
+function conversationGenerationMoved(harness, conversationKey, generation) {
+  if (generation === null) return false;
+  return readConversationGeneration(harness, conversationKey) !== generation;
+}
+
+/**
+ * Wait for a conversation-level workspace switch that is still committing.
+ * An explicit /conv publishes its fence before it persists, so a message that
+ * is already in flight must settle on the new workspace instead of resolving a
+ * session in the one being left behind.
+ */
+async function awaitPendingConversationSwitch(harness, conversationKey) {
+  if (typeof harness?.pendingConversationWorkspaceSwitch !== 'function') return;
+  const pending = harness.pendingConversationWorkspaceSwitch(conversationKey);
+  if (pending && typeof pending.then === 'function') await pending.catch(() => undefined);
+}
+
+function workspaceSession(harness, sessionId, conversationKey) {
   if (typeof harness.workspaceSession === 'function') {
-    return harness.workspaceSession(sessionId);
+    return conversationKey
+      ? harness.workspaceSession(sessionId, conversationKey)
+      : harness.workspaceSession(sessionId);
   }
   const session = {
     sessionId,
@@ -67,12 +103,20 @@ export async function askInWorkspaceSession({
   while (true) {
     try {
       const binding = await withSessionBindingLock(state, key, async () => {
+        await awaitPendingConversationSwitch(harness, key);
         let sessionId = state.sessionFor(key);
-        let session = sessionId ? workspaceSession(harness, sessionId) : null;
+        let session = sessionId ? workspaceSession(harness, sessionId, key) : null;
         if (!session || !(await sessionExists(session, existsOptions))) {
-          sessionId = await createSession(harness, createOptions);
+          sessionId = await createSession(harness, {
+            conversationKey: key,
+            ...(createOptions ?? {}),
+          });
           if (await state.setSession(key, sessionId) === false) return null;
-          session = workspaceSession(harness, sessionId);
+          // Binding committed: capture the conversation's effective-workspace
+          // generation together with the session, so the prompt below is fenced
+          // against a conversation switch that only commits after the bind.
+          const conversationGeneration = readConversationGeneration(harness, key);
+          session = workspaceSession(harness, sessionId, key);
           if (initialTitle && typeof session.renameTitle === 'function') {
             try {
               await session.renameTitle(initialTitle, renameOptions);
@@ -83,6 +127,12 @@ export async function askInWorkspaceSession({
               console.warn('[dsh-im] unable to set the initial Session title:', error?.message ?? error);
             }
           }
+          // A switch that committed while the title was being set has already
+          // cleared the mapping and must not receive this prompt.
+          if (conversationGenerationMoved(harness, key, conversationGeneration)) {
+            throw workspaceSessionStaleError();
+          }
+          return { sessionId, session };
         }
         return { sessionId, session };
       });
