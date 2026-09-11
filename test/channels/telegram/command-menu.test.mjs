@@ -62,7 +62,8 @@ test('menu filters unsupported, disabled and hidden commands and aliases in stab
 test('real catalog preserves existing aliases and excludes channel-specific commands', () => {
   const names = telegramCommandMenu().map((item) => item.command);
   assert.deepEqual(names, [
-    'new', 'compact', 'history', 'workspace', 'ws', 'workspacelist', 'workspaces', 'wsl',
+    'new', 'compact', 'history', 'workspace', 'ws',
+    'conv', 'conversation', 'thread', 'workspacelist', 'workspaces', 'wsl',
     'sessionlist', 'sessions', 'session', 'models', 'reasoninglist', 'reasonings',
     'reasoning', 'model', 'presetlist', 'presets', 'preset', 'stop', 'steer',
     'batch', 'send', 'cancel', 'status', 'version', 'help',

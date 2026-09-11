@@ -705,7 +705,9 @@ export async function runModelCommand(text, harness, state, key, options = {}) {
           throw new TypeError('Harness cannot create a conversation session');
         }
         // An explicit choice must remain usable even when the saved bot model expires.
-        const sessionId = await harness.createSession({ ...requestOptions, inheritBotModel: false });
+        const sessionId = await harness.createSession({
+          ...requestOptions, inheritBotModel: false, conversationKey: key,
+        });
         if (typeof sessionId !== 'string' || !sessionId) {
           throw new TypeError('Harness returned an invalid session id');
         }

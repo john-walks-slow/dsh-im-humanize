@@ -102,7 +102,7 @@ test('runtime sends the complete localized production catalog before menu button
   ]);
   const commands = menuCalls(apiServer)[0].body.commands;
   assert.deepEqual(commands, telegramCommandMenu());
-  assert.equal(commands.length, 27);
+  assert.equal(commands.length, telegramCommandMenu().length);
   assert.equal(commands.find((item) => item.command === 'history').description,
     'Show recent history (private chats only)');
   for (const command of ['history', 'reasoninglist', 'reasonings', 'reasoning']) {

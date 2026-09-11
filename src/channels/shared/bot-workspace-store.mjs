@@ -102,6 +102,35 @@ function conversationKeyOf(value) {
   return value;
 }
 
+function conversationWorkspaceGenerationKey(botId, conversationKey) {
+  // Conversation keys validated by conversationKeyOf never contain the null
+  // separator, so the compound key stays unambiguous.
+  return `${botIdOf(botId)}\u0000${conversationKeyOf(conversationKey)}`;
+}
+
+function normalizeConversationWorkspaces(value) {
+  const conversationWorkspaces = Object.create(null);
+  if (value === undefined) return conversationWorkspaces;
+  // Override damage is isolated: an invalid entry is dropped rather than
+  // failing the whole document, because a missing/invalid override falls back
+  // to the bot workspace safely.
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return conversationWorkspaces;
+  }
+  for (const [botId, overrides] of Object.entries(value)) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(botId)) continue;
+    if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) continue;
+    const normalized = Object.create(null);
+    for (const [conversationKey, workspace] of Object.entries(overrides)) {
+      if (typeof conversationKey !== 'string' || !conversationKey
+        || typeof workspace !== 'string' || !isAbsolute(workspace)) continue;
+      normalized[conversationKey] = resolve(workspace);
+    }
+    if (Object.keys(normalized).length > 0) conversationWorkspaces[botId] = normalized;
+  }
+  return conversationWorkspaces;
+}
+
 function normalizeDeliveryTarget(value, { targetId, allowSessionSync = false } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw deliveryTargetError('invalid-target', 'Invalid delivery target');
@@ -221,6 +250,7 @@ function normalizeDocument(value) {
       || typeof workspace !== 'string' || !isAbsolute(workspace)) return null;
     workspaces[botId] = resolve(workspace);
   }
+  const conversationWorkspaces = normalizeConversationWorkspaces(value.conversationWorkspaces);
   let agentPresets = {};
   if (value.agentPresets !== undefined) {
     if (!value.agentPresets || typeof value.agentPresets !== 'object'
@@ -285,6 +315,7 @@ function normalizeDocument(value) {
     // recovered from an interrupted/manual edit, retain it on the next write.
     version,
     workspaces,
+    conversationWorkspaces,
     agentPresets,
     models,
     contextEnhancement,
@@ -297,6 +328,7 @@ function normalizeDocument(value) {
 function storedDocument({
   version,
   workspaces,
+  conversationWorkspaces,
   agentPresets,
   models,
   contextEnhancement,
@@ -306,6 +338,9 @@ function storedDocument({
 }) {
   const document = { version, workspaces };
   if (Object.keys(aliases).length > 0) document.aliases = aliases;
+  if (Object.keys(conversationWorkspaces).length > 0) {
+    document.conversationWorkspaces = conversationWorkspaces;
+  }
   if (Object.keys(agentPresets).length > 0) document.agentPresets = agentPresets;
   if (Object.keys(models).length > 0) document.models = models;
   if (Object.keys(contextEnhancement).length > 0) {
@@ -364,8 +399,11 @@ export class BotWorkspaceStore {
   #contextEnhancement = {};
   #deliveryTargets = Object.create(null);
   #accessPolicies = Object.create(null);
+  #conversationWorkspaces = Object.create(null);
   #generations = new Map();
   #nextGeneration = 1;
+  #conversationGenerations = new Map();
+  #nextConversationGeneration = 1;
   #incarnations = new Map();
   #nextIncarnation = 1;
   #removals = new Map();
@@ -392,6 +430,7 @@ export class BotWorkspaceStore {
       this.#contextEnhancement = normalized.contextEnhancement;
       this.#deliveryTargets = normalized.deliveryTargets;
       this.#accessPolicies = normalized.accessPolicies;
+      this.#conversationWorkspaces = normalized.conversationWorkspaces;
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
       this.#version = 1;
@@ -402,9 +441,12 @@ export class BotWorkspaceStore {
       this.#contextEnhancement = {};
       this.#deliveryTargets = Object.create(null);
       this.#accessPolicies = Object.create(null);
+      this.#conversationWorkspaces = Object.create(null);
     }
     this.#generations.clear();
     this.#nextGeneration = 1;
+    this.#conversationGenerations.clear();
+    this.#nextConversationGeneration = 1;
     this.#incarnations.clear();
     this.#nextIncarnation = 1;
     this.#removals.clear();
@@ -433,6 +475,30 @@ export class BotWorkspaceStore {
 
   workspaceFor(botId) {
     return this.#workspaces[botIdOf(botId)] ?? this.#defaultWorkspace;
+  }
+
+  /**
+   * An explicit override is stored even when it equals the current bot default,
+   * so a later default change must never move a conversation that pinned its
+   * own workspace.
+   */
+  hasConversationWorkspaceOverride(botId, conversationKey) {
+    const id = botIdOf(botId);
+    return Boolean(conversationKey) && Boolean(this.#conversationWorkspaces[id]?.[conversationKey]);
+  }
+
+  conversationWorkspaceFor(botId, conversationKey) {
+    const id = botIdOf(botId);
+    const override = this.#conversationWorkspaces[id]?.[conversationKey];
+    if (override) return override;
+    return this.workspaceFor(id);
+  }
+
+  conversationGenerationFor(botId, conversationKey) {
+    if (typeof conversationKey !== 'string' || !conversationKey) return null;
+    return this.#conversationGenerations.get(
+      conversationWorkspaceGenerationKey(botId, conversationKey),
+    ) ?? null;
   }
 
   agentPresetFor(botId) {
@@ -705,6 +771,30 @@ export class BotWorkspaceStore {
     });
   }
 
+  async setConversationWorkspace(botId, conversationKey, value, {
+    clearSession,
+    incarnation,
+  } = {}) {
+    const id = botIdOf(botId);
+    if (typeof conversationKey !== 'string' || !conversationKey
+      || conversationKey.length > 1_024 || conversationKey.trim() !== conversationKey
+      || /[\u0000-\u001f\u007f]/u.test(conversationKey)) {
+      throw new TypeError('conversationKey is required');
+    }
+    if (!this.has(id)
+      || (incarnation !== undefined && incarnation !== this.incarnationFor(id))) {
+      const error = new Error('找不到要修改的机器人。');
+      error.code = 'workspace-bot-not-found';
+      throw error;
+    }
+    const token = this.publishConversationWorkspaceSwitch(id, conversationKey);
+    return this.applyConversationWorkspaceSwitch(id, conversationKey, value, {
+      token,
+      clearSession,
+      incarnation,
+    });
+  }
+
   async setAgentPreset(botId, value, { incarnation } = {}) {
     const id = botIdOf(botId);
     if (!this.has(id)
@@ -829,6 +919,103 @@ export class BotWorkspaceStore {
     });
   }
 
+  /**
+   * Publish the fence for a conversation-level switch before its asynchronous
+   * work starts. Every session that was resolved for this conversation is
+   * invalidated from this moment on: a bind or prompt already in flight must
+   * not keep running (or be written back) in the workspace being left behind.
+   * Returns the opaque token that applyConversationWorkspaceSwitch requires, so
+   * two overlapping switches cannot adopt each other's fence.
+   */
+  publishConversationWorkspaceSwitch(botId, conversationKey) {
+    const id = botIdOf(botId);
+    conversationKeyOf(conversationKey);
+    const token = this.#freshConversationGeneration();
+    this.#conversationGenerations.set(
+      conversationWorkspaceGenerationKey(id, conversationKey),
+      token,
+    );
+    return token;
+  }
+
+  /** True while this token is still the current fence for the conversation. */
+  isConversationWorkspaceSwitchCurrent(botId, conversationKey, token) {
+    const id = botIdOf(botId);
+    conversationKeyOf(conversationKey);
+    return this.#conversationGenerations.get(
+      conversationWorkspaceGenerationKey(id, conversationKey),
+    ) === token;
+  }
+
+  async applyConversationWorkspaceSwitch(botId, conversationKey, value, {
+    token,
+    clearSession,
+    incarnation,
+  } = {}) {
+    const id = botIdOf(botId);
+    const key = conversationKeyOf(conversationKey);
+    if (typeof token !== 'number') throw new TypeError('token is required');
+    if (!this.has(id)
+      || (incarnation !== undefined && incarnation !== this.incarnationFor(id))) {
+      const error = new Error('找不到要修改的机器人。');
+      error.code = 'workspace-bot-not-found';
+      throw error;
+    }
+    // Validate before queueing so an invalid path fails without disturbing the
+    // conversation's current workspace or its session.
+    const workspace = value === null ? null : await validateWorkspacePath(value);
+    return this.#enqueue(id, async () => {
+      if (!this.has(id)
+        || (incarnation !== undefined && incarnation !== this.incarnationFor(id))) {
+        const error = new Error('找不到要修改的机器人。');
+        error.code = 'workspace-bot-not-found';
+        throw error;
+      }
+      if (!this.isConversationWorkspaceSwitchCurrent(id, key, token)) {
+        throw workspaceSessionStale(
+          'The conversation workspace changed before this switch could be committed.',
+        );
+      }
+      const previousOverrides = this.#conversationWorkspaces[id];
+      const previous = previousOverrides?.[key];
+      const hadOverride = Boolean(previousOverrides)
+        && Object.hasOwn(previousOverrides, key);
+      if (workspace === null ? !hadOverride : (hadOverride && previous === workspace)) {
+        // An identical explicit binding is already durable: nothing to rewrite
+        // and no reason to drop the conversation's session. The fence token is
+        // already published, which keeps the workspace that is in effect.
+        return this.conversationWorkspaceFor(id, key);
+      }
+      const next = workspace === null
+        ? (() => {
+          const overrides = { ...previousOverrides };
+          delete overrides[key];
+          return overrides;
+        })()
+        : { ...previousOverrides, [key]: workspace };
+      await clearSession?.();
+      if (Object.keys(next).length > 0) this.#conversationWorkspaces[id] = next;
+      else delete this.#conversationWorkspaces[id];
+      try {
+        // Binding a conversation to its own current default is still persisted:
+        // a later bot-default change must not move a conversation that pinned
+        // the workspace it was using.
+        await this.#persist();
+      } catch (error) {
+        if (Object.keys(next).length > 0 || hadOverride) {
+          this.#conversationWorkspaces[id] = {
+            ...(previousOverrides ?? {}),
+            ...(hadOverride ? { [key]: previous } : {}),
+          };
+        } else {
+          delete this.#conversationWorkspaces[id];
+        }
+        throw error;
+      }
+      return this.conversationWorkspaceFor(id, key);
+    });
+  }
+
   async bindWorkspaceSession(botId, value, {
     conversationKey,
     sessionId,
@@ -852,6 +1039,9 @@ export class BotWorkspaceStore {
       throw error;
     }
     const workspace = await canonicalWorkspacePath(await validateWorkspacePath(value));
+    const expectedConversationGeneration = this.#conversationGenerations.get(
+      conversationWorkspaceGenerationKey(id, conversationKey),
+    ) ?? null;
     return this.#enqueue(id, async () => {
       if (!this.has(id)
         || (incarnation !== undefined && incarnation !== this.incarnationFor(id))) {
@@ -863,6 +1053,17 @@ export class BotWorkspaceStore {
         && expectedGeneration !== this.generationFor(id)) {
         throw workspaceSessionStale(
           'The bot workspace changed before the session binding could be committed.',
+        );
+      }
+      // An explicit session binding is also a conversation-level statement: a
+      // workspace switch queued while the session was being adopted must not be
+      // silently overwritten by the binding that started before it.
+      if (expectedConversationGeneration
+        !== (this.#conversationGenerations.get(
+          conversationWorkspaceGenerationKey(id, conversationKey),
+        ) ?? null)) {
+        throw workspaceSessionStale(
+          'The conversation workspace changed before the session binding could be committed.',
         );
       }
 
@@ -991,6 +1192,7 @@ export class BotWorkspaceStore {
       ...Object.keys(this.#contextEnhancement),
       ...Object.keys(this.#deliveryTargets),
       ...Object.keys(this.#accessPolicies),
+      ...Object.keys(this.#conversationWorkspaces),
       ...this.#dirtyRemovals,
     ]);
     for (const botId of candidates) {
@@ -1028,6 +1230,12 @@ export class BotWorkspaceStore {
     return incarnation;
   }
 
+  #freshConversationGeneration() {
+    const generation = this.#nextConversationGeneration;
+    this.#nextConversationGeneration += 1;
+    return generation;
+  }
+
   #removalDetailsFor(transaction) {
     if (!transaction || typeof transaction !== 'object') {
       throw new TypeError('Invalid workspace removal transaction');
@@ -1045,8 +1253,10 @@ export class BotWorkspaceStore {
     const hadContextEnhancement = Object.hasOwn(this.#contextEnhancement, id);
     const hadDeliveryTargets = Object.hasOwn(this.#deliveryTargets, id);
     const hadAccessPolicy = Object.hasOwn(this.#accessPolicies, id);
+    const hadConversationWorkspaces = Object.hasOwn(this.#conversationWorkspaces, id);
     const needsCleanup = hadWorkspace || hadPreset || hadModel || hadAlias || hadContextEnhancement
-      || hadDeliveryTargets || hadAccessPolicy || this.#dirtyRemovals.has(id);
+      || hadDeliveryTargets || hadAccessPolicy || hadConversationWorkspaces
+      || this.#dirtyRemovals.has(id);
     delete this.#workspaces[id];
     delete this.#agentPresets[id];
     delete this.#models[id];
@@ -1054,6 +1264,7 @@ export class BotWorkspaceStore {
     delete this.#contextEnhancement[id];
     delete this.#deliveryTargets[id];
     delete this.#accessPolicies[id];
+    delete this.#conversationWorkspaces[id];
     this.#generations.delete(id);
     this.#incarnations.delete(id);
     if (!needsCleanup) return {
@@ -1089,10 +1300,12 @@ export class BotWorkspaceStore {
     version = this.#version,
     accessPolicies = this.#accessPolicies,
     aliases = this.#aliases,
+    conversationWorkspaces = this.#conversationWorkspaces,
   ) {
     await writeStoredDocument(this.#path, storedDocument({
       version,
       workspaces: this.#workspaces,
+      conversationWorkspaces,
       agentPresets: this.#agentPresets,
       models: this.#models,
       contextEnhancement,
@@ -1110,7 +1323,8 @@ export class BotWorkspaceStore {
       || Object.keys(this.#aliases).length > 0
       || Object.keys(this.#contextEnhancement).length > 0
       || Object.keys(this.#deliveryTargets).length > 0
-      || Object.keys(this.#accessPolicies).length > 0) {
+      || Object.keys(this.#accessPolicies).length > 0
+      || Object.keys(this.#conversationWorkspaces).length > 0) {
       await this.#persist();
       return;
     }
@@ -1246,6 +1460,68 @@ export function createBotWorkspaceScope(
     };
   };
   const sessionGenerations = new Map();
+  // A conversation-level switch/clear publishes an opaque mask token before it
+  // starts its asynchronous work, so a bind or prompt that was already resolved
+  // for that conversation is rejected instead of running in the old workspace.
+  // The store keeps the same token as the conversation's generation, so the
+  // scope marker and the durable generation never disagree.
+  const conversationSwitchMasks = new Map();
+  // The in-flight switch of each conversation, so a message that starts while
+  // /conv is still committing waits for the new workspace instead of resolving
+  // a session in the old one.
+  const pendingConversationSwitches = new Map();
+
+  function trackConversationSwitch(conversationKey, promise) {
+    pendingConversationSwitches.set(conversationKey, promise);
+    return promise.finally(() => {
+      if (pendingConversationSwitches.get(conversationKey) === promise) {
+        pendingConversationSwitches.delete(conversationKey);
+      }
+    });
+  }
+
+  function currentConversationGeneration(conversationKey) {
+    // The store reports "no override recorded yet" as null; map it to an opaque
+    // token so "before the first switch" is still a comparable state.
+    const generation = workspaces.conversationGenerationFor(botId, conversationKey);
+    return generation ?? 0;
+  }
+
+  function maskConversationSwitch(conversationKey, token) {
+    if (!conversationKey) return;
+    conversationSwitchMasks.set(
+      conversationKey,
+      token === undefined ? currentConversationGeneration(conversationKey) : token,
+    );
+  }
+
+  function conversationGenerationIsStale(conversationKey, expected) {
+    if (typeof conversationKey !== 'string' || !conversationKey) return false;
+    const mask = conversationSwitchMasks.get(conversationKey);
+    if (mask !== undefined && mask !== currentConversationGeneration(conversationKey)) {
+      return true;
+    }
+    if (expected === undefined) return false;
+    return expected !== currentConversationGeneration(conversationKey);
+  }
+
+  function generationIsStale(entry) {
+    return Boolean(entry)
+      && ((entry.generation !== undefined && entry.generation !== workspaces.generationFor(botId))
+        || conversationGenerationIsStale(entry.conversationKey, entry.conversationGeneration));
+  }
+
+  /**
+   * Drop every remembered session that a switch just fenced, while keeping the
+   * records of sessions created after the fence was published: those already
+   * belong to the new workspace and must stay bindable.
+   */
+  function forgetFencedSessions() {
+    for (const [sessionId, entry] of sessionGenerations) {
+      if (generationIsStale(entry)) sessionGenerations.delete(sessionId);
+    }
+  }
+
   const scopedHarness = new Proxy(harness, {
     get(target, property) {
       if (property === 'agentPresetSettings') {
@@ -1341,6 +1617,67 @@ export function createBotWorkspaceScope(
           });
         };
       }
+      if (property === 'currentConversationWorkspace') {
+        return (conversationKey) => {
+          if (!isCurrentScope()) {
+            const error = new Error('找不到要修改的机器人。');
+            error.code = 'workspace-bot-not-found';
+            throw error;
+          }
+          return workspaces.conversationWorkspaceFor(botId, conversationKey);
+        };
+      }
+      if (property === 'pendingConversationWorkspaceSwitch') {
+        // Read-only: callers in the message path wait for a switch that is
+        // still committing before they resolve a session for this conversation.
+        return (conversationKey) => pendingConversationSwitches.get(conversationKey) ?? null;
+      }
+      if (property === 'conversationWorkspaceGeneration') {
+        // Read-only fence token for the conversation's effective workspace.
+        // Callers outside this scope (message bridging) compare it across the
+        // bind and the send so a late switch cannot be outrun.
+        return (conversationKey) => currentConversationGeneration(conversationKey);
+      }
+      if (property === 'switchConversationWorkspace') {
+        return (conversationKey, workspace) => {
+          if (!isCurrentScope()) {
+            const error = new Error('找不到要修改的机器人。');
+            error.code = 'workspace-bot-not-found';
+            return Promise.reject(error);
+          }
+          const token = workspaces.publishConversationWorkspaceSwitch(botId, conversationKey);
+          maskConversationSwitch(conversationKey, token);
+          return trackConversationSwitch(conversationKey, workspaces.applyConversationWorkspaceSwitch(botId, conversationKey, workspace, {
+            token,
+            clearSession: async () => {
+              await state.clearSession(conversationKey);
+              // A handle resolved before this switch must not stay usable: the
+              // conversation now belongs to another workspace.
+              forgetFencedSessions();
+            },
+            incarnation,
+          }));
+        };
+      }
+      if (property === 'clearConversationWorkspace') {
+        return (conversationKey) => {
+          if (!isCurrentScope()) {
+            const error = new Error('找不到要修改的机器人。');
+            error.code = 'workspace-bot-not-found';
+            return Promise.reject(error);
+          }
+          const token = workspaces.publishConversationWorkspaceSwitch(botId, conversationKey);
+          maskConversationSwitch(conversationKey, token);
+          return trackConversationSwitch(conversationKey, workspaces.applyConversationWorkspaceSwitch(botId, conversationKey, null, {
+            token,
+            clearSession: async () => {
+              await state.clearSession(conversationKey);
+              forgetFencedSessions();
+            },
+            incarnation,
+          }));
+        };
+      }
       if (property === 'bindWorkspaceSession') {
         return async (conversationKey, sessionId) => {
           if (typeof conversationKey !== 'string' || !conversationKey
@@ -1399,7 +1736,7 @@ export function createBotWorkspaceScope(
       }
       if (property === 'createSession') {
         return async (options = {}) => {
-          const { inheritBotModel = true, ...createOptions } = options;
+          const { inheritBotModel = true, conversationKey, ...createOptions } = options;
           await workspaces.whenBotIdle(botId);
           if (!isCurrentScope()) {
             const error = new Error('找不到要修改的机器人。');
@@ -1407,13 +1744,24 @@ export function createBotWorkspaceScope(
             throw error;
           }
           const generation = workspaces.generationFor(botId);
+          const conversationGeneration = conversationKey
+            ? currentConversationGeneration(conversationKey)
+            : null;
           const agentPreset = workspaces.agentPresetFor(botId);
           const model = inheritBotModel === false ? null : workspaces.modelFor(botId);
           const sessionId = await target.createSession({
             ...createOptions,
-            workspace: workspaces.workspaceFor(botId),
+            workspace: workspaces.conversationWorkspaceFor(botId, conversationKey),
             ...(agentPreset == null ? {} : { agentPreset }),
           });
+          // A conversation-level workspace switch can commit while the session is
+          // being created; never bind a session created in the stale workspace to
+          // a conversation whose override already moved on.
+          if (conversationGenerationIsStale(conversationKey, conversationGeneration)) {
+            throw workspaceSessionStale(
+              'The conversation workspace changed while the session was being created.',
+            );
+          }
           if (model) {
             if (typeof target.selectSessionModel !== 'function') {
               throw new TypeError('Harness does not support model selection');
@@ -1429,23 +1777,40 @@ export function createBotWorkspaceScope(
               throw error;
             }
           }
-          sessionGenerations.set(sessionId, generation);
+          sessionGenerations.set(sessionId, {
+            generation,
+            conversationKey,
+            conversationGeneration,
+          });
           return sessionId;
         };
       }
       if (property === 'workspaceSession') {
-        return (sessionId) => {
+        return (sessionId, sessionConversationKey) => {
           if (typeof sessionId !== 'string' || !sessionId) {
-            throw new TypeError('sessionId is required');
+            // A caller whose mapping was cleared under it must retry the
+            // resolution instead of crashing on a handle it cannot use.
+            return null;
           }
-          const generation = sessionGenerations.get(sessionId)
+          const generation = sessionGenerations.get(sessionId)?.generation
             ?? workspaces.generationFor(botId);
+          // A session handle that names its conversation also fences the
+          // conversation's effective workspace: a switch that starts after the
+          // bind but before the prompt is sent must not run in the old workspace.
+          const conversationKey = typeof sessionConversationKey === 'string'
+            && sessionConversationKey
+            ? sessionConversationKey
+            : null;
+          const conversationGeneration = conversationKey
+            ? currentConversationGeneration(conversationKey)
+            : null;
           // Transfer the mutable provenance entry into this immutable handle.
           // A later handle for the same id captures its own generation instead
           // of sharing deletion or rebinding state with this call.
           sessionGenerations.delete(sessionId);
           const isCurrentSession = () => isCurrentScope()
-            && generation === workspaces.generationFor(botId);
+            && generation === workspaces.generationFor(botId)
+            && !conversationGenerationIsStale(conversationKey, conversationGeneration);
           const invokeCurrentSession = async (method, args, action) => {
             if (!isCurrentSession()) {
               throw workspaceSessionStale(
@@ -1520,8 +1885,8 @@ export function createBotWorkspaceScope(
       if (property === 'sessionExists') {
         return (sessionId, ...args) => {
           if (!isCurrentScope()) return false;
-          const generation = sessionGenerations.get(sessionId);
-          if (generation !== undefined && generation !== workspaces.generationFor(botId)) {
+          const entry = sessionGenerations.get(sessionId);
+          if (generationIsStale(entry)) {
             sessionGenerations.delete(sessionId);
             return false;
           }
@@ -1530,10 +1895,9 @@ export function createBotWorkspaceScope(
       }
       if (property === 'ask') {
         return (sessionId, ...args) => {
-          const generation = sessionGenerations.get(sessionId);
+          const entry = sessionGenerations.get(sessionId);
           sessionGenerations.delete(sessionId);
-          if (!isCurrentScope()
-            || (generation !== undefined && generation !== workspaces.generationFor(botId))) {
+          if (!isCurrentScope() || generationIsStale(entry)) {
             const error = new Error('The bot workspace changed before this prompt started.');
             error.code = WORKSPACE_SESSION_STALE;
             throw error;
@@ -1543,10 +1907,9 @@ export function createBotWorkspaceScope(
       }
       if (property === 'executeCommand' && typeof target.executeCommand === 'function') {
         return (sessionId, ...args) => {
-          const generation = sessionGenerations.get(sessionId);
+          const entry = sessionGenerations.get(sessionId);
           sessionGenerations.delete(sessionId);
-          if (!isCurrentScope()
-            || (generation !== undefined && generation !== workspaces.generationFor(botId))) {
+          if (!isCurrentScope() || generationIsStale(entry)) {
             const error = new Error('The bot workspace changed before this command started.');
             error.code = WORKSPACE_SESSION_STALE;
             throw error;
@@ -1565,17 +1928,30 @@ export function createBotWorkspaceScope(
         return (key, ...args) => {
           if (!isCurrentScope()) return null;
           const sessionId = target.sessionFor(key, ...args);
-          if (sessionId && !sessionGenerations.has(sessionId)) {
-            sessionGenerations.set(sessionId, workspaces.generationFor(botId));
+          if (sessionId) {
+            const entry = sessionGenerations.get(sessionId);
+            if (generationIsStale(entry)) {
+              // The conversation's effective workspace already moved on, so the
+              // stored mapping must not be treated as a usable session. The
+              // caller re-resolves one in the current workspace instead.
+              sessionGenerations.delete(sessionId);
+              return null;
+            }
+            if (!entry) {
+              sessionGenerations.set(sessionId, {
+                generation: workspaces.generationFor(botId),
+                conversationKey: key,
+                conversationGeneration: currentConversationGeneration(key),
+              });
+            }
           }
           return sessionId;
         };
       }
       if (property === 'setSession') {
         return (key, sessionId, ...args) => {
-          const generation = sessionGenerations.get(sessionId);
-          if (!isCurrentScope()
-            || (generation !== undefined && generation !== workspaces.generationFor(botId))) {
+          const entry = sessionGenerations.get(sessionId);
+          if (!isCurrentScope() || generationIsStale(entry)) {
             sessionGenerations.delete(sessionId);
             return false;
           }
