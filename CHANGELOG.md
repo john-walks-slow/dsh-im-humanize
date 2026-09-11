@@ -6,12 +6,21 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.20.0] - 2026-09-12
+
 ### Added / 新增
 
 - 新增会话级工作区覆盖：每个会话（群线程 / 私聊）可绑定专属 DSH 工作区，未设置时回落到 bot 默认工作区。新增 `/conv` 命令（别名 `/conversation`、`/thread`）用于查看、设置、清除当前会话专属工作区，无参数时会显示当前是「显式绑定」还是「跟随 bot 默认」，并顺带列出现有工作区及序号，可直接用 `/conv <序号>` 切换；`/workspace` 保持 bot 默认级不变。主命令取 `/conv` 而非 `/thread`，是因为 Discord 客户端注册了同名原生斜杠命令，会抢占输入框。覆盖以可选增量字段 `conversationWorkspaces` 持久化到 `workspaces.json`，读取时逐条做破坏隔离，损坏时安全降级为 bot 默认。
   Added per-conversation workspace overrides: each conversation (group thread / DM) can pin its own DSH workspace, falling back to the bot default when unset. A new `/conv` command (aliases `/conversation`, `/thread`) shows, sets, or clears the current conversation's workspace; with no argument it reports whether the conversation is explicitly bound or following the bot default, and also lists the existing workspaces with their indexes so `/conv <index>` can switch directly. `/workspace` remains bot-default. The primary name is `/conv` rather than `/thread` because Discord registers a native slash command of that name and would capture the input box. Overrides persist as the optional additive `conversationWorkspaces` field in `workspaces.json`, with per-entry damage isolation and safe fallback to the bot default.
 
+  感谢 [@baijian](https://github.com/baijian) 的实现、测试与文档，以及 [@lyzhu86](https://github.com/lyzhu86) 的方案与文档贡献（[#195](https://github.com/xmanrui/dsh-im/pull/195)）。Thanks to [@baijian](https://github.com/baijian) for implementation, tests, and documentation, and [@lyzhu86](https://github.com/lyzhu86) for ideas and documentation in [#195](https://github.com/xmanrui/dsh-im/pull/195).
+
 ### Fixed / 修复
+
+- 微信连接与绑定失败保留具体分类和可执行的中英文恢复提示，覆盖启动、扫码、凭据读取、重连及账号移除；区分网络、超时、HTTP 状态、失效登录与文件访问问题，不再只显示笼统的离线或失败提示（[#198](https://github.com/xmanrui/dsh-im/issues/198)）。设置页支持展开和复制经过筛选的诊断详情，通过 `WX-CONN-XXXXXXXX` 参考编号关联 Host 日志，避免直接展示原始 Token、二维码链接、本地路径或消息内容。
+  Weixin connection and provisioning failures retain classified, actionable bilingual recovery guidance across startup, QR login, credential reads, reconnects, and account removal. Network, timeout, HTTP, stale-login, and file-access failures are distinguished instead of collapsing into generic offline or failure messages ([#198](https://github.com/xmanrui/dsh-im/issues/198)). The settings UI can expand and copy filtered diagnostic details and correlate them with Host logs through a `WX-CONN-XXXXXXXX` reference ID, without directly exposing raw tokens, QR URLs, local paths, or message content.
+- 微信账号移除后的清理失败明确报告为警告，不再恢复已删除的账号；回滚结果与主要失败分别保留，状态读取不确定时也不再误报为删除失败。自动重试的重复诊断日志会在短时间窗口内合并。
+  Cleanup failures after Weixin account removal are reported as warnings without resurrecting deleted accounts. Rollback outcomes remain distinct from the primary failure, and uncertain status reads are no longer misreported as failed deletion. Repeated automatic-retry diagnostics are deduplicated within a short window.
 
 - `/session ID` 绑定时在同一事务内清除与目标 Session 工作区冲突的对话覆盖，保留匹配的显式覆盖和原有 bot 默认工作区语义；重复 `/conv` 会核验遗留 Session 的目录归属，避免提示切换成功却在其他项目执行。补齐持久化失败、并发切换和符号链接路径的回归测试。
   `/session ID` now clears a conflicting conversation override in the binding transaction, preserving matching explicit pins and existing bot-default behavior. Repeated `/conv` verifies legacy Session ownership instead of reporting success while retaining a Session from another project. Regression tests cover persistence failures, concurrent switches, and symbolic-link paths.
@@ -27,6 +36,16 @@ This file records the notable changes in each dsh-im release. Its format follows
   `/sessionlist` without a workspace argument now lists the workspace the conversation effectively uses (an explicit index or absolute path still wins), so sessions from the bot default are no longer offered inside a conversation-specific workspace.
 - 补齐 `/conv` 与相关提示的英文翻译，并让 Telegram 命令菜单、`/help` 与对应测试跟随命令目录自动更新。
   Added the missing English translations for `/conv` and its messages, and let the Telegram command menu, `/help`, and their tests follow the command catalog automatically.
+
+### Documentation / 文档
+
+- 中英文 README 补充会话专属工作区命令与微信诊断说明，统一贡献者致谢及贡献类型图例，并同步 npm 包的贡献者元数据。
+  Updated bilingual READMEs with conversation-workspace commands and Weixin diagnostics, standardized contributor acknowledgements and contribution legends, and synchronized npm contributor metadata.
+
+### Known limitations / 已知限制
+
+- 本次微信更新改善错误诊断，不代表已复现或修复 #198 最初报告的掉线根因；再次发生时仍需结合页面诊断及对应参考编号的 Host 日志排查。
+  The Weixin update improves diagnostics; it does not establish that the original disconnection reported in #198 has been reproduced or resolved. Further occurrences still require the page diagnostics and matching Host-log reference ID for investigation.
 
 ## [4.19.2] - 2026-09-11
 
@@ -966,7 +985,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.19.2...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.20.0...HEAD
+[4.20.0]: https://github.com/xmanrui/dsh-im/compare/v4.19.2...v4.20.0
 [4.19.2]: https://github.com/xmanrui/dsh-im/compare/v4.19.1...v4.19.2
 [4.19.1]: https://github.com/xmanrui/dsh-im/compare/v4.19.0...v4.19.1
 [4.19.0]: https://github.com/xmanrui/dsh-im/compare/v4.18.1...v4.19.0
