@@ -2856,7 +2856,7 @@ export class FeishuHarnessBridge {
       const sessionId = this.#state.sessionFor(key);
       if (typeof sessionId === 'string' && sessionId) {
         currentSessionId = sessionId;
-        const session = this.#harness.workspaceSession?.(sessionId);
+        const session = this.#harness.workspaceSession?.(sessionId, key);
         directSessionTitle = nonEmptyString(session?.title)
           ?? nonEmptyString(session?.name)
           ?? nonEmptyString(session?.displayName);
@@ -2896,7 +2896,7 @@ export class FeishuHarnessBridge {
     const modelTask = (async () => {
       try {
         if (currentSessionId) {
-          const session = this.#harness.workspaceSession?.(currentSessionId);
+          const session = this.#harness.workspaceSession?.(currentSessionId, key);
           if (typeof session?.models === 'function') {
             return await session.models({ signal: dataSignal });
           }
@@ -2956,7 +2956,7 @@ export class FeishuHarnessBridge {
   async #resolveSessionTitle(key, sessionId) {
     try {
       if (typeof this.#harness.workspaceSession === 'function') {
-        const session = this.#harness.workspaceSession(sessionId);
+        const session = this.#harness.workspaceSession(sessionId, key);
         if (session && typeof session === 'object') {
           const direct = nonEmptyString(session.title)
             ?? nonEmptyString(session.name)
@@ -3009,7 +3009,7 @@ export class FeishuHarnessBridge {
       const sessionId = this.#state?.sessionFor?.(key);
       let catalog;
       if (typeof sessionId === 'string' && sessionId) {
-        const session = this.#harness.workspaceSession(sessionId);
+        const session = this.#harness.workspaceSession(sessionId, key);
         if (session?.models) {
           catalog = await session.models({ signal });
         }
@@ -3078,7 +3078,7 @@ export class FeishuHarnessBridge {
       try {
         const sessionId = this.#state?.sessionFor?.(key);
         if (typeof sessionId === 'string' && sessionId) {
-          const session = this.#harness.workspaceSession(sessionId);
+          const session = this.#harness.workspaceSession(sessionId, key);
           if (session?.models) {
             const cat = await session.models({ signal });
             if (cat.current) info.model = `${cat.current.provider}/${cat.current.model}`;

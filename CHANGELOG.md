@@ -13,6 +13,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ### Fixed / 修复
 
+- 补齐会话工作区切换的提交校验：显式绑定统一记录会话代际，读取已有 Session 前捕获代际，`/model` 的既有会话与新会话路径都保留对话上下文，防止异步选模或绑定把旧工作区 Session 写回。`/session N` 与 `/sessionlist` 共用对话有效工作区，`/conv` 正确区分显式绑定与跟随默认；共享 Session 的其他对话不受单个对话切换影响。
+  Completed conversation-workspace commit fencing: explicit bindings retain structured generation records, adoption captures the conversation generation before asynchronous lookups, and both `/model` paths preserve the conversation context. Delayed model selection or binding cannot restore a Session from the old workspace. `/session N` and `/sessionlist` resolve the same effective workspace, `/conv` reports explicit overrides correctly, and switching one conversation preserves other conversations sharing the Session.
 - 修复对话工作区切换与消息处理并发时可能把后续消息发进旧工作区的问题：`/conv` 在开始提交时就发布代际栅栏，已在途的会话绑定会被拒绝并重新解析，消息也不会再经由切换前的会话发送；`/session` 显式绑定同样受该栅栏保护。
   Fixed messages sometimes running in the previous workspace when a conversation workspace switch overlapped message processing. `/conv` now publishes its generation fence as soon as it starts committing, so an in-flight Session binding is rejected and re-resolved and the prompt is never sent through the Session of the workspace being left behind. Explicit `/session` bindings are fenced the same way.
 - 修复把对话绑定到当前 bot 默认工作区时未落盘的问题：`/conv <当前默认路径>` 现在会写入显式覆盖，之后修改 bot 默认工作区不再连带改变该对话；`/conv clear` 才回到跟随默认。

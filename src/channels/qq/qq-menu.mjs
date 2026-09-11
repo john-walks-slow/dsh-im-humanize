@@ -80,8 +80,8 @@ export function qqMenuPage(list, requestedPage = 0) {
     list.choices.length ? '' : t('暂无可用选项。')].filter(Boolean).join('\n'), entries, columns: 2 };
 }
 
-async function catalogFor(harness, sessionId, options) {
-  const session = sessionId ? harness.workspaceSession?.(sessionId) : null;
+async function catalogFor(harness, sessionId, key, options) {
+  const session = sessionId ? harness.workspaceSession?.(sessionId, key) : null;
   return typeof session?.models === 'function' ? session.models(options) : harness.listModels(options);
 }
 
@@ -95,7 +95,7 @@ export async function qqMenuView(name, harness, state, key, { signal, busy = fal
     if (name === 'status') await harness.ensureRunning(options);
     const results = await Promise.allSettled([
       harness.listWorkspaceSessions?.(workspace, options),
-      catalogFor(harness, sessionId, options),
+      catalogFor(harness, sessionId, key, options),
       harness.agentPresetSettings?.(options),
     ]);
     signal?.throwIfAborted();
@@ -135,7 +135,7 @@ export async function qqMenuView(name, harness, state, key, { signal, busy = fal
       command(`${path === workspace ? '✓ ' : ''}${clean(path)}`, `/workspace ${path}`)) });
   }
   if (name === 'models') {
-    const catalog = await catalogFor(harness, sessionId, options);
+    const catalog = await catalogFor(harness, sessionId, key, options);
     return qqMenuPage({ title: t('🧠 模型'), detail: catalog.failures?.length ? t('部分模型暂不可用，可稍后重试。') : '',
       choices: catalog.groups.flatMap((group) => group.models.map((model) => command(
         `${catalog.current?.provider === group.id && catalog.current?.model === model.id ? '✓ ' : ''}${clean(group.name, 30)} · ${clean(model.name, 60)}`,

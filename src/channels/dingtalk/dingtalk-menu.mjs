@@ -25,7 +25,7 @@ export async function dingtalkMenuSnapshot(harness, state, key, signal) {
     workspacePathSnapshot(harness, options),
     harness.listWorkspaceSessions?.(workspace, options),
     (async () => {
-      const session = sessionId ? harness.workspaceSession?.(sessionId) : null;
+      const session = sessionId ? harness.workspaceSession?.(sessionId, key) : null;
       return typeof session?.models === 'function'
         ? session.models(options) : harness.listModels?.(options);
     })(),

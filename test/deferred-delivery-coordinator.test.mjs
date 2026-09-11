@@ -165,15 +165,15 @@ test('stop forwards the exact turn and prompt identity to the existing scoped co
   const controls = [];
   const f = await fixture(t, { harness: {
     rpc: async () => ({ events: [start, prompt], hasMore: false }),
-    workspaceSession: (sessionId) => ({ stopDeferredTurn: async (identity, options) => {
-      controls.push({ sessionId, identity, current: options.isCurrent() });
+    workspaceSession: (sessionId, key) => ({ stopDeferredTurn: async (identity, options) => {
+      controls.push({ sessionId, key, identity, current: options.isCurrent() });
       return true;
     } }),
   } });
   await f.track();
   await f.coordinator.whenIdle();
   assert.equal(await f.coordinator.stop('chat'), 'stopped');
-  assert.deepEqual(controls, [{ sessionId: 'session', identity: { turn: 3, promptRpcId: 'im-prompt' }, current: true }]);
+  assert.deepEqual(controls, [{ sessionId: 'session', key: 'chat', identity: { turn: 3, promptRpcId: 'im-prompt' }, current: true }]);
   assert.equal(f.state.deferredEntries().length, 1, 'the terminal event still needs delivery');
 });
 

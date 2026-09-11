@@ -24,7 +24,7 @@ function boundSession(harness, state, key) {
   if (typeof harness?.workspaceSession !== 'function') {
     throw new TypeError('Harness does not support workspace sessions');
   }
-  const session = harness.workspaceSession(sessionId);
+  const session = harness.workspaceSession(sessionId, key);
   if (!session || typeof session !== 'object') {
     throw new TypeError('Harness returned an invalid workspace session');
   }

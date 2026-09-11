@@ -443,7 +443,7 @@ async function boundSession(harness, state, key, options) {
   if (typeof harness?.workspaceSession !== 'function') {
     throw new TypeError('Harness does not support workspace sessions');
   }
-  const session = harness.workspaceSession(sessionId);
+  const session = harness.workspaceSession(sessionId, key);
   if (!session || typeof session.sessionExists !== 'function') {
     throw new TypeError('Harness returned an invalid workspace session');
   }
@@ -711,7 +711,7 @@ export async function runModelCommand(text, harness, state, key, options = {}) {
         if (typeof sessionId !== 'string' || !sessionId) {
           throw new TypeError('Harness returned an invalid session id');
         }
-        const session = harness.workspaceSession(sessionId);
+        const session = harness.workspaceSession(sessionId, key);
         applied = await selectAndVerifyModel(session, selection, requestOptions);
         const currentSessionId = state.sessionFor(key);
         if (typeof currentSessionId === 'string' && currentSessionId) {

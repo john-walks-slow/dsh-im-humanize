@@ -331,13 +331,15 @@ async function runSessionBindCommand(command, harness, conversationKey) {
   const match = SESSION_BIND_COMMAND.exec(command);
   let sessionId = match?.[1];
   if (typeof sessionId === 'string' && /^\d+$/u.test(sessionId)) {
-    // 序号模式：把 /session N 解析成当前工作区会话列表中的第 N 个会话
+    // Use the same effective-workspace resolver as /sessionlist, so its indexes
+    // cannot select a session from the bot default after /conv sets an override.
     if (typeof harness?.listWorkspaceSessions !== 'function'
-      || typeof harness?.currentWorkspace !== 'function') {
+      || (typeof harness?.currentWorkspace !== 'function'
+        && typeof harness?.currentConversationWorkspace !== 'function')) {
       return commandResult(t('当前机器人暂不支持按序号绑定，请使用 /session Session ID。'));
     }
     try {
-      const selected = await selectedWorkspacePath(harness.currentWorkspace());
+      const selected = await resolveSessionListWorkspace('', harness, { conversationKey });
       if (selected.error) return commandResult(selected.error);
       const listed = await harness.listWorkspaceSessions(selected.workspace);
       if (!listed || !Array.isArray(listed.sessions)) {

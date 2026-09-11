@@ -1029,7 +1029,7 @@ export class DingtalkHarnessBridge {
     if (quotedAt === null) return { unavailableReason: 'not-delivered' };
     const sessionId = this.#state.sessionFor(key);
     const session = typeof sessionId === 'string' && sessionId
-      ? this.#harness.workspaceSession?.(sessionId)
+      ? this.#harness.workspaceSession?.(sessionId, key)
       : null;
     const text = await recoverAssistantTextByTimestamp({
       session,
