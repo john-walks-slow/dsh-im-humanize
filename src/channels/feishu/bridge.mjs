@@ -2266,6 +2266,7 @@ export class FeishuHarnessBridge {
     chatId,
     key,
     messageId = null,
+    conversationWorkspace,
     sessionWorkspace = null,
     sessionPage = 0,
     sessionLimit = null,
@@ -2513,6 +2514,10 @@ export class FeishuHarnessBridge {
       return;
     }
     if (action.startsWith('use:')) {
+      if (conversationWorkspace !== undefined && conversationWorkspace !== this.#conversationWorkspace(key)) {
+        await reply(t('这个菜单已过期，请回复 /m 重新打开。'));
+        return;
+      }
       await this.#bindSession(key, chatId, action.slice('use:'.length), { updateMessageId: messageId, replyTo: messageId });
       return;
     }
@@ -2594,7 +2599,9 @@ export class FeishuHarnessBridge {
         return;
       }
       // The number label sits on the session (bind) button of the row.
-      await this.#handleCardAction(`use:${session.sessionId}`, { chatId, key, messageId: replyTo });
+      await this.#handleCardAction(`use:${session.sessionId}`, {
+        chatId, key, messageId: replyTo, conversationWorkspace: menu.conversationWorkspace,
+      });
       return;
     }
     if (menu.kind === 'workspaces') {
@@ -2624,6 +2631,12 @@ export class FeishuHarnessBridge {
     return sessions;
   }
 
+  #conversationWorkspace(key) {
+    return typeof this.#harness.currentConversationWorkspace === 'function'
+      ? this.#harness.currentConversationWorkspace(key)
+      : this.#harness.currentWorkspace?.();
+  }
+
   async #showSessions(
     { chatId, key, replyTo = null },
     selector,
@@ -2631,13 +2644,20 @@ export class FeishuHarnessBridge {
     { updateMessageId = null, limit = null } = {},
   ) {
     try {
+      const conversationWorkspace = this.#conversationWorkspace(key);
       const signal = this.#cardDataSignal();
-      const resolved = await resolveSessionListWorkspace(selector ?? '', this.#harness, { signal });
+      const resolved = await resolveSessionListWorkspace(selector ?? '', this.#harness, {
+        signal, conversationKey: key,
+      });
       if (resolved.error) {
         await this.#send(chatId, resolved.error, { replyTo });
         return;
       }
       const listed = await this.#harness.listWorkspaceSessions(resolved.workspace, { signal });
+      if (conversationWorkspace !== undefined && conversationWorkspace !== this.#conversationWorkspace(key)) {
+        await this.#send(chatId, t('这个菜单已过期，请回复 /m 重新打开。'), { replyTo });
+        return;
+      }
       const visibleSessions = this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : []);
       const sessionLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : null;
       const sessions = sessionLimit === null
@@ -2656,6 +2676,7 @@ export class FeishuHarnessBridge {
       const pageSlice = sessions.slice(safePage * MENU_PAGE_SIZE, (safePage + 1) * MENU_PAGE_SIZE);
       this.#rememberMenu(key, {
         kind: 'sessions',
+        conversationWorkspace,
         sessions: pageSlice.map((session) => ({ ...session, watched: watchedSet.has(session.sessionId) })),
       });
       await this.#sendCard(
@@ -2665,6 +2686,9 @@ export class FeishuHarnessBridge {
           key,
           updateMessageId,
           replyTo,
+          // The effective conversation workspace is separate from an explicit
+          // list selector, which may intentionally point at another workspace.
+          conversationWorkspace,
           // Keep the canonical selector result for later page callbacks. The
           // list response's workspace is display data and is not authoritative.
           sessionWorkspace: resolved.workspace,
@@ -2732,6 +2756,7 @@ export class FeishuHarnessBridge {
     this.#cardKeys.set(messageId, {
       key: options.key,
       chatId,
+      conversationWorkspace: options.conversationWorkspace,
       sessionWorkspace: typeof options.sessionWorkspace === 'string' && options.sessionWorkspace
         ? options.sessionWorkspace
         : null,
@@ -2850,6 +2875,7 @@ export class FeishuHarnessBridge {
   }
 
   async #sendMenuCard(key, chatId, { updateMessageId = null, replyTo = null } = {}) {
+    const conversationWorkspace = this.#conversationWorkspace(key);
     let currentSessionId = null;
     let directSessionTitle = null;
     try {
@@ -2874,12 +2900,13 @@ export class FeishuHarnessBridge {
         return { current, paths: current ? [current] : [] };
       });
     const sessionTask = (async () => {
-      const current = typeof this.#harness.currentWorkspace === 'function'
-        ? this.#harness.currentWorkspace()
-        : null;
-      if (!current || typeof this.#harness.listWorkspaceSessions !== 'function') return [];
+      if (typeof this.#harness.listWorkspaceSessions !== 'function') return [];
       try {
-        const listed = await this.#harness.listWorkspaceSessions(current, { signal: dataSignal });
+        const resolved = await resolveSessionListWorkspace('', this.#harness, {
+          signal: dataSignal, conversationKey: key,
+        });
+        if (resolved.error) return [];
+        const listed = await this.#harness.listWorkspaceSessions(resolved.workspace, { signal: dataSignal });
         return this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : []);
       } catch {
         return [];
@@ -2913,6 +2940,10 @@ export class FeishuHarnessBridge {
       presetTask,
       modelTask,
     ]);
+    if (conversationWorkspace !== undefined && conversationWorkspace !== this.#conversationWorkspace(key)) {
+      await this.#send(chatId, t('这个菜单已过期，请回复 /m 重新打开。'), { replyTo });
+      return;
+    }
     const workspaces = Array.isArray(snapshot.paths) ? snapshot.paths : [];
     const currentWorkspace = snapshot.current ?? null;
     const currentMatch = listedSessions.find((session) => session.sessionId === currentSessionId);
@@ -2944,7 +2975,7 @@ export class FeishuHarnessBridge {
         currentSession: currentSessionId ? { id: currentSessionId, title: currentSessionTitle } : null,
         sessions, archiveVisible, presetCatalog, modelCatalog,
       }),
-      { key, updateMessageId, replyTo },
+      { key, updateMessageId, replyTo, conversationWorkspace },
     );
   }
 

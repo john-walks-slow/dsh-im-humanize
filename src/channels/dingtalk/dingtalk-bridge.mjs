@@ -852,7 +852,10 @@ export class DingtalkHarnessBridge {
       });
       return;
     }
+    const sessionWorkspace = typeof this.#harness.currentConversationWorkspace === 'function'
+      ? this.#harness.currentConversationWorkspace(key) : this.#harness.currentWorkspace?.();
     if (entry.workspace !== this.#harness.currentWorkspace?.()
+      || entry.sessionWorkspace !== sessionWorkspace
       || entry.sessionId !== this.#state.sessionFor(key)) {
       result = { message: t('会话或工作区已变化，菜单已刷新，请重新选择。') };
     } else if ((this.#queues.has(key) || options.pendingInteraction || this.#batchInputs.status(key).phase !== 'idle')

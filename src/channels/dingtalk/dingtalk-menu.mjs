@@ -19,11 +19,14 @@ const presetCommand = (id) => `/preset ${/^\d+$/u.test(id) ? 'id:' : ''}${id}`;
 // as a command supplied by the client or as a prompt for the model.
 export async function dingtalkMenuSnapshot(harness, state, key, signal) {
   const workspace = harness.currentWorkspace?.();
+  const currentSessionWorkspace = () => typeof harness.currentConversationWorkspace === 'function'
+    ? harness.currentConversationWorkspace(key) : harness.currentWorkspace?.();
+  const sessionWorkspace = currentSessionWorkspace();
   const sessionId = state.sessionFor(key);
   const options = { signal };
   const results = await Promise.allSettled([
     workspacePathSnapshot(harness, options),
-    harness.listWorkspaceSessions?.(workspace, options),
+    harness.listWorkspaceSessions?.(sessionWorkspace, options),
     (async () => {
       const session = sessionId ? harness.workspaceSession?.(sessionId, key) : null;
       return typeof session?.models === 'function'
@@ -32,7 +35,8 @@ export async function dingtalkMenuSnapshot(harness, state, key, signal) {
     harness.agentPresetSettings?.(options),
   ]);
   signal?.throwIfAborted();
-  if (harness.currentWorkspace?.() !== workspace || state.sessionFor(key) !== sessionId) {
+  if (harness.currentWorkspace?.() !== workspace
+    || currentSessionWorkspace() !== sessionWorkspace || state.sessionFor(key) !== sessionId) {
     throw new Error(t('会话或工作区已变化，请重新发送 /m。'));
   }
   const [paths, listed, catalog, settings] = results.map((r) => r.status === 'fulfilled' ? r.value : null);
@@ -65,7 +69,7 @@ export async function dingtalkMenuSnapshot(harness, state, key, signal) {
     }));
     data[`${name}_index`] = entries.findIndex(([, command]) => command === current[name]);
   }
-  return { workspace, sessionId, selections, data };
+  return { workspace, sessionWorkspace, sessionId, selections, data };
 }
 
 export function dingtalkMenuCommand(entry, callback) {

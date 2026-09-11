@@ -950,6 +950,7 @@ export class BotWorkspaceStore {
   async applyConversationWorkspaceSwitch(botId, conversationKey, value, {
     token,
     clearSession,
+    sessionMatchesWorkspace,
     incarnation,
   } = {}) {
     const id = botIdOf(botId);
@@ -965,25 +966,34 @@ export class BotWorkspaceStore {
     // conversation's current workspace or its session.
     const workspace = value === null ? null : await validateWorkspacePath(value);
     return this.#enqueue(id, async () => {
-      if (!this.has(id)
-        || (incarnation !== undefined && incarnation !== this.incarnationFor(id))) {
-        const error = new Error('找不到要修改的机器人。');
-        error.code = 'workspace-bot-not-found';
-        throw error;
-      }
-      if (!this.isConversationWorkspaceSwitchCurrent(id, key, token)) {
-        throw workspaceSessionStale(
-          'The conversation workspace changed before this switch could be committed.',
-        );
-      }
+      const assertCurrentSwitch = () => {
+        if (!this.has(id)
+          || (incarnation !== undefined && incarnation !== this.incarnationFor(id))) {
+          const error = new Error('找不到要修改的机器人。');
+          error.code = 'workspace-bot-not-found';
+          throw error;
+        }
+        if (!this.isConversationWorkspaceSwitchCurrent(id, key, token)) {
+          throw workspaceSessionStale(
+            'The conversation workspace changed before this switch could be committed.',
+          );
+        }
+      };
+      assertCurrentSwitch();
       const previousOverrides = this.#conversationWorkspaces[id];
       const previous = previousOverrides?.[key];
       const hadOverride = Boolean(previousOverrides)
         && Object.hasOwn(previousOverrides, key);
       if (workspace === null ? !hadOverride : (hadOverride && previous === workspace)) {
-        // An identical explicit binding is already durable: nothing to rewrite
-        // and no reason to drop the conversation's session. The fence token is
-        // already published, which keeps the workspace that is in effect.
+        // The override may be unchanged while a binding persisted by an older
+        // version still points elsewhere. Only preserve a verified matching
+        // Session; never acknowledge /conv while keeping a foreign cwd.
+        const matches = await sessionMatchesWorkspace?.(this.conversationWorkspaceFor(id, key));
+        assertCurrentSwitch();
+        if (matches === false) {
+          await clearSession?.();
+          assertCurrentSwitch();
+        }
         return this.conversationWorkspaceFor(id, key);
       }
       const next = workspace === null
@@ -994,6 +1004,7 @@ export class BotWorkspaceStore {
         })()
         : { ...previousOverrides, [key]: workspace };
       await clearSession?.();
+      assertCurrentSwitch();
       if (Object.keys(next).length > 0) this.#conversationWorkspaces[id] = next;
       else delete this.#conversationWorkspaces[id];
       try {
@@ -1020,7 +1031,9 @@ export class BotWorkspaceStore {
     conversationKey,
     sessionId,
     clearSessions,
+    clearSession,
     setSession,
+    onConversationGeneration,
     incarnation,
     expectedGeneration,
     expectedConversationGeneration,
@@ -1041,7 +1054,7 @@ export class BotWorkspaceStore {
     }
     // Capture before any asynchronous lookup, unless the caller already captured
     // the fence before adopting the Session.
-    const conversationGeneration = expectedConversationGeneration === undefined
+    let conversationGeneration = expectedConversationGeneration === undefined
       ? this.conversationGenerationFor(id, conversationKey)
       : expectedConversationGeneration;
     const assertConversationCurrent = () => {
@@ -1070,14 +1083,36 @@ export class BotWorkspaceStore {
       // silently overwritten by the binding that started before it.
       assertConversationCurrent();
       const sameWorkspace = await sameWorkspacePath(workspace, this.workspaceFor(id));
+      const previousOverrides = this.#conversationWorkspaces[id];
+      const override = previousOverrides?.[conversationKey];
+      const clearsOverride = override !== undefined && !(await sameWorkspacePath(workspace, override));
       assertConversationCurrent();
-      if (!sameWorkspace) {
+      if (!sameWorkspace || clearsOverride) {
+        if (sameWorkspace && typeof clearSession !== 'function') {
+          throw new TypeError('clearSession is required to reconcile a conversation workspace');
+        }
         const previous = this.#workspaces[id];
-        // Fence every session resolved before this transition, then remove
-        // the old workspace mappings before publishing the new workspace.
-        this.#generations.set(id, this.#freshGeneration());
-        await clearSessions();
-        this.#workspaces[id] = workspace;
+        if (clearsOverride) {
+          // /session keeps its bot-default semantics, but cannot leave this
+          // conversation pinned to a different cwd from the adopted Session.
+          // Publish the new fence to the scope before any asynchronous work.
+          conversationGeneration = this.publishConversationWorkspaceSwitch(id, conversationKey);
+          onConversationGeneration?.(conversationGeneration);
+        }
+        if (!sameWorkspace) {
+          this.#generations.set(id, this.#freshGeneration());
+          await clearSessions();
+        } else {
+          await clearSession(conversationKey);
+        }
+        assertConversationCurrent();
+        if (!sameWorkspace) this.#workspaces[id] = workspace;
+        if (clearsOverride) {
+          const next = { ...previousOverrides };
+          delete next[conversationKey];
+          if (Object.keys(next).length) this.#conversationWorkspaces[id] = next;
+          else delete this.#conversationWorkspaces[id];
+        }
         try {
           await this.#persist();
         } catch (error) {
@@ -1085,6 +1120,7 @@ export class BotWorkspaceStore {
           // fenced. Restoring either could pair an old session with a state
           // transition whose durable outcome is unknown.
           this.#workspaces[id] = previous;
+          if (clearsOverride) this.#conversationWorkspaces[id] = previousOverrides;
           throw error;
         }
       }
@@ -1098,6 +1134,7 @@ export class BotWorkspaceStore {
         workspace,
         sessionId,
         generation: this.#generations.get(id),
+        conversationGeneration,
       };
     });
   }
@@ -1536,6 +1573,37 @@ export function createBotWorkspaceScope(
     }
   }
 
+  async function conversationSessionMatchesWorkspace(conversationKey, workspace) {
+    const sessionId = state.sessionFor?.(conversationKey);
+    if (!sessionId) return true;
+    let sessionWorkspace = sessionGenerations.get(sessionId)?.workspace;
+    let matches = false;
+    if (!sessionWorkspace && typeof harness.rpc === 'function') {
+      // Read registration metadata only: adopting a Session is not a lookup.
+      // Resolve by id before comparing real paths so symlink pins remain valid.
+      const listed = await harness.rpc('workspace.list', {}, 30_000);
+      if (!Array.isArray(listed?.items)) {
+        throw new TypeError('Harness returned an invalid workspace list');
+      }
+      const owners = listed.items.filter((item) => Array.isArray(item?.sessionIds)
+        && item.sessionIds.includes(sessionId));
+      if (owners.length === 1 && typeof owners[0].path === 'string' && isAbsolute(owners[0].path)) {
+        sessionWorkspace = owners[0].path;
+      }
+    } else if (!sessionWorkspace && typeof harness.listWorkspaceSessions === 'function') {
+      const listed = await harness.listWorkspaceSessions(await canonicalWorkspacePath(workspace));
+      if (!Array.isArray(listed?.sessions)) {
+        throw new TypeError('Harness returned an invalid workspace session list');
+      }
+      matches = listed.sessions.some((session) => session?.sessionId === sessionId);
+    }
+    if (sessionWorkspace) matches = await sameWorkspacePath(sessionWorkspace, workspace);
+    if (state.sessionFor(conversationKey) !== sessionId) {
+      throw workspaceSessionStale('The session binding changed while its workspace was being checked.');
+    }
+    return matches;
+  }
+
   const scopedHarness = new Proxy(harness, {
     get(target, property) {
       if (property === 'agentPresetSettings') {
@@ -1669,6 +1737,7 @@ export function createBotWorkspaceScope(
           maskConversationSwitch(conversationKey, token);
           return trackConversationSwitch(conversationKey, workspaces.applyConversationWorkspaceSwitch(botId, conversationKey, workspace, {
             token,
+            sessionMatchesWorkspace: (selected) => conversationSessionMatchesWorkspace(conversationKey, selected),
             clearSession: async () => {
               await state.clearSession(conversationKey);
               // A handle resolved before this switch must not stay usable: the
@@ -1689,6 +1758,7 @@ export function createBotWorkspaceScope(
           maskConversationSwitch(conversationKey, token);
           return trackConversationSwitch(conversationKey, workspaces.applyConversationWorkspaceSwitch(botId, conversationKey, null, {
             token,
+            sessionMatchesWorkspace: (selected) => conversationSessionMatchesWorkspace(conversationKey, selected),
             clearSession: async () => {
               await state.clearSession(conversationKey);
             },
@@ -1737,7 +1807,9 @@ export function createBotWorkspaceScope(
             conversationKey,
             sessionId,
             clearSessions: () => state.clearSessions(),
+            clearSession: (key) => state.clearSession(key),
             setSession: (key, selectedSessionId) => state.setSession(key, selectedSessionId),
+            onConversationGeneration: (generation) => maskConversationSwitch(conversationKey, generation),
             incarnation,
             expectedGeneration,
             expectedConversationGeneration,
@@ -1748,7 +1820,7 @@ export function createBotWorkspaceScope(
             throw error;
           }
           if (bound.generation !== workspaces.generationFor(botId)
-            || expectedConversationGeneration
+            || bound.conversationGeneration
               !== workspaces.conversationGenerationFor(botId, conversationKey)) {
             throw workspaceSessionStale(
               'The bot workspace changed before the session binding completed.',
@@ -1756,8 +1828,9 @@ export function createBotWorkspaceScope(
           }
           sessionGenerations.set(sessionId, {
             generation: bound.generation,
+            workspace: bound.workspace,
             conversationKey,
-            conversationGeneration: expectedConversationGeneration ?? 0,
+            conversationGeneration: bound.conversationGeneration ?? 0,
           });
           return {
             ...adopted,
@@ -1789,9 +1862,10 @@ export function createBotWorkspaceScope(
             : null;
           const agentPreset = workspaces.agentPresetFor(botId);
           const model = inheritBotModel === false ? null : workspaces.modelFor(botId);
+          const workspace = workspaces.conversationWorkspaceFor(botId, conversationKey);
           const sessionId = await target.createSession({
             ...createOptions,
-            workspace: workspaces.conversationWorkspaceFor(botId, conversationKey),
+            workspace,
             ...(agentPreset == null ? {} : { agentPreset }),
           });
           // A conversation-level workspace switch can commit while the session is
@@ -1819,6 +1893,7 @@ export function createBotWorkspaceScope(
           }
           sessionGenerations.set(sessionId, {
             generation,
+            workspace,
             conversationKey,
             conversationGeneration,
           });

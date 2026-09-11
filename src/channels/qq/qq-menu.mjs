@@ -55,7 +55,8 @@ export class QqMenuStore {
     const entry = this.#entries.get(this.#key(route, actor));
     if (!entry || entry.used || !entry.view || entry.expiresAt <= this.#now()
       || (token && token !== entry.token)) return { error: t('这个菜单已过期，请回复 /m 重新打开。') };
-    if (entry.workspace !== context.workspace || entry.sessionId !== context.sessionId) {
+    if (entry.workspace !== context.workspace || entry.sessionWorkspace !== context.sessionWorkspace
+      || entry.sessionId !== context.sessionId) {
       entry.used = true;
       return { error: t('会话或工作区已变化，请重新发送 /m。') };
     }
@@ -87,6 +88,8 @@ async function catalogFor(harness, sessionId, key, options) {
 
 export async function qqMenuView(name, harness, state, key, { signal, busy = false } = {}) {
   const workspace = harness.currentWorkspace?.();
+  const sessionWorkspace = typeof harness.currentConversationWorkspace === 'function'
+    ? harness.currentConversationWorkspace(key) : workspace;
   const sessionId = state.sessionFor(key);
   const options = { signal };
   const archived = state.includesArchivedSessions?.() === true;
@@ -94,7 +97,7 @@ export async function qqMenuView(name, harness, state, key, { signal, busy = fal
   if (name === 'main' || name === 'status') {
     if (name === 'status') await harness.ensureRunning(options);
     const results = await Promise.allSettled([
-      harness.listWorkspaceSessions?.(workspace, options),
+      harness.listWorkspaceSessions?.(name === 'main' ? sessionWorkspace : workspace, options),
       catalogFor(harness, sessionId, key, options),
       harness.agentPresetSettings?.(options),
     ]);
@@ -125,8 +128,8 @@ export async function qqMenuView(name, harness, state, key, { signal, busy = fal
       ] };
   }
   if (name === 'sessions') {
-    const listed = await harness.listWorkspaceSessions(workspace, options);
-    return qqMenuPage({ title: t('📋 会话列表'), detail: clean(workspace), choices: visibleSessions(listed).map((item) =>
+    const listed = await harness.listWorkspaceSessions(sessionWorkspace, options);
+    return qqMenuPage({ title: t('📋 会话列表'), detail: clean(sessionWorkspace), choices: visibleSessions(listed).map((item) =>
       command(`${item.sessionId === sessionId ? '✓ ' : ''}${clean(item.title || item.sessionId, 70)}${item.archived ? t('（已归档）') : ''}`, `/session ${item.sessionId}`)) });
   }
   if (name === 'workspaces') {

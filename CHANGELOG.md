@@ -13,6 +13,10 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ### Fixed / 修复
 
+- `/session ID` 绑定时在同一事务内清除与目标 Session 工作区冲突的对话覆盖，保留匹配的显式覆盖和原有 bot 默认工作区语义；重复 `/conv` 会核验遗留 Session 的目录归属，避免提示切换成功却在其他项目执行。补齐持久化失败、并发切换和符号链接路径的回归测试。
+  `/session ID` now clears a conflicting conversation override in the binding transaction, preserving matching explicit pins and existing bot-default behavior. Repeated `/conv` verifies legacy Session ownership instead of reporting success while retaining a Session from another project. Regression tests cover persistence failures, concurrent switches, and symbolic-link paths.
+- 飞书 `/sessionlist` 卡片及主菜单、钉钉会话选择器和 QQ 会话列表改用当前对话的有效工作区；工作区设置菜单仍管理 bot 默认工作区。切换后旧会话选择菜单失效，避免旧选项把新工作区切回，并新增实际渠道入口回归测试。
+  Feishu `/sessionlist` cards and main-menu sessions, the DingTalk session selector, and QQ session lists now use the conversation's effective workspace. Workspace settings remain bot-default. Stale session-selection menus are rejected after a conversation workspace change, with regression tests covering channel entry points.
 - 补齐会话工作区切换的提交校验：显式绑定统一记录会话代际，读取已有 Session 前捕获代际，`/model` 的既有会话与新会话路径都保留对话上下文，防止异步选模或绑定把旧工作区 Session 写回。`/session N` 与 `/sessionlist` 共用对话有效工作区，`/conv` 正确区分显式绑定与跟随默认；共享 Session 的其他对话不受单个对话切换影响。
   Completed conversation-workspace commit fencing: explicit bindings retain structured generation records, adoption captures the conversation generation before asynchronous lookups, and both `/model` paths preserve the conversation context. Delayed model selection or binding cannot restore a Session from the old workspace. `/session N` and `/sessionlist` resolve the same effective workspace, `/conv` reports explicit overrides correctly, and switching one conversation preserves other conversations sharing the Session.
 - 修复对话工作区切换与消息处理并发时可能把后续消息发进旧工作区的问题：`/conv` 在开始提交时就发布代际栅栏，已在途的会话绑定会被拒绝并重新解析，消息也不会再经由切换前的会话发送；`/session` 显式绑定同样受该栅栏保护。
