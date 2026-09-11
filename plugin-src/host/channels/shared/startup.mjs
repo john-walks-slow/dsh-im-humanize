@@ -26,7 +26,7 @@ function followHostLanguage(ctx, channel, controller, logger) {
 
 /** Mount the native management RPC before any fallible production initialization. */
 export async function installProductionChannel(ctx, config, {
-  channel, rpcChannel, createProduction, createHandler,
+  channel, rpcChannel, createProduction, createHandler, reportStartupError,
 }) {
   let startupError = publicChannelInitializing(channel);
   let handler = async () => ({ ok: false, error: startupError });
@@ -56,12 +56,15 @@ export async function installProductionChannel(ctx, config, {
     followHostLanguage(ctx, channel, production.controller, logger);
     handler = readyHandler;
   } catch (error) {
-    startupError = publicChannelStartupError(channel, error);
-    logger.error?.(`[dsh-im] failed to activate ${channel}; management RPC remains available`, error);
+    startupError = reportStartupError
+      ? reportStartupError(error, false)
+      : publicChannelStartupError(channel, error);
+    if (!reportStartupError) logger.error?.(`[dsh-im] failed to activate ${channel}; management RPC remains available`, error);
     try {
       await closeProduction();
     } catch (cleanupError) {
-      logger.error?.(`[dsh-im] failed to close partially initialized ${channel} resources`, cleanupError);
+      if (reportStartupError) reportStartupError(cleanupError, true);
+      else logger.error?.(`[dsh-im] failed to close partially initialized ${channel} resources`, cleanupError);
     }
   }
   return disposeRpc;

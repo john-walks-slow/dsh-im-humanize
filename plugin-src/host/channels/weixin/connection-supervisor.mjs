@@ -1,3 +1,5 @@
+import { createWeixinDiagnostics } from '../../../../src/channels/weixin/connection-error.mjs';
+
 const DEFAULT_RETRY_DELAYS_MS = Object.freeze([250, 1_000, 3_000, 5_000, 10_000, 30_000]);
 
 function retryDelays(value) {
@@ -10,6 +12,7 @@ export class ConnectionSupervisor {
   #controller;
   #harness;
   #logger;
+  #diagnostics;
   #retryDelays;
   #healthyIntervalMs;
   #setTimeout;
@@ -26,6 +29,7 @@ export class ConnectionSupervisor {
     controller,
     harness,
     logger = console,
+    diagnostics,
     retryDelaysMs,
     healthyIntervalMs = 15_000,
     setTimeoutImpl = setTimeout,
@@ -40,6 +44,7 @@ export class ConnectionSupervisor {
     this.#controller = controller;
     this.#harness = harness;
     this.#logger = logger;
+    this.#diagnostics = diagnostics ?? createWeixinDiagnostics({ logger });
     this.#retryDelays = retryDelays(retryDelaysMs);
     this.#healthyIntervalMs = Number.isFinite(healthyIntervalMs) && healthyIntervalMs >= 0
       ? healthyIntervalMs
@@ -116,7 +121,14 @@ export class ConnectionSupervisor {
       if (this.#closed) return;
       const delayMs = this.#retryDelays[Math.min(this.#retryIndex, this.#retryDelays.length - 1)];
       this.#retryIndex += 1;
-      this.#logger.warn?.(`[dsh-weixin] connection reconciliation failed; retrying in ${delayMs}ms`, error);
+      if (typeof this.#controller.reportRestoreFailure === 'function') {
+        try { await this.#controller.reportRestoreFailure(error); }
+        catch {
+          this.#diagnostics.report(error, { operation: 'connection.restore', stage: 'harness.check', code: 'harness-check-unknown-failed', automatic: true });
+        }
+      } else {
+        this.#diagnostics.report(error, { operation: 'connection.restore', stage: 'harness.check', code: 'harness-check-unknown-failed', automatic: true });
+      }
       this.#schedule(delayMs);
     }
   }

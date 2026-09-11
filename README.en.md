@@ -220,6 +220,8 @@ DingTalk menus use a shared template built into the plugin; no template setup is
 - **Manage multiple bots independently**: a channel can have multiple connected bots. Credentials, connection state, workspace, model, Agent Preset, and chat-to-Session mappings are kept separately for every bot, so card actions do not affect sibling bots.
 - **Streaming replies and progress**: the plugin uses each platform's available capabilities to show thinking state, tool progress, and incremental answers. Platforms without a native streaming API complete replies through message edits, card updates, or a final message.
 
+If WeChat setup, connection, or removal fails, expand **Diagnostic details** and choose **Copy diagnostics**. Include the steps, Desktop/Web mode, and actual DSH version in your report; use the `WX-CONN-…` reference to find the matching `[dsh-weixin]` Host log. Diagnostics distinguish network, credential, file, Harness, and WeChat service failures without including login tokens or QR contents. When removal succeeds but local cleanup fails, the page retains a cleanup warning. If no Host reference was received, also check the DSH management connection and startup logs.
+
 ## Design
 
 - Registers one top-level **IM Bot** settings page containing the built-in IM channels and one AI Office Connector.

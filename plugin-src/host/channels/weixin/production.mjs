@@ -11,6 +11,7 @@ import {
 } from '../../../../src/channels/weixin/weixin-api.mjs';
 import { WeixinController } from '../../../../src/channels/weixin/weixin-controller.mjs';
 import { WeixinRuntime } from '../../../../src/channels/weixin/weixin-runtime.mjs';
+import { createWeixinDiagnostics, knownWeixinErrorCode, weixinStageError } from '../../../../src/channels/weixin/connection-error.mjs';
 import {
   BotWorkspaceStore,
   createBotWorkspaceScope,
@@ -44,6 +45,33 @@ function pluginPaths(config) {
   };
 }
 
+// Keep shared workspace lifecycle semantics; expose its fallible persistence only to Weixin.
+function diagnosticWorkspaces(store) {
+  const writes = new Set(['ensure', 'setWorkspace', 'setModel', 'setAgentPreset', 'setAlias', 'setContextEnhancement', 'setAccessPolicy', 'flushPendingRemoval']);
+  const removals = new Set(['retireAfterConfigCommit', 'finishRemoval']);
+  return new Proxy(store, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (typeof value !== 'function') return value;
+      if (!writes.has(property) && !removals.has(property)) return value.bind(target);
+      return (...args) => {
+        const failure = error => {
+          throw knownWeixinErrorCode(error?.code) ? error
+            : weixinStageError(removals.has(property) ? 'workspace-cleanup-failed' : 'workspace-save-failed', error);
+        };
+        try {
+          const result = value.apply(target, args);
+          // flushPendingRemoval must remain synchronous when no cleanup is pending.
+          return result?.then ? result.then(value => {
+            if (removals.has(property) && value?.error) failure(value.error);
+            return value;
+          }, failure) : result;
+        } catch (error) { return failure(error); }
+      };
+    },
+  });
+}
+
 export async function createProductionController(ctx, config = {}, internals = {}) {
   if (!ctx?.credentials) throw new TypeError('dsh-weixin requires ctx.credentials');
   const connection = harnessConnection(ctx, config);
@@ -58,13 +86,14 @@ export async function createProductionController(ctx, config = {}, internals = {
   const logger = typeof ctx.logger === 'function'
     ? ctx.logger('dsh-weixin')
     : (ctx.logger ?? console);
+  const diagnostics = internals.diagnostics ?? createWeixinDiagnostics({ logger });
   const agentPresetCatalog = () => listAgentPresetCatalog(ctx);
   const paths = pluginPaths(config);
   const configStore = await new ConfigStore(paths.config).load();
   const defaultWorkspace = resolve(config.workspace ?? process.cwd());
   const WorkspaceStore = internals.WorkspaceStore ?? BotWorkspaceStore;
-  const workspaces = internals.workspaces
-    ?? await new WorkspaceStore(paths.workspaces, { defaultWorkspace }).load();
+  const workspaces = diagnosticWorkspaces(internals.workspaces
+    ?? await new WorkspaceStore(paths.workspaces, { defaultWorkspace }).load());
   const configuredBots = configStore.list();
   await workspaces.reconcile(configuredBots.map((bot) => bot.botId));
   await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.botId, {
@@ -115,6 +144,7 @@ export async function createProductionController(ctx, config = {}, internals = {
     credentials: ctx.credentials,
     configStore: observedConfigStore,
     logger,
+    diagnostics,
     createRuntime: async ({ botId, config: accountConfig, token }) => {
       const state = await stateFor(botId);
       await workspaces.ensure(botId, {
@@ -125,6 +155,7 @@ export async function createProductionController(ctx, config = {}, internals = {
         botId, workspaces, state, agentPresetCatalog,
       });
       return new Runtime({
+        diagnostics,
         api,
         config: accountConfig,
         token,
@@ -158,16 +189,35 @@ export async function createProductionController(ctx, config = {}, internals = {
       }
     },
   });
-  const controller = createWorkspaceAwareController(coreController, {
+  const workspaceController = createWorkspaceAwareController(coreController, {
     workspaces,
     stateFor,
     agentPresetCatalog,
     modelCatalog,
   });
+  const controller = new Proxy(workspaceController, {
+    get(target, property) {
+      if (property === 'deleteBot') return async (...args) => {
+        const existed = Boolean(configStore.get(args[0]));
+        try { return await target.deleteBot(...args); }
+        catch (error) {
+          if (!existed || configStore.get(args[0])) throw error;
+          // The shared workspace wrapper can fail cleaning up after the account commit.
+          const warning = diagnostics.report(weixinStageError('workspace-cleanup-failed', error), {
+            operation: 'bot.delete', botId: args[0], warning: true,
+          }).publicError;
+          try { return { ...await target.status(), warnings: [warning] }; }
+          catch (readError) { throw weixinStageError('status-read-failed', readError, 'status.read'); }
+        }
+      };
+      return Reflect.get(target, property);
+    },
+  });
   const supervisor = createSupervisor({
     controller,
     harness,
     logger,
+    diagnostics,
     retryDelaysMs: config.retryDelaysMs,
     healthyIntervalMs: config.healthyIntervalMs,
   }).start();

@@ -1,3 +1,4 @@
+import { weixinStageError } from './connection-error.mjs';
 import { deferredStateAccess, normalizeDeferredState } from '../shared/deferred-state.mjs';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
@@ -123,7 +124,7 @@ export class WeixinStateStore {
     try {
       this.#state = normalizeState(JSON.parse(await readFile(this.#path, 'utf8')));
     } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
+      if (error?.code !== 'ENOENT') throw weixinStageError('account-state-read-failed', error);
       this.#state = structuredClone(EMPTY_STATE);
       await this.#persist();
     }
@@ -271,7 +272,7 @@ export class WeixinStateStore {
     try {
       await unlink(this.#path);
     } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
+      if (error?.code !== 'ENOENT') throw weixinStageError('account-state-cleanup-failed', error);
     }
     this.#state = structuredClone(EMPTY_STATE);
   }
@@ -285,6 +286,6 @@ export class WeixinStateStore {
       await rename(temporary, this.#path);
     });
     this.#writeQueue = operation.then(() => undefined, () => undefined);
-    await operation;
+    await operation.catch(error => { throw weixinStageError('account-state-write-failed', error); });
   }
 }

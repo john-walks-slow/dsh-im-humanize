@@ -24,6 +24,23 @@ function jsonResponse(value, init) {
   });
 }
 
+test('login lifecycle preserves business rejection codes without confusing numeric and string zero', async () => {
+  for (const operation of ['beginLogin', 'notifyStart', 'notifyStop']) {
+    for (const response of [{ ret: 0, errcode: '0' }, { ret: '0', errcode: 0 }, { ret: 0, errcode: -14 }, { ret: '23', errcode: '0' }]) {
+      const api = createWeixinApi({ fetchImpl: async () => jsonResponse({ qrcode: 'test', qrcode_img_content: 'https://liteapp.weixin.qq.com/q/test', ...response }) });
+      const request = () => api[operation]({ baseUrl: 'https://ilinkai.weixin.qq.com/', token: 'test-login' });
+      const provider = response.errcode === -14 ? '-14' : response.ret === '23' ? '23' : null;
+      if (!provider) await request();
+      else await assert.rejects(request(), error => {
+        assert.equal(error.providerCode, provider);
+        assert.equal(error.code, operation === 'beginLogin' ? 'qr-request-rejected'
+          : operation === 'notifyStop' ? 'stop-rejected' : provider === '-14' ? 'stale-token' : 'start-rejected');
+        return true;
+      });
+    }
+  }
+});
+
 function encryptImage(plaintext, key) {
   const cipher = createCipheriv('aes-128-ecb', key, null);
   return Buffer.concat([cipher.update(plaintext), cipher.final()]);

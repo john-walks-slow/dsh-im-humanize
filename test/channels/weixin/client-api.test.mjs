@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import React from 'react';
@@ -14,7 +13,6 @@ import {
 } from '../../../plugin-src/client/channels/weixin/index.js';
 
 const { act, create } = TestRenderer;
-const CLIENT_URL = new URL('../../../plugin-src/client/channels/weixin/index.js', import.meta.url);
 
 async function flushMicrotasks() {
   for (let index = 0; index < 6; index += 1) await Promise.resolve();
@@ -171,10 +169,41 @@ test('Weixin connection feedback is scoped to the checked bot', async (t) => {
   await act(async () => { renderer.unmount(); });
 });
 
-test('Weixin reconnect failure uses fixed translatable copy', async () => {
-  const source = await readFile(CLIENT_URL, 'utf8');
-  assert.match(source, /'连接检查失败，请稍后重试。'/);
-  assert.match(source, /'连接检查完成。机器人尚未收到可用于测试的私聊消息。'/);
-  assert.doesNotMatch(source, /请先私聊机器人发送 \/status/);
-  assert.doesNotMatch(source, /连接检查失败：\$\{presentError\(error\)\.message\}/);
+test('Weixin management failures stay visible with a copyable diagnostic', async t => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    setInterval() { return 1; }, clearInterval() {}, setTimeout() { return 1; }, clearTimeout() {},
+    requestAnimationFrame(callback) { callback(); return 1; }, cancelAnimationFrame() {},
+  };
+  t.after(() => { if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow; });
+  const error = { code: 'credential-read-failed', message: '无法读取登录凭据', details: {
+    stage: 'credential.read', reason: 'EACCES', referenceId: 'WX-CONN-ABCDEF12', hint: '请检查数据目录权限',
+    bot_token: 'must-not-cross-client-normalization', providerCode: 'must-not-cross-client-normalization',
+  } };
+  for (const operation of ['bot.reconnect', 'bot.delete', 'provision.begin']) {
+    let renderer;
+    const bots = operation === 'provision.begin' ? [] : [account('wx_first', 'First Bot')];
+    await act(async () => {
+      renderer = create(React.createElement(WeixinSettingsTab, { rpcCall: async endpoint => {
+        if (endpoint === 'connection.status') return { ok: true, value: { revision: 1, bots } };
+        if (endpoint === operation) return { ok: false, error };
+        throw new Error('Unexpected endpoint');
+      } }));
+      await flushMicrotasks();
+    });
+    if (operation === 'bot.delete') await act(async () => { buttonNamed(renderer.root, '移除接入').props.onClick(); });
+    await act(async () => {
+      buttonNamed(renderer.root, operation === 'bot.delete' ? '确认移除' : operation === 'provision.begin' ? '生成微信二维码' : '检查连接').props.onClick();
+      await flushMicrotasks();
+    });
+    const diagnostics = renderer.root.findAllByProps({ 'data-weixin-diagnostic': true });
+    assert.equal(diagnostics.length, 1, operation);
+    assert.match(textOf(diagnostics[0]), /WX-CONN-ABCDEF12/);
+    assert.match(textOf(diagnostics[0]), /EACCES/);
+    assert.doesNotMatch(JSON.stringify(renderer.toJSON()), /must-not-cross-client-normalization/);
+    await act(async () => { buttonNamed(diagnostics[0], '复制诊断信息').props.onClick(); await flushMicrotasks(); });
+    assert.match(renderer.root.findByType('textarea').props.value, /WX-CONN-ABCDEF12/);
+    if (operation === 'bot.delete') assert.ok(buttonNamed(renderer.root, '确认移除'));
+    await act(async () => { renderer.unmount(); });
+  }
 });

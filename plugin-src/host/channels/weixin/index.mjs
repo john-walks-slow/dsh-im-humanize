@@ -1,20 +1,29 @@
 import { createProductionController } from './production.mjs';
 import { createWeixinRpcHandler, installWeixinRpc, WEIXIN_RPC_CHANNEL } from './rpc.mjs';
 import { installProductionChannel } from '../shared/startup.mjs';
+import { publicChannelStartupError } from '../shared/startup-error.mjs';
+import { createWeixinDiagnostics } from '../../../../src/channels/weixin/connection-error.mjs';
 
 export const name = 'dsh-weixin-host';
 export const inject = ['connection', 'credentials', 'typertGateway'];
 
 export async function apply(ctx, config = {}) {
+  const logger = typeof ctx.logger === 'function' ? ctx.logger('dsh-weixin') : (ctx.logger ?? console);
+  const diagnostics = createWeixinDiagnostics({ logger });
+  const rpcOptions = { ...config.rpcOptions, logger, diagnostics };
   if (config?.controller) {
-    return installWeixinRpc(ctx, config.controller, config.rpcOptions, config.rpcAuthority);
+    return installWeixinRpc(ctx, config.controller, rpcOptions, config.rpcAuthority);
   }
 
   return installProductionChannel(ctx, config, {
     channel: 'weixin',
     rpcChannel: WEIXIN_RPC_CHANNEL,
-    createProduction: () => createProductionController(ctx, config, config.internals),
-    createHandler: controller => createWeixinRpcHandler(controller, config.rpcOptions),
+    createProduction: () => createProductionController(ctx, config, { ...config.internals, diagnostics }),
+    createHandler: controller => createWeixinRpcHandler(controller, rpcOptions),
+    reportStartupError: (error, warning) => diagnostics.report(error, {
+      operation: 'startup', stage: warning ? 'connection.stop' : 'startup.load', warning,
+      code: publicChannelStartupError('weixin', error).code,
+    }).publicError,
   });
 }
 

@@ -93,9 +93,9 @@ function uncertainWeixinDelivery(cause) {
   return preserveArtifactMetadata(error, cause);
 }
 
-function rejectedProviderResponse(value) {
+export function rejectedProviderResponse(value, fields = ['ret', 'errcode']) {
   if (!value || typeof value !== 'object') return null;
-  for (const field of ['ret', 'errcode']) {
+  for (const field of fields) {
     if (value[field] !== undefined && value[field] !== 0 && value[field] !== '0') {
       return safeProviderCode(value[field]) ?? 'rejected';
     }
@@ -411,6 +411,7 @@ async function requestJson(fetchImpl, {
   }
 
   const controller = new AbortController();
+  const startedAt = Date.now();
   let timedOut = false;
   const onAbort = () => controller.abort(signal?.reason);
   if (signal?.aborted) throw abortError(signal);
@@ -441,11 +442,16 @@ async function requestJson(fetchImpl, {
     }
   } catch (error) {
     if (signal?.aborted) throw abortError(signal);
+    let failure;
     if (timedOut) {
-      throw new WeixinApiError('timeout', '微信服务请求超时。', { cause: error });
+      failure = new WeixinApiError('timeout', '微信服务请求超时。', { cause: error });
+    } else {
+      failure = error instanceof WeixinApiError ? error
+        : new WeixinApiError('network-error', '暂时无法访问微信服务。', { cause: error });
     }
-    if (error instanceof WeixinApiError) throw error;
-    throw new WeixinApiError('network-error', '暂时无法访问微信服务。', { cause: error });
+    failure.durationMs = Date.now() - startedAt;
+    failure.timeoutMs = timeoutMs;
+    throw failure;
   } finally {
     if (timer) clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
@@ -599,6 +605,8 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
         signal,
       });
       const qrcode = nonEmptyString(response?.qrcode);
+      const providerCode = rejectedProviderResponse(response, ['errcode', 'ret']);
+      if (providerCode) throw new WeixinApiError('qr-request-rejected', '微信服务拒绝了二维码申请。', { providerCode });
       if (!qrcode) throw new WeixinApiError('invalid-qr', '微信服务没有返回二维码令牌。');
       return {
         qrcode,
@@ -764,14 +772,15 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
         timeoutMs: 10_000,
         body: { base_info: baseInfo() },
       });
-      if (response?.ret !== undefined && response.ret !== 0) {
-        throw new WeixinApiError('start-rejected', '微信账号连接启动失败。');
+      const providerCode = rejectedProviderResponse(response, ['errcode', 'ret']);
+      if (providerCode) {
+        throw new WeixinApiError(providerCode === '-14' ? 'stale-token' : 'start-rejected', '微信账号连接启动失败。', { providerCode });
       }
       return response;
     },
 
     async notifyStop({ baseUrl, token, signal }) {
-      return requestJson(fetchImpl, {
+      const response = await requestJson(fetchImpl, {
         method: 'POST',
         baseUrl,
         endpoint: 'ilink/bot/msg/notifystop',
@@ -780,6 +789,9 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
         timeoutMs: 10_000,
         body: { base_info: baseInfo() },
       });
+      const providerCode = rejectedProviderResponse(response, ['errcode', 'ret']);
+      if (providerCode) throw new WeixinApiError('stop-rejected', '微信服务未确认停止通知。', { providerCode });
+      return response;
     },
   });
 }

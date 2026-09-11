@@ -128,7 +128,10 @@ for (const { id, apply, Store, api } of channels) {
       const result = await f.call(id);
       assert.equal(result.ok, false);
       assert.equal(result.error.code, `${id}-startup-config-invalid`);
-      assert.deepEqual(result.error.details, {});
+      if (id === 'weixin') {
+        assert.equal(result.error.details.stage, 'startup.load');
+        assert.match(result.error.details.referenceId, /^WX-CONN-[A-F0-9]{8}$/);
+      } else assert.deepEqual(result.error.details, {});
       assert.doesNotMatch(JSON.stringify(result), /private-secret-value/);
       assert.equal(await readFile(config[filename], 'utf8'), contents);
       assert.throws(() => (api.unwrapRpcResult ?? api.unwrapOfficeRpc)(result), error => {
