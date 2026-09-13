@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { h, localizeText } from '../../i18n.js';
 import { normalizeConnectionError } from './api.js';
+import { CONFIG_ISSUE_LABELS } from '../../../../src/channels/weixin/diagnostic-details.mjs';
 
 const STAGE_LABELS = {
   'startup.load': '加载微信配置', 'qr.begin': '申请二维码', 'qr.encode': '生成二维码图片', 'qr.poll': '查询扫码状态',
@@ -27,7 +28,7 @@ export function formatWeixinDiagnostic(value) {
   return [
     localizeText(error.message), details.hint ? localizeText(details.hint) : null,
     localizeText('错误码') + ': ' + error.code,
-    ...['operation', 'stage', 'reason', 'httpStatus', 'providerCode', 'resource', 'referenceId', 'occurredAt', 'rollback', 'pluginVersion']
+    ...['operation', 'stage', 'reason', 'httpStatus', 'providerCode', 'resource', 'file', 'field', 'issue', 'referenceId', 'occurredAt', 'rollback', 'pluginVersion']
       .filter(field => details[field] !== undefined)
       .map(field => `${field}: ${details[field]}`),
   ].filter(Boolean).join('\n');
@@ -48,6 +49,8 @@ export function WeixinConnectionError({ error: value, warning = false }) {
   const fields = [
     ['错误码', error.code], ['失败阶段', localizeText(STAGE_LABELS[details.stage] ?? details.stage ?? '')],
     ['底层原因', details.reason], ['HTTP 状态', details.httpStatus], ['微信返回码', details.providerCode],
+    ['配置文件', details.file], ['配置字段', details.field],
+    ['校验原因', details.issue ? localizeText(CONFIG_ISSUE_LABELS[details.issue]) : undefined],
     ['参考号', details.referenceId], ['发生时间', details.occurredAt], ['插件版本', details.pluginVersion],
   ].filter(([, text]) => text !== undefined && text !== '');
   return h('div', { className: 'dxw-summary dim-cardSummary', 'data-weixin-diagnostic': true, role: warning ? 'status' : undefined },

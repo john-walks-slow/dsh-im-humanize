@@ -228,6 +228,8 @@ DingTalk menus use a shared template built into the plugin; no template setup is
 
 If WeChat setup, connection, or removal fails, expand **Diagnostic details** and choose **Copy diagnostics**. Include the steps, Desktop/Web mode, and actual DSH version in your report; use the `WX-CONN-…` reference to find the matching `[dsh-weixin]` Host log. Diagnostics distinguish network, credential, file, Harness, and WeChat service failures without including login tokens or QR contents. When removal succeeds but local cleanup fails, the page retains a cleanup warning. If no Host reference was received, also check the DSH management connection and startup logs.
 
+Startup configuration validation failures also include `file`, `field`, and `issue`, identifying the first rejected field in `config.json` or `workspaces.json`. Field positions use zero-based entry order: `workspaces[0].value` means the first workspace entry's value without exposing its account identifier. The default directory is `DSH_HOME/integrations/dsh-weixin`, or `~/.dsh/integrations/dsh-weixin` when `DSH_HOME` is unset; custom plugin paths take precedence. Restart DSH after fixing the file. Refreshing the settings status does not reload configuration files.
+
 ## Design
 
 - Registers one top-level **IM Bot** settings page containing the built-in IM channels and one AI Office Connector.

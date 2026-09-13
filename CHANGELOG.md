@@ -8,6 +8,9 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ### Fixed / 修复
 
+- 微信启动配置错误现在标明具体配置文件、字段位置和校验原因，区分 JSON 语法错误、账号标识不匹配、重复账号、工作区路径及模型等配置问题；页面、复制诊断和参考号对应的 Host 日志保留相同定位信息，并明确修复后需要重启 DSH。字段位置使用从 0 开始的条目序号，不输出账号、配置值、凭据或本机绝对路径。
+  WeChat startup configuration errors now identify the configuration file, field position, and validation issue, distinguishing JSON syntax errors, mismatched or duplicate account identities, invalid workspace paths, and other settings errors. The settings page, copied diagnostics, and correlated Host log retain the same details and explain that DSH must restart after a fix. Field positions use zero-based entry indexes without exposing account identities, configuration values, credentials, or absolute local paths.
+
 - 批量输入模式下，引用一条消息再发送 `/send`、`/cancel` 或重复的 `/batch` 不再被当作「未收录的内容」拒绝：命令本身不贡献内容，要求纯文本的只是被收录的文字，因此现在会照常提交、取消或显示进度。同时提交内容严格等于已收录的文字，命令消息自带的引用与附件（企业微信引用、QQ 引用与附件、飞书引用话题、Slack/Telegram/Discord/WhatsApp 的回复引用）不会再混进批量内容。空闲状态下带引用发送 `/send`、`/cancel` 也会返回各自的准确提示，而不是「批量输入命令仅支持纯文字」。
   In batch input mode, quoting a message and then sending `/send`, `/cancel`, or a repeated `/batch` is no longer refused as uncollectable content: a command contributes no content, so only the collected text must be plain, and the command now submits, cancels, or reports progress as usual. A submission is exactly the collected text — the quote or attachment carried by the command message (a WeCom quote, a QQ quote or attachment, a Feishu quoted topic, or a Slack/Telegram/Discord/WhatsApp reply reference) no longer leaks into the batch. While idle, a quoted `/send` or `/cancel` now answers with its own state message instead of the plain-text rule.
 - 批量提交的会话标题改为取第一条已收录内容，不再使用 dsh-im 自己拼接的框架句和 `[消息 N]` 标签，避免插件文字出现在会话标题里。

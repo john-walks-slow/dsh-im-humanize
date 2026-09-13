@@ -32,10 +32,15 @@ import {
   validateModelSelection,
 } from './model-setting.mjs';
 import { WORKSPACE_SESSION_STALE } from './workspace-session.mjs';
+import { configValidationError, withConfigResource } from './config-read-error.mjs';
 
 const DELIVERY_DOCUMENT_VERSION = 2;
 export const CURRENT_DOCUMENT_VERSION = 3;
 const EMPTY_DOCUMENT = Object.freeze({ version: 1, workspaces: Object.freeze({}) });
+
+function invalidWorkspaceConfig(field, issue) {
+  throw configValidationError('dsh-im workspace config is invalid', field, issue);
+}
 
 function workspaceSessionStale(message) {
   const error = new Error(message);
@@ -185,13 +190,17 @@ function sameDeliveryRoute(left, right) {
 function normalizeDeliveryTargets(value, { version } = {}) {
   const deliveryTargets = Object.create(null);
   if (value === undefined) return deliveryTargets;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return invalidWorkspaceConfig('deliveryTargets', 'expected-object');
+  let field = 'deliveryTargets';
   try {
-    for (const [botId, targets] of Object.entries(value)) {
+    for (const [botIndex, [botId, targets]] of Object.entries(value).entries()) {
+      field = `deliveryTargets[${botIndex}].key`;
       botIdOf(botId);
-      if (!targets || typeof targets !== 'object' || Array.isArray(targets)) return null;
+      field = `deliveryTargets[${botIndex}].targets`;
+      if (!targets || typeof targets !== 'object' || Array.isArray(targets)) throw new TypeError('Invalid targets');
       const normalizedTargets = Object.create(null);
-      for (const [targetId, target] of Object.entries(targets)) {
+      for (const [targetIndex, [targetId, target]] of Object.entries(targets).entries()) {
+        field = `deliveryTargets[${botIndex}].targets[${targetIndex}]`;
         // Backward compatibility: some released builds persisted the target id
         // inside the stored object as well. Accept a redundant targetId that
         // matches the map key when loading a stored document; a mismatch stays
@@ -215,7 +224,7 @@ function normalizeDeliveryTargets(value, { version } = {}) {
       deliveryTargets[botId] = normalizedTargets;
     }
   } catch {
-    return null;
+    return invalidWorkspaceConfig(field, 'invalid-delivery-target');
   }
   return deliveryTargets;
 }
@@ -241,44 +250,44 @@ function normalizeAccessPolicies(value, workspaces) {
 }
 
 function normalizeDocument(value) {
-  if (!value || ![1, DELIVERY_DOCUMENT_VERSION, CURRENT_DOCUMENT_VERSION].includes(value.version)
-    || !value.workspaces
-    || typeof value.workspaces !== 'object' || Array.isArray(value.workspaces)) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return invalidWorkspaceConfig('$', 'expected-object');
+  if (![1, DELIVERY_DOCUMENT_VERSION, CURRENT_DOCUMENT_VERSION].includes(value.version)) return invalidWorkspaceConfig('version', 'unsupported-version');
+  if (!value.workspaces || typeof value.workspaces !== 'object' || Array.isArray(value.workspaces)) return invalidWorkspaceConfig('workspaces', 'expected-object');
   const workspaces = {};
-  for (const [botId, workspace] of Object.entries(value.workspaces)) {
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(botId)
-      || typeof workspace !== 'string' || !isAbsolute(workspace)) return null;
+  for (const [index, [botId, workspace]] of Object.entries(value.workspaces).entries()) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(botId)) return invalidWorkspaceConfig(`workspaces[${index}].key`, 'invalid-identifier');
+    if (typeof workspace !== 'string' || !isAbsolute(workspace)) return invalidWorkspaceConfig(`workspaces[${index}].value`, 'invalid-workspace-path');
     workspaces[botId] = resolve(workspace);
   }
   const conversationWorkspaces = normalizeConversationWorkspaces(value.conversationWorkspaces);
   let agentPresets = {};
   if (value.agentPresets !== undefined) {
     if (!value.agentPresets || typeof value.agentPresets !== 'object'
-      || Array.isArray(value.agentPresets)) return null;
-    for (const [botId, agentPreset] of Object.entries(value.agentPresets)) {
-      if (!/^[A-Za-z0-9_-]{1,128}$/.test(botId)) return null;
+      || Array.isArray(value.agentPresets)) return invalidWorkspaceConfig('agentPresets', 'expected-object');
+    for (const [index, [botId, agentPreset]] of Object.entries(value.agentPresets).entries()) {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(botId)) return invalidWorkspaceConfig(`agentPresets[${index}].key`, 'invalid-identifier');
       try {
         const normalized = validateAgentPresetId(agentPreset);
-        if (!normalized) return null;
+        if (!normalized) return invalidWorkspaceConfig(`agentPresets[${index}].value`, 'invalid-agent-preset');
         agentPresets[botId] = normalized;
       } catch {
-        return null;
+        return invalidWorkspaceConfig(`agentPresets[${index}].value`, 'invalid-agent-preset');
       }
     }
   }
   const models = {};
   if (value.models !== undefined) {
     if (!value.models || typeof value.models !== 'object' || Array.isArray(value.models)) {
-      return null;
+      return invalidWorkspaceConfig('models', 'expected-object');
     }
-    for (const [botId, model] of Object.entries(value.models)) {
-      if (!/^[A-Za-z0-9_-]{1,128}$/.test(botId)) return null;
+    for (const [index, [botId, model]] of Object.entries(value.models).entries()) {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(botId)) return invalidWorkspaceConfig(`models[${index}].key`, 'invalid-identifier');
       try {
         const normalized = validateModelSelection(model);
-        if (!normalized) return null;
+        if (!normalized) return invalidWorkspaceConfig(`models[${index}].value`, 'invalid-model-selection');
         models[botId] = normalized;
       } catch {
-        return null;
+        return invalidWorkspaceConfig(`models[${index}].value`, 'invalid-model-selection');
       }
     }
   }
@@ -292,9 +301,8 @@ function normalizeDocument(value) {
       }
     }
   }
-  if (value.version === 1 && value.deliveryTargets !== undefined) return null;
+  if (value.version === 1 && value.deliveryTargets !== undefined) return invalidWorkspaceConfig('deliveryTargets', 'unexpected-field');
   const deliveryTargets = normalizeDeliveryTargets(value.deliveryTargets, { version: value.version });
-  if (!deliveryTargets) return null;
   const aliases = Object.create(null);
   if (value.aliases && typeof value.aliases === 'object' && !Array.isArray(value.aliases)) {
     for (const [botId, alias] of Object.entries(value.aliases)) {
@@ -421,7 +429,6 @@ export class BotWorkspaceStore {
   async load() {
     try {
       const normalized = normalizeDocument(JSON.parse(await readFile(this.#path, 'utf8')));
-      if (!normalized) throw new Error('dsh-im workspace config is invalid');
       this.#version = normalized.version;
       this.#workspaces = normalized.workspaces;
       this.#agentPresets = normalized.agentPresets;
@@ -432,7 +439,7 @@ export class BotWorkspaceStore {
       this.#accessPolicies = normalized.accessPolicies;
       this.#conversationWorkspaces = normalized.conversationWorkspaces;
     } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
+      if (error?.code !== 'ENOENT') throw withConfigResource(error, 'workspace-config');
       this.#version = 1;
       this.#workspaces = {};
       this.#agentPresets = {};

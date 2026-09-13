@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import packageInfo from '../../../package.json' with { type: 'json' };
 import { t } from '../shared/i18n.mjs';
-import { normalizeWeixinDiagnosticDetails } from './diagnostic-details.mjs';
+import { CONFIG_ISSUE_LABELS, normalizeWeixinDiagnosticDetails } from './diagnostic-details.mjs';
+import { configReadErrorDetails } from '../shared/config-read-error.mjs';
 
 const MESSAGES = Object.freeze({
   'credential-read-failed': '无法读取现有登录凭据。请检查 DSH 凭据存储。',
@@ -123,6 +124,13 @@ function hintFor(code, details) {
   if (details.reason === 'ENOTFOUND' || details.reason === 'EAI_AGAIN') return t('微信服务域名解析失败，请检查运行 DSH 的机器的网络和 DNS 设置后重试。');
   if (['EACCES', 'EPERM', 'EROFS'].includes(details.reason)) return t('请检查 DSH 数据目录和对应文件的读写权限。');
   if (details.reason === 'ENOSPC') return t('磁盘空间不足，请释放空间后重试。');
+  if (code.startsWith('weixin-startup-') && details.file) {
+    const explanation = details.reason === 'invalid-json' ? t('JSON 语法无效。')
+      : details.issue ? t(CONFIG_ISSUE_LABELS[details.issue]) : '';
+    return [explanation, t('请检查微信渠道数据目录中的 {file}，修复后重启 DSH；“重新读取”不会重新加载配置。', { file: details.file }),
+      details.field ? t('字段位置中的序号从 0 开始，按文件中的条目顺序计数，不包含真实账号标识。') : '',
+    ].filter(Boolean).join(' ');
+  }
   if (details.reason === 'invalid-json' && details.resource) return t('本机文件格式无效，请检查对应配置或状态文件；不要清空登录凭据。');
   if (/CERT|TLS|SSL/.test(details.reason ?? '')) return t('请检查运行 DSH 的机器的系统时间、证书和网络设置。');
   if (code === 'stale-token' || code === 'missing-token') return t('请移除失效接入并重新扫码绑定。');
@@ -143,17 +151,21 @@ export function createWeixinDiagnostics({ logger = console, now = Date.now } = {
     const selected = chain.find(error => knownWeixinErrorCode(error.code));
     const code = selected?.code ?? (knownWeixinErrorCode(context.code) ? context.code : 'weixin-operation-failed');
     const staged = chain.map(error => ownedStages.get(error)).find(Boolean) ?? {};
+    const configDetails = chain.map(configReadErrorDetails).find(Boolean) ?? {};
     const defaults = CODE_STAGES[code] ?? [];
     const reason = chain.map(error => normalizeWeixinDiagnosticDetails({ reason: error.code }).reason).find(Boolean)
       ?? (chain.some(error => error instanceof SyntaxError) ? 'invalid-json' : undefined);
     const numeric = field => chain.map(error => normalizeWeixinDiagnosticDetails({ [field]: field === 'httpStatus' ? error.status : error[field] })[field]).find(value => value !== undefined);
     const details = normalizeWeixinDiagnosticDetails({
-      ...context, stage: staged.stage ?? defaults[0] ?? (code.startsWith('harness-') ? 'harness.check' : context.stage),
-      resource: staged.resource ?? defaults[1] ?? context.resource,
-      reason: reason ?? context.reason, httpStatus: numeric('httpStatus'), providerCode: numeric('providerCode'), pluginVersion: packageInfo.version,
+      ...context, ...configDetails,
+      file: { 'account-config': 'config.json', 'workspace-config': 'workspaces.json' }[configDetails.resource],
+      stage: staged.stage ?? defaults[0] ?? (code.startsWith('harness-') ? 'harness.check' : context.stage),
+      resource: staged.resource ?? defaults[1] ?? configDetails.resource ?? context.resource,
+      reason: reason ?? configDetails.reason ?? context.reason, httpStatus: numeric('httpStatus'), providerCode: numeric('providerCode'), pluginVersion: packageInfo.version,
     });
     const botId = /^wx_[a-f0-9]{24}$/.test(context.botId ?? '') ? context.botId : undefined;
-    const key = JSON.stringify([botId, details.operation, details.stage, code, details.reason, details.httpStatus, details.providerCode]);
+    const key = JSON.stringify([botId, details.operation, details.stage, code, details.reason, details.httpStatus, details.providerCode,
+      details.resource, details.file, details.field, details.issue]);
     const previous = recent.get(key);
     const time = now();
     if (context.automatic && previous && time - previous.time < 60_000) {
@@ -168,7 +180,10 @@ export function createWeixinDiagnostics({ logger = console, now = Date.now } = {
     details.referenceId = `WX-CONN-${randomUUID().replaceAll('-', '').slice(0, 8).toUpperCase()}`;
     details.occurredAt = new Date(time).toISOString();
     details.hint = hintFor(code, details);
-    const publicError = { code, message: t(MESSAGES[code], { status: details.httpStatus ?? '?' }), details };
+    const message = code === 'weixin-startup-config-invalid' && details.file
+      ? t('微信配置格式错误：{file}。请查看诊断详情，修复后重启 DSH。', { file: details.file })
+      : t(MESSAGES[code], { status: details.httpStatus ?? '?' });
+    const publicError = { code, message, details };
     const wrapped = new Error(publicError.message, { cause });
     wrapped.code = code;
     wrapped.publicError = publicError;
