@@ -31,6 +31,7 @@ test('normalizeHumanizeSettings fills the new defaults and repairs malformed val
     typingBurst: DEFAULT_TYPING_BURST,
     statusReaction: true,
     replyQuote: true,
+    progressStatus: true,
   });
   // Legacy typingIndicator booleans map onto the new modes.
   assert.equal(normalizeHumanizeSettings({ typingIndicator: true }).typingIndicator, 'burst');
@@ -153,6 +154,7 @@ test('resolveHumanizeSettings prefers the live provider and normalizes its outpu
     typingBurst: DEFAULT_TYPING_BURST,
     statusReaction: true,
     replyQuote: true,
+    progressStatus: true,
   });
 
   const live = resolveHumanizeSettings({
@@ -163,6 +165,7 @@ test('resolveHumanizeSettings prefers the live provider and normalizes its outpu
   assert.equal(live.streaming, true, 'missing provider keys fall back to the snapshot');
   assert.equal(live.statusReaction, false, 'provider output wins when present');
   assert.equal(live.replyQuote, true, 'absent provider keys default to true');
+  assert.equal(live.progressStatus, true, 'absent provider keys default to true');
   // Provider output is normalized defensively.
   assert.deepEqual(live.sendDelay, DEFAULT_SEND_DELAY_CONFIG);
   assert.deepEqual(live.typingBurst, DEFAULT_TYPING_BURST);

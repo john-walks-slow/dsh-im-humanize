@@ -672,7 +672,7 @@ export class TelegramBotClient {
     return this.#sendRich(target, createTextDeliveryBlock(value));
   }
 
-  async openDeliveryStream(target) {
+  async openDeliveryStream(target, { lazy = false } = {}) {
     if (target.chatType === 'private') {
       const draftId = randomInt(1, 2_147_483_647);
       const updateDraft = async (block) => {
@@ -693,23 +693,52 @@ export class TelegramBotClient {
         presentation: 'telegram-rich-draft',
         logger: this.#logger,
       });
-      await stream.update(createTextDeliveryBlock('正在处理…', 'plain'));
+      // Lazy: skip the "正在处理…" draft — the first real update creates it.
+      if (!lazy) await stream.update(createTextDeliveryBlock('正在处理…', 'plain'));
       return stream;
     }
 
-    const placeholder = await this.#api.sendMessage({
-      chatId: target.chatId,
-      text: '正在处理…',
-      replyToMessageId: target.replyToMessageId,
-      messageThreadId: target.messageThreadId,
-      signal: this.#signal,
-    });
-    const messageId = placeholder?.message_id;
-    if (!Number.isSafeInteger(messageId)) {
-      throw new Error('Telegram did not return a placeholder message id');
-    }
+    // Regular placeholder-edit mode. Lazy defers the placeholder send: the
+    // first real content update creates the message, finish sends fresh if
+    // none was created. `ids` is shared by reference so the stream's finish
+    // pushes and the getter both see the live list.
+    let messageId = null;
+    const ids = [];
+    const ensureMessage = async (text, format = 'plain') => {
+      if (messageId !== null) return messageId;
+      // Markdown blocks create via sendRichMessage so the first lazy bubble
+      // renders rich text immediately — no raw-markdown window before the
+      // first editMessageText lands.
+      const message = format === 'markdown'
+        ? await this.#api.sendRichMessage({
+          chatId: target.chatId,
+          richMessage: { markdown: toTelegramRichMarkdown(text) },
+          replyToMessageId: target.replyToMessageId,
+          messageThreadId: target.messageThreadId,
+          signal: this.#signal,
+        })
+        : await this.#api.sendMessage({
+          chatId: target.chatId,
+          text,
+          replyToMessageId: target.replyToMessageId,
+          messageThreadId: target.messageThreadId,
+          signal: this.#signal,
+        });
+      messageId = message?.message_id;
+      if (!Number.isSafeInteger(messageId)) {
+        throw new Error('Telegram did not return a placeholder message id');
+      }
+      ids.push(String(messageId));
+      return messageId;
+    };
+    if (!lazy) await ensureMessage(t('正在处理…'));
     return new TelegramDeliveryStream({
       update: async (block) => {
+        if (messageId === null) {
+          // First real content creates the message (no placeholder).
+          await ensureMessage(block.text, block.format);
+          return deliveryResult('telegram-regular', [...ids]);
+        }
         if (block.format === 'plain') {
           await this.#api.editMessageText({
             chatId: target.chatId,
@@ -727,19 +756,21 @@ export class TelegramBotClient {
         });
         return deliveryResult('telegram-rich-draft', [String(messageId)]);
       },
-      finish: (block) => this.#editRich(target, messageId, block),
-      fail: (block) => this.#sendPlain(target, block.text, {
-        placeholderMessageId: messageId,
-      }),
-      providerMessageIds: [String(messageId)],
+      finish: (block) => (messageId === null
+        ? this.#sendRich(target, block)
+        : this.#editRich(target, messageId, block)),
+      fail: (block) => this.#sendPlain(target, block.text,
+        messageId === null ? {} : { placeholderMessageId: messageId }),
+      providerMessageIds: ids,
       presentation: 'telegram-regular',
       logger: this.#logger,
     });
   }
 
-  async openStream(target) {
+  async openStream(target, { lazy = false } = {}) {
     const stream = createEditableMessageStream({
       limit: 4_000,
+      lazy,
       create: async (text) => {
         const message = await this.#api.sendMessage({
           chatId: target.chatId,

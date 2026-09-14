@@ -66,6 +66,10 @@ export const HUMANIZE_SETTING_META = Object.freeze({
     label: '回复引用',
     hint: '回复时引用你的消息（引用样式）。关闭后回复以普通消息发出。仅影响 Telegram、Discord、WhatsApp 的引用样式；话题、Thread 归组不受影响。',
   }),
+  progressStatus: Object.freeze({
+    label: '过程进度提示',
+    hint: '处理任务时显示中间状态气泡（如“正在处理…”“正在使用工具…”“正在整理结果…”）。关闭后不发送占位气泡与中间进度文案，回复直达；流式文本仍正常逐字显示。适用于所有具备过程气泡的聊天渠道（QQ/微信本就无中间进度；AI Office 任务进度不受影响）。',
+  }),
   onNewMessage: Object.freeze({
     label: '新消息行为',
     hint: '生成中收到新消息时的处理方式：打断重发、排队等待、或注入为纠偏指令。交互等待时一律排队。',
@@ -88,6 +92,7 @@ export const SHIPPED_HUMANIZE_DEFAULTS = Object.freeze({
   messageBreak: true,
   statusReaction: true,
   replyQuote: true,
+  progressStatus: true,
   onNewMessage: 'interrupt',
   typingIndicator: 'burst',
   typingBurst: DEFAULT_TYPING_BURST,

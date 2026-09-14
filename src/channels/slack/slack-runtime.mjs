@@ -226,26 +226,36 @@ async function appendInChunks(api, target, ts, text, signal) {
   }
 }
 
-async function createSlackMessageStream({ api, target, signal, logger }) {
-  const started = await api.startStream({
-    channelId: target.channelId,
-    threadTs: target.threadTs,
-    recipientTeamId: target.recipientTeamId || undefined,
-    recipientUserId: target.recipientUserId || undefined,
-    signal,
-  });
-  const ts = typeof started?.ts === 'string' ? started.ts : null;
-  if (!ts) throw new Error('Slack did not return a streaming message timestamp');
-
+async function createSlackMessageStream({ api, target, signal, logger, lazy = false }) {
+  let ts = null;
   let appended = '';
   let pending = '';
   let timer = null;
   let inFlight = null;
   let broken = false;
   let closed = false;
-  const providerMessageIds = [ts];
+  const providerMessageIds = [];
+
+  // Lazy mode defers startStream until the first real text update, so no
+  // empty streaming bubble appears while the model is still thinking.
+  const ensureStarted = async () => {
+    if (ts !== null) return;
+    const started = await api.startStream({
+      channelId: target.channelId,
+      threadTs: target.threadTs,
+      recipientTeamId: target.recipientTeamId || undefined,
+      recipientUserId: target.recipientUserId || undefined,
+      signal,
+    });
+    ts = typeof started?.ts === 'string' ? started.ts : null;
+    if (!ts) throw new Error('Slack did not return a streaming message timestamp');
+    providerMessageIds.push(ts);
+  };
+
+  if (!lazy) await ensureStarted();
 
   const appendLatest = async (text) => {
+    if (ts === null) return;
     const next = splitMessageText(text, SLACK_MESSAGE_LIMIT)[0] ?? '';
     if (!next || !next.startsWith(appended)) return;
     const delta = next.slice(appended.length);
@@ -260,7 +270,10 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
       timer = null;
       const text = pending;
       pending = '';
-      inFlight = appendLatest(text)
+      inFlight = (async () => {
+        if (ts === null) await ensureStarted();
+        await appendLatest(text);
+      })()
         .catch((error) => {
           broken = true;
           logger.warn?.('[dsh-im:slack] streaming append failed:', error);
@@ -274,7 +287,9 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
   };
 
   return {
-    messageId: ts,
+    get messageId() {
+      return ts ?? undefined;
+    },
     get providerMessageIds() {
       return [...providerMessageIds];
     },
@@ -294,7 +309,16 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
 
       const chunks = splitMessageText(text, SLACK_MESSAGE_LIMIT);
       const first = chunks[0] ?? t('处理完成。');
-      if (!broken && first.startsWith(appended)) {
+      if (ts === null) {
+        // Lazy and never started: deliver the final text as plain messages.
+        const firstResult = await api.postMessage({
+          channelId: target.channelId,
+          threadTs: target.threadTs,
+          text: first,
+          signal,
+        });
+        if (typeof firstResult?.ts === 'string' && firstResult.ts) providerMessageIds.push(firstResult.ts);
+      } else if (!broken && first.startsWith(appended)) {
         await appendInChunks(api, target, ts, first.slice(appended.length), signal);
         await api.stopStream({ channelId: target.channelId, ts, signal });
       } else {
@@ -316,7 +340,15 @@ async function createSlackMessageStream({ api, target, signal, logger }) {
       pending = '';
       if (timer !== null) clearTimeout(timer);
       timer = null;
-      void api.stopStream({ channelId: target.channelId, ts, signal }).catch(() => undefined);
+      // inFlight may be a lazy startStream still settling — stop the
+      // stream once it lands so no orphan streaming bubble stays open.
+      void Promise.resolve(inFlight)
+        .catch(() => undefined)
+        .then(() => {
+          if (ts !== null) {
+            void api.stopStream({ channelId: target.channelId, ts, signal }).catch(() => undefined);
+          }
+        });
     },
   };
 }
@@ -367,12 +399,13 @@ export class SlackBotClient {
     });
   }
 
-  openStream(target) {
+  openStream(target, { lazy = false } = {}) {
     return createSlackMessageStream({
       api: this.#api,
       target,
       signal: this.#signal,
       logger: this.#logger,
+      lazy,
     });
   }
 

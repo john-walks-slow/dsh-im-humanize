@@ -478,12 +478,13 @@ export class DiscordBotClient {
     });
   }
 
-  async openStream(target) {
+  async openStream(target, { lazy = false } = {}) {
     const notice = !this.#deliveredNotices.has(target) && target?.notice
       ? String(target.notice) : null;
     const decorate = (content) => notice ? `${notice}\n\n${content}` : content;
     const stream = createEditableMessageStream({
       limit: notice ? 1_800 : 1_900,
+      lazy,
       create: async (content) => {
         const message = await this.#api.createMessage({
           channelId: target.channelId,

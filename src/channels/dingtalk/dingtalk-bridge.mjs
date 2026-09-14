@@ -1435,7 +1435,9 @@ export class DingtalkHarnessBridge {
           logger: this.#logger,
         });
         const startedAt = Date.now();
-        cardStarted = await cardStream.start(t(CARD_INITIAL_TEXT));
+        const initialCardText = humanize.progressStatus === false
+          ? t('…') : t(CARD_INITIAL_TEXT);
+        cardStarted = await cardStream.start(initialCardText);
         if (cardStarted) cardStartedAt = startedAt;
       }
       // Create message_break handler for this turn. Segment gaps
@@ -1481,7 +1483,13 @@ export class DingtalkHarnessBridge {
                 if (handled === null) return;
                 update = handled;
               }
-              if (cardStarted) cardStream.push(progressText(update));
+              // progressStatus=false: drop tool/status progress text
+              // ("正在使用{name}…", "正在整理结果…"); only push real text.
+              if (cardStarted) {
+                if (humanize.progressStatus === false
+                  && update.type !== 'text' && update.type !== 'assistant-message') return;
+                cardStream.push(progressText(update));
+              }
             }
             : undefined,
           onInteraction: (interaction) => this.#handleInteraction(interaction, {

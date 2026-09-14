@@ -24,7 +24,7 @@ export const HUMANIZE_ENDPOINTS = Object.freeze({
   set: 'humanize.set',
 });
 
-const BOOLEAN_SETTING_KEYS = ['streaming', 'messageBreak', 'statusReaction', 'replyQuote'];
+const BOOLEAN_SETTING_KEYS = ['streaming', 'messageBreak', 'statusReaction', 'replyQuote', 'progressStatus'];
 
 function presentError(error, fallback) {
   return error?.message || fallback;

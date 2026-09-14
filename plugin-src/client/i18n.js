@@ -1012,6 +1012,8 @@ const EN = Object.freeze({
   '处理任务时用表情标记状态（处理中/成功/失败）。关闭后不再发送表情，回复照常送达。支持 Telegram、Discord、WhatsApp、Slack、飞书、钉钉。': 'Mark task status with emoji reactions (processing/success/failure). When disabled, no reactions are sent and replies deliver as usual. Applies to Telegram, Discord, WhatsApp, Slack, Feishu, and DingTalk.',
   '回复引用': 'Reply quotes',
   '回复时引用你的消息（引用样式）。关闭后回复以普通消息发出。仅影响 Telegram、Discord、WhatsApp 的引用样式；话题、Thread 归组不受影响。': 'Quote your message when replying (quote header). When disabled, replies are sent as plain messages. Only affects the quote style on Telegram, Discord, and WhatsApp; topic and thread grouping are unaffected.',
+  '过程进度提示': 'Progress hints',
+  '处理任务时显示中间状态气泡（如“正在处理…”“正在使用工具…”“正在整理结果…”）。关闭后不发送占位气泡与中间进度文案，回复直达；流式文本仍正常逐字显示。适用于所有具备过程气泡的聊天渠道（QQ/微信本就无中间进度；AI Office 任务进度不受影响）。': 'Show interim status bubbles while processing (e.g. "Processing…", "Using tool…", "Gathering results…"). When disabled, no placeholder or progress text is sent and replies arrive directly; streaming text still appears word by word. Applies to every chat channel that has progress bubbles (QQ/WeChat never had interim progress; AI Office job progress is unaffected).',
   '新消息行为': 'New message behavior',
   '生成中收到新消息时的处理方式：打断重发、排队等待、或注入为纠偏指令。交互等待时一律排队。': 'How to handle new messages received during generation: interrupt and resend, queue, or inject as a steering instruction. Pending interactions always queue.',
   '打断重发 (interrupt)': 'Interrupt & resend (interrupt)',

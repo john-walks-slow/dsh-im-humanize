@@ -54,6 +54,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 | 新消息行为 `onNewMessage` | interrupt | interrupt / queue / steer 三档；上游仅 queue |
 | 状态表情回应 `statusReaction` | 开 | 关闭后六渠道停发处理中/成功/失败表情 |
 | 回复引用 `replyQuote` | 开 | 关闭后 Telegram/Discord/WhatsApp 回复不带引用头 |
+| 过程进度提示 `progressStatus` | 开 | 关闭后不发"正在处理…/正在使用工具…/正在整理结果…"占位与中间进度气泡，回复直达；流式文本仍逐字显示 |
 | 发送延迟 `sendDelay` | 关 | 阅读延迟 + 分段间隔两阶段，含活跃响应 |
 | 输入状态指示 `typingIndicator` | burst | off / continuous / burst 三档 |
 | QQ 桥接 messageBreak 修复 | — | 修复上游 `messageBreakHandler` 作用域缺陷 |
@@ -62,7 +63,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 > 上游同步说明：本分支为长期维护的 fork，会持续合并 `xmanrui/dsh-im` 上游更新；上游修复与功能在合并时保持完全兼容。**分步消息（message_break）、流式开关（streaming）、发送延迟与输入状态指示依赖本 fork 对 Harness 回复追踪（HarnessReplyTracker）与渠道桥接的扩展**，在上游仓库中不可用。
 
-- **流式回复（streaming，默认开启）**：关闭后不再逐字推送模型输出，而是等回合结束后一次性发送完整回复，更接近真人回复节奏。与 message_break 互斥，开启分步消息会自动关闭流式回复。
+- **流式回复（streaming，默认开启）**：关闭后不再逐字推送模型输出，而是等回合结束后一次性发送完整回复，更接近真人回复节奏。可与 message_break 同时开启。
 - **分步消息（message_break，默认关闭）**：插件会注册一个名为 `message_break` 的 **no-op 工具**（不执行任何操作，仅作为回复中的断点标记）。模型在长回复中主动调用它来"换气"时，插件会把断点之前的文本作为一条独立消息发送，随后继续发送后续分段，整段回答因此变成多条消息，读起来更像真人逐条输入。三个分隔点（思考/工具进度与最终回答之间、长回答的段落之间、前后文切换处）最自然；单回合最多拆分 20 段，纯空白分段会被跳过。
 - **新消息行为（onNewMessage，默认 interrupt）**：模型生成过程中用户又发来新消息时的处理方式：
   - **打断重发（interrupt）**：取消当前回合并立即用新消息重新提问；
@@ -73,6 +74,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 - **状态表情回应（statusReaction，默认开启）**：机器人在用户消息上用表情标记任务状态（处理中/成功/失败，例如 Telegram 的 👀 → 👍/👎）。关闭后不再发送任何表情，回复照常送达。支持 Telegram、Discord、WhatsApp、Slack、飞书、钉钉。
 - **回复引用（replyQuote，默认开启）**：机器人回复时引用你的消息（回复顶部的引用样式）。关闭后回复以普通消息发出。仅影响 Telegram、Discord、WhatsApp 的引用样式；话题路由（Telegram 话题、Discord Thread、Slack 线程、飞书话题回复）与会话归组不受影响。
+- **过程进度提示（progressStatus，默认开启）**：处理任务时显示中间状态气泡（如"正在处理…""正在使用工具…""正在整理结果…"）。关闭后不再发送占位气泡与中间进度文案，回复直达；流式文本仍正常逐字显示。**与 message_break 同时开启时**，关闭此项会连带跳过占位流（分段直接逐条发送，消除占位气泡与分段消息的内容重复）。支持所有聊天渠道；QQ/微信本就无中间进度，AI Office 任务进度不受影响（属产品核心 UX）。
 
 ### 发送延迟（两阶段模型）
 

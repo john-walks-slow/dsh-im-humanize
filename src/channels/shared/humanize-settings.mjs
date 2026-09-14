@@ -1,8 +1,8 @@
 /**
  * Humanization settings store for the dsh-im-humanize fork.
  * Persists streaming, messageBreak, onNewMessage, sendDelay,
- * typingIndicator, typingBurst, statusReaction, and replyQuote
- * to a JSON file.
+ * typingIndicator, typingBurst, statusReaction, replyQuote,
+ * and progressStatus to a JSON file.
  */
 import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -37,6 +37,7 @@ export const DEFAULT_HUMANIZE_SETTINGS = Object.freeze({
   typingBurst: DEFAULT_TYPING_BURST,
   statusReaction: true,
   replyQuote: true,
+  progressStatus: true,
 });
 
 /**
@@ -59,6 +60,9 @@ export function normalizeHumanizeSettings(partial = {}) {
   }
   if (typeof partial.replyQuote === 'boolean') {
     result.replyQuote = partial.replyQuote;
+  }
+  if (typeof partial.progressStatus === 'boolean') {
+    result.progressStatus = partial.progressStatus;
   }
   result.onNewMessage = normalizeOnNewMessage(partial.onNewMessage);
   result.sendDelay = normalizeSendDelayConfig(partial.sendDelay);
@@ -91,6 +95,9 @@ export function validateHumanizeUpdate(partial) {
   }
   if (partial.replyQuote !== undefined && typeof partial.replyQuote !== 'boolean') {
     throw invalidField('replyQuote', 'replyQuote must be a boolean.');
+  }
+  if (partial.progressStatus !== undefined && typeof partial.progressStatus !== 'boolean') {
+    throw invalidField('progressStatus', 'progressStatus must be a boolean.');
   }
   if (partial.onNewMessage !== undefined
     && !['interrupt', 'queue', 'steer'].includes(partial.onNewMessage)) {

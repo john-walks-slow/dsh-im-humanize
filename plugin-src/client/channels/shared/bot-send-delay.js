@@ -57,7 +57,7 @@ export const TYPING_CAPABILITY = Object.freeze({
   none: 'none',
 });
 
-const BOOLEAN_KEYS = ['streaming', 'messageBreak', 'statusReaction', 'replyQuote'];
+const BOOLEAN_KEYS = ['streaming', 'messageBreak', 'statusReaction', 'replyQuote', 'progressStatus'];
 const ENUM_KEYS = ['onNewMessage', 'typingIndicator'];
 const ALL_KEYS = [...BOOLEAN_KEYS, ...ENUM_KEYS, 'typingBurst', 'sendDelay'];
 

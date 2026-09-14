@@ -38,6 +38,7 @@ const HUMANIZE_CONFIG_KEYS = [
   'typingBurst',
   'statusReaction',
   'replyQuote',
+  'progressStatus',
 ];
 
 function channelConfig(config, name, deliveryService) {

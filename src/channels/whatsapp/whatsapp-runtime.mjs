@@ -511,11 +511,12 @@ export class WhatsappBotClient {
     };
   }
 
-  async openStream(target) {
+  async openStream(target, { lazy = false } = {}) {
     let messageKey;
     const stream = createEditableMessageStream({
       limit: WHATSAPP_TEXT_LIMIT,
       updateIntervalMs: 1_000,
+      lazy,
       create: async (text) => {
         const message = await this.#sendTextMessage(target, text);
         messageKey = message.key;

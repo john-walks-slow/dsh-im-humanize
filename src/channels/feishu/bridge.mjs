@@ -4405,6 +4405,7 @@ export class FeishuHarnessBridge {
         stream = await this.#channel.stream(chatId, {
           markdown: async (controller) => {
             promptStarted = true;
+            const progressHintsEnabled = this.#humanizeSettings().progressStatus !== false;
             const baseAskOptions = this.#interactionAskOptions(event, key, message.files);
             const askOptions = {
               ...baseAskOptions,
@@ -4418,6 +4419,10 @@ export class FeishuHarnessBridge {
                 await baseAskOptions.onInteraction(interaction);
               },
               onUpdate: async (update) => {
+                // progressStatus=false: drop tool/status progress text
+                // ("正在使用{name}…", "正在整理结果…"); only stream real text.
+                if (!progressHintsEnabled
+                  && update.type !== 'text' && update.type !== 'assistant-message') return;
                 await controller.setContent(this.#progressText(update));
                 this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
               },

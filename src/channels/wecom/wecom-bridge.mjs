@@ -1377,7 +1377,9 @@ export class WecomHarnessBridge {
     const key = conversationKey(frame);
     let streamId = null;
     let streamStarted = false;
-    let streamThinkingText = t('正在思考中…');
+    // progressStatus=false: start with an empty thinking line so no
+    // "正在思考中…" bubble appears; the first real text fills it.
+    let streamThinkingText = '';
     let streamAnswerText = '';
     let batchSettled = batchSubmission === null;
     let promptRecorded = false;
@@ -1432,6 +1434,11 @@ export class WecomHarnessBridge {
       }
 
       const humanize = this.#humanizeSettings();
+      // progressStatus=false keeps streamThinkingText empty (no thinking
+      // bubble); otherwise seed the thinking line for tool/status frames.
+      if (humanize.progressStatus !== false) {
+        streamThinkingText = t('正在思考中…');
+      }
       // Mark the message seen BEFORE the silent read delay: WeCom
       // redelivers unacknowledged callbacks, so a redelivery arriving during
       // the delay must never enqueue the same message as a second turn.
@@ -1485,18 +1492,21 @@ export class WecomHarnessBridge {
       // #streaming is now live: false skips the thinking-placeholder stream
       // entirely; the final answer is a one-shot passive-first delivery.
       streamId = this.#generateReqId('stream');
-      if (humanize.streaming) {
+      // progressStatus=false: defer the stream opening until the first real
+      // text arrives (lazy) — no empty/placeholder streaming bubble is sent
+      // upfront, matching the shared bridges' lazy mode.
+      const lazyStream = humanize.streaming && humanize.progressStatus === false
+        && typeof this.#client.replyStreamNonBlocking === 'function';
+      const openStream = async (initialContent) => {
         try {
-          await this.#client.replyStream(
-            frame,
-            streamId,
-            streamContent(streamThinkingText),
-            false,
-          );
+          await this.#client.replyStream(frame, streamId, initialContent, false);
           streamStarted = true;
         } catch (error) {
           this.#logger.warn?.('[dsh-im:wecom] unable to start a stream; using an active reply:', error);
         }
+      };
+      if (humanize.streaming && !lazyStream) {
+        await openStream(streamContent(streamThinkingText));
       }
       // Create message_break handler for this turn. Segment gaps
       // ("typing the next message") pause between segments.
@@ -1531,23 +1541,33 @@ export class WecomHarnessBridge {
           timeoutMs: this.#replyTimeoutMs,
           signal: this.#signal,
           control: { owner: this, key },
-          onUpdate: (streamStarted && typeof this.#client.replyStreamNonBlocking === 'function') || messageBreakHandler
+          onUpdate: (humanize.streaming && typeof this.#client.replyStreamNonBlocking === 'function') || messageBreakHandler
             ? async (update) => {
                 if (messageBreakHandler) {
                   const handled = await messageBreakHandler.handleUpdate(update);
                   if (handled === null) return;
                   update = handled;
                 }
-                if (!streamStarted || typeof this.#client.replyStreamNonBlocking !== 'function') return;
+                if (typeof this.#client.replyStreamNonBlocking !== 'function') return;
                 if (update?.type === 'text') {
                   streamAnswerText = update.text;
-                } else {
+                } else if (humanize.progressStatus !== false) {
+                  // progressStatus=false: drop tool/status progress text
+                  // ("正在使用{name}…", "正在整理结果…"); keep thinking line.
                   streamThinkingText = thinkingProgressText(update) || streamThinkingText;
                 }
                 const preview = splitUtf8(
                   streamContent(streamThinkingText, streamAnswerText),
                 )[0];
-                if (preview) await this.#client.replyStreamNonBlocking(frame, streamId, preview, false);
+                if (!preview) return;
+                if (!streamStarted) {
+                  // Lazy: the first non-empty preview opens the stream with
+                  // that content; nothing was sent upfront.
+                  if (!lazyStream) return;
+                  await openStream(preview);
+                  return;
+                }
+                await this.#client.replyStreamNonBlocking(frame, streamId, preview, false);
               }
             : undefined,
           onInteraction: (interaction) => this.#handleInteraction(interaction, {

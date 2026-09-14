@@ -853,6 +853,11 @@ export class TextHarnessBridge {
       // with constructor fallback) — global/per-bot panel updates apply
       // from the next message without a restart.
       const humanize = this.#humanizeSettings();
+      // progressStatus=false suppresses interim "processing…" placeholders
+      // and tool/status progress edits. Declared here (before the pre-ask
+      // try block) so the onUpdate closure below can read it.
+      const suppressProgress = humanize.progressStatus === false;
+      const skipPlaceholderStream = suppressProgress && humanize.messageBreak;
 
       // ---- Phase ①: read delay（"过了一段时间才读到消息"）----
       // Silent: no typing indicator, no read receipts, no harness activity.
@@ -897,15 +902,22 @@ export class TextHarnessBridge {
           });
           await typingSession.start();
         }
-        // Streaming is skipped when streaming=false or messageBreak=true
-        // (mutually exclusive). Without streaming, the reply is delivered as a
-        // single complete message at the end via sendDelivery/sendText.
         // Stream opening stays inside the pre-ask region so a supersede
         // abort still wins against it.
-        if (humanize.streaming) {
+        //
+        // progressStatus=false suppresses the interim "processing…" placeholder
+        // and tool/status progress edits. When messageBreak is also on, the
+        // placeholder stream is skipped entirely (segments are sent directly by
+        // the message_break handler; the final remainder goes through the
+        // sendDelivery/sendText fallback) — this also avoids the top bubble
+        // duplicating the segmented text. Without messageBreak, a lazy stream
+        // is opened so streaming text still builds up word by word, but the
+        // first message is created with real text rather than a placeholder.
+        if (humanize.streaming && !skipPlaceholderStream) {
+          const streamOptions = suppressProgress ? { lazy: true } : undefined;
           if (typeof this.#bot.openDeliveryStream === 'function') {
             try {
-              stream = await this.#bot.openDeliveryStream(target);
+              stream = await this.#bot.openDeliveryStream(target, streamOptions);
               semanticStream = true;
             } catch (error) {
               this.#logger.warn?.(
@@ -915,7 +927,7 @@ export class TextHarnessBridge {
             }
           } else if (typeof this.#bot.openStream === 'function') {
             try {
-              stream = await this.#bot.openStream(target);
+              stream = await this.#bot.openStream(target, streamOptions);
             } catch (error) {
               this.#logger.warn?.(
                 `[dsh-im:${this.#descriptor.key}] unable to start a streamed reply; using text:`,
@@ -1005,6 +1017,13 @@ export class TextHarnessBridge {
               update = handled;
             }
             if (!stream) return;
+            // progressStatus=false: drop interim tool/status progress text
+            // ("正在使用{name}…", "正在整理结果…"). Only real text and
+            // assistant-message canonical frames reach the stream.
+            if (suppressProgress
+              && update.type !== 'text' && update.type !== 'assistant-message') {
+              return;
+            }
             const progress = update.type === 'text' ? update.text
               : update.type === 'tool' ? t('正在使用{name}…', { name: update.name }) : update.text;
             if (progress) {

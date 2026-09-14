@@ -51,6 +51,7 @@ This repository is a fork of `xmanrui/dsh-im` focused on **humanized messaging**
 | New message behavior `onNewMessage` | interrupt | interrupt / queue / steer; upstream only has queue |
 | Status emoji reactions `statusReaction` | on | When off, the six channels send no processing/success/failure emoji |
 | Reply quotes `replyQuote` | on | When off, Telegram/Discord/WhatsApp replies carry no quote header |
+| Progress hints `progressStatus` | on | When off, no "Processing…/Using tool…/Gathering results…" placeholder or interim progress bubbles; streaming text still streams word by word |
 | Send delay `sendDelay` | off | Two-phase read delay + segment gap, with activity boost |
 | Typing indicator `typingIndicator` | burst | off / continuous / burst |
 | QQ messageBreak scoping fix | — | Fixes an upstream `messageBreakHandler` scope defect |
@@ -59,7 +60,7 @@ This repository is a fork of `xmanrui/dsh-im` focused on **humanized messaging**
 
 > Upstream sync note: this branch is a long-lived fork and keeps merging updates from `xmanrui/dsh-im` upstream, staying fully compatible when features get merged. **Message breaks, the streaming toggle, the send delay, and the typing indicator depend on this fork's extension of the Harness reply tracker (HarnessReplyTracker) and channel bridges** and are not available in the upstream repository.
 
-- **Streaming replies (streaming, on by default)**: when disabled, model output is no longer pushed progressively; the complete reply is sent at once when the turn finishes, closer to real human reply pacing. Mutually exclusive with message breaks (enabling message_break turns streaming off automatically).
+- **Streaming replies (streaming, on by default)**: when disabled, model output is no longer pushed progressively; the complete reply is sent at once when the turn finishes, closer to real human reply pacing. Can be enabled alongside message breaks.
 - **Message breaks (message_break, off by default)**: the plugin registers a **no-op tool** named `message_break` (it executes nothing; it only marks a break point inside the reply). When the model calls it deliberately in a long reply to "take a breath", the plugin sends the text accumulated before the break as a separate message and then continues with the following segments, so one answer becomes several messages that read like someone typing line by line. Natural spots are between the thinking/tool progress and the final answer, between paragraphs of long answers, and at topic transitions; at most 20 segments per turn, and whitespace-only segments are skipped.
 - **New message behavior (onNewMessage, interrupt by default)**: what happens when the user sends a new message while the model is still generating:
   - **Interrupt & resend (interrupt)**: cancels the current turn and immediately re-asks with the new message;
@@ -70,6 +71,7 @@ This repository is a fork of `xmanrui/dsh-im` focused on **humanized messaging**
 
 - **Status emoji reactions (statusReaction, on by default)**: the bot marks task status with emoji reactions on the user's message (processing/success/failure — 👀 → 👍/👎 on Telegram, for example). Turn it off to send no reactions at all; replies still deliver. Applies to Telegram, Discord, WhatsApp, Slack, Feishu, and DingTalk.
 - **Reply quotes (replyQuote, on by default)**: the bot quotes the user's message when replying (the quote header at the top of a reply). Turn it off and replies go out as plain messages. Only affects the quote style on Telegram, Discord, and WhatsApp; topic routing (Telegram topics, Discord threads, Slack threads, Feishu reply-in-thread) and conversation grouping are unaffected.
+- **Progress hints (progressStatus, on by default)**: show interim status bubbles while processing (e.g. "Processing…", "Using tool…", "Gathering results…"). Turn it off to send no placeholder or interim progress text — replies arrive directly while streaming text still appears word by word. **When message_break is also on**, turning this off additionally skips the placeholder stream entirely (segments are sent directly, removing the duplicate top bubble). Applies to all chat channels; QQ/WeChat already have no interim progress, and AI Office job progress is unaffected (core product UX).
 
 ### Send delay (two-phase model)
 

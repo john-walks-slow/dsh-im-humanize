@@ -24,6 +24,7 @@ const SETTABLE_KEYS = new Set([
   'typingBurst',
   'statusReaction',
   'replyQuote',
+  'progressStatus',
 ]);
 
 export function validHumanizePayload(endpoint, payload) {
