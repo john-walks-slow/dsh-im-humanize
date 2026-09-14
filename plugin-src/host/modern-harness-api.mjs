@@ -474,11 +474,35 @@ class ModernHarnessApi {
   #requestQuestion(request, next) {
     const owner = this.#claimableAgent(request?.agent);
     if (!owner) return next();
-    if (request.signal?.aborted) {
+    const turnSignal = request.signal;
+    if (turnSignal?.aborted) {
       return Promise.reject(questionError(
         'ask_user_question was aborted before the user answered', 'ASK_ABORTED',
       ));
     }
+    // Give this question a lifetime of its own instead of lending it the enclosing
+    // turn's. `dsh-agent-loop` mints one abort controller per turn and every tool
+    // call in that turn shares the one signal, and under PTC two consumers of it
+    // react to the abort EVENT rather than to `signal.aborted`: `run_code` flips its
+    // own program controller from an abort listener (dsh-tools `onOuterAbort`) and
+    // the worker code runtime retires the worker the same way
+    // (dsh-code-runtime-worker-thread `onAbort`). Retiring the Web card by firing
+    // that event therefore also killed the program that was merely waiting for this
+    // answer — `code run failed (abort)`. A private controller keeps the retirement
+    // below local: real upstream cancellation is forwarded into it, and every
+    // listener on this waterfall — the Remote/Web forwarder that renders the card,
+    // and our own IM pending — sees a lifetime that ends with this question rather
+    // than with the turn.
+    //
+    // Handing it downstream means replacing `request.signal`, because the Cordis
+    // waterfall passes the same request object to every remaining listener and
+    // `next()` takes no replacement arguments. The object is a per-call copy made by
+    // `UserQuestionService.ask`, and the signal it carried stays reachable here as
+    // `turnSignal`, so the caller's own view of the request is untouched.
+    const question = new AbortController();
+    const forwardTurnAbort = () => question.abort(turnSignal?.reason);
+    turnSignal?.addEventListener('abort', forwardTurnAbort, { once: true });
+    request.signal = question.signal;
     // Race the IM answer against the host's own answerers (Web/CLI). Claiming the
     // request exclusively used to keep the question out of Web entirely, leaving
     // whoever happened to be looking at that Session with a card they could not
@@ -512,27 +536,23 @@ class ModernHarnessApi {
       // the IM pending: leaving it registered would let a late press answer a
       // question the model has moved past. Settling is idempotent.
       im.dismiss(new Error('another client answered this question'));
+      turnSignal?.removeEventListener('abort', forwardTurnAbort);
       if (answeredByIm) {
         // The host's own answerer (DSH Web) keeps its question card until its own
         // pending settles, and a host-side adapter has no other handle on it. A Web
-        // client holds that pending by listening to `request.signal`, so dispatching
-        // the abort it already stands for makes the client drop a card whose answer
-        // was already given on IM — otherwise it keeps offering choices for a
+        // client holds that pending through the lifetime this question handed
+        // downstream, so ending that lifetime makes the client drop a card whose
+        // answer was already given on IM — otherwise it keeps offering choices for a
         // question the model has moved past.
         //
-        // Read this signal for what it is: NOT this question's lifetime, but the
-        // enclosing turn's shared signal (dsh-agent-loop mints `phase.abort` per
-        // turn; dsh-tools fuses the caller and wrapper signals into that same
-        // object). Every listener on it is retired, not just ours. That is
-        // harmless today only because `ask_user_question` declares no
-        // `isConcurrencySafe`, so the tool registry runs it exclusively and one
-        // turn never holds two pending questions. If concurrent questions ever
-        // become possible, this broadcast would cancel the siblings too and the
-        // fix has to move to a per-question controller.
-        //
-        // A dispatched event also does not flip `signal.aborted`, so the turn keeps
-        // running: only the client-side pending is retired.
-        request.signal?.dispatchEvent(new Event('abort'));
+        // Ending it is `abort`, not a dispatched `abort` event: a listener that
+        // reads `signal.aborted` must see the same thing one that listens for the
+        // event does. Either way it reaches only this question's controller, so the
+        // turn and every other tool call in it — a waiting `run_code` program above
+        // all — keep running. The reason carries `ASK_ABORTED` so the host answerer
+        // rejecting alongside us stays an expected retirement rather than a logged
+        // failure.
+        question.abort(questionError('the question was answered on IM', 'ASK_ABORTED'));
       }
     });
   }
