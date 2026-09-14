@@ -1020,6 +1020,14 @@ function channelName(value) {
 }
 
 function translateDynamic(text) {
+  const configMessage = /^微信配置格式错误：(config\.json|workspaces\.json)。请查看诊断详情，修复后重启 DSH。$/.exec(text);
+  if (configMessage) return EN['微信配置格式错误：{file}。请查看诊断详情，修复后重启 DSH。'].replace('{file}', configMessage[1]);
+  const configHint = /^(.*?)请检查微信渠道数据目录中的 (config\.json|workspaces\.json)，修复后重启 DSH；“重新读取”不会重新加载配置。\s*(字段位置中的序号从 0 开始，按文件中的条目顺序计数，不包含真实账号标识。)?$/.exec(text);
+  if (configHint) return [
+    localizeText(configHint[1].trim()),
+    EN['请检查微信渠道数据目录中的 {file}，修复后重启 DSH；“重新读取”不会重新加载配置。'].replace('{file}', configHint[2]),
+    configHint[3] ? localizeText(configHint[3]) : '',
+  ].filter(Boolean).join(' ');
   const guidanceLimit = /^增强提示词不得超过 (\d+) 个字符。$/.exec(text);
   if (guidanceLimit) return `Guidance must not exceed ${guidanceLimit[1]} characters.`;
   let match = /^(\d+) \/ (\d+) 在线$/.exec(text);

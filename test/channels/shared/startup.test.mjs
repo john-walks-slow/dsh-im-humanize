@@ -131,15 +131,23 @@ for (const { id, apply, Store, api } of channels) {
       if (id === 'weixin') {
         assert.equal(result.error.details.stage, 'startup.load');
         assert.match(result.error.details.referenceId, /^WX-CONN-[A-F0-9]{8}$/);
+        assert.equal(result.error.details.file, filename === 'configPath' ? 'config.json' : 'workspaces.json');
+        assert.equal(result.error.details.resource, filename === 'configPath' ? 'account-config' : 'workspace-config');
+        assert.equal(result.error.details.reason, label === 'malformed JSON' ? 'invalid-json' : 'invalid-config');
+        if (label !== 'malformed JSON') {
+          assert.equal(result.error.details.field, 'version');
+          assert.equal(result.error.details.issue, 'unsupported-version');
+        }
       } else assert.deepEqual(result.error.details, {});
       assert.doesNotMatch(JSON.stringify(result), /private-secret-value/);
       assert.equal(await readFile(config[filename], 'utf8'), contents);
       assert.throws(() => (api.unwrapRpcResult ?? api.unwrapOfficeRpc)(result), error => {
         assert.equal(error.code, result.error.code);
         const message = api.presentError ? api.presentError(error).message : error.message;
-        assert.match(message, /config\.json/);
+        assert.match(message, id === 'weixin' && filename === 'workspacesPath' ? /workspaces\.json/ : /config\.json/);
         assert.match(message, /重启 DSH/);
-        if (id === 'office') assert.doesNotMatch(message, /workspaces\.json/);
+        if (id === 'weixin') assert.ok(message.includes(result.error.details.file));
+        else if (id === 'office') assert.doesNotMatch(message, /workspaces\.json/);
         else assert.match(message, /workspaces\.json/);
         return true;
       });

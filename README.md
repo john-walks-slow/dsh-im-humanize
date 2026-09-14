@@ -231,6 +231,8 @@ Logo 由 dsh-im 的浏览器适配显示，无需修改 DSH。适配保留原始
 
 微信扫码、连接或移除失败时，可展开页面中的「诊断详情」并点击「复制诊断信息」。反馈时附上操作步骤、Desktop/Web 运行方式和实际 DSH 版本；使用 `WX-CONN-…` 参考号查找同一次故障的 `[dsh-weixin]` Host 日志。诊断会区分网络、凭据、文件、Harness 和微信业务拒绝，不包含登录令牌或二维码内容。账号已移除但本机清理未完成时，页面会保留清理警告；若未取得 Host 参考号，请同时检查 DSH 管理连接和启动日志。
 
+微信启动配置校验失败时，诊断还会提供 `file`、`field`、`issue`，定位 `config.json` 或 `workspaces.json` 中第一个未通过校验的位置。字段中的序号从 0 开始，按文件条目顺序计数，例如 `workspaces[0].value` 表示第一条工作区配置的值，不包含真实账号标识。默认目录为 `DSH_HOME/integrations/dsh-weixin`（未设置 `DSH_HOME` 时为 `~/.dsh/integrations/dsh-weixin`），自定义路径以插件配置为准。修复后需要重启 DSH；页面「重新读取」仅查询状态，不会重新加载配置文件。
+
 ## 设计
 
 - Harness 一级设置菜单中只注册一个「IM机器人」设置页，其中包含内置 IM 渠道和一个 AI Office Connector；

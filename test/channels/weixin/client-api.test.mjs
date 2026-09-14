@@ -7,12 +7,55 @@ import TestRenderer from 'react-test-renderer';
 
 import { en, setImTranslator } from '../../../plugin-src/client/i18n.js';
 import { normalizeSnapshot } from '../../../plugin-src/client/channels/weixin/api.js';
+import { WeixinConnectionError, formatWeixinDiagnostic } from '../../../plugin-src/client/channels/weixin/connection-error.js';
+import { createWeixinDiagnostics } from '../../../src/channels/weixin/connection-error.mjs';
+import { configValidationError, withConfigResource } from '../../../src/channels/shared/config-read-error.mjs';
+import { setImHostLanguage } from '../../../src/channels/shared/i18n.mjs';
 import {
   AccountCard,
   WeixinSettingsTab,
 } from '../../../plugin-src/client/channels/weixin/index.js';
 
 const { act, create } = TestRenderer;
+
+test('startup configuration fields and guidance survive rendering, copying and an English UI', async t => {
+  setImHostLanguage('zh');
+  t.after(() => { setImTranslator(); setImHostLanguage('zh'); });
+  const cause = withConfigResource(configValidationError('private-parser-message', 'workspaces[0].value', 'invalid-workspace-path'), 'workspace-config');
+  const error = createWeixinDiagnostics({ logger: {} }).report(cause, {
+    code: 'weixin-startup-config-invalid', operation: 'startup', stage: 'startup.load',
+  }).publicError;
+  error.details.secret = 'private-config-value';
+  const beforeNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  let copied;
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard: { writeText: async text => { copied = text; } } } });
+  t.after(() => {
+    if (beforeNavigator) Object.defineProperty(globalThis, 'navigator', beforeNavigator);
+    else delete globalThis.navigator;
+  });
+  for (const english of [false, true]) {
+    setImTranslator(english ? key => en[key] ?? key : undefined);
+    let renderer;
+    await act(async () => { renderer = create(React.createElement(WeixinConnectionError, { error })); });
+    try {
+      const rendered = textOf(renderer.root);
+      for (const expected of ['workspaces.json', 'workspaces[0].value', 'invalid-config']) assert.ok(rendered.includes(expected));
+      assert.ok(rendered.includes(english ? 'absolute on the current operating system' : '当前操作系统的绝对路径'));
+      await act(async () => {
+        buttonNamed(renderer.root, english ? en['复制诊断信息'] : '复制诊断信息').props.onClick();
+        await flushMicrotasks();
+      });
+      assert.equal(copied, formatWeixinDiagnostic(error));
+      for (const expected of ['file: workspaces.json', 'field: workspaces[0].value', 'issue: invalid-workspace-path', error.details.referenceId]) {
+        assert.ok(copied.includes(expected));
+      }
+      assert.doesNotMatch(copied + rendered, /private-parser-message|private-config-value/);
+      if (english) assert.doesNotMatch(copied + rendered, /[\p{Script=Han}]/u);
+    } finally {
+      await act(async () => renderer.unmount());
+    }
+  }
+});
 
 async function flushMicrotasks() {
   for (let index = 0; index < 6; index += 1) await Promise.resolve();

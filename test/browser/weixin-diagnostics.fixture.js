@@ -14,7 +14,12 @@ if (english) setImTranslator(key => en[key] ?? key);
 installWeixinStyles();
 installImStyles();
 const botId = 'wx_0123456789abcdef01234567';
-const error = scenario === 'qr' ? {
+const error = scenario === 'startup' ? {
+  code: 'weixin-startup-config-invalid', message: '微信配置格式错误：workspaces.json。请查看诊断详情，修复后重启 DSH。',
+  details: { operation: 'startup', stage: 'startup.load', reason: 'invalid-config', resource: 'workspace-config',
+    file: 'workspaces.json', field: 'workspaces[0].value', issue: 'invalid-workspace-path',
+    hint: '工作区路径必须是当前操作系统的绝对路径。 请检查微信渠道数据目录中的 workspaces.json，修复后重启 DSH；“重新读取”不会重新加载配置。 字段位置中的序号从 0 开始，按文件中的条目顺序计数，不包含真实账号标识。' },
+} : scenario === 'qr' ? {
   code: 'network-error', message: '暂时无法访问微信服务。',
   details: { operation: 'provision.begin', stage: 'qr.begin', reason: 'ENOTFOUND',
     hint: '微信服务域名解析失败，请检查运行 DSH 的机器的网络和 DNS 设置后重试。' },
@@ -46,7 +51,7 @@ Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { wri
 } } });
 async function rpcCall(endpoint) {
   calls.push(endpoint);
-  return endpoint === 'connection.status' ? { ok: true, value: snapshot } : { ok: false, error };
+  return endpoint === 'connection.status' && scenario !== 'startup' ? { ok: true, value: snapshot } : { ok: false, error };
 }
 createRoot(document.getElementById('app')).render(React.createElement('div', { className: 'dim-page' },
   React.createElement('section', { className: 'dim-panel' }, React.createElement(WeixinSettingsTab, { rpcCall }))));
@@ -79,6 +84,11 @@ async function run() {
   assert(text.includes(error.code) && text.includes(error.details.referenceId), 'Copy lost the diagnostic identity');
   assert(!text.includes('private-fixture-secret'), 'Copy leaked an unknown detail');
   assert(text.includes('pluginVersion: 4.19.2'), 'Copy lost the plugin version');
+  if (scenario === 'startup') {
+    for (const field of ['file', 'field', 'issue']) assert(text.includes(`${field}: ${error.details[field]}`), `Copy lost ${field}`);
+    assert(diagnostic.textContent.includes('workspaces[0].value'), 'Field position is not visible');
+    assert(button('重新读取'), 'Startup error lost its status refresh control');
+  }
   if (english) assert(!/[\p{Script=Han}]/u.test(diagnostic.textContent), 'Diagnostic was not fully translated');
   if (scenario === 'delete') assert(button('保留账号') && button('确认移除'), 'Failed removal lost its recovery controls');
   const rect = diagnostic.getBoundingClientRect();

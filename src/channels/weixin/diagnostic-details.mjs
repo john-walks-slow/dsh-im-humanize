@@ -15,9 +15,29 @@ const REASONS = new Set([
   'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN',
   'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_SSL_WRONG_VERSION_NUMBER',
   'ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'EROFS', 'ENOTDIR', 'EISDIR', 'EBUSY', 'EIO', 'EXDEV', 'EMFILE', 'ENFILE', 'EEXIST',
-  'invalid-json', 'read-only',
+  'invalid-json', 'invalid-config', 'read-only',
 ]);
 const RESOURCES = new Set(['credential-store', 'account-config', 'account-state', 'workspace-config', 'workspace-directory']);
+const CONFIG_FILES = new Set(['config.json', 'workspaces.json']);
+export const CONFIG_ISSUE_LABELS = Object.freeze({
+  'expected-object': '应为 JSON 对象。',
+  'expected-array': '应为 JSON 数组。',
+  'unsupported-version': '配置版本缺失或不受当前插件支持。',
+  'invalid-string': '字段缺失或不是非空字符串。',
+  'invalid-identifier': '标识符格式不符合要求。',
+  'identity-mismatch': '标识符与 accountId 派生结果不一致。',
+  'duplicate-identity': '账号标识重复。',
+  'invalid-api-url': '微信服务地址不是有效 URL。',
+  'untrusted-api-url': '微信服务地址必须使用受信任的 HTTPS 域名和端口。',
+  'invalid-workspace-path': '工作区路径必须是当前操作系统的绝对路径。',
+  'invalid-agent-preset': 'Agent Preset 标识无效。',
+  'invalid-model-selection': '模型设置须包含有效的 provider、model 和可选 reasoningEffort。',
+  'invalid-delivery-target': '投递目标的标识、结构或路由不符合当前配置版本要求。',
+  'unexpected-field': '当前配置版本不允许此字段。',
+});
+// Only schema-owned field names and numeric entry positions may leave the Host.
+// Map keys are replaced with zero-based positions to avoid exposing identities.
+const CONFIG_FIELD = /^(?:\$|version|accounts(?:\[\d{1,10}\](?:\.(?:accountId|ownerUserId|botId|tokenRef|baseUrl))?)?|(?:workspaces|agentPresets|models)(?:\[\d{1,10}\]\.(?:key|value))?|deliveryTargets(?:\[\d{1,10}\]\.(?:key|targets(?:\[\d{1,10}\])?))?)$/;
 
 export function normalizeWeixinDiagnosticDetails(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -25,6 +45,9 @@ export function normalizeWeixinDiagnosticDetails(value) {
   for (const [field, allowed] of [['operation', OPERATIONS], ['stage', STAGES], ['reason', REASONS], ['resource', RESOURCES]]) {
     if (allowed.has(value[field])) result[field] = value[field];
   }
+  if (CONFIG_FILES.has(value.file)) result.file = value.file;
+  if (typeof value.field === 'string' && CONFIG_FIELD.test(value.field)) result.field = value.field;
+  if (typeof value.issue === 'string' && Object.hasOwn(CONFIG_ISSUE_LABELS, value.issue)) result.issue = value.issue;
   if (/^WX-CONN-[A-F0-9]{8}$/.test(value.referenceId ?? '')) result.referenceId = value.referenceId;
   if (typeof value.occurredAt === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.occurredAt)
     && Number.isFinite(Date.parse(value.occurredAt))) result.occurredAt = value.occurredAt;
