@@ -40,7 +40,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 ## This fork: humanized messaging
 
-This repository is a fork of `xmanrui/dsh-im` focused on **humanized messaging** for role-play immersion. It keeps every upstream feature and adds settings configured in the **Humanization settings** section under **Settings → IM bots → General settings**; the **send delay** can additionally be overridden per bot on each channel's bot card:
+This repository is a fork of `xmanrui/dsh-im` focused on **humanized messaging** for role-play immersion. It keeps every upstream feature and adds settings configured in the **Humanization settings** section under **Settings → IM bots → General settings**; **all humanization settings** can additionally be overridden per bot on each channel's bot card:
 
 ### At a glance: all differences from upstream
 
@@ -84,7 +84,7 @@ The send delay splits the human feel into two phases matching the real gaps in h
 
 **Supersede semantics**: if a new message arrives (interrupt mode) or `/stop` runs while the read delay is ticking, the old turn is **silently cancelled** — no generation, no send, no "processing failed" notice, no double reply — and the new message takes over immediately. In queue mode messages are processed one by one and their delays accumulate (each one is "read" in turn).
 
-The send delay is off by default (`enabled=false`), in which case behavior matches upstream exactly, apart from the supersede fix above. The settings panel exposes the full parameter face: read-delay min/max, reading speed (chars/sec), per-turn cap, activity boost (fast reply plus the fast/floor/full recovery windows), segment gap and segment typing speed, folded advanced burst-rhythm fields (on/off durations in ms), plus **exploration presets** (Lightly human / Slow-paced / Immersive role-play / Instant reply) that fill every field at once. The config file (`~/.dsh/integrations/dsh-im/humanize.json`) exposes the same parameters. **Each bot can override the send delay on its channel card** (follow global / custom override; the override draft prefills the current global values, and advanced subfields left untouched inherit the global values on save).
+The send delay is off by default (`enabled=false`), in which case behavior matches upstream exactly, apart from the supersede fix above. The settings panel exposes the full parameter face: read-delay min/max, reading speed (chars/sec), per-turn cap, activity boost (fast reply plus the fast/floor/full recovery windows), segment gap and segment typing speed, folded advanced burst-rhythm fields (on/off durations in ms), plus **exploration presets** (Lightly human / Slow-paced / Immersive role-play / Instant reply) that fill every field at once. The config file (`~/.dsh/integrations/dsh-im/humanize.json`) exposes the same parameters. **Each bot can override any humanization setting on its channel card's "Humanization" panel** (streaming, message break, status reaction, reply quote, on-new-message behavior, typing indicator, burst rhythm, send delay): each setting can be set to "follow global" or a custom value; only customized settings are saved, while the rest continue to track the global default.
 
 ### Typing indicator (typingIndicator)
 

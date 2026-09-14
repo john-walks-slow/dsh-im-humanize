@@ -6,7 +6,7 @@ import { CollapsibleAccountSection } from '../shared/collapsible-account.js';
 import { h } from '../../i18n.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
 import { ContextEnhancementEditor } from '../../context-enhancement.js';
-import { BotSendDelayEditor, TYPING_CAPABILITY } from '../shared/bot-send-delay.js';
+import { BotHumanizeEditor, TYPING_CAPABILITY } from '../shared/bot-send-delay.js';
 import {
   AgentPresetCatalogContext,
   AgentPresetEditor,
@@ -258,9 +258,9 @@ export function WhatsappAccountCard({
         disabled: Boolean(busy),
         onSave: onContextEnhancementSave,
       }),
-      h(BotSendDelayEditor, {
+      h(BotHumanizeEditor, {
         humanize: account.humanize,
-        sendDelayDefaults: account.humanizeDefaults?.sendDelay ?? null,
+        humanizeDefaults: account.humanizeDefaults ?? null,
         capability: TYPING_CAPABILITY.full,
         disabled: Boolean(busy),
         onSave: onHumanizeSave,

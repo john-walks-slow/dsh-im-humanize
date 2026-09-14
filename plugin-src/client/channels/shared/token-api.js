@@ -106,8 +106,8 @@ export function createTokenChannelApi(channel, connectionSummary, {
       totals: { configured: bots.length, connected: bots.filter((bot) => bot.connected).length },
       agentPresetCatalog: normalizeAgentPresetCatalog(source.agentPresetCatalog),
       modelCatalog: normalizeModelCatalog(source.modelCatalog),
-      ...(isRecord(source.humanizeDefaults?.sendDelay)
-        ? { humanizeDefaults: { sendDelay: source.humanizeDefaults.sendDelay } }
+      ...(isRecord(source.humanizeDefaults)
+        ? { humanizeDefaults: source.humanizeDefaults }
         : {}),
     };
   };

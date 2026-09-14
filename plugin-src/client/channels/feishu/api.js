@@ -283,8 +283,8 @@ export function normalizeBotsSnapshot(value) {
     error: normalizeError(value.error),
     agentPresetCatalog: normalizeAgentPresetCatalog(value.agentPresetCatalog),
     modelCatalog: normalizeModelCatalog(value.modelCatalog),
-    ...(isRecord(value.humanizeDefaults?.sendDelay)
-      ? { humanizeDefaults: { sendDelay: value.humanizeDefaults.sendDelay } }
+    ...(isRecord(value.humanizeDefaults)
+      ? { humanizeDefaults: value.humanizeDefaults }
       : {}),
   };
 }

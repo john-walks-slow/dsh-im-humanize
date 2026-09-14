@@ -240,8 +240,8 @@ export function normalizeSnapshot(value) {
     testMessage: normalizeTestMessage(source.testMessage),
     agentPresetCatalog: normalizeAgentPresetCatalog(source.agentPresetCatalog),
     modelCatalog: normalizeModelCatalog(source.modelCatalog),
-    ...(isRecord(source.humanizeDefaults?.sendDelay)
-      ? { humanizeDefaults: { sendDelay: source.humanizeDefaults.sendDelay } }
+    ...(isRecord(source.humanizeDefaults)
+      ? { humanizeDefaults: source.humanizeDefaults }
       : {}),
   };
 }

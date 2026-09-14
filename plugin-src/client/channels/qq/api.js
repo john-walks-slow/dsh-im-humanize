@@ -141,8 +141,8 @@ export function normalizeSnapshot(value) {
     provisioning: source.provisioning ? normalizeProvisioning(source.provisioning) : null,
     agentPresetCatalog: normalizeAgentPresetCatalog(source.agentPresetCatalog),
     modelCatalog: normalizeModelCatalog(source.modelCatalog),
-    ...(isRecord(source.humanizeDefaults?.sendDelay)
-      ? { humanizeDefaults: { sendDelay: source.humanizeDefaults.sendDelay } }
+    ...(isRecord(source.humanizeDefaults)
+      ? { humanizeDefaults: source.humanizeDefaults }
       : {}),
     ...(testMessage ? { testMessage } : {}),
   };

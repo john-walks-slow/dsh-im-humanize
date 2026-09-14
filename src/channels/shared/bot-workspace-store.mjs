@@ -33,7 +33,7 @@ import {
   normalizeHumanizeOverride,
   validateHumanizeOverrideSection,
 } from './humanize-override.mjs';
-import { normalizeSendDelayConfig } from './send-delay.mjs';
+import { normalizeHumanizeSettings } from './humanize-settings.mjs';
 import { WORKSPACE_SESSION_STALE } from './workspace-session.mjs';
 
 const DELIVERY_DOCUMENT_VERSION = 2;
@@ -1162,23 +1162,24 @@ function assertCurrentBotScope(isCurrentScope) {
 }
 
 /**
- * Project the resolved GLOBAL sendDelay onto the snapshot as
- * `humanizeDefaults.sendDelay` so per-bot editors can prefill from the
- * live global config (plan §5.2/§7.2). Never throws: the editor falls
- * back to shipped defaults when absent.
+ * Project the resolved GLOBAL humanization settings onto the snapshot as
+ * `humanizeDefaults` so per-bot editors can prefill every setting from
+ * the live global config (plan §5.2/§7.2). Never throws: the editor
+ * falls back to shipped defaults when absent.
+ *
+ * The projected object is always fully normalized (all keys present),
+ * matching the editor's "follow global" hint display. Callers that only
+ * need sendDelay can read `humanizeDefaults.sendDelay`.
  */
 function withHumanizeDefaults(value, humanizeDefaultsSource) {
   if (!humanizeDefaultsSource || !value || typeof value !== 'object') return value;
-  let sendDelay = null;
   try {
     const settings = humanizeDefaultsSource();
-    if (settings?.sendDelay && typeof settings.sendDelay === 'object') {
-      sendDelay = normalizeSendDelayConfig(settings.sendDelay);
-    }
+    if (!settings || typeof settings !== 'object') return value;
+    return { ...value, humanizeDefaults: normalizeHumanizeSettings(settings) };
   } catch {
-    sendDelay = null;
+    return value;
   }
-  return sendDelay ? { ...value, humanizeDefaults: { sendDelay } } : value;
 }
 
 function decorateResult(workspaces, result, agentPresetCatalogSource, modelCatalogSource,

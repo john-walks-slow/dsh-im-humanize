@@ -1,19 +1,28 @@
 /**
- * Per-bot send-delay override editor, shared by every IM channel card.
+ * Per-bot humanization override editor, shared by every IM channel card.
+ *
+ * Exposes ALL humanization settings (streaming, messageBreak,
+ * statusReaction, replyQuote, onNewMessage, typingIndicator,
+ * typingBurst, sendDelay) for per-bot override. Each setting uses a
+ * tri-state dropdown: the empty value means "follow global"; a specific
+ * value means "custom override". typingBurst and sendDelay use a
+ * "自定义" checkbox + the shared sub-forms.
+ *
+ * Field layout, hints, presets, and validation come from
+ * humanize-fields.js — the SAME building blocks the global settings
+ * panel renders — so the two surfaces cannot drift apart in detail or
+ * format. Only the wrapper is per-bot specific: the follow-global /
+ * custom gates, the override-count badge, and the channel capability
+ * note.
  *
  * Data model (see src/channels/shared/humanize-override.mjs): the per-bot
- * humanize section REPLACES the whole override when written, so the
- * editor round-trips the full section — non-sendDelay keys present in the
- * snapshot are preserved, and the follow-global action clears the entire
- * override with an explicit confirmation label.
- *
- * The per-bot sendDelay is complete on write (enabled + readDelay +
- * segmentGap with every subfield, matching the global panel field groups);
- * the prefill base is the override when one exists, otherwise the resolved
- * GLOBAL sendDelay projected onto the snapshot as
- * `humanizeDefaults.sendDelay`, falling back to the shipped defaults.
- * UI values are seconds (minutes for the activity windows) / per-second
- * rates; the wire format is milliseconds.
+ * humanize section is per-key — keys present in the section override the
+ * resolved global defaults; keys absent inherit them. The editor saves
+ * ONLY the custom keys (or null to clear everything). A custom sendDelay
+ * is complete on write (the shared form always carries every subfield);
+ * the prefill base is the override when one exists, otherwise the
+ * resolved GLOBAL settings projected onto the snapshot as
+ * `humanizeDefaults`, falling back to the shipped defaults.
  *
  * A mounted editor owns its draft: the 15-second silent status polling
  * rebuilds snapshot objects, and refreshes must not replace unsaved edits
@@ -21,18 +30,24 @@
  * while the draft is clean (never edited, or after a successful save).
  *
  * Checkable inputs are audited by scripts/verify-package.mjs — keep the
- * two checkboxes here in sync with its manifest.
+ * checkbox count here in sync with its manifest.
  */
 import * as React from 'react';
 
 import { h } from '../../i18n.js';
-import { DEFAULT_SEND_DELAY_CONFIG } from '../../../../src/channels/shared/send-delay.mjs';
-
-export const READ_DELAY_MAX_SECONDS = 300;
-export const SEGMENT_GAP_MAX_SECONDS = 30;
-const CHARS_PER_SECOND_MAX = 1000;
-const ACTIVITY_FAST_REPLY_MAX_SECONDS = 60;
-const ACTIVITY_WINDOW_MAX_MINUTES = 1440;
+import {
+  FieldError,
+  HUMANIZE_SETTING_META,
+  SEND_DELAY_PRESETS,
+  SendDelayFields,
+  SendDelayPresetSelect,
+  TypingBurstFields,
+  burstDraftFrom,
+  draftFromConfig,
+  resolvedHumanizeDefaults,
+  validateBurstDraft,
+  validateSendDelayDraft,
+} from './humanize-fields.js';
 
 // Channels without a typing/status API only get the delay, and their read
 // delay is capped at SHORT_DELAY_CAP_MS (5s) by the bridges.
@@ -42,166 +57,86 @@ export const TYPING_CAPABILITY = Object.freeze({
   none: 'none',
 });
 
-const OVERRIDE_KEYS = ['streaming', 'messageBreak', 'statusReaction', 'replyQuote', 'onNewMessage', 'typingIndicator', 'typingBurst'];
+const BOOLEAN_KEYS = ['streaming', 'messageBreak', 'statusReaction', 'replyQuote'];
+const ENUM_KEYS = ['onNewMessage', 'typingIndicator'];
+const ALL_KEYS = [...BOOLEAN_KEYS, ...ENUM_KEYS, 'typingBurst', 'sendDelay'];
 
-function sendDelayOverride(humanize) {
-  return humanize && typeof humanize === 'object'
-    && humanize.sendDelay && typeof humanize.sendDelay === 'object'
-    ? humanize.sendDelay
-    : null;
-}
+// ── per-key draft derivation ───────────────────────────────────────
 
-function globalSendDelayDefaults(defaults) {
-  return defaults && typeof defaults === 'object' ? defaults : null;
-}
+function deriveDraft(humanize, defaults) {
+  const ov = humanize && typeof humanize === 'object' ? humanize : {};
+  const base = resolvedHumanizeDefaults(defaults);
+  const draft = {};
 
-function secondsOf(ms) {
-  return Number.isFinite(ms) && ms > 0 ? Math.round(ms) / 1000 : 0;
-}
+  // Booleans and enums: tri-state dropdown value.
+  // '' = follow global, 'true'/'false' = custom boolean, specific = custom enum
+  for (const key of BOOLEAN_KEYS) {
+    draft[key] = ov[key] !== undefined
+      ? (ov[key] ? 'true' : 'false')
+      : '';
+  }
+  for (const key of ENUM_KEYS) {
+    draft[key] = ov[key] !== undefined ? ov[key] : '';
+  }
 
-function minutesOf(ms) {
-  return Number.isFinite(ms) && ms > 0 ? Math.round(ms / 6000) / 10 : 0;
-}
-
-function rateOf(value) {
-  return Number.isFinite(value) && value > 0 ? Math.round(value * 10) / 10 : 0;
-}
-
-function draftFromConfig(config) {
-  // Caps and idle boost fall back to the shipped defaults when the source
-  // config omits them (hand-edited disk sections): the resolver normalizes
-  // those the same way, and a zero prefill would dead-end the cross-field
-  // cap >= max validation.
-  const activity = config.readDelay?.activityBoost
-    ?? DEFAULT_SEND_DELAY_CONFIG.readDelay.activityBoost;
-  return {
-    enabled: config.enabled === true,
-    readMin: String(secondsOf(config.readDelay?.minMs)),
-    readMax: String(secondsOf(config.readDelay?.maxMs)),
-    readCps: String(rateOf(config.readDelay?.charsPerSecond)),
-    readCap: String(secondsOf(
-      config.readDelay?.maxTotalMs ?? DEFAULT_SEND_DELAY_CONFIG.readDelay.maxTotalMs)),
-    actOn: activity.enabled !== false,
-    actFast: String(secondsOf(activity.fastReplyMs)),
-    actFastWin: String(minutesOf(activity.fastWindowMs)),
-    actMinWin: String(minutesOf(activity.minWindowMs)),
-    actFullWin: String(minutesOf(activity.fullWindowMs)),
-    gapMin: String(secondsOf(config.segmentGap?.minMs)),
-    gapMax: String(secondsOf(config.segmentGap?.maxMs)),
-    gapCps: String(rateOf(config.segmentGap?.charsPerSecond)),
-    gapCap: String(secondsOf(
-      config.segmentGap?.maxTotalMs ?? DEFAULT_SEND_DELAY_CONFIG.segmentGap.maxTotalMs)),
+  // typingBurst: checkbox + shared 4-field group
+  draft.typingBurst = {
+    custom: ov.typingBurst !== undefined,
+    fields: burstDraftFrom(ov.typingBurst !== undefined ? ov.typingBurst : base.typingBurst),
   };
-}
 
-class FieldError extends Error {
-  constructor(field, message) {
-    super(message);
-    this.field = field;
-  }
-}
-
-function parseSeconds(value, { field, label, max }) {
-  if (typeof value !== 'string' || value.trim() === '') {
-    throw new FieldError(field, `请填写${label}。`);
-  }
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new FieldError(field, `${label}必须是不小于 0 的数字。`);
-  }
-  if (parsed > max) {
-    throw new FieldError(field, `${label}不能超过 ${max} 秒。`);
-  }
-  return Math.round(parsed * 1000);
-}
-
-function parseMinutes(value, { field, label, max }) {
-  if (typeof value !== 'string' || value.trim() === '') {
-    throw new FieldError(field, `请填写${label}。`);
-  }
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new FieldError(field, `${label}必须是不小于 0 的数字。`);
-  }
-  if (parsed > max) {
-    throw new FieldError(field, `${label}不能超过 ${max} 分钟。`);
-  }
-  return Math.round(parsed * 60000);
-}
-
-function parseRate(value, { field, label, max, min = 0 }) {
-  if (typeof value !== 'string' || value.trim() === '') {
-    throw new FieldError(field, `请填写${label}。`);
-  }
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < min) {
-    throw new FieldError(field, `${label}必须是不小于 ${min} 的数字。`);
-  }
-  if (parsed > max) {
-    throw new FieldError(field, `${label}不能超过 ${max}。`);
-  }
-  return Math.round(parsed * 10) / 10;
-}
-
-function validateDraft(draft) {
-  const readMinMs = parseSeconds(draft.readMin, { field: 'readMin', label: '阅读延迟下限', max: READ_DELAY_MAX_SECONDS });
-  const readMaxMs = parseSeconds(draft.readMax, { field: 'readMax', label: '阅读延迟上限', max: READ_DELAY_MAX_SECONDS });
-  if (readMinMs > readMaxMs) {
-    throw new FieldError('readMin', '阅读延迟下限不能超过上限。');
-  }
-  const readCps = parseRate(draft.readCps, { field: 'readCps', label: '阅读速度', max: CHARS_PER_SECOND_MAX });
-  const readCapMs = parseSeconds(draft.readCap, { field: 'readCap', label: '阅读延迟封顶', max: READ_DELAY_MAX_SECONDS });
-  if (readCapMs < readMaxMs) {
-    throw new FieldError('readCap', '阅读延迟封顶不能低于上限。');
-  }
-  const activityFastMs = parseSeconds(draft.actFast, {
-    field: 'actFast', label: '快速回复', max: ACTIVITY_FAST_REPLY_MAX_SECONDS,
-  });
-  const activityFastWinMs = parseMinutes(draft.actFastWin, {
-    field: 'actFastWin', label: '秒回窗口', max: ACTIVITY_WINDOW_MAX_MINUTES,
-  });
-  const activityMinWinMs = parseMinutes(draft.actMinWin, {
-    field: 'actMinWin', label: '恢复下限窗口', max: ACTIVITY_WINDOW_MAX_MINUTES,
-  });
-  const activityFullWinMs = parseMinutes(draft.actFullWin, {
-    field: 'actFullWin', label: '完全恢复窗口', max: ACTIVITY_WINDOW_MAX_MINUTES,
-  });
-  if (activityFastWinMs > activityMinWinMs || activityMinWinMs > activityFullWinMs) {
-    throw new FieldError('actFastWin', '活跃响应窗口需依次递增：秒回 ≤ 恢复下限 ≤ 完全恢复。');
-  }
-  const gapMinMs = parseSeconds(draft.gapMin, { field: 'gapMin', label: '分段间隔下限', max: SEGMENT_GAP_MAX_SECONDS });
-  const gapMaxMs = parseSeconds(draft.gapMax, { field: 'gapMax', label: '分段间隔上限', max: SEGMENT_GAP_MAX_SECONDS });
-  if (gapMinMs > gapMaxMs) {
-    throw new FieldError('gapMin', '分段间隔下限不能超过上限。');
-  }
-  const gapCps = parseRate(draft.gapCps, { field: 'gapCps', label: '分段打字速度', max: CHARS_PER_SECOND_MAX });
-  const gapCapMs = parseSeconds(draft.gapCap, { field: 'gapCap', label: '分段间隔封顶', max: SEGMENT_GAP_MAX_SECONDS });
-  if (gapCapMs < gapMaxMs) {
-    throw new FieldError('gapCap', '分段间隔封顶不能低于上限。');
-  }
-  return {
-    enabled: draft.enabled === true,
-    readDelay: {
-      minMs: readMinMs,
-      maxMs: readMaxMs,
-      charsPerSecond: readCps,
-      maxTotalMs: readCapMs,
-      activityBoost: {
-        enabled: draft.actOn === true,
-        fastReplyMs: activityFastMs,
-        fastWindowMs: activityFastWinMs,
-        minWindowMs: activityMinWinMs,
-        fullWindowMs: activityFullWinMs,
-      },
-    },
-    segmentGap: {
-      minMs: gapMinMs,
-      maxMs: gapMaxMs,
-      charsPerSecond: gapCps,
-      maxTotalMs: gapCapMs,
-    },
+  // sendDelay: checkbox + shared full form
+  const sdConfig = ov.sendDelay !== undefined
+    ? ov.sendDelay
+    : base.sendDelay;
+  draft.sendDelay = {
+    custom: ov.sendDelay !== undefined,
+    fields: draftFromConfig(sdConfig),
   };
+
+  return draft;
 }
+
+function countOverrides(humanize) {
+  if (!humanize || typeof humanize !== 'object') return 0;
+  return ALL_KEYS.filter((key) => humanize[key] !== undefined).length;
+}
+
+function overrideLabel(humanize) {
+  const n = countOverrides(humanize);
+  if (n === 0) return '跟随全局';
+  return `已覆盖 ${n} 项`;
+}
+
+/**
+ * Build the save payload from the draft. Returns a partial section
+ * (only custom keys) or null (clear). Throws FieldError on validation
+ * failure.
+ */
+function buildPayload(draft) {
+  const payload = {};
+
+  for (const key of BOOLEAN_KEYS) {
+    if (draft[key] !== '') {
+      payload[key] = draft[key] === 'true';
+    }
+  }
+  for (const key of ENUM_KEYS) {
+    if (draft[key] !== '') {
+      payload[key] = draft[key];
+    }
+  }
+  if (draft.typingBurst.custom) {
+    payload.typingBurst = validateBurstDraft(draft.typingBurst.fields);
+  }
+  if (draft.sendDelay.custom) {
+    payload.sendDelay = validateSendDelayDraft(draft.sendDelay.fields);
+  }
+
+  return Object.keys(payload).length > 0 ? payload : null;
+}
+
+// ── UI helpers ────────────────────────────────────────────────────
 
 function capabilityNote(capability) {
   if (capability === TYPING_CAPABILITY.none) {
@@ -213,48 +148,28 @@ function capabilityNote(capability) {
   return null;
 }
 
-function formatSecondsLabel(ms) {
-  return String(Math.round(ms) / 1000);
+function booleanLabel(value) {
+  return value ? '开' : '关';
 }
 
-function overrideLabel(section) {
-  if (!section) return '跟随全局';
-  if (section.enabled === false) return '已覆盖·未启用';
-  const { readDelay } = section;
-  if (!Number.isFinite(readDelay?.minMs) || !Number.isFinite(readDelay?.maxMs)) return '已覆盖';
-  const min = formatSecondsLabel(readDelay.minMs);
-  const max = formatSecondsLabel(readDelay.maxMs);
-  return `已覆盖 ${min}–${max} 秒`;
+function enumLabel(key, value) {
+  const options = HUMANIZE_SETTING_META[key]?.options ?? [];
+  return options.find((option) => option.value === value)?.label ?? value;
 }
 
-/** One labeled number input (advanced single-value fields). */
-function NumberField({ label, value, max, step = 0.1, min = 0, disabled, ariaLabel, error, onChange }) {
-  return h('label', { className: 'dim-sendDelayAdvancedField' },
-    h('span', { className: 'dim-sendDelayRangeName' }, label),
-    h('input', {
-      type: 'number',
-      min, max, step,
-      value,
-      disabled,
-      'aria-label': ariaLabel,
-      onChange: (event) => onChange(event.target.value),
-    }),
-    error || null);
-}
+// ── Main component ─────────────────────────────────────────────────
 
-export function BotSendDelayEditor({
+export function BotHumanizeEditor({
   humanize,
-  sendDelayDefaults = null,
+  humanizeDefaults = null,
   capability = TYPING_CAPABILITY.full,
   disabled = false,
   onSave,
 }) {
-  const current = sendDelayOverride(humanize);
-  const defaults = globalSendDelayDefaults(sendDelayDefaults);
+  const defaults = resolvedHumanizeDefaults(humanizeDefaults);
   const [open, setOpen] = React.useState(false);
-  const [mode, setMode] = React.useState(current ? 'override' : 'follow');
-  const [draft, setDraft] = React.useState(
-    () => draftFromConfig(current ?? defaults ?? DEFAULT_SEND_DELAY_CONFIG));
+  const [presetKey, setPresetKey] = React.useState('');
+  const [draft, setDraft] = React.useState(() => deriveDraft(humanize, humanizeDefaults));
   const [dirty, setDirty] = React.useState(false);
   const [fieldErrors, setFieldErrors] = React.useState(null);
   const [saveError, setSaveError] = React.useState(null);
@@ -266,9 +181,8 @@ export function BotSendDelayEditor({
   // fresh identities; a mounted editor owns its unsaved edits.
   React.useEffect(() => {
     if (dirty) return;
-    setMode(current ? 'override' : 'follow');
-    setDraft(draftFromConfig(current ?? defaults ?? DEFAULT_SEND_DELAY_CONFIG));
-  }, [current, defaults, dirty]);
+    setDraft(deriveDraft(humanize, humanizeDefaults));
+  }, [humanize, humanizeDefaults, dirty]);
 
   const beginChange = () => {
     setFieldErrors(null);
@@ -276,40 +190,39 @@ export function BotSendDelayEditor({
     setSaved(false);
   };
 
-  const setModeAndDraft = (nextMode) => {
+  const updateDraft = (updater) => {
     beginChange();
     setDirty(true);
-    setMode(nextMode);
-    if (nextMode === 'override' && !current) {
-      setDraft(draftFromConfig(defaults ?? DEFAULT_SEND_DELAY_CONFIG));
-    }
+    setDraft((prev) => updater(prev));
   };
 
-  const updateDraft = (key, value) => {
-    beginChange();
-    setDirty(true);
-    setDraft((prev) => ({ ...prev, [key]: value }));
+  const updateSelect = (key, value) => {
+    updateDraft((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const toggleCustom = (key, checked) => {
+    updateDraft((prev) => ({
+      ...prev,
+      [key]: { ...prev[key], custom: checked },
+    }));
+  };
+
+  const applyPreset = (key) => {
+    setPresetKey(key);
+    const preset = SEND_DELAY_PRESETS.find((candidate) => candidate.key === key);
+    if (!preset) return;
+    updateDraft((prev) => ({
+      ...prev,
+      sendDelay: { ...prev.sendDelay, fields: draftFromConfig(preset.config) },
+    }));
   };
 
   const save = async () => {
     if (disabled || saving || typeof onSave !== 'function') return;
     beginChange();
-    if (mode === 'follow') {
-      setSaving(true);
-      try {
-        await onSave(null);
-        setSaved(true);
-        setDirty(false);
-      } catch (caught) {
-        setSaveError(caught?.message ?? '保存失败，请稍后重试。');
-      } finally {
-        setSaving(false);
-      }
-      return;
-    }
     let payload;
     try {
-      payload = validateDraft(draft);
+      payload = buildPayload(draft);
     } catch (caught) {
       if (caught instanceof FieldError) {
         setFieldErrors({ [caught.field]: caught.message });
@@ -318,16 +231,9 @@ export function BotSendDelayEditor({
       }
       return;
     }
-    // Preserve any other override keys: the section replaces whole.
-    const rest = {};
-    for (const key of OVERRIDE_KEYS) {
-      if (humanize && typeof humanize === 'object' && humanize[key] !== undefined) {
-        rest[key] = humanize[key];
-      }
-    }
     setSaving(true);
     try {
-      await onSave({ ...rest, sendDelay: payload });
+      await onSave(payload);
       setSaved(true);
       setDirty(false);
     } catch (caught) {
@@ -339,9 +245,14 @@ export function BotSendDelayEditor({
 
   const busy = disabled || saving;
   const note = capabilityNote(capability);
-  const fieldError = (field) => fieldErrors?.[field]
-    ? h('span', { className: 'dim-sendDelayFieldError', role: 'alert' }, fieldErrors[field])
-    : null;
+
+  // Whether the save button should say "清除覆盖" (payload is null and
+  // an override exists) vs "保存" (payload is non-null).
+  const hasOverride = countOverrides(humanize) > 0;
+  const draftHasCustom = BOOLEAN_KEYS.some((key) => draft[key] !== '')
+    || ENUM_KEYS.some((key) => draft[key] !== '')
+    || draft.typingBurst.custom
+    || draft.sendDelay.custom;
 
   return h('div', { className: 'dim-sendDelayEditor' },
     h('button', {
@@ -351,167 +262,139 @@ export function BotSendDelayEditor({
       onClick: () => setOpen((value) => !value),
       disabled,
     },
-    h('span', { className: 'dim-sendDelayToggleLabel' }, '发送延迟'),
+    h('span', { className: 'dim-sendDelayToggleLabel' }, '拟人化'),
     h('span', {
       className: 'dim-sendDelayToggleStatus',
-      'data-active': Boolean(current),
-    }, overrideLabel(current)),
+      'data-active': hasOverride,
+    }, overrideLabel(humanize)),
     h('span', { className: 'dim-sendDelayChevron', 'aria-hidden': 'true' }, open ? '▾' : '▸')),
     open ? h('div', { className: 'dim-sendDelayBody' },
-      h('div', { className: 'dim-sendDelayModes', role: 'radiogroup', 'aria-label': '发送延迟模式' },
-        h('label', { className: 'dim-sendDelayMode' },
-          h('input', {
-            type: 'radio',
-            name: 'send-delay-mode',
-            checked: mode === 'follow',
-            disabled: busy,
-            onChange: () => setModeAndDraft('follow'),
-          }),
-          '跟随全局'),
-        h('label', { className: 'dim-sendDelayMode' },
-          h('input', {
-            type: 'radio',
-            name: 'send-delay-mode',
-            checked: mode === 'override',
-            disabled: busy,
-            onChange: () => setModeAndDraft('override'),
-          }),
-          '自定义覆盖')),
 
-      mode === 'override' ? h('div', { className: 'dim-sendDelayFields' },
-        h('label', { className: 'dim-humanizeField dim-sendDelayField' },
+      // ── Boolean toggles (tri-state dropdown) ──────────────────────
+      ...BOOLEAN_KEYS.map((key) => {
+        const meta = HUMANIZE_SETTING_META[key];
+        return h('label', { key, className: 'dim-humanizeField dim-sendDelayField' },
           h('span', { className: 'dim-humanizeFieldRow' },
-            h('input', {
-              type: 'checkbox',
-              checked: draft.enabled,
+            h('select', {
+              value: draft[key],
               disabled: busy,
-              onChange: (event) => updateDraft('enabled', event.target.checked),
-            }),
-            h('span', { className: 'dim-humanizeFieldName' }, '启用发送延迟')),
-          h('span', { className: 'dim-humanizeFieldHint' },
-            '开启后，机器人收到消息先静默一段时间再处理，模拟真人稍后才读到消息。')),
-        h('div', { className: 'dim-sendDelayRange' },
-          h('span', { className: 'dim-sendDelayRangeName' }, '阅读延迟（秒）'),
-          h('span', { className: 'dim-sendDelayRangeInputs' },
-            h('input', {
-              type: 'number', min: 0, max: READ_DELAY_MAX_SECONDS, step: 0.1,
-              value: draft.readMin,
-              disabled: busy,
-              'aria-label': '阅读延迟下限（秒）',
-              onChange: (event) => updateDraft('readMin', event.target.value),
-            }),
-            h('span', { className: 'dim-sendDelayRangeSep', 'aria-hidden': 'true' }, '–'),
-            h('input', {
-              type: 'number', min: 0, max: READ_DELAY_MAX_SECONDS, step: 0.1,
-              value: draft.readMax,
-              disabled: busy,
-              'aria-label': '阅读延迟上限（秒）',
-              onChange: (event) => updateDraft('readMax', event.target.value),
-            })),
-          fieldError('readMin') || fieldError('readMax'),
-          h('span', { className: 'dim-humanizeFieldHint' },
-            '收到消息后到开始处理之间的静默时间，按用户消息长度还会略有增加。')),
-        h('div', { className: 'dim-sendDelayAdvanced' },
-          h(NumberField, {
-            label: '阅读速度（字/秒）', ariaLabel: '阅读速度（字/秒，0 关闭）',
-            value: draft.readCps, max: CHARS_PER_SECOND_MAX, disabled: busy,
-            error: fieldError('readCps'),
-            onChange: (value) => updateDraft('readCps', value),
-          }),
-          h(NumberField, {
-            label: '阅读延迟封顶（秒）', ariaLabel: '阅读延迟单回合封顶（秒）',
-            value: draft.readCap, max: READ_DELAY_MAX_SECONDS, disabled: busy,
-            error: fieldError('readCap'),
-            onChange: (value) => updateDraft('readCap', value),
-          })),
-        h('label', { className: 'dim-humanizeField dim-sendDelayField' },
-          h('span', { className: 'dim-humanizeFieldRow' },
-            h('input', {
-              type: 'checkbox',
-              checked: draft.actOn,
-              disabled: busy,
-              'aria-label': '启用活跃响应',
-              onChange: (event) => updateDraft('actOn', event.target.checked),
-            }),
-            h('span', { className: 'dim-humanizeFieldName' }, '活跃响应')),
-          h('span', { className: 'dim-humanizeFieldHint' },
-            '刚聊完天时“秒回”，闲置越久越接近完整延迟区间。')),
-        h('div', { className: 'dim-sendDelayAdvanced dim-sendDelayActivity' },
-          h(NumberField, {
-            label: '快速回复（秒）', ariaLabel: '快速回复延迟（秒）',
-            value: draft.actFast, max: ACTIVITY_FAST_REPLY_MAX_SECONDS, step: 0.5, disabled: busy,
-            error: fieldError('actFast'),
-            onChange: (value) => updateDraft('actFast', value),
-          }),
-          h(NumberField, {
-            label: '秒回窗口（分钟）', ariaLabel: '秒回窗口（分钟）',
-            value: draft.actFastWin, max: ACTIVITY_WINDOW_MAX_MINUTES, step: 0.5, disabled: busy,
-            error: fieldError('actFastWin'),
-            onChange: (value) => updateDraft('actFastWin', value),
-          }),
-          h(NumberField, {
-            label: '恢复下限窗口（分钟）', ariaLabel: '恢复下限窗口（分钟）',
-            value: draft.actMinWin, max: ACTIVITY_WINDOW_MAX_MINUTES, step: 0.5, disabled: busy,
-            error: fieldError('actMinWin'),
-            onChange: (value) => updateDraft('actMinWin', value),
-          }),
-          h(NumberField, {
-            label: '完全恢复窗口（分钟）', ariaLabel: '完全恢复窗口（分钟）',
-            value: draft.actFullWin, max: ACTIVITY_WINDOW_MAX_MINUTES, step: 0.5, disabled: busy,
-            error: fieldError('actFullWin'),
-            onChange: (value) => updateDraft('actFullWin', value),
-          })),
-        h('span', { className: 'dim-humanizeFieldHint' },
-          '上一回合结束后：秒回窗口内直接用快速回复；过渡到下限窗口线性回升；超过完全恢复窗口回到完整随机区间。首条消息不加速。'),
-        h('div', { className: 'dim-sendDelayRange' },
-          h('span', { className: 'dim-sendDelayRangeName' }, '分段间隔（秒）'),
-          h('span', { className: 'dim-sendDelayRangeInputs' },
-            h('input', {
-              type: 'number', min: 0, max: SEGMENT_GAP_MAX_SECONDS, step: 0.1,
-              value: draft.gapMin,
-              disabled: busy,
-              'aria-label': '分段间隔下限（秒）',
-              onChange: (event) => updateDraft('gapMin', event.target.value),
-            }),
-            h('span', { className: 'dim-sendDelayRangeSep', 'aria-hidden': 'true' }, '–'),
-            h('input', {
-              type: 'number', min: 0, max: SEGMENT_GAP_MAX_SECONDS, step: 0.1,
-              value: draft.gapMax,
-              disabled: busy,
-              'aria-label': '分段间隔上限（秒）',
-              onChange: (event) => updateDraft('gapMax', event.target.value),
-            })),
-          fieldError('gapMin') || fieldError('gapMax'),
-          h('span', { className: 'dim-humanizeFieldHint' },
-            '多条分段回复之间“正在打下一条”的停顿，仅在启用分步消息或流式分段时生效。')),
-        h('div', { className: 'dim-sendDelayAdvanced' },
-          h(NumberField, {
-            label: '分段打字速度（字/秒）', ariaLabel: '分段打字速度（字/秒，0 关闭）',
-            value: draft.gapCps, max: CHARS_PER_SECOND_MAX, disabled: busy,
-            error: fieldError('gapCps'),
-            onChange: (value) => updateDraft('gapCps', value),
-          }),
-          h(NumberField, {
-            label: '分段间隔封顶（秒）', ariaLabel: '分段间隔封顶（秒）',
-            value: draft.gapCap, max: SEGMENT_GAP_MAX_SECONDS, disabled: busy,
-            error: fieldError('gapCap'),
-            onChange: (value) => updateDraft('gapCap', value),
-          })),
-        h('p', { className: 'dim-humanizeFieldHint dim-sendDelayNote' },
-          '覆盖保存后固定为本页值，之后修改全局设置不影响此机器人（覆盖为整体替换）。'),
-        note ? h('p', { className: 'dim-humanizeFieldHint dim-sendDelayNote' }, note) : null)
-        : h('p', { className: 'dim-humanizeFieldHint dim-sendDelayNote' },
-          '机器人使用全局拟人化设置中的发送延迟。', current ? '切换回跟随全局会清除该机器人的全部拟人化覆盖。' : null,
-          note ? ` ${note}` : null),
+              'aria-label': meta.label,
+              onChange: (event) => updateSelect(key, event.target.value),
+            },
+            h('option', { value: '' },
+              `跟随全局 (${booleanLabel(defaults[key])})`),
+            h('option', { value: 'true' }, '开启'),
+            h('option', { value: 'false' }, '关闭')),
+            h('span', { className: 'dim-humanizeFieldName' }, meta.label)),
+          h('span', { className: 'dim-humanizeFieldHint' }, meta.hint));
+      }),
 
+      // ── onNewMessage dropdown ─────────────────────────────────────
+      h('label', { className: 'dim-humanizeField dim-sendDelayField' },
+        h('span', { className: 'dim-humanizeFieldRow' },
+          h('select', {
+            value: draft.onNewMessage,
+            disabled: busy,
+            'aria-label': HUMANIZE_SETTING_META.onNewMessage.label,
+            onChange: (event) => updateSelect('onNewMessage', event.target.value),
+          },
+          h('option', { value: '' },
+            `跟随全局 (${enumLabel('onNewMessage', defaults.onNewMessage)})`),
+          HUMANIZE_SETTING_META.onNewMessage.options.map((option) =>
+            h('option', { key: option.value, value: option.value }, option.label))),
+          h('span', { className: 'dim-humanizeFieldName' }, HUMANIZE_SETTING_META.onNewMessage.label)),
+        h('span', { className: 'dim-humanizeFieldHint' }, HUMANIZE_SETTING_META.onNewMessage.hint)),
+
+      // ── typingIndicator dropdown ─────────────────────────────────
+      h('label', { className: 'dim-humanizeField dim-sendDelayField' },
+        h('span', { className: 'dim-humanizeFieldRow' },
+          h('select', {
+            value: draft.typingIndicator,
+            disabled: busy,
+            'aria-label': HUMANIZE_SETTING_META.typingIndicator.label,
+            onChange: (event) => updateSelect('typingIndicator', event.target.value),
+          },
+          h('option', { value: '' },
+            `跟随全局 (${enumLabel('typingIndicator', defaults.typingIndicator)})`),
+          HUMANIZE_SETTING_META.typingIndicator.options.map((option) =>
+            h('option', { key: option.value, value: option.value }, option.label))),
+          h('span', { className: 'dim-humanizeFieldName' }, HUMANIZE_SETTING_META.typingIndicator.label)),
+        h('span', { className: 'dim-humanizeFieldHint' }, HUMANIZE_SETTING_META.typingIndicator.hint)),
+
+      // ── typingBurst (gated by a custom checkbox) ──────────────────
+      h('div', { className: 'dim-humanizeField dim-sendDelayField' },
+        h('span', { className: 'dim-humanizeFieldRow' },
+          h('input', {
+            type: 'checkbox',
+            checked: draft.typingBurst.custom,
+            disabled: busy,
+            'aria-label': '自定义断续节奏',
+            onChange: (event) => toggleCustom('typingBurst', event.target.checked),
+          }),
+          h('span', { className: 'dim-humanizeFieldName' }, '断续节奏')),
+        draft.typingBurst.custom
+          ? h(TypingBurstFields, {
+            draft: draft.typingBurst.fields,
+            busy,
+            errors: fieldErrors,
+            onField: (field, value) => updateDraft((prev) => ({
+              ...prev,
+              typingBurst: {
+                ...prev.typingBurst,
+                fields: { ...prev.typingBurst.fields, [field]: value },
+              },
+            })),
+          })
+          : h('span', { className: 'dim-humanizeFieldHint' },
+            `跟随全局（${defaults.typingBurst.onMinMs}–${defaults.typingBurst.onMaxMs}`
+            + ` / ${defaults.typingBurst.offMinMs}–${defaults.typingBurst.offMaxMs} 毫秒）`)),
+
+      // ── sendDelay (gated by a custom checkbox) ────────────────────
+      h('div', { className: 'dim-humanizeField dim-sendDelayField' },
+        h('span', { className: 'dim-humanizeFieldRow' },
+          h('input', {
+            type: 'checkbox',
+            checked: draft.sendDelay.custom,
+            disabled: busy,
+            'aria-label': '自定义发送延迟',
+            onChange: (event) => toggleCustom('sendDelay', event.target.checked),
+          }),
+          h('span', { className: 'dim-humanizeFieldName' }, '发送延迟')),
+        draft.sendDelay.custom
+          ? h('div', { className: 'dim-sendDelayFields' },
+            h(SendDelayPresetSelect, {
+              value: presetKey,
+              disabled: busy,
+              onChange: applyPreset,
+            }),
+            h(SendDelayFields, {
+              draft: draft.sendDelay.fields,
+              busy,
+              errors: fieldErrors,
+              onField: (field, value) => updateDraft((prev) => ({
+                ...prev,
+                sendDelay: {
+                  ...prev.sendDelay,
+                  fields: { ...prev.sendDelay.fields, [field]: value },
+                },
+              })),
+            }),
+            h('span', { className: 'dim-humanizeFieldHint dim-sendDelayNote' },
+              '自定义项保存后固定为本页值；未自定义项继续跟随全局设置变化。'))
+          : h('span', { className: 'dim-humanizeFieldHint' },
+            `跟随全局（${defaults.sendDelay?.enabled === true ? '已启用' : '未启用'}）`)),
+
+      note ? h('p', { className: 'dim-humanizeFieldHint dim-sendDelayNote' }, note) : null,
+
+      // ── Save ──────────────────────────────────────────────────────
       h('div', { className: 'dim-humanizeActions' },
         h('button', {
           type: 'button',
           className: 'dim-deliveryButton dim-humanizeSave',
           'data-kind': 'primary',
-          disabled: busy || (mode === 'follow' && !current),
+          disabled: busy || (!dirty && !hasOverride),
           onClick: () => { void save(); },
-        }, saving ? '保存中…' : mode === 'follow' ? '清除覆盖' : '保存'),
+        }, saving ? '保存中…' : (!draftHasCustom && hasOverride ? '清除覆盖' : '保存')),
         saved
           ? h('span', { className: 'dim-humanizeStatus', 'data-tone': 'success', role: 'status' }, '已保存')
           : null,
@@ -519,4 +402,18 @@ export function BotSendDelayEditor({
           ? h('span', { className: 'dim-humanizeStatus', 'data-tone': 'error', role: 'alert' }, saveError)
           : null))
       : null);
+}
+
+/**
+ * Deprecated alias for backward compatibility. New mount sites should
+ * use BotHumanizeEditor with the `humanizeDefaults` prop (full global
+ * settings object). This adapter accepts the old `sendDelayDefaults`
+ * prop and projects it as `{ sendDelay }`.
+ */
+export function BotSendDelayEditor(props) {
+  return h(BotHumanizeEditor, {
+    ...props,
+    humanizeDefaults: props.humanizeDefaults
+      ?? (props.sendDelayDefaults ? { sendDelay: props.sendDelayDefaults } : null),
+  });
 }

@@ -143,19 +143,21 @@ if (client.includes('settings.plugins.tab') || clientSources.includes('settings.
 }
 // Connections still have no channel-enable toggle. Checkable inputs are owned
 // only by the shared context editor, the saved-target Session sync row, the
-// humanization panel, and the per-bot send-delay editor. The expected bundle
-// counts are derived from those audited sources so adding a field inside one
-// of them only needs a manifest update here, while a stray checkable anywhere
-// else still fails the build.
+// humanization panel, the shared humanization field group, and the per-bot
+// humanization editor. The expected bundle counts are derived from those
+// audited sources so adding a field inside one of them only needs a manifest
+// update here, while a stray checkable anywhere else still fails the build.
 const contextEditorSource = await readFile(resolve(root, 'plugin-src/client/context-enhancement.js'), 'utf8');
 const deliverySettingsSource = await readFile(resolve(root, 'plugin-src/client/delivery-settings.js'), 'utf8');
 const humanizeSettingsSource = await readFile(resolve(root, 'plugin-src/client/humanize-settings.js'), 'utf8');
 const botSendDelaySource = await readFile(resolve(root, 'plugin-src/client/channels/shared/bot-send-delay.js'), 'utf8');
+const humanizeFieldsSource = await readFile(resolve(root, 'plugin-src/client/channels/shared/humanize-fields.js'), 'utf8');
 const auditedSources = [
   ['context-enhancement.js', contextEditorSource, { checkbox: 2, switch: 1 }],
   ['delivery-settings.js', deliverySettingsSource, { checkbox: 1, switch: 0 }],
-  ['humanize-settings.js', humanizeSettingsSource, { checkbox: 6, switch: 0 }],
+  ['humanize-settings.js', humanizeSettingsSource, { checkbox: 1, switch: 0 }],
   ['bot-send-delay.js', botSendDelaySource, { checkbox: 2, switch: 0 }],
+  ['humanize-fields.js', humanizeFieldsSource, { checkbox: 2, switch: 0 }],
 ];
 let expectedCheckboxes = 0;
 let expectedSwitches = 0;
