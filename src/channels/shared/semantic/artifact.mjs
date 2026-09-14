@@ -371,7 +371,7 @@ export class OutboundArtifactRegistry {
     const agent = exec?.agent;
     const sessionId = agent?.session?.header?.id;
     const workspace = agent?.session?.header?.cwd;
-    const turn = currentTurn(agent);
+    const turn = this.#openTurns.get(sessionId) ?? currentTurn(agent);
     if (typeof sessionId !== 'string' || !sessionId
       || typeof workspace !== 'string' || !workspace || turn === null) {
       throw artifactError(
