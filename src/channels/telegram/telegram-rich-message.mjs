@@ -64,10 +64,12 @@ function assertCompleteFences(markdown) {
 }
 
 function escapedMarkdown(value) {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
+  return Array.from(value, (character) => {
+    if (character === '&') return '&amp;';
+    if (character === '<') return '&lt;';
+    if (character === '>') return '&gt;';
+    return character;
+  }).join('');
 }
 
 function plainRichChunks(source, limit) {

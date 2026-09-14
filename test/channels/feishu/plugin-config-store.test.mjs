@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { PluginConfigStore } from '../../../src/channels/feishu/plugin-config-store.mjs';
+import { assertRestrictiveMode } from '../../support/filesystem.mjs';
 
 test('PluginConfigStore persists non-secret onboarding facts', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-feishu-config-'));
@@ -21,7 +22,7 @@ test('PluginConfigStore persists non-secret onboarding facts', async () => {
 
   const raw = await readFile(path, 'utf8');
   assert.doesNotMatch(raw, /must-not-be-written/);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await assertRestrictiveMode(path, 0o600);
   assert.equal((await new PluginConfigStore(path).load()).get().appId, 'cli_test');
   assert.equal(store.get().groupResponseMode, 'mention');
   assert.equal(store.get().groupMessagePermissionGranted, false);

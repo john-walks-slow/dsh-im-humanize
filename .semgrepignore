@@ -1,0 +1,6 @@
+# Generated bundles; scan source files under plugin-src/ and src/ instead.
+lib/client.js
+
+# Test fixtures use dynamic assertions and host-specific path regexes; SAST gates
+# cover runtime source under src/, plugin-src/, bin/, and scripts/.
+test/

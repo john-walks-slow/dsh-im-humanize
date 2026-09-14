@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { DingtalkStateStore } from '../../../src/channels/dingtalk/state-store.mjs';
+import { assertRestrictiveMode } from '../../support/filesystem.mjs';
 
 test('state store persists sessions, dedupe IDs, and host-only pending sender records atomically', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-dingtalk-state-'));
@@ -44,7 +45,7 @@ test('state store persists sessions, dedupe IDs, and host-only pending sender re
 
   const storedText = await readFile(path, 'utf8');
   assert.doesNotMatch(storedText, /sessionWebhook|must-not-persist/);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await assertRestrictiveMode(path, 0o600);
 
   const reloaded = await new DingtalkStateStore(path).load();
   assert.deepEqual(reloaded.pendingSenders(), [updated]);

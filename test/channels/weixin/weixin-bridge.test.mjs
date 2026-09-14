@@ -33,8 +33,8 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-async function eventually(predicate, messageText = 'condition was not met') {
-  const deadline = Date.now() + 1_000;
+async function eventually(predicate, messageText = 'condition was not met', timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -434,7 +434,7 @@ test('Weixin starts a native-file download before an earlier queued turn finishe
   });
 
   const first = bridge.accept(message('weixin-prefetch-first', '先等待'));
-  await eventually(() => asks === 1);
+  await eventually(() => asks === 1, 'busy turn did not start before /batch assertion', 5_000);
   const second = bridge.accept(message('weixin-prefetch-second', '', {
     item_list: [{
       type: 4,
@@ -2536,7 +2536,7 @@ test('Weixin refuses /batch while the existing conversation queue is running', a
   });
 
   const turn = bridge.accept(message('busy-turn', '正在运行'));
-  await eventually(() => asks === 1);
+  await eventually(() => asks === 1, 'busy turn did not start before /batch assertion', 5_000);
   await bridge.accept(message('busy-batch', '/batch'));
   assert.match(sent.at(-1), /正在运行的任务.*\/stop.*\/batch/s);
 

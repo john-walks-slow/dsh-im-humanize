@@ -53,6 +53,27 @@ async function fixture(t) {
   return { root, defaultWorkspace, alternateWorkspace, path: join(root, 'workspaces.json') };
 }
 
+function isLinkPrivilegeError(error) {
+  return ['EACCES', 'EPERM', 'ENOSYS', 'UNKNOWN'].includes(error?.code);
+}
+
+async function createDirectoryLink(t, target, link) {
+  try {
+    await symlink(target, link, 'dir');
+    return true;
+  } catch (error) {
+    if (!isLinkPrivilegeError(error)) throw error;
+  }
+  try {
+    await symlink(target, link, 'junction');
+    return true;
+  } catch (error) {
+    if (!isLinkPrivilegeError(error)) throw error;
+  }
+  t.skip('directory links are unavailable in this Windows test environment');
+  return false;
+}
+
 test('workspace asks collect result files without an explicit Gate', async () => {
   const observed = [];
   const harness = {
@@ -1402,7 +1423,7 @@ test('/workspacelist and /sessionlist canonicalize a symbolic-link workspace', a
   const canonicalWorkspace = join(root, 'canonical-workspace');
   const linkedWorkspace = join(root, 'linked-workspace');
   await mkdir(canonicalWorkspace);
-  await symlink(canonicalWorkspace, linkedWorkspace, 'dir');
+  if (!(await createDirectoryLink(t, canonicalWorkspace, linkedWorkspace))) return;
   const requested = [];
   const harness = {
     currentWorkspace() { return linkedWorkspace; },
