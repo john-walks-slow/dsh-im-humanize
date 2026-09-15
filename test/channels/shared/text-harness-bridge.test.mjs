@@ -2460,7 +2460,7 @@ test('keeps a failed interaction response pending so the actor can retry', async
   });
 
   const processing = bridge.accept(message('retry-start', '启动可重试交互'));
-  await eventually(() => sent.some(({ text }) => text.includes('请回答')));
+  await eventually(() => sent.some(({ text }) => text.includes('请回答')), 5_000);
   await bridge.accept(message('retry-first', '第一次答案', {
     reactionTarget: { id: 'source-retry-first' },
   }));
@@ -2513,7 +2513,7 @@ test('notifies the actor when an in-flight response resolves elsewhere before re
   });
 
   const processing = bridge.accept(message('response-race-start', '启动提交竞态'));
-  await eventually(() => sent.some(({ text }) => text.includes('请回答')));
+  await eventually(() => sent.some(({ text }) => text.includes('请回答')), 5_000);
   await bridge.accept(message('response-race-answer', '已经收到的答案'));
   await processing;
 

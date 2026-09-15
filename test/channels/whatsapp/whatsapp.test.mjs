@@ -4,7 +4,6 @@ import { EventEmitter } from 'node:events';
 import {
   mkdtemp,
   rm,
-  stat,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -39,6 +38,7 @@ import {
   WHATSAPP_ENDPOINTS,
   createWhatsappRpcHandler,
 } from '../../../plugin-src/host/channels/whatsapp/rpc.mjs';
+import { assertRestrictiveMode } from '../../support/filesystem.mjs';
 
 const ACCOUNT_JID = '16505550123@s.whatsapp.net';
 const AUTH_DIRECTORY = '7fe8c17e-4fb7-4c5b-a9dc-c36525575dd1';
@@ -177,7 +177,7 @@ test('WhatsApp config stores only linked-device metadata with restrictive permis
   await store.save(linkedConfig());
   assert.equal(store.list()[0].accountJid, ACCOUNT_JID);
   assert.equal(store.list()[0].accessMode, WHATSAPP_ACCESS_MODES.open);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await assertRestrictiveMode(path, 0o600);
   await assert.rejects(() => store.save(linkedConfig({ botId: 'whatsapp_invalid' })));
 });
 
@@ -237,7 +237,7 @@ test('WhatsApp Web session reports QR and linked identity without printing eithe
     accountJid: ACCOUNT_JID,
     name: 'Harness WhatsApp',
   });
-  assert.equal((await stat(root)).mode & 0o777, 0o700);
+  await assertRestrictiveMode(root, 0o700);
   await session.close();
   assert.equal(ended, true);
 });

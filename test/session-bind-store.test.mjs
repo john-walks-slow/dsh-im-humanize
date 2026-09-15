@@ -19,6 +19,7 @@ import {
 } from '../src/channels/shared/bot-workspace-store.mjs';
 import { runModelCommand } from '../src/channels/shared/model-command.mjs';
 import { askInWorkspaceSession } from '../src/channels/shared/workspace-session.mjs';
+import { symlinkOrSkip } from './support/filesystem.mjs';
 
 async function fixture(t) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-im-session-bind-')));
@@ -146,7 +147,7 @@ test('binding inside the current workspace only replaces the selected conversati
 test('binding through an equivalent real path does not clear a symlink workspace', async (t) => {
   const { root, path, defaultWorkspace } = await fixture(t);
   const linkedWorkspace = join(root, 'default-link');
-  await symlink(defaultWorkspace, linkedWorkspace);
+  if (!await symlinkOrSkip(t, defaultWorkspace, linkedWorkspace)) return;
   const workspaces = await new BotWorkspaceStore(path, { defaultWorkspace: linkedWorkspace }).load();
   await workspaces.ensure('bot_symlink', { workspace: linkedWorkspace });
   const generation = workspaces.generationFor('bot_symlink');

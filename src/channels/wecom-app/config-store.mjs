@@ -17,7 +17,9 @@ function safeIntegrationId(value) {
 
 function safeRef(value, prefix) {
   const ref = cleanString(value);
-  return ref && new RegExp('^' + prefix + '[A-F0-9]{24}$').test(ref) ? ref : null;
+  if (!ref?.startsWith(prefix)) return null;
+  const suffix = ref.slice(prefix.length);
+  return /^[A-F0-9]{24}$/.test(suffix) ? ref : null;
 }
 
 // A bot identity is stable per (corpId, agentId) pair so re-binding the same
