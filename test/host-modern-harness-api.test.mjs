@@ -572,3 +572,381 @@ test('modern adapter delegates interactions when a Session exposes no readable e
   }, () => Promise.resolve(questionAnswer));
   assert.deepEqual(question, questionAnswer);
 });
+
+forEachSessionApi('concurrent questions', async (sessionApi) => {
+  const { events, session } = sessionFixture(sessionApi);
+  const eventRecord = (event) => ({ type: 'event', event });
+  let fixture;
+  let turnTask;
+  const append = (event) => {
+    events.push(event);
+    fixture.emit('session/event', session, event);
+  };
+  const browserAnswer = { answers: [{ id: 'environment', selected: ['Production'] }] };
+  const gateway = {
+    async invoke(request) {
+      const endpoint = `${request.namespace}/${request.method}`;
+      if (endpoint === 'session/page') {
+        return { records: events.map(eventRecord), hasMore: false };
+      }
+      if (endpoint === 'session/prompt') {
+        const rpcId = request.args.request.requestId;
+        turnTask = (async () => {
+          append({ type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } });
+          append({
+            type: 'user/message', seq: 1, time: 1,
+            data: { turn: 1, source: { kind: 'user', rpcId }, message: { content: [] } },
+          });
+          // The host answers; the IM side is offered the question but stays silent.
+          const raced = await fixture.waterfall('user-questions/request', {
+            agent: { id: 'session', session },
+            questions: [{
+              id: 'environment',
+              question: 'Choose an environment',
+              options: [{ label: 'Test' }, { label: 'Production' }],
+            }],
+          }, () => Promise.resolve(browserAnswer));
+          assert.deepEqual(raced, browserAnswer);
+          append({
+            type: 'assistant/message', seq: 2, time: 2,
+            data: { turn: 1, message: { content: [{ type: 'text', text: 'answered by the host' }] } },
+          });
+          append({
+            type: 'turn/end', seq: 3, time: 3,
+            data: { turn: 1, reason: { kind: 'completed' } },
+          });
+        })();
+        return { accepted: true };
+      }
+      throw new Error(`unexpected invoke ${endpoint}`);
+    },
+    async stream(request) {
+      if (`${request.namespace}/${request.method}` !== 'session/follow') {
+        throw new Error('unexpected stream');
+      }
+      return asyncValues({
+        type: 'snapshot', cursor: -1, records: [], hasMore: false,
+        projections: { asOfSeq: -1, values: {} },
+      });
+    },
+  };
+  fixture = fakeContext(gateway);
+  const client = new HarnessClient({
+    ...harnessConnection(fixture.ctx),
+    workspace: '/workspace',
+    rpcIdPrefix: 'modern-race-test',
+    logPrefix: 'modern-race-test',
+  });
+  const interactions = [];
+  const resolutions = [];
+  const answer = await client.ask('session', 'ask a question', {
+    timeoutMs: 5_000,
+    onInteraction: async (interaction) => { interactions.push(interaction); },
+    onInteractionResolved: (resolution) => resolutions.push(resolution),
+  });
+  await turnTask;
+
+  assert.equal(answer, 'answered by the host');
+  assert.equal(interactions.length, 1, 'IM is still offered an active-turn question');
+  assert.equal(resolutions.length, 1, 'the IM pending is retired once the host answers');
+  assert.equal(resolutions[0].outcome, 'cancelled');
+});
+
+forEachSessionApi('questions answered on IM', async (sessionApi) => {
+  const { events, session } = sessionFixture(sessionApi);
+  const eventRecord = (event) => ({ type: 'event', event });
+  let fixture;
+  let turnTask;
+  let turnRetiredByAbort = 0;
+  let questionSignal;
+  let questionRetiredByAbort = 0;
+  let programController;
+  let turnSignal;
+  const append = (event) => {
+    events.push(event);
+    fixture.emit('session/event', session, event);
+  };
+  const gateway = {
+    async invoke(request) {
+      const endpoint = `${request.namespace}/${request.method}`;
+      if (endpoint === 'session/page') {
+        return { records: events.map(eventRecord), hasMore: false };
+      }
+      if (endpoint === 'session/prompt') {
+        const rpcId = request.args.request.requestId;
+        turnTask = (async () => {
+          append({ type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } });
+          append({
+            type: 'user/message', seq: 1, time: 1,
+            data: { turn: 1, source: { kind: 'user', rpcId }, message: { content: [] } },
+          });
+          const controller = new AbortController();
+          turnSignal = controller.signal;
+          controller.signal.addEventListener('abort', () => { turnRetiredByAbort += 1; });
+          // Every tool call in one turn receives the same turn-level signal, and a
+          // PTC program waiting on this answer subscribes to it by EVENT rather than
+          // by polling `signal.aborted`: `run_code` flips its own program controller
+          // from an abort listener (dsh-tools `onOuterAbort`), and the worker code
+          // runtime retires the worker the same way
+          // (dsh-code-runtime-worker-thread `onAbort`). This controller stands in for
+          // the program that is merely waiting for the answer.
+          programController = new AbortController();
+          controller.signal.addEventListener('abort', () => {
+            programController.abort('run_code run is over');
+          });
+          const request = {
+            agent: { id: 'session', session },
+            signal: controller.signal,
+            questions: [{
+              id: 'environment',
+              question: 'Choose an environment',
+              options: [{ label: 'Test' }, { label: 'Production' }],
+            }],
+          };
+          const answer = await fixture.waterfall('user-questions/request', request, () => {
+            // What a host-side Remote/Web forwarder holds: it projects
+            // `request.signal` and drops its card when that lifetime ends.
+            questionSignal = request.signal;
+            questionSignal.addEventListener('abort', () => { questionRetiredByAbort += 1; }, { once: true });
+            if (questionSignal.aborted) questionRetiredByAbort += 1;
+            return new Promise(() => {});
+          });
+          assert.deepEqual(answer, {
+            answers: [{ id: 'environment', selected: ['Test'] }],
+          });
+          append({
+            type: 'assistant/message', seq: 2, time: 2,
+            data: { turn: 1, message: { content: [{ type: 'text', text: 'answered on IM' }] } },
+          });
+          append({
+            type: 'turn/end', seq: 3, time: 3,
+            data: { turn: 1, reason: { kind: 'completed' } },
+          });
+        })();
+        return { accepted: true };
+      }
+      throw new Error(`unexpected invoke ${endpoint}`);
+    },
+    async stream(request) {
+      if (`${request.namespace}/${request.method}` !== 'session/follow') {
+        throw new Error('unexpected stream');
+      }
+      return asyncValues({
+        type: 'snapshot', cursor: -1, records: [], hasMore: false,
+        projections: { asOfSeq: -1, values: {} },
+      });
+    },
+  };
+  fixture = fakeContext(gateway);
+  const client = new HarnessClient({
+    ...harnessConnection(fixture.ctx),
+    workspace: '/workspace',
+    rpcIdPrefix: 'modern-im-answer-test',
+    logPrefix: 'modern-im-answer-test',
+  });
+  const answer = await client.ask('session', 'ask a question', {
+    timeoutMs: 5_000,
+    onInteraction: async (interaction) => {
+      await interaction.respond({
+        ok: true,
+        value: {
+          sessionId: interaction.sessionId,
+          answer: { answers: [{ id: 'environment', selected: ['Test'] }] },
+        },
+      });
+    },
+  });
+  await turnTask;
+
+  assert.equal(answer, 'answered on IM');
+  // Retirement is local to this question: the turn signal is shared with every other
+  // tool execution in the turn, so broadcasting on it would also stop a `run_code`
+  // program that is merely waiting for this answer.
+  assert.equal(programController.signal.aborted, false, 'a program waiting on the answer must survive an IM answer');
+  assert.equal(turnRetiredByAbort, 0, 'an IM answer must not broadcast an abort on the shared turn signal');
+  assert.notEqual(questionSignal, turnSignal, 'the question must own its lifetime, not borrow the turn signal');
+  // The host answerer is still holding the question open here (its own pending
+  // never settles), and a host-side adapter has no other handle on it. Without a
+  // retirement a Web client watching the same Session keeps a card offering choices
+  // for a question already answered on IM, so the question's own lifetime must end.
+  assert.equal(questionRetiredByAbort, 1, 'an IM answer must retire the question lifetime a Web card holds');
+});
+
+forEachSessionApi('questions answered by the host', async (sessionApi) => {
+  const { events, session } = sessionFixture(sessionApi);
+  const eventRecord = (event) => ({ type: 'event', event });
+  let fixture;
+  let turnTask;
+  let retiredByAbort = 0;
+  let questionRetiredByAbort = 0;
+  const append = (event) => {
+    events.push(event);
+    fixture.emit('session/event', session, event);
+  };
+  const hostAnswer = { answers: [{ id: 'environment', selected: ['Test'] }] };
+  const gateway = {
+    async invoke(request) {
+      const endpoint = `${request.namespace}/${request.method}`;
+      if (endpoint === 'session/page') {
+        return { records: events.map(eventRecord), hasMore: false };
+      }
+      if (endpoint === 'session/prompt') {
+        const rpcId = request.args.request.requestId;
+        turnTask = (async () => {
+          append({ type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } });
+          append({
+            type: 'user/message', seq: 1, time: 1,
+            data: { turn: 1, source: { kind: 'user', rpcId }, message: { content: [] } },
+          });
+          const controller = new AbortController();
+          controller.signal.addEventListener('abort', () => { retiredByAbort += 1; });
+          // The host answers first, exactly as the Web client does when the person
+          // looking at the Session presses an option before touching Telegram.
+          const request = {
+            agent: { id: 'session', session },
+            signal: controller.signal,
+            questions: [{
+              id: 'environment',
+              question: 'Choose an environment',
+              options: [{ label: 'Test' }, { label: 'Production' }],
+            }],
+          };
+          const answer = await fixture.waterfall('user-questions/request', request, () => {
+            request.signal.addEventListener('abort', () => { questionRetiredByAbort += 1; }, { once: true });
+            if (request.signal.aborted) questionRetiredByAbort += 1;
+            return Promise.resolve(hostAnswer);
+          });
+          assert.deepEqual(answer, hostAnswer);
+          append({
+            type: 'assistant/message', seq: 2, time: 2,
+            data: { turn: 1, message: { content: [{ type: 'text', text: 'answered by the host' }] } },
+          });
+          append({
+            type: 'turn/end', seq: 3, time: 3,
+            data: { turn: 1, reason: { kind: 'completed' } },
+          });
+        })();
+        return { accepted: true };
+      }
+      throw new Error(`unexpected invoke ${endpoint}`);
+    },
+    async stream(request) {
+      if (`${request.namespace}/${request.method}` !== 'session/follow') {
+        throw new Error('unexpected stream');
+      }
+      return asyncValues({
+        type: 'snapshot', cursor: -1, records: [], hasMore: false,
+        projections: { asOfSeq: -1, values: {} },
+      });
+    },
+  };
+  fixture = fakeContext(gateway);
+  const client = new HarnessClient({
+    ...harnessConnection(fixture.ctx),
+    workspace: '/workspace',
+    rpcIdPrefix: 'modern-host-answer-test',
+    logPrefix: 'modern-host-answer-test',
+  });
+  const interactions = [];
+  const resolutions = [];
+  const answer = await client.ask('session', 'ask a question', {
+    timeoutMs: 5_000,
+    onInteraction: async (interaction) => { interactions.push(interaction); },
+    onInteractionResolved: (resolution) => resolutions.push(resolution),
+  });
+  await turnTask;
+
+  assert.equal(answer, 'answered by the host');
+  assert.equal(interactions.length, 1, 'IM is still offered an active-turn question');
+  assert.equal(resolutions.length, 1, 'the IM pending is retired once the host answers');
+  assert.equal(resolutions[0].outcome, 'cancelled');
+  // Retirement is one-directional: only an IM answer ends the question's lifetime.
+  // The host settling the request itself must not retire pendings the host never
+  // touched, and nothing here may reach the turn signal every tool call shares.
+  assert.equal(questionRetiredByAbort, 0, 'the question lifetime must outlive a host answer untouched');
+  assert.equal(retiredByAbort, 0, 'a host answer must not broadcast an abort on the turn signal');
+});
+
+forEachSessionApi('a question cancelled with its turn', async (sessionApi) => {
+  const { events, session } = sessionFixture(sessionApi);
+  const eventRecord = (event) => ({ type: 'event', event });
+  let fixture;
+  let turnTask;
+  const append = (event) => {
+    events.push(event);
+    fixture.emit('session/event', session, event);
+  };
+  const gateway = {
+    async invoke(request) {
+      const endpoint = `${request.namespace}/${request.method}`;
+      if (endpoint === 'session/page') {
+        return { records: events.map(eventRecord), hasMore: false };
+      }
+      if (endpoint === 'session/prompt') {
+        const rpcId = request.args.request.requestId;
+        turnTask = (async () => {
+          append({ type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } });
+          append({
+            type: 'user/message', seq: 1, time: 1,
+            data: { turn: 1, source: { kind: 'user', rpcId }, message: { content: [] } },
+          });
+          const controller = new AbortController();
+          let questionRetiredByAbort = 0;
+          const request = {
+            agent: { id: 'session', session },
+            signal: controller.signal,
+            questions: [{
+              id: 'environment',
+              question: 'Choose an environment',
+              options: [{ label: 'Test' }, { label: 'Production' }],
+            }],
+          };
+          const pending = fixture.waterfall('user-questions/request', request, () => {
+            request.signal.addEventListener('abort', () => { questionRetiredByAbort += 1; }, { once: true });
+            if (request.signal.aborted) questionRetiredByAbort += 1;
+            return new Promise(() => {});
+          });
+          // A real cancellation of the enclosing turn must still reach the question
+          // lifetime a Web card holds: giving the question its own controller is a
+          // narrowing of the cancellation scope, not a severing of it.
+          controller.abort(new Error('the turn was cancelled'));
+          await assert.rejects(pending, (error) => error?.code === 'ASK_ABORTED');
+          assert.equal(questionRetiredByAbort, 1, 'a cancelled turn must retire the question lifetime');
+          append({
+            type: 'assistant/message', seq: 2, time: 2,
+            data: { turn: 1, message: { content: [{ type: 'text', text: 'turn unwound' }] } },
+          });
+          append({
+            type: 'turn/end', seq: 3, time: 3,
+            data: { turn: 1, reason: { kind: 'completed' } },
+          });
+        })();
+        return { accepted: true };
+      }
+      throw new Error(`unexpected invoke ${endpoint}`);
+    },
+    async stream(request) {
+      if (`${request.namespace}/${request.method}` !== 'session/follow') {
+        throw new Error('unexpected stream');
+      }
+      return asyncValues({
+        type: 'snapshot', cursor: -1, records: [], hasMore: false,
+        projections: { asOfSeq: -1, values: {} },
+      });
+    },
+  };
+  fixture = fakeContext(gateway);
+  const client = new HarnessClient({
+    ...harnessConnection(fixture.ctx),
+    workspace: '/workspace',
+    rpcIdPrefix: 'modern-turn-cancel-test',
+    logPrefix: 'modern-turn-cancel-test',
+  });
+  const answer = await client.ask('session', 'ask a question', {
+    timeoutMs: 5_000,
+    onInteraction: async () => {},
+  });
+  await turnTask;
+
+  assert.equal(answer, 'turn unwound');
+});
