@@ -6,41 +6,44 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.21.0] - 2026-09-16
+
 ### Added / 新增
 
-- Telegram 渠道接入 Inline Keyboard：单选型 Harness 提问改为带按钮的卡片，点击即提交，不必再手动回复选项序号。`callback_data` 使用短编码（展示标识 + 题目序号 + 选项序号）以适配 Telegram 的 64 字节上限，发送前统一校验；平台拒绝键盘、多选提问、选项超过八个或按钮标签不可用时自动回退为原有文本流程，编号列表始终保留，因此打字回复仍然有效（[#199](https://github.com/xmanrui/dsh-im/issues/199)）。
-  Telegram now presents single-choice Harness questions as inline-keyboard cards, so a press submits the answer instead of typing an option number. `callback_data` uses a short encoding (presentation identity plus question and option indexes) to fit Telegram's 64-byte limit and is validated before dispatch. A refused keyboard, a multi-select question, more than eight options, or an unusable button label all fall back to the existing text flow — the numbered list is always kept, so replying with text still works ([#199](https://github.com/xmanrui/dsh-im/issues/199)).
-
-  感谢 [@wings1848](https://github.com/wings1848) 的代码、文档与测试贡献（[#206](https://github.com/xmanrui/dsh-im/pull/206)）。Thanks to [@wings1848](https://github.com/wings1848) for the code, documentation, and tests in [#206](https://github.com/xmanrui/dsh-im/pull/206).
+- Telegram 单选型 Harness 提问支持 Inline Keyboard，点击按钮即可提交，编号文字回复仍然有效。多选、超过八个选项、按钮标签不可用或平台拒绝键盘时回退到文本流程；回调数据使用短编码并校验 Telegram 的 64 字节限制（[#199](https://github.com/xmanrui/dsh-im/issues/199)）。感谢 [@wings1848](https://github.com/wings1848) 的代码、文档与测试贡献（[#206](https://github.com/xmanrui/dsh-im/pull/206)）。
+  Telegram single-choice Harness questions now support inline keyboards: press a button to answer, or keep replying with numbered text. Multi-select questions, more than eight options, unusable button labels, or keyboard rejection fall back to text. Compact callback data is validated against Telegram's 64-byte limit ([#199](https://github.com/xmanrui/dsh-im/issues/199)). Thanks to [@wings1848](https://github.com/wings1848) for code, documentation, and tests in [#206](https://github.com/xmanrui/dsh-im/pull/206).
 
 ### Fixed / 修复
 
-- 微信启动配置错误现在标明具体配置文件、字段位置和校验原因，区分 JSON 语法错误、账号标识不匹配、重复账号、工作区路径及模型等配置问题；页面、复制诊断和参考号对应的 Host 日志保留相同定位信息，并明确修复后需要重启 DSH。字段位置使用从 0 开始的条目序号，不输出账号、配置值、凭据或本机绝对路径。
-  WeChat startup configuration errors now identify the configuration file, field position, and validation issue, distinguishing JSON syntax errors, mismatched or duplicate account identities, invalid workspace paths, and other settings errors. The settings page, copied diagnostics, and correlated Host log retain the same details and explain that DSH must restart after a fix. Field positions use zero-based entry indexes without exposing account identities, configuration values, credentials, or absolute local paths.
+- Harness 提问允许 IM 与 Web／CLI 同时呈现，先作答者生效；另一端及时收回待答项和卡片。取消范围限定到当前问题，避免 IM 正常作答误取消外层 `run_code`／PTC 执行，真正的上游取消仍会传递。
+  Harness questions can be presented on IM and Web/CLI together, with the first answer winning and the other side's pending question and card retired. Cancellation is scoped to the current question, so an IM answer does not cancel an enclosing `run_code`/PTC execution, while genuine upstream cancellation still propagates.
+- Telegram 卡片提交前等待展示完成，拒绝提交期间的重复点击；文字回答也会回收旧键盘，旧卡片不能回答后续问题。数字标签按钮直接提交所选选项，不再把标签误解析为位置序号；手动输入数字仍按位置选择。宿主应答链仅对 `NO_PROVIDER` 静默降级，其他错误保留日志。
+  Telegram card answers wait for presentation to finish, reject duplicate presses during submission, and retire keyboards after text answers so stale cards cannot answer later questions. Numeric button labels submit the exact selected option instead of being reinterpreted as positions; typed numbers still select by position. Only `NO_PROVIDER` is silently handled in the host answerer chain; other failures are logged.
+- 批量输入收集期间，带引用的 `/send`、`/cancel` 和重复 `/batch` 正常提交、取消或报告进度；空闲时的 `/send`、`/cancel` 返回准确状态。命令携带的引用或附件不混入批量内容，会话标题取第一条已收录内容，而非插件框架句。首次开启批次仍需要纯文字 `/batch`。感谢 [@Librazy](https://github.com/Librazy) 的代码、文档与测试贡献（[#205](https://github.com/xmanrui/dsh-im/pull/205)）。
+  During batch collection, quoted `/send`, `/cancel`, and repeated `/batch` commands submit, cancel, or report progress normally; idle `/send` and `/cancel` return accurate state messages. Command-carried quotes and attachments stay out of submissions, and Session titles use the first collected message rather than plugin framing. Starting a batch still requires plain-text `/batch`. Thanks to [@Librazy](https://github.com/Librazy) for code, documentation, and tests in [#205](https://github.com/xmanrui/dsh-im/pull/205).
+- QQ 本地状态 JSON 损坏时，先以独占文件保存原始字节备份，再重建状态，避免机器人因解析失败无法启动（[#215](https://github.com/xmanrui/dsh-im/issues/215)）。恢复会重置该机器人的会话映射、消息去重和延迟投递记录，并在 Host 日志中提示；备份失败时保留原文件，读取、备份和写入失败分别通过管理接口报告。
+  Corrupt QQ state JSON is backed up byte-for-byte to an exclusive file before state is rebuilt, allowing startup to recover from parse errors ([#215](https://github.com/xmanrui/dsh-im/issues/215)). Recovery resets that bot's Session mappings, message deduplication, and deferred-delivery records and reports this in Host logs. A failed backup preserves the original file; read, backup, and write failures retain distinct management-interface errors.
+- 微信启动配置错误标明配置文件、从零开始的字段位置和校验原因，区分 JSON 语法、账号标识、重复账号、工作区及模型配置等问题；页面、复制诊断和参考号对应日志保持一致，不包含账号、配置值、凭据或本机绝对路径，并明确修复配置后需要重启 DSH。
+  Weixin startup configuration errors identify the file, zero-based field position, and validation issue, distinguishing JSON syntax, account identity, duplicates, workspace, and model settings. The page, copied diagnostics, and correlated logs retain matching details without account identities, configuration values, credentials, or absolute local paths, and explain that DSH must restart after configuration repair.
+- `dsh_im_return_file` 优先采用 Session 事件流观察到的活动回合，修复实际宿主不公开事件快照时误报 `artifact-context-required`、文件无法进入投递流程的问题；回合已结束或缺少活动证据时仍拒绝暂存。感谢 [@Dong09](https://github.com/Dong09) 的贡献（[#210](https://github.com/xmanrui/dsh-im/pull/210)）。
+  `dsh_im_return_file` now prefers the active turn observed on the Session event stream, fixing `artifact-context-required` errors that blocked delivery when the host exposed no event snapshot. Staging still rejects closed turns or Sessions without activity evidence. Thanks to [@Dong09](https://github.com/Dong09) for [#210](https://github.com/xmanrui/dsh-im/pull/210).
+- Telegram 移除机器人提及时使用原文偏移，避免 Unicode 大小写转换改变长度后残留提及或误删其他用户名，同时覆盖文字与媒体说明。
+  Telegram mention removal uses original text offsets, avoiding retained mentions or damaged usernames when Unicode case conversion changes string length, for both text and media captions.
 
-- 批量输入模式下，引用一条消息再发送 `/send`、`/cancel` 或重复的 `/batch` 不再被当作「未收录的内容」拒绝：命令本身不贡献内容，要求纯文本的只是被收录的文字，因此现在会照常提交、取消或显示进度。同时提交内容严格等于已收录的文字，命令消息自带的引用与附件（企业微信引用、QQ 引用与附件、飞书引用话题、Slack/Telegram/Discord/WhatsApp 的回复引用）不会再混进批量内容。空闲状态下带引用发送 `/send`、`/cancel` 也会返回各自的准确提示，而不是「批量输入命令仅支持纯文字」。
-  In batch input mode, quoting a message and then sending `/send`, `/cancel`, or a repeated `/batch` is no longer refused as uncollectable content: a command contributes no content, so only the collected text must be plain, and the command now submits, cancels, or reports progress as usual. A submission is exactly the collected text — the quote or attachment carried by the command message (a WeCom quote, a QQ quote or attachment, a Feishu quoted topic, or a Slack/Telegram/Discord/WhatsApp reply reference) no longer leaks into the batch. While idle, a quoted `/send` or `/cancel` now answers with its own state message instead of the plain-text rule.
-- 批量提交的会话标题改为取第一条已收录内容，不再使用 dsh-im 自己拼接的框架句和 `[消息 N]` 标签，避免插件文字出现在会话标题里。
-  A batch submission now names its conversation after the first collected message instead of dsh-im's own framing sentence and `[消息 N]` labels, so plugin-authored text no longer appears in the session title.
+### Changed / 变更
 
-  感谢 [@Librazy](https://github.com/Librazy) 的代码、文档与测试贡献（[#205](https://github.com/xmanrui/dsh-im/pull/205)）。Thanks to [@Librazy](https://github.com/Librazy) for the code, documentation, and tests in [#205](https://github.com/xmanrui/dsh-im/pull/205).
+- 将正常的模型思考强度说明移入帮助提示，失效配置仍在设置区显式提醒；统一 Slack、iMessage 的渠道图标与应用图标。
+  Moved normal reasoning-effort guidance into the help tooltip while keeping unavailable-setting warnings visible, and aligned Slack and iMessage channel icons with their app icons.
 
-- Harness 提问不再被 dsh-im 独占：宿主适配器改为让 IM 与 DSH 自身的应答方（Web／CLI）竞速，先作答者生效，因此同看一个 Session 的 Web 端重新获得可点击的选项卡，不再只看到无法回答的参数卡片。纯 IM 场景下宿主以 `NO_PROVIDER` 拒绝该分支并静默等待 IM；IM 落败时其待答项会被收回并广播 `question/resolved`，避免迟到点击回答已经翻篇的问题（[#199](https://github.com/xmanrui/dsh-im/issues/199)）。
-  Harness questions are no longer claimed exclusively by dsh-im: the host adapter now races the IM answer against DSH's own answerers (Web/CLI) and the first answer wins. A Web client watching the same Session gets its clickable question back instead of an unanswerable parameter card. In a pure-IM session the host rejects that branch with `NO_PROVIDER` and the adapter silently waits for IM. When IM loses the race its pending is retired and a `question/resolved` frame is broadcast, so a late press cannot answer a question the model has moved past ([#199](https://github.com/xmanrui/dsh-im/issues/199)).
-- 修复卡片送达与点击之间的竞态：按钮点击可能早于卡片自身的发送承诺完成（Telegram 在 API 接受键盘后立即投递回调），此时卡片消息 ID 尚未记录，导致键盘无法回收。现在提交前会先等待本次展示完成。
-- 修复卡片作答路径的三处缺陷：同一张卡片的重复点击会各自推进一题，把第二题的答案写成第一题按钮的标签，现在改为提交前同步认领、提交期间拒绝重复点击；文字作答同样回收键盘，聊天里遗留的旧卡片因此无法回答后续问题；宿主应答链失败时不再静默吞掉所有错误，`NO_PROVIDER` 之外的失败会记录日志。
-  Fixed three defects on the card answer path: repeated presses of one card each advanced a question, writing the first card's label into the second question's answer — a press is now claimed synchronously and duplicates are refused while a submission is in flight; text answers retire the keyboard too, so a card left behind in the chat cannot answer a later question; and a failing host answerer chain is no longer swallowed silently — anything other than `NO_PROVIDER` is logged.
-- 修复数字选项标签的错答：选项标签为纯数字时（例如 `2` / `4` / `8`），按下按钮会把标签再当作「选项序号」解析一次，原本点第一个按钮却提交了第二个选项。按钮回调已知确切选项，现在直接生成结构化答案，跳过文字序号解析；手动回复数字仍然按位置选择，行为不变。
-  Fixed a wrong answer with numeric option labels: when labels are bare numbers (for example `2` / `4` / `8`), a press re-parsed the label as an option position and submitted a different option than the one pressed. A press now supplies the structured answer directly, skipping the text resolution; replying with a number by hand still selects by position, unchanged.
-- 修复 IM 先作答时 Web 端选项卡不消失：宿主应答方持有的待答项只能靠请求信号回收，而 IM 胜出后没有触发它，于是同看一个 Session 的 Web 端卡片一直挂着、输入框持续被占用，只有重启宿主才恢复。现在每次提问都会新建一个只属于本题的生命周期（独立 `AbortController`）交给下游，IM 胜出时结束它，Web 端据此收卡；上游真正的取消会转发进这个生命周期，所以取消范围是收窄了，而不是被切断。宿主先作答时不动它，因为宿主自己结清请求时就已经收回了卡片。
-  Fixed the Web question card outliving an IM answer: a pending held by the host answerer can only be retired through the request signal, and winning on IM never triggered it, so a Web client watching the same Session kept an unanswerable card and a blocked composer until the host restarted. Each question now hands downstream a lifetime of its own (a private `AbortController`) that the adapter ends when IM wins, and real upstream cancellation is forwarded into it — a narrowing of the cancellation scope rather than a severing of it. A host answer leaves it alone, because the host settling the request already retires the card.
-- 修复上一版收卡方式引入的 PTC 回归：提问原先借用整回合共享的请求信号，IM 胜出时向它派发 abort 事件，而 `run_code` 与 worker 代码运行时都是靠监听这个事件停下（并不读取 `signal.aborted`），于是「只提问一次、只在 IM 正常作答一次」也会把外层代码执行一起取消，`run_code` 以 `code run failed (abort)` 结束。收卡现在只作用于本次提问自己的生命周期，等待答案的程序不再被牵连。
-  Fixed a PTC regression introduced by the previous retirement scheme: a question borrowed the turn-wide request signal, and winning on IM dispatched an abort event on it — but `run_code` and the worker code runtime both stop on that event rather than on `signal.aborted`, so a single question answered once on IM also cancelled the enclosing code run with `code run failed (abort)`. Retirement now acts only on the question's own lifetime, leaving the program that is waiting for the answer untouched.
+### Security / 安全
+
+- 减少动态正则与动态日志格式字符串，强化标识校验和配置目录错误处理；更新锁文件中的 `qs`、`sharp`／libvips 间接依赖，并将 CI Actions 固定到提交 SHA。感谢 [@johnslee1207-commits](https://github.com/johnslee1207-commits) 的代码、测试与基础设施贡献（[#214](https://github.com/xmanrui/dsh-im/pull/214)）。
+  Reduced dynamic regular expressions and log format strings, strengthened identity validation and configuration-directory error handling, updated locked `qs` and `sharp`/libvips transitive dependencies, and pinned CI Actions to commit SHAs. Thanks to [@johnslee1207-commits](https://github.com/johnslee1207-commits) for code, tests, and infrastructure in [#214](https://github.com/xmanrui/dsh-im/pull/214).
 
 ### Documentation / 文档
 
-- 明确首次开启批次需要纯文字 `/batch`，收集期间才支持通过带引用的 `/batch` 查看进度；中英文指南同步更新，并补充贡献者名单。
-  Clarified that starting a batch requires a plain-text `/batch`, while a quoted `/batch` reports progress only during collection. Updated both command guides and contributor lists.
+- 同步中英文交互与批量命令说明、贡献者名单、渠道徽章和截图，并完善跨平台测试及 Windows 包校验兼容性。
+  Updated bilingual interaction and batch-command guidance, contributor lists, channel badges, and screenshots, and improved cross-platform tests and Windows package verification.
 
 ## [4.20.2] - 2026-09-13
 
@@ -1050,7 +1053,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.20.2...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.21.0...HEAD
+[4.21.0]: https://github.com/xmanrui/dsh-im/compare/v4.20.2...v4.21.0
 [4.20.2]: https://github.com/xmanrui/dsh-im/compare/v4.20.1...v4.20.2
 [4.20.1]: https://github.com/xmanrui/dsh-im/compare/v4.20.0...v4.20.1
 [4.20.0]: https://github.com/xmanrui/dsh-im/compare/v4.19.2...v4.20.0
