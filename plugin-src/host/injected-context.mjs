@@ -9,12 +9,24 @@ import {
 /** Row label for a quoted reply, in the mirrored Host interface language. */
 const REPLY_LABELS = Object.freeze({ zh: '\u5f15\u7528', en: 'Quoted' });
 
+/** Row label for a source block that names no readable field of its own. */
+const SOURCE_LABELS = Object.freeze({ zh: '\u6765\u6e90', en: 'Source' });
+
 /** Read the current reply-row label; an unknown language falls back to English. */
 function replyLabel() {
   try {
     return getImHostLanguage() === 'en' ? REPLY_LABELS.en : REPLY_LABELS.zh;
   } catch {
     return REPLY_LABELS.en;
+  }
+}
+
+/** Read the current nameless-source-row label; unknown languages fall back. */
+function sourceLabel() {
+  try {
+    return getImHostLanguage() === 'en' ? SOURCE_LABELS.en : SOURCE_LABELS.zh;
+  } catch {
+    return SOURCE_LABELS.en;
   }
 }
 
@@ -73,7 +85,7 @@ export function installInjectedContext(ctx, { logger, registry = imSourceGuidanc
     }
     try {
       const rewritten = rewriteInjectedContextMessages(decision.messages, {
-        labels: { reply: replyLabel() },
+        labels: { reply: replyLabel(), source: sourceLabel() },
         ownedGuidance: registry.get(agent?.session?.id),
       });
       return rewritten === null ? decision : { ...decision, messages: rewritten };

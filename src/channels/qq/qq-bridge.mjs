@@ -1070,6 +1070,7 @@ export class QqHarnessBridge {
           text,
           content,
           titleText: batchSubmission?.title,
+          sourceGuidance: snapshot?.config?.guidance,
           contextEnhanced,
           createOptions: { signal: this.#signal },
           existsOptions: { signal: this.#signal },

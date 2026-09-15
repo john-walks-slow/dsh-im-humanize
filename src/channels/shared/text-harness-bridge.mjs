@@ -753,6 +753,7 @@ export class TextHarnessBridge {
         text,
         content,
         titleText: batchSubmission?.title,
+        sourceGuidance: snapshot?.config?.guidance,
         contextEnhanced,
         createOptions: this.#signal ? { signal: this.#signal } : undefined,
         existsOptions: this.#signal ? { signal: this.#signal } : undefined,

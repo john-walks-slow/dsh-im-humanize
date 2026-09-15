@@ -11,9 +11,16 @@
 // The source block describes the message, so it follows it; a quoted reply is
 // material the user pointed at, so it precedes it.
 //
+// Nothing here decides what configuration is in force. A channel writes the
+// guidance its own captured settings produced, and publishes that same captured
+// text out of band (see `im-source-guidance.mjs`); parsing the prompt back into
+// settings would let a user message that merely looks like a block become the
+// Session's guidance.
+//
 // Keep this module free of Node built-ins: the Host bundle imports it.
 
 import {
+  CONTEXT_ENHANCEMENT_FIELDS,
   INJECTED_CONTEXT_SEPARATOR,
   INJECTED_CONTEXT_TAGS,
 } from './context-enhancement.mjs';
@@ -26,6 +33,17 @@ export const CONTEXT_SUMMARY_MAX_LENGTH = 120;
 
 /** Fallback row label for a quoted reply when the Host passes none. */
 export const DEFAULT_REPLY_LABEL = 'Quoted';
+
+/** Fallback row label for a source block whose fields carry no readable value. */
+export const DEFAULT_SOURCE_LABEL = 'Source';
+
+/**
+ * Every field the source producer can project -- the same canonical list the
+ * settings UI validates against, so the two cannot drift. A block is ours only
+ * when its body is an object drawn from these keys, whatever it happens to
+ * display: `botId`/`chatId`/`threadId` alone still identify our block.
+ */
+export const SOURCE_BLOCK_FIELDS = CONTEXT_ENHANCEMENT_FIELDS;
 
 let fallbackIdCounter = 0;
 
@@ -57,6 +75,22 @@ function sourceSummary(body) {
 }
 
 /**
+ * Read one source row's label.
+ *
+ * Whether a block is ours and whether it can name itself are different
+ * questions: `botId`, `chatId` and `threadId` alone are valid selections that
+ * project no readable field, and those blocks must still be recognised.
+ *
+ * @param labels - localized row labels; `source` names a nameless source row.
+ * @returns the row label to use when the block itself offers no readable value.
+ */
+function sourceLabel(labels) {
+  return typeof labels?.source === 'string' && labels.source
+    ? labels.source
+    : DEFAULT_SOURCE_LABEL;
+}
+
+/**
  * One-line account of a quoted reply: the label plus whoever was quoted.
  * @param body - the block's JSON body, exactly as the producer wrote it.
  * @param labels - localized row labels; `reply` names the quoted-reply row.
@@ -75,7 +109,7 @@ function replySummary(body, labels) {
 }
 
 /**
- * Parse one block body, refusing anything that is not our own JSON object.
+ * Parse one block body as a JSON object.
  * @param body - the text between the block's tags.
  * @returns the parsed plain object, or null.
  */
@@ -88,6 +122,25 @@ function parseBlockJson(body) {
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
   return parsed;
+}
+
+/**
+ * Decide whether one body is a source block this plugin wrote.
+ *
+ * Only the shape is judged -- a non-empty object drawn from the eight known
+ * fields -- so a block still counts when the selected fields carry no readable
+ * value, and a user message that happens to contain some other JSON object does
+ * not become one.
+ *
+ * @param body - the text between the source tags.
+ * @returns whether the body is one of our source blocks.
+ */
+function isSourceBlock(body) {
+  const parsed = parseBlockJson(body);
+  if (parsed === null) return false;
+  const fields = Object.keys(parsed);
+  return fields.length > 0
+    && fields.every((field) => SOURCE_BLOCK_FIELDS.includes(field));
 }
 
 /** Bound one summary to the row's declared maximum. */
@@ -124,13 +177,15 @@ function blockAt(text, cursor, labels) {
   const tags = INJECTED_CONTEXT_TAGS;
   const source = delimited(text, cursor, tags.sourceOpen, tags.sourceClose);
   if (source !== null) {
-    const summary = sourceSummary(source.body);
-    // A body that is not our JSON is user text that happens to use the tag.
-    if (summary === null) return null;
+    // A body that is not our own JSON is user text that happens to use the tag.
+    if (!isSourceBlock(source.body)) return null;
     return {
       end: source.end,
       block: {
-        position: 'after', form: 'notice', summary, text: text.slice(cursor, source.end),
+        position: 'after',
+        form: 'notice',
+        summary: sourceSummary(source.body) ?? sourceLabel(labels),
+        text: text.slice(cursor, source.end),
       },
     };
   }
@@ -194,29 +249,6 @@ export function splitLeadingInjectedContext(text, options = {}) {
   }
   if (blocks.length === 0) return null;
   return { blocks, rest: text.slice(cursor) };
-}
-
-/**
- * Read the guidance body one composed prompt carries, if any.
- *
- * The bridge publishes this before dispatch so the Host can materialize the
- * guidance as prompt context instead of repeating it in every user message.
- *
- * @param content - one prompt's content parts, as the channel composed them.
- * @returns the guidance body, or undefined when the prompt carries none.
- */
-export function guidanceInPromptContent(content) {
-  if (!Array.isArray(content) || content.length === 0) return undefined;
-  for (const part of content) {
-    if (part === null || typeof part !== 'object'
-      || part.type !== 'text' || typeof part.text !== 'string') return undefined;
-    const split = splitLeadingInjectedContext(part.text);
-    if (split === null) return undefined;
-    const guidance = split.blocks.find((block) => block.form === 'instructions');
-    if (guidance !== undefined) return guidance.value;
-    if (split.rest.length > 0) return undefined;
-  }
-  return undefined;
 }
 
 /**
