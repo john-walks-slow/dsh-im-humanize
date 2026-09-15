@@ -141,6 +141,8 @@ export function ModelEditor({ model = null, disabled = false, onSave }) {
           'aria-label': '查看模型设置说明', 'aria-describedby': `${id}-help` },
         h('span', { 'aria-hidden': true }, '?')),
         h('span', { id: `${id}-help`, className: 'dim-presetTooltip', role: 'tooltip' },
+          effortHint && !effortUnavailable
+            ? h('span', { id: `${id}-hint` }, effortHint, ' ') : null,
           '只影响新建会话；若当前聊天已有会话，先发送 /new，再发送普通消息生效。'))),
     saving ? h('span', { className: 'dim-presetStatus', role: 'status' }, '保存中…') : null),
   row('model', '模型', entry?.name ?? (current ? modelSelectionId(current) : localizeText('跟随默认模型'))),
@@ -163,8 +165,8 @@ export function ModelEditor({ model = null, disabled = false, onSave }) {
     ...(reasoning?.efforts ?? []).map((level) => option(`effort:${level.id}`, level.name, level.description,
       effort === level.id, { ...current, reasoningEffort: level.id })),
   ]) : null,
-  effortHint ? h('p', { id: `${id}-hint`, className: 'dim-modelHint',
-    role: effortUnavailable ? 'status' : undefined }, effortHint) : null,
+  effortHint && effortUnavailable ? h('p', { id: `${id}-hint`, className: 'dim-modelHint',
+    role: 'status' }, effortHint) : null,
   error || !currentAvailable ? h('p', { className: 'dim-presetError', role: error ? 'alert' : 'status' },
     error ?? '当前模型已不可用，请选择其他模型或跟随默认模型。') : null);
 }
