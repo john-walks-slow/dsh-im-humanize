@@ -235,6 +235,22 @@
       ]
     },
     {
+      "login": "Dong09",
+      "name": "Dong09",
+      "avatar_url": "https://avatars.githubusercontent.com/u/45942487",
+      "profile": "https://github.com/Dong09",
+      "contributions": [
+        {
+          "type": "code",
+          "url": "https://github.com/xmanrui/dsh-im/pull/210"
+        },
+        {
+          "type": "test",
+          "url": "https://github.com/xmanrui/dsh-im/pull/210"
+        }
+      ]
+    },
+    {
       "login": "evanfang0054",
       "name": "Evan Fang",
       "avatar_url": "https://avatars.githubusercontent.com/u/34673339",
