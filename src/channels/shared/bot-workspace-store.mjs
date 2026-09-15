@@ -1379,6 +1379,18 @@ export class BotWorkspaceStore {
       return;
     }
     try {
+      const parent = await stat(dirname(this.#path));
+      if (!parent.isDirectory()) {
+        const error = new Error('workspace config parent is not a directory');
+        error.code = 'ENOTDIR';
+        throw error;
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      this.#dirtyRemovals.clear();
+      return;
+    }
+    try {
       await unlink(this.#path);
       this.#dirtyRemovals.clear();
     } catch (error) {
@@ -2284,7 +2296,8 @@ export function createWorkspaceAwareController(controller, {
           await state.clearSessions();
         } catch (error) {
           console.warn(
-            `[dsh-im] ignored session cleanup failure while deleting bot ${botId}:`,
+            '[dsh-im] ignored session cleanup failure while deleting bot:',
+            botId,
             error?.message ?? error,
           );
         }

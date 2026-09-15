@@ -14,6 +14,7 @@ import {
   InboundFileError,
   stageInboundFiles,
 } from '../src/channels/shared/inbound-file.mjs';
+import { assertPathInside, assertPathMatches } from './support/filesystem.mjs';
 
 async function workspace(t) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-im-inbound-file-'));
@@ -24,7 +25,7 @@ async function workspace(t) {
 function absoluteStagedPath(root, file) {
   assert.equal(isAbsolute(file.path), false, 'Harness receives a workspace-relative path');
   const path = resolve(root, file.path);
-  assert.equal(path.startsWith(`${resolve(root)}/`), true, 'staged path stays in the Session cwd');
+  assertPathInside(root, path);
   return path;
 }
 
@@ -146,7 +147,7 @@ test('stageInboundFiles keeps display names but makes traversal-like storage nam
   }, { workspace: root });
 
   assert.equal(staged.files[0].name, 'report:?*.txt');
-  assert.match(staged.files[0].path, /^\.dsh-im\/inbound\/\d{8}-\d{6}-[^/]+\/01-report___\.txt$/);
+  assertPathMatches(staged.files[0].path, /^\.dsh-im\/inbound\/\d{8}-\d{6}-[^/]+\/01-report___\.txt$/);
   assert.equal(await readFile(absoluteStagedPath(root, staged.files[0]), 'utf8'), 'safe');
   await staged.cleanup();
 });

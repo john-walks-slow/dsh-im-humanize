@@ -576,7 +576,7 @@ export class VerifiedFeishuChannel {
       assertApiSuccess('Feishu message delete', response);
       return true;
     } catch (error) {
-      console.warn(`[bridge] unable to recall ${label}:`, error.message);
+      console.warn('[bridge] unable to recall message:', label, error.message);
       return false;
     }
   }

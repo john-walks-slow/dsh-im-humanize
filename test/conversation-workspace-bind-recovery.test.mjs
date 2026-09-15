@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {
-  mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, unlink, writeFile,
+  mkdir, mkdtemp, readFile, realpath, rename, rm, unlink, writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +13,7 @@ import { ConversationStateStore } from '../src/channels/shared/conversation-stat
 import {
   askInWorkspaceSession, WORKSPACE_SESSION_STALE,
 } from '../src/channels/shared/workspace-session.mjs';
+import { symlinkOrSkip } from './support/filesystem.mjs';
 
 const BOT = 'bot_bind_recovery';
 const KEY = 'direct:one';
@@ -134,7 +135,7 @@ for (const pauseAt of ['clearSession', 'setSession']) {
 test('adopting a Session preserves an explicit symlink pin for the same canonical workspace', async (t) => {
   const { root, workspaceB, workspaces, state, scope, asked } = await fixture(t);
   const alias = join(root, 'b-link');
-  await symlink(workspaceB, alias, 'dir');
+  if (!await symlinkOrSkip(t, workspaceB, alias, 'dir')) return;
   await scope.harness.switchConversationWorkspace(KEY, alias);
   const generation = workspaces.conversationGenerationFor(BOT, KEY);
 

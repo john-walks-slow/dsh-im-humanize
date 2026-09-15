@@ -9,6 +9,7 @@ import { SET_CONTEXT_ENHANCEMENT_ENDPOINT, validContextEnhancementPayload } from
 import { SET_ACCESS_POLICY_ENDPOINT, validAccessPolicyPayload } from '../shared/access-policy-rpc.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, SET_WORKSPACE_ENDPOINT, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
+import { publicQqStateError } from '../../../../src/channels/qq/state-error.mjs';
 import { SET_AGENT_PRESET_ENDPOINT, validAgentPresetPayload } from '../shared/agent-preset-rpc.mjs';
 import { SET_MODEL_ENDPOINT, validModelPayload } from '../shared/model-setting-rpc.mjs';
 
@@ -232,7 +233,7 @@ export function createQqRpcHandler(controller, { encodeQr = qrDataUrl } = {}) {
       const workspaceError = publicWorkspaceError(error);
       return signal?.aborted
         ? { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } }
-        : { ok: false, error: workspaceError
+        : { ok: false, error: publicQqStateError(error) ?? workspaceError
           ?? { code: 'qq-operation-failed', message: 'QQ 操作失败，请稍后重试。' } };
     }
   };

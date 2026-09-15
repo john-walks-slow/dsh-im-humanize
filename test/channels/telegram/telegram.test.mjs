@@ -1099,6 +1099,34 @@ test('Telegram normalizes private messages and requires an explicit group addres
   assert.deepEqual(topicTwo.reactionTarget, { chatId: -1001, messageId: 7 });
 });
 
+for (const field of ['text', 'caption']) {
+  test(`Telegram preserves Unicode offsets and username boundaries in ${field}`, () => {
+    for (const [input, expected] of [
+      ['İ @test_bot hello', 'İ  hello'],
+      ['İ @test_botX hello', 'İ @test_botX hello'],
+      ['İ @test_bot_2 hello', 'İ @test_bot_2 hello'],
+      ['İ @test_bot1 hello', 'İ @test_bot1 hello'],
+      ['İİ @TeSt_BoT /new', 'İİ  /new'],
+      ['😀İ @TEST_BOT, 你好', '😀İ , 你好'],
+      ['@test_bot İ @TeSt_BoT hello', 'İ  hello'],
+      ['İ @test_bot', 'İ'],
+      ['你好 @TeSt_BoT hello', '你好  hello'],
+      ['İ @other_bot hello', 'İ @other_bot hello'],
+    ]) {
+      const message = normalizeTelegramUpdate({
+        update_id: 1,
+        message: {
+          message_id: 1,
+          chat: { id: 88, type: 'private' },
+          from: { id: 42, is_bot: false },
+          [field]: input,
+        },
+      }, { botId: '123456789', username: 'test_bot' });
+      assert.equal(message.content, expected, `${field}: ${input}`);
+    }
+  });
+}
+
 test('Telegram maps one reply_to_message snapshot without expanding nested replies', () => {
   const replied = normalizeTelegramUpdate({
     update_id: 14,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -10,6 +10,7 @@ import {
   deriveDingtalkBotIdentity,
   deriveDingtalkSenderKey,
 } from '../../../src/channels/dingtalk/config-store.mjs';
+import { assertRestrictiveMode } from '../../support/filesystem.mjs';
 
 async function temporaryConfig(t) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-dingtalk-config-'));
@@ -55,7 +56,7 @@ test('config persists only clientId, derived secretRef, and approvedSenders with
   ]);
   assert.equal('botId' in document.bots[0], false);
   assert.equal('clientSecret' in document.bots[0], false);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await assertRestrictiveMode(path, 0o600);
 
   const reloaded = await new DingtalkConfigStore(path).load();
   assert.deepEqual(reloaded.get(identity.botId), {
