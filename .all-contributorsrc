@@ -623,6 +623,26 @@
       ]
     },
     {
+      "login": "wings1848",
+      "name": "Wings Butterfly",
+      "avatar_url": "https://avatars.githubusercontent.com/u/120104016",
+      "profile": "https://github.com/wings1848",
+      "contributions": [
+        {
+          "type": "code",
+          "url": "https://github.com/xmanrui/dsh-im/pull/206"
+        },
+        {
+          "type": "doc",
+          "url": "https://github.com/xmanrui/dsh-im/pull/206"
+        },
+        {
+          "type": "test",
+          "url": "https://github.com/xmanrui/dsh-im/pull/206"
+        }
+      ]
+    },
+    {
       "login": "xmanrui",
       "name": "xiemanR",
       "avatar_url": "https://avatars.githubusercontent.com/u/4094054",

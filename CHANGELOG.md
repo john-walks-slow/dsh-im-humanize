@@ -11,6 +11,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - Telegram 渠道接入 Inline Keyboard：单选型 Harness 提问改为带按钮的卡片，点击即提交，不必再手动回复选项序号。`callback_data` 使用短编码（展示标识 + 题目序号 + 选项序号）以适配 Telegram 的 64 字节上限，发送前统一校验；平台拒绝键盘、多选提问、选项超过八个或按钮标签不可用时自动回退为原有文本流程，编号列表始终保留，因此打字回复仍然有效（[#199](https://github.com/xmanrui/dsh-im/issues/199)）。
   Telegram now presents single-choice Harness questions as inline-keyboard cards, so a press submits the answer instead of typing an option number. `callback_data` uses a short encoding (presentation identity plus question and option indexes) to fit Telegram's 64-byte limit and is validated before dispatch. A refused keyboard, a multi-select question, more than eight options, or an unusable button label all fall back to the existing text flow — the numbered list is always kept, so replying with text still works ([#199](https://github.com/xmanrui/dsh-im/issues/199)).
 
+  感谢 [@wings1848](https://github.com/wings1848) 的代码、文档与测试贡献（[#206](https://github.com/xmanrui/dsh-im/pull/206)）。Thanks to [@wings1848](https://github.com/wings1848) for the code, documentation, and tests in [#206](https://github.com/xmanrui/dsh-im/pull/206).
+
 ### Fixed / 修复
 
 - 微信启动配置错误现在标明具体配置文件、字段位置和校验原因，区分 JSON 语法错误、账号标识不匹配、重复账号、工作区路径及模型等配置问题；页面、复制诊断和参考号对应的 Host 日志保留相同定位信息，并明确修复后需要重启 DSH。字段位置使用从 0 开始的条目序号，不输出账号、配置值、凭据或本机绝对路径。
