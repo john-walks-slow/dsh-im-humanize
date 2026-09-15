@@ -65,9 +65,11 @@ function withoutBotMention(text, username) {
   const target = `@${username}`.toLowerCase();
   let result = '';
   let offset = 0;
-  const lower = text.toLowerCase();
   while (offset < text.length) {
-    if (lower.startsWith(target, offset) && isUsernameBoundary(text[offset + target.length])) {
+    // Case-fold only the candidate: Unicode casing can change the full text's length.
+    if (text[offset] === '@'
+      && text.slice(offset, offset + target.length).toLowerCase() === target
+      && isUsernameBoundary(text[offset + target.length])) {
       offset += target.length;
     } else {
       result += text[offset];

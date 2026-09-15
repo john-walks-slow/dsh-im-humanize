@@ -391,6 +391,26 @@
       ]
     },
     {
+      "login": "johnslee1207-commits",
+      "name": "Johnslee1207",
+      "avatar_url": "https://avatars.githubusercontent.com/u/243954471",
+      "profile": "https://github.com/johnslee1207-commits",
+      "contributions": [
+        {
+          "type": "code",
+          "url": "https://github.com/xmanrui/dsh-im/pull/214"
+        },
+        {
+          "type": "test",
+          "url": "https://github.com/xmanrui/dsh-im/pull/214"
+        },
+        {
+          "type": "infra",
+          "url": "https://github.com/xmanrui/dsh-im/pull/214"
+        }
+      ]
+    },
+    {
       "login": "kimi-agent-bot",
       "name": "Kimi Agent",
       "avatar_url": "https://avatars.githubusercontent.com/u/317908118",
