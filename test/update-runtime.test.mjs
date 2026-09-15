@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -24,6 +24,27 @@ async function plugin(directory, version = '3.0.8') {
   });
   await Promise.all(['lib/index.js', 'lib/client.js', 'cordis.patch.yml']
     .map((entry) => writeFile(join(directory, entry), '')));
+}
+
+function isLinkPrivilegeError(error) {
+  return ['EACCES', 'EPERM', 'ENOSYS', 'UNKNOWN'].includes(error?.code);
+}
+
+async function linkDirectory(target, link) {
+  try {
+    await symlink(target, link, 'dir');
+    return 'symlink';
+  } catch (error) {
+    if (!isLinkPrivilegeError(error)) throw error;
+  }
+  try {
+    await symlink(target, link, 'junction');
+    return 'junction';
+  } catch (error) {
+    if (!isLinkPrivilegeError(error)) throw error;
+  }
+  await cp(target, link, { recursive: true });
+  return 'copy';
 }
 
 function operation({ output = '', errors = '', exitCode = 0, signal, pending = false, onCancel } = {}) {
@@ -60,7 +81,7 @@ async function fixture(t, { desktop = false, name = 'update-test', hoisted = fal
   await plugin(installedDir);
   if (!hoisted) {
     await mkdir(join(installedLink, '..'), { recursive: true });
-    await symlink(installedDir, installedLink, 'dir');
+    await linkDirectory(installedDir, installedLink);
   }
   const manifest = { name: `dsh-profile-${name}`, private: true, dependencies: { [PACKAGE_NAME]: '3.0.8' } };
   await json(join(profileDir, 'package.json'), manifest);
@@ -174,8 +195,8 @@ test('local, Git, alias and external-directory installations cannot be replaced'
   }
   const sourceDir = join(f.root, 'source-checkout');
   await plugin(sourceDir);
-  await unlink(f.installedLink);
-  await symlink(sourceDir, f.installedLink, 'dir');
+  await rm(f.installedLink, { recursive: true, force: true });
+  await linkDirectory(sourceDir, f.installedLink);
   await json(join(f.profileDir, 'package.json'), f.manifest);
   f.options.moduleUrl = pathToFileURL(join(sourceDir, 'lib/index.js')).href;
   const inspected = await f.runtime().inspect();
@@ -209,8 +230,8 @@ test('inspection reads new disk versions and snapshots without require cache', a
   const before = await runtime.inspect();
   const newDir = join(f.profileDir, 'node_modules/.pnpm/@xmanrui+dsh-im@3.0.9/node_modules', PACKAGE_NAME);
   await plugin(newDir, '3.0.9');
-  await unlink(f.installedLink);
-  await symlink(newDir, f.installedLink, 'dir');
+  await rm(f.installedLink, { recursive: true, force: true });
+  await linkDirectory(newDir, f.installedLink);
   const after = await runtime.inspect();
   assert.equal(after.installedVersion, '3.0.9');
   assert.equal(after.packageValid, true);

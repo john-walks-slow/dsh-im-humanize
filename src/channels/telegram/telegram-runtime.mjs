@@ -42,10 +42,6 @@ export const TELEGRAM_COMMAND_MENU = Object.freeze(
   commandMenuEntries(SHARED_COMMAND_CATALOG, (text) => text).map((item) => Object.freeze(item)),
 );
 
-function escaped(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function mentionedUsername(message, username) {
   if (!username) return false;
   return [
@@ -60,9 +56,27 @@ function mentionedUsername(message, username) {
     }));
 }
 
+function isUsernameBoundary(character) {
+  return character === undefined || !(/[a-z0-9_]/i).test(character);
+}
+
 function withoutBotMention(text, username) {
   if (!username || typeof text !== 'string') return text;
-  return text.replace(new RegExp(`@${escaped(username)}\\b`, 'ig'), '').trim();
+  const target = `@${username}`.toLowerCase();
+  let result = '';
+  let offset = 0;
+  while (offset < text.length) {
+    // Case-fold only the candidate: Unicode casing can change the full text's length.
+    if (text[offset] === '@'
+      && text.slice(offset, offset + target.length).toLowerCase() === target
+      && isUsernameBoundary(text[offset + target.length])) {
+      offset += target.length;
+    } else {
+      result += text[offset];
+      offset += 1;
+    }
+  }
+  return result.trim();
 }
 
 const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);

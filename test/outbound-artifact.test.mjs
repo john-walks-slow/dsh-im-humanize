@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -13,6 +13,7 @@ import {
   readExactArtifactFile,
   releaseOutboundArtifact,
 } from '../src/channels/shared/semantic/artifact.mjs';
+import { symlinkOrSkip } from './support/filesystem.mjs';
 
 async function fixture(t) {
   const workspace = await mkdtemp(join(tmpdir(), 'dsh-im-artifact-workspace-'));
@@ -137,7 +138,7 @@ test('absolute outside-workspace paths and symbolic links are delivered normally
   const fx = await fixture(t);
   const outsidePath = join(fx.outside, 'outside.txt');
   await writeFile(outsidePath, 'outside content');
-  await symlink(outsidePath, join(fx.workspace, 'linked.txt'));
+  if (!await symlinkOrSkip(t, outsidePath, join(fx.workspace, 'linked.txt'))) return;
   const tool = createOutboundArtifactTool({ registry: fx.registry });
 
   await execute(tool, { path: outsidePath }, execution(fx.agent, 'outside'));

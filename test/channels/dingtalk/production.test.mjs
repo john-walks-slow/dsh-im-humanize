@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createProductionController } from '../../../plugin-src/host/channels/dingtalk/production.mjs';
+import { assertPathMatches } from '../../support/filesystem.mjs';
 
 test('production assembly keeps secrets in credentials and creates per-bot runtimes', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-dingtalk-production-'));
@@ -69,7 +70,7 @@ test('production assembly keeps secrets in credentials and creates per-bot runti
   assert.ok(runtime instanceof Runtime);
   assert.equal(seen.runtimeOptions.clientSecret, 'host-only-secret');
   assert.equal(Object.hasOwn(seen.runtimeOptions, 'outboundArtifactsEnabled'), false);
-  assert.match(seen.statePath, /dt_abc\/state\.json$/);
+  assertPathMatches(seen.statePath, /dt_abc\/state\.json$/);
   await seen.controllerOptions.createRuntime({
     botId: 'dt_disabled',
     config: { botId: 'dt_disabled', clientId: 'dingdisabled' },

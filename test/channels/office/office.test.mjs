@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +20,7 @@ import {
 } from '../../../src/channels/office/protocol.mjs';
 import { createOfficeRpcHandler } from '../../../plugin-src/host/channels/office/rpc.mjs';
 import { OfficeSettingsTab } from '../../../plugin-src/client/channels/office/index.js';
+import { assertRestrictiveMode } from '../../support/filesystem.mjs';
 
 const TOKEN = 'office-device-token-ABCDEFGHIJKLMNOPQRSTUVWXYZ-123456';
 
@@ -112,7 +113,7 @@ test('AI Office config persists safe aliases without a Device Token', async (t) 
   const raw = await readFile(path, 'utf8');
   assert.doesNotMatch(raw, /office-device-token/);
   assert.match(raw, /office-project/);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await assertRestrictiveMode(path, 0o600);
   assert.deepEqual(store.get().workspaces, { 'office-project': '/Users/a004/glassespaw-ai-office-web' });
   await assert.rejects(() => store.save(config({ workspaces: { unsafe: 'relative/path' } })), /invalid/);
 });
