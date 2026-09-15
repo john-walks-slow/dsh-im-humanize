@@ -1,6 +1,8 @@
 import { deferredStateAccess, normalizeDeferredState } from '../shared/deferred-state.mjs';
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { qqStateError } from './state-error.mjs';
 
 const EMPTY_STATE = Object.freeze({ version: 1, sessions: {}, seenMessageIds: [] });
 
@@ -27,22 +29,46 @@ function normalizeState(value) {
 
 export class QqStateStore {
   #path;
+  #logger;
   #state = structuredClone(EMPTY_STATE);
   #writeQueue = Promise.resolve();
   #deferred = deferredStateAccess(() => this.#state, () => this.#persist());
 
-  constructor(path) {
+  constructor(path, { logger = console } = {}) {
     this.#path = path;
+    this.#logger = logger;
   }
 
   async load() {
+    let bytes;
     try {
-      this.#state = normalizeState(JSON.parse(await readFile(this.#path, 'utf8')));
+      bytes = await fs.readFile(this.#path);
     } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
+      if (error?.code !== 'ENOENT') throw qqStateError('state-read-failed', error);
       this.#state = structuredClone(EMPTY_STATE);
       await this.#persist();
+      return this;
     }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(bytes.toString('utf8'));
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      const backup = `${this.#path}.corrupt-${Date.now()}-${randomUUID()}`;
+      try {
+        // Copy the exact bytes before replacing anything. A failed rebuild
+        // leaves both the original and this exclusive backup available.
+        await fs.writeFile(backup, bytes, { flag: 'wx', mode: 0o600 });
+      } catch (cause) {
+        throw qqStateError('state-backup-failed', cause);
+      }
+      this.#state = structuredClone(EMPTY_STATE);
+      await this.#persist();
+      this.#logger.warn?.(`[dsh-im:qq] state-recovered: ${this.#path}; backup: ${backup}; conversation mappings, message deduplication and deferred deliveries have been reset.`);
+      return this;
+    }
+    this.#state = normalizeState(parsed);
     return this;
   }
 
@@ -96,7 +122,7 @@ export class QqStateStore {
 
   async remove() {
     try {
-      await unlink(this.#path);
+      await fs.unlink(this.#path);
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
     }
@@ -106,12 +132,12 @@ export class QqStateStore {
   async #persist() {
     const snapshot = `${JSON.stringify(this.#state, null, 2)}\n`;
     const operation = this.#writeQueue.then(async () => {
-      await mkdir(dirname(this.#path), { recursive: true, mode: 0o700 });
+      await fs.mkdir(dirname(this.#path), { recursive: true, mode: 0o700 });
       const temporary = `${this.#path}.tmp`;
-      await writeFile(temporary, snapshot, { encoding: 'utf8', mode: 0o600 });
-      await rename(temporary, this.#path);
+      await fs.writeFile(temporary, snapshot, { encoding: 'utf8', mode: 0o600 });
+      await fs.rename(temporary, this.#path);
     });
     this.#writeQueue = operation.then(() => undefined, () => undefined);
-    await operation;
+    await operation.catch(error => { throw qqStateError('state-write-failed', error); });
   }
 }

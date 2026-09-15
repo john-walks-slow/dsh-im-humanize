@@ -1,5 +1,8 @@
 // English translations (qq area). Keys are exact Chinese literals passed to t().
 export default {
+  '无法读取 QQ 本地状态，请检查数据目录及访问权限。': 'Unable to read local QQ state. Check the data directory and access permissions.',
+  'QQ 本地状态已损坏，但无法备份，原文件已保留。': 'Local QQ state is corrupt and could not be backed up. The original file has been preserved.',
+  '无法保存 QQ 本地状态，请检查磁盘空间及目录写入权限。': 'Unable to save local QQ state. Check disk space and directory write permissions.',
   '返回主菜单': 'Back to main menu',
   '模式／预设': 'Mode / preset',
   '归档显示': 'Archived sessions',
