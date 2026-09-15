@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -79,7 +79,7 @@ test('context tokens survive restart and workspace changes, remain private, and 
   assert.equal(state.contextTokenFor('unknown'), undefined);
   assert.doesNotMatch(JSON.stringify(state.snapshot()), /alice-context|bob-context/);
   assert.doesNotMatch(await readFile(path, 'utf8'), /bot-login/);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await assertRestrictiveMode(path, 0o600);
 
   const restored = await new WeixinStateStore(path).load();
   await restored.bindContextTokens('bot-login');

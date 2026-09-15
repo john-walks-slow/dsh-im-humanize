@@ -1534,7 +1534,8 @@ export class HarnessClient {
         } catch (stagingError) {
           if (signal?.aborted) throw signal.reason ?? stagingError;
           console.warn(
-            `[${this.#logPrefix}] unable to restage rejected images as workspace files:`,
+            '[dsh-im] unable to restage rejected images as workspace files:',
+            this.#logPrefix,
             stagingError?.message ?? String(stagingError),
           );
           throw error;

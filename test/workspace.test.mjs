@@ -1106,13 +1106,22 @@ test('/workspace command supports fresh list numbers, preserves paths, and retur
     (await runWorkspaceCommand(`/workspace ${alternateWorkspace}`, harness)).message,
     new RegExp(alternateWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
   );
-  assert.match((await runWorkspaceCommand('/workspace 2', harness)).message, new RegExp(alternateWorkspace));
+  assert.match(
+    (await runWorkspaceCommand('/workspace 2', harness)).message,
+    new RegExp(alternateWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+  );
   listed = [];
-  assert.match((await runWorkspaceCommand('/workspace 1', harness)).message, new RegExp(defaultWorkspace));
+  assert.match(
+    (await runWorkspaceCommand('/workspace 1', harness)).message,
+    new RegExp(defaultWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+  );
   assert.match((await runWorkspaceCommand('/workspace 2', harness)).message, /workspacelist/);
   assert.deepEqual(switched, [alternateWorkspace, alternateWorkspace, defaultWorkspace]);
 
-  assert.match((await runWorkspaceCommand(`/WS ${alternateWorkspace}`, harness)).message, new RegExp(alternateWorkspace));
+  assert.match(
+    (await runWorkspaceCommand(`/WS ${alternateWorkspace}`, harness)).message,
+    new RegExp(alternateWorkspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+  );
   assert.equal(await runWorkspaceCommand('/wsnope /tmp', harness), null);
 
   const invalidHarness = {
