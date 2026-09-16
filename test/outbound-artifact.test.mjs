@@ -436,7 +436,10 @@ test('Host installer always exposes the tool and explicitly permits existing fil
   assert.equal(installed, true);
   assert.equal(definition.name, OUTBOUND_ARTIFACT_TOOL);
   assert.match(definition.description, /Existing and newly created files are both valid/);
+  assert.match(definition.description, /Success means queued, not sent/);
+  assert.match(definition.output.render({}, { fileName: 'result.zip', size: 123 })[0].text, /has not been sent yet/);
   assert.match(section.text, /Existing files can be sent directly/);
+  assert.match(section.text, /after your turn finishes/);
   assert.equal(typeof listeners.get('tools/result'), 'function');
   assert.equal(typeof listeners.get('session/event'), 'function');
   assert.equal(typeof listeners.get('session/disposed'), 'function');

@@ -266,6 +266,8 @@ function artifactFailureText(fileName, error) {
       return t('结果文件「{name}」已生成，但微信机器人当前没有文件消息发送权限，请检查机器人文件消息能力。', { name });
     case 'artifact-too-large':
       return t('结果文件「{name}」超过当前微信会话可发送的文件大小，未发送。', { name });
+    case 'artifact-upload-timeout':
+      return t('结果文件「{name}」上传微信时长时间没有进展，已超时，文件尚未发送。请检查网络后重试，或压缩、拆分文件后发送。', { name });
     case 'artifact-rate-limited':
       return t('结果文件「{name}」暂时被微信限流，未能发送，请稍后重试。', { name });
     case 'artifact-provider-rejected':

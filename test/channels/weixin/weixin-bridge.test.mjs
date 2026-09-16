@@ -746,6 +746,52 @@ test('Weixin tells users to inspect the chat instead of retrying an uncertain fi
   }]);
 });
 
+test('Weixin explains that an upload timeout happened before the file was sent', async (t) => {
+  const artifact = await committedArtifact(t, 'large.zip', 'weixin-file');
+  const fixture = stateFixture();
+  fixture.sessions.set('p2p:owner-user', 'session-upload-timeout');
+  const sent = [];
+  const bridge = new WeixinHarnessBridge({
+    api: {
+      inboundImages: () => [],
+      sendText: async ({ text }) => {
+        sent.push(text);
+        return { messageId: `weixin-text-${sent.length}` };
+      },
+      sendFile: async () => {
+        throw Object.assign(new Error('private CDN URL and token'), { code: 'artifact-upload-timeout' });
+      },
+    },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, _text, options) => {
+        await options.onArtifact(artifact);
+        return '';
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+  });
+
+  const receipt = await bridge.accept(message('weixin-upload-timeout', '发文件'));
+  const failure = bridge.status.lastMessageError;
+  assert.match(sent.at(-1), /上传微信.*超时，文件尚未发送/);
+  assert.match(sent.at(-1), /检查网络/);
+  assert.doesNotMatch(sent.join('\n'), /private CDN URL and token/);
+  assert.equal(failure.code, 'CHANNEL_DELIVERY');
+  assert.equal(failure.reason, 'ARTIFACT_UPLOAD_TIMEOUT');
+  assert.equal(bridge.status.artifactsSent, 0);
+  assert.equal(bridge.status.artifactSendErrors, 1);
+  assert.deepEqual(receipt.artifacts, [{
+    artifactId: artifact.artifactId,
+    outcome: 'failed',
+    reason: 'artifact-upload-timeout',
+  }]);
+});
+
 test('Weixin sends image-only messages to Harness as structured content', async () => {
   const fixture = stateFixture();
   fixture.sessions.set('p2p:owner-user', 'session-image');
