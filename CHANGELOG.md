@@ -6,6 +6,34 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.21.1] - 2026-09-16
+
+### Fixed / 修复
+
+- 修复钉钉群聊和私聊中引用图片、文件、富文本图片及音视频附件时，模型只收到引用说明而无法读取实际内容的问题（[#211](https://github.com/xmanrui/dsh-im/issues/211)）。仅解析直接引用的一层附件，保留当前消息附件并按下载引用去重；命令、权限校验与交互路由完成后才下载。缺少下载信息或下载失败时明确提示，不再把仅有元数据的请求送入模型。
+  Fixed quoted images, files, rich-text images, and audio/video attachments in DingTalk group and direct chats reaching the model as descriptions without their actual content ([#211](https://github.com/xmanrui/dsh-im/issues/211)). Only the immediate quote is resolved, current attachments are preserved, and matching download references are deduplicated. Downloads happen after command, access, and interaction routing; missing references or failed downloads report an error instead of submitting metadata alone.
+- 微信文件上传改为分块流式加密，由网络背压控制读取，减少整份密文复制。将固定 60 秒上传截止时间改为 60 秒无进展超时，持续传输的大文件不再因总耗时超过一分钟被中断；重试重新创建加密流，用户取消立即停止，失败不发送文件消息，并提供明确的上传超时提示。
+  Weixin file uploads now encrypt in chunks with network backpressure, reducing whole-file ciphertext copies. A 60-second idle timeout replaces the fixed upload deadline, allowing transfers that continue making progress to exceed one minute. Retries recreate the encrypted stream, caller cancellation stops immediately, and failed uploads never send a file message and report an explicit timeout when stalled.
+- IM 来源块与引用块按实际消息身份配对，在支持的 Host 中拆成独立、可折叠的 `dsh-im` 上下文行；用户消息保留自己的正文，引用材料排在提问之前，并发或在途消息不会串用来源。只选择 `botId`、`chatId` 或 `threadId` 时仍正确拆分，无法生成摘要时使用「来源」标题；不支持拆分或连接外部 Harness 时保留内联回退。
+  IM source and quoted-reply blocks are paired by message identity and split into separate, collapsible `dsh-im` context rows on supported Hosts. User messages retain their own text, quotations precede the question, and concurrent or in-flight prompts cannot exchange sources. ID-only field selections still split correctly and use a Source label when no readable summary exists; unsupported Hosts and external Harness connections retain the inline fallback.
+- `/补充指令`（`/steer`）按执行时的增强配置记录实际下达指令者的来源，卡片使用操作者身份，菜单和消息使用发送者身份，不再借用开启该回合的消息来源。感谢 [@Librazy](https://github.com/Librazy) 的实现、测试与文档贡献（[#204](https://github.com/xmanrui/dsh-im/pull/204)）。
+  `/steer` captures enhancement settings when the correction is issued and records its actual author: the card operator or the menu/message sender, rather than the author of the turn's opening message. Thanks to [@Librazy](https://github.com/Librazy) for implementation, tests, and documentation in [#204](https://github.com/xmanrui/dsh-im/pull/204).
+
+### Changed / 变更
+
+- 上下文增强提示词登记为会话级动态提示词上下文，不再逐条消息重复，配置变化时重新渲染。提示词中的 `{{变量}}` 按部署注册的变量解析，未知或格式错误的变量会使当前步骤失败；是否保留动态上下文由 Host 部署策略决定。
+  Context-enhancement guidance is registered as Session-level dynamic prompt context instead of repeating in each message, and re-rendered when its configuration changes. `{{variable}}` references use the deployment's registered template variables; unknown or malformed references fail the current step. Host deployment policy controls whether dynamic context is retained.
+
+### Security / 安全
+
+- 会话增强提示词仅来自渠道捕获的配置，不从用户消息中的仿造标签回读；关闭增强时清除登记。来源块采用受限字段识别，避免将形状不符的用户 JSON 误当成插件上下文。
+  Session guidance comes only from configuration captured by the channel, never from lookalike tags in user text, and is cleared when enhancement is disabled. Source blocks use restricted-field recognition so unrelated user JSON is not mistaken for plugin context.
+
+### Documentation / 文档
+
+- 更新上下文增强说明和钉钉引用附件修复记录，补充消息配对、纠偏来源、实际附件内容、微信流式上传、超时重试及取消的回归测试。
+  Updated context-enhancement guidance and DingTalk quoted-attachment repair notes, with regression tests for message pairing, correction provenance, actual attachment content, Weixin streaming uploads, timeout retries, and cancellation.
+
 ## [4.21.0] - 2026-09-16
 
 ### Added / 新增
@@ -39,22 +67,6 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 - 减少动态正则与动态日志格式字符串，强化标识校验和配置目录错误处理；更新锁文件中的 `qs`、`sharp`／libvips 间接依赖，并将 CI Actions 固定到提交 SHA。感谢 [@johnslee1207-commits](https://github.com/johnslee1207-commits) 的代码、测试与基础设施贡献（[#214](https://github.com/xmanrui/dsh-im/pull/214)）。
   Reduced dynamic regular expressions and log format strings, strengthened identity validation and configuration-directory error handling, updated locked `qs` and `sharp`/libvips transitive dependencies, and pinned CI Actions to commit SHAs. Thanks to [@johnslee1207-commits](https://github.com/johnslee1207-commits) for code, tests, and infrastructure in [#214](https://github.com/xmanrui/dsh-im/pull/214).
-
-- 上下文增强的来源块不再写入用户消息正文：Host 在 `agent/pre-step` 把渠道写入的前缀拆成独立的 `dsh-im` 上下文消息，用户消息只保留用户真正发送的内容，同时保留可审计的提交来源，会话展示中不再出现裸标签。配对按消息身份而非队列位置决定，因此在途或并发的多条消息不会互相串用来源；无法拆分的 Host 或指向外部 Harness 的配置保持原有内联前缀行为。
-  Context enhancement no longer writes its source block into the user message. The Host splits the prefix a channel wrote at `agent/pre-step` into its own `dsh-im` context message, so the user message keeps only what the person sent while its durable source still identifies the prompt, and no raw tags remain in the transcript. Pairing follows message identity rather than inbox position, so in-flight or concurrent prompts cannot swap sources; a Host that cannot split, or a configuration pointing at an external Harness, keeps the previous inline prefix.
-- 引用回复的 `<dsh_im_reply_to>` 块同样改为独立消息，排在用户消息之前：引用材料作为 `dsh-im` 上下文行可折叠展示（引用正文上限 8000 字符），用户气泡只保留用户自己的提问；排在提问之前以保留「先引用、后提问」的阅读顺序。
-  Quoted replies are split the same way and placed before the user's message: the quoted material becomes a collapsible `dsh-im` context row (the quoted body is capped at 8000 characters) while the user bubble keeps only the person's own question, and it precedes the question to preserve the quoted-then-asked reading order.
-- `/补充指令` 的纠偏消息现在也带 `dsh_im_source`：命令路径在运行时捕获当前会话场景的增强配置，并写入**下达指令者**的来源字段，因此同群不同人补的指令各自可辨，不再借用开启该回合那条消息的来源。卡片入口使用操作者身份，菜单与消息输入使用该消息的发送者；未开启增强时行为不变。
-  `/steer` corrections now carry the same `dsh_im_source` block: the command path captures the scope's enhancement when it runs and fills the source fields of whoever issued the correction, so instructions from different group members stay distinguishable instead of borrowing the provenance of the message that opened the turn. Card entry points use the operator identity, menu and message entry points use that message's sender, and behaviour is unchanged where enhancement is off.
-- 会话级增强提示词只由渠道**捕获到的配置**登记，不再从 prompt 正文里回读。此前用户消息只要以 `<dsh_im_source_guidance>` 块开头就会被当成该会话的配置：块体含未注册的 `{{变量}}` 时该步直接失败（Host 渲染动态上下文先于 `agent/pre-step`，拆分监听器兜不住），块体是普通文本时则会无提示地进入会话的提示词上下文段落；这与增强开关无关，前置一个真实来源块也同样会被登记。现在渠道把捕获配置里的提示词随 ask 显式传出（`askInWorkspaceSession` 的 `sourceGuidance`），关闭该场景时传空以清除登记。
-  Session guidance is now registered only from the configuration a channel captured, never read back out of the prompt. Previously any user message that began with a `<dsh_im_source_guidance>` block became that Session's configuration: a body containing an unregistered `{{variable}}` failed the step outright (the Host renders dynamic context before `agent/pre-step`, so the splitter cannot catch it), and a plain-text body silently entered the Session's prompt-context section. This did not depend on the enhancement switch — a real source block in front changed nothing. Channels now pass the guidance from their captured settings alongside the ask (`sourceGuidance` on `askInWorkspaceSession`) and pass an empty value to clear it when the scope is off.
-- 只勾选 `botId`、`chatId` 或 `threadId`（及其组合）时，来源块不再被判为普通文本：这类配置投影不出可读字段，拆分因此整体失效——来源块与同一条消息里的引用块都拿不到独立行，提示词也提取不到（相当于回退到改动前）。现在"是不是我们的块"与"能不能生成展示摘要"分开判断：块体是非空对象且键全部取自八个来源字段即被认领，摘要为空时回退为 `来源` / `Source` 行标题；顺带收紧了认领条件，用户文本里形状不符的 JSON 不会被误认领。
-  Selecting only `botId`, `chatId`, or `threadId` (or a combination) no longer turns a source block into ordinary text: those selections project no readable field, which disabled splitting for the whole message — neither the source block nor a quoted reply in it got its own row, and the guidance was not extracted either (equivalent to the previous behavior). Whether a block is ours and whether it can describe itself are now decided separately: a non-empty object drawn from the eight known fields is claimed, and a block with nothing readable falls back to the `来源` / `Source` row label. The claim rule is also stricter, so unrelated JSON in user text is no longer mistaken for one of our blocks.
-
-### Changed / 变更
-
-- 上下文增强的「增强提示词」不再逐条消息重复：渠道在派发时把它登记到会话，Host 作为动态提示词上下文物化，每个会话只渲染一次，内容变化时才重新渲染。因此它是提示词模板（`{{变量}}` 按部署注册的变量插值，未注册或格式错误会让该步失败），并随 Host 的运行时上下文快照一起受部署策略管辖。
-  Context-enhancement guidance is no longer repeated in every message: a channel publishes it when it dispatches the prompt and the Host materializes it as dynamic prompt context, so it is rendered once per Session and only re-rendered when it changes. It is therefore a prompt template (`{{name}}` references interpolate against the deployment's registered variables, and an unknown or malformed one fails that step), and it travels with the Host's runtime-context snapshot, so deployment policy governs whether it appears.
 
 ### Documentation / 文档
 
@@ -1069,7 +1081,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.21.0...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.21.1...HEAD
+[4.21.1]: https://github.com/xmanrui/dsh-im/compare/v4.21.0...v4.21.1
 [4.21.0]: https://github.com/xmanrui/dsh-im/compare/v4.20.2...v4.21.0
 [4.20.2]: https://github.com/xmanrui/dsh-im/compare/v4.20.1...v4.20.2
 [4.20.1]: https://github.com/xmanrui/dsh-im/compare/v4.20.0...v4.20.1
