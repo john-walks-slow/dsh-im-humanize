@@ -19,7 +19,7 @@ export function createImSendToolDefinition({ send, resolveBoundTargets }) {
   if (typeof send !== 'function') throw new TypeError('A delivery send function is required');
   return Object.freeze({
     name: IM_SEND_TOOL,
-    description: 'Deliver one text message to the user through IM. Use this ONLY in turns NOT initiated by dsh-im: in a turn initiated by dsh-im (an inbound IM message), just write the reply as ordinary chat text and it reaches the user automatically. Call send_im only in silent turns — typically a proactive wake or background task — where no inbound IM message carries the reply back. If both botId and targetId are omitted, the message is delivered to the private chat currently bound to this session; if the session has no bound private chat this fails, so provide both ids explicitly. Provide botId + targetId (copied from the IM bot settings page, 复制调用参数) to target a specific saved delivery target.',
+    description: 'Deliver one text message to the user through a specific saved IM delivery target (botId + targetId, from 复制调用参数). Agent-initiated turns — proactive wakes, background tasks, subagent notices — already auto-deliver your visible reply to the private chat bound to this session, so do NOT call send_im there: just write the reply. Use send_im only to reach a saved target that automatic delivery does not cover. If both botId and targetId are omitted, the message falls back to the bound private chat (normally redundant with automatic delivery).',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -121,7 +121,7 @@ export function installImSendTool(ctx, { send, resolveBoundTargets } = {}) {
   ctx.systemPrompt.section({
     name: 'dsh-im:send-im',
     order: 117,
-    text: 'When you must reach the user through IM from a turn NOT initiated by dsh-im (no inbound IM message carries the reply back) — typically a proactive wake or background task — call send_im. In a turn initiated by dsh-im, never call send_im: just write the reply as ordinary chat text and it reaches the user. You may omit both botId and targetId to deliver to the private chat bound to the current session.',
+    text: 'Your visible reply in agent-initiated turns (proactive wake, background task, subagent notice) is already delivered automatically to the private chat bound to this session — just write the reply, no send_im needed. Call send_im only to reach a specific saved IM target (botId + targetId) that automatic delivery does not cover.',
   });
   return true;
 }

@@ -20,7 +20,7 @@ export const NO_REPLY_TOOL = 'no_reply';
 export function createNoReplyToolDefinition() {
   return Object.freeze({
     name: NO_REPLY_TOOL,
-    description: 'Conclude the current turn in complete silence: call no_reply as your ONLY action with no chat text, so nothing is visible to the user. Use it to signal that you will not reply, do not want to reply, or need not reply. Do not use when the user message does not come from dsh-im.',
+    description: 'Conclude the current turn in complete silence: call no_reply as your ONLY action with no chat text, so nothing is visible to the user. Use it when no IM reply should be sent — e.g. answering a dsh-im message you choose not to reply to, or in a proactive wake on an IM-connected session where you did work but no user-facing message is needed (your work stays in context). If the host also offers a reclaim-silence tool for the "nothing to do this turn" case, prefer that one for reclaiming; no_reply keeps your work in context.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -60,7 +60,7 @@ export function installNoReplyTool(ctx) {
   ctx.systemPrompt.section({
     name: 'dsh-im:no-reply',
     order: 118,
-    text: 'When you decide not to reply, do not want to reply, or need not reply to a dsh-im message, call the no_reply tool as your ONLY action with no chat text; it ends the turn silently. Do not use when the user message does not come from dsh-im.',
+    text: 'When no IM reply should be sent, call no_reply as your ONLY action with no chat text. This covers answering a dsh-im message you do not want to reply to, and a proactive wake on an IM-connected session where you did work but no user message is needed (the work stays in context). If the host also offers a reclaim-silence tool for the "nothing to do" case, prefer that one for reclaiming the turn; no_reply keeps your work in context.',
   });
   return true;
 }

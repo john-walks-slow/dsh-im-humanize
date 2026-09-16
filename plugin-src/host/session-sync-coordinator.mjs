@@ -20,8 +20,14 @@ function sessionIdOf(session) {
   return typeof value === 'string' && value ? value : null;
 }
 
+// Self-initiated turn sources whose visible reply should auto-deliver to the
+// private chat currently bound to this session (no inbound IM message carries
+// the reply back): any plugin framing and background subagent settlements.
+// These are agent-initiated, not user inbound; silence (no visible text)
+// stays silent at delivery time.
 function userInputOrigin(scope, event) {
   const source = event?.data?.source;
+  if (source?.kind === 'plugin' || source?.kind === 'subagent-settled') return 'wake';
   if (source?.kind !== 'user' || typeof source.rpcId !== 'string' || !source.rpcId) {
     return 'other';
   }
@@ -37,7 +43,9 @@ function validRecipient(target) {
 
 export function createSessionSyncCoordinator({ deliveryService, logger = console }) {
   if (typeof deliveryService?.listSessionSyncTargets !== 'function'
-    || typeof deliveryService?.sendSessionSyncText !== 'function') {
+    || typeof deliveryService?.sendSessionSyncText !== 'function'
+    || typeof deliveryService?.listSessionConversations !== 'function'
+    || typeof deliveryService?.send !== 'function') {
     throw new TypeError('Session sync requires a complete delivery service');
   }
 
@@ -74,6 +82,25 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
       else logFailure(phase, target, result.reason);
     });
     return successful;
+  };
+
+  // Wake/scheduled/subagent turns have no mirrored user text, so their
+  // recipients resolve at delivery time: every private chat currently bound
+  // to this session. Text is sent verbatim (no mirrored-exchange prefixes).
+  const deliverWake = async (conversations, text) => {
+    const results = await Promise.allSettled(conversations.map(({ botId, target }) => (
+      deliveryService.send(botId, target, text)
+    )));
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        const entry = conversations[index];
+        logFailure('wake delivery', {
+          channel: entry?.channel,
+          botId: entry?.botId,
+          targetId: entry?.target?.kind,
+        }, result.reason);
+      }
+    });
   };
 
   const processEvent = async (sessionId, event, origin) => {
@@ -138,7 +165,7 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
     }
 
     if (event.type === 'assistant/message') {
-      if (state.origin !== 'dsh' || event.surfaceOp !== 'append'
+      if ((state.origin !== 'dsh' && state.origin !== 'wake') || event.surfaceOp !== 'append'
         || event.data?.interrupted === true
         || (event.data?.turn !== undefined && event.data.turn !== state.turn)) return;
       const text = textFromHarnessContent(event.data?.message?.content);
@@ -149,14 +176,26 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
 
     if (event.type !== 'turn/end' || event.data?.turn !== state.turn) return;
     turns.delete(sessionId);
-    if (state.origin !== 'dsh' || !completedTurn(event.data?.reason)
-      || !state.recipients?.size || !state.assistant.text) return;
-    await deliver(
-      sessionId,
-      state.recipients.values(),
-      `${DSH_ASSISTANT_PREFIX}${state.assistant.text}`,
-      'assistant delivery',
-    );
+    if (!completedTurn(event.data?.reason) || !state.assistant.text) return;
+    if (state.origin === 'dsh') {
+      if (!state.recipients?.size) return;
+      await deliver(
+        sessionId,
+        state.recipients.values(),
+        `${DSH_ASSISTANT_PREFIX}${state.assistant.text}`,
+        'assistant delivery',
+      );
+      return;
+    }
+    if (state.origin !== 'wake') return;
+    let conversations;
+    try {
+      conversations = await deliveryService.listSessionConversations(sessionId);
+    } catch (error) {
+      logFailure('wake lookup', null, error);
+      return;
+    }
+    await deliverWake(conversations, state.assistant.text);
   };
 
   const enqueue = (sessionId, event, origin = 'other') => {

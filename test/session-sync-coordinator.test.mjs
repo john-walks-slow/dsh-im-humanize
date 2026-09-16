@@ -49,6 +49,8 @@ test('Session sync mirrors direct DSH text and one ordered multi-step assistant 
     async sendSessionSyncText(botId, targetId, sessionId, text) {
       sends.push({ botId, targetId, sessionId, text });
     },
+    async listSessionConversations() { return []; },
+    async send() {},
   };
   const coordinator = createSessionSyncCoordinator({ deliveryService });
 
@@ -84,6 +86,8 @@ test('Session sync suppresses IM, unknown, non-append, and unsuccessful Turn out
   const deliveryService = {
     async listSessionSyncTargets() { return [TARGET_A]; },
     async sendSessionSyncText(...args) { sends.push(args); },
+    async listSessionConversations() { return []; },
+    async send() {},
   };
   const coordinator = createSessionSyncCoordinator({ deliveryService });
 
@@ -120,6 +124,8 @@ test('Session sync isolates target failures and only returns the assistant to su
       sends.push({ botId, targetId, sessionId, text });
       if (targetId === 'bob') throw new Error('provider secret detail');
     },
+    async listSessionConversations() { return []; },
+    async send() {},
   };
   const coordinator = createSessionSyncCoordinator({
     deliveryService,
@@ -156,6 +162,8 @@ test('installed Session sync classifies an unregistered Host user rpcId as direc
   const installed = installSessionSyncCoordinator(ctx, {
     async listSessionSyncTargets() { return [TARGET_A]; },
     async sendSessionSyncText(...args) { sends.push(args); },
+    async listSessionConversations() { return []; },
+    async send() {},
   });
 
   listener({ id: 'session-one' }, turnStart());
@@ -171,4 +179,159 @@ test('installed Session sync classifies an unregistered Host user rpcId as direc
   effects[0]();
   installed.close();
   assert.equal(disposed, 1);
+});
+
+function wakeMessage(plugin = 'dsh-proactive') {
+  return {
+    type: 'user/message',
+    surfaceOp: 'append',
+    data: {
+      source: { kind: 'plugin', plugin, form: 'notice' },
+      content: [{ type: 'text', text: '[dsh-proactive wake alarm-1 heartbeat] now …' }],
+    },
+  };
+}
+
+function subagentSettled() {
+  return {
+    type: 'user/message',
+    surfaceOp: 'append',
+    data: {
+      source: { kind: 'subagent-settled', form: 'notice', summary: 'done', senderSessionId: 's' },
+      content: [{ type: 'text', text: '[subagent settled] done' }],
+    },
+  };
+}
+
+const BOUND = Object.freeze({ kind: 'chat', route: { chatId: '6110538394' } });
+
+test('Session sync auto-delivers a proactive wake reply to the bound private chat', async () => {
+  const sends = [];
+  const lookups = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations(sessionId) {
+      lookups.push(sessionId);
+      return [{ channel: 'telegram', botId: 'bot-b', target: BOUND }];
+    },
+    async send(botId, target, text) {
+      sends.push({ botId, target, text });
+    },
+  };
+  const coordinator = createSessionSyncCoordinator({ deliveryService });
+
+  void coordinator.enqueue('session-one', turnStart());
+  void coordinator.enqueue('session-one', wakeMessage(), 'wake');
+  void coordinator.enqueue('session-one', assistantMessage(0, '该喝水了'));
+  void coordinator.enqueue('session-one', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(lookups, ['session-one']);
+  assert.deepEqual(sends, [{ botId: 'bot-b', target: BOUND, text: '该喝水了' }]);
+});
+
+test('Session sync auto-delivers a subagent-settled reply to the bound private chat', async () => {
+  const sends = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations() {
+      return [{ channel: 'telegram', botId: 'bot-b', target: BOUND }];
+    },
+    async send(botId, target, text) { sends.push({ botId, target, text }); },
+  };
+  const coordinator = createSessionSyncCoordinator({ deliveryService });
+
+  void coordinator.enqueue('session-one', turnStart());
+  void coordinator.enqueue('session-one', subagentSettled(), 'wake');
+  void coordinator.enqueue('session-one', assistantMessage(0, '任务完成'));
+  void coordinator.enqueue('session-one', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(sends, [{ botId: 'bot-b', target: BOUND, text: '任务完成' }]);
+});
+
+test('Session sync stays silent for no-reply wakes and failed wakes', async () => {
+  const sends = [];
+  let listener;
+  const ctx = {
+    root: {},
+    on(name, callback) { listener = callback; return () => {}; },
+    effect(effect) { void effect(); },
+  };
+  const installed = installSessionSyncCoordinator(ctx, {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations() {
+      return [{ channel: 'telegram', botId: 'bot-b', target: BOUND }];
+    },
+    async send(...args) { sends.push(args); },
+  });
+
+  // Silent wake: no visible assistant text.
+  listener({ id: 'session-silent' }, turnStart());
+  listener({ id: 'session-silent' }, wakeMessage());
+  listener({ id: 'session-silent' }, turnEnd());
+  // Failed wake: turn did not complete.
+  listener({ id: 'session-failed' }, turnStart());
+  listener({ id: 'session-failed' }, wakeMessage());
+  listener({ id: 'session-failed' }, assistantMessage(0, '不得投递'));
+  listener({ id: 'session-failed' }, turnEnd({ kind: 'error' }));
+  await installed.whenIdle();
+
+  assert.deepEqual(sends, []);
+  installed.close();
+});
+
+test('Session sync auto-delivers for any plugin source', async () => {
+  const sends = [];
+  let listener;
+  const ctx = {
+    root: {},
+    on(name, callback) { listener = callback; return () => {}; },
+    effect(effect) { void effect(); },
+  };
+  const installed = installSessionSyncCoordinator(ctx, {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations() {
+      return [{ channel: 'telegram', botId: 'bot-b', target: BOUND }];
+    },
+    async send(botId, target, text) { sends.push({ botId, target, text }); },
+  });
+
+  listener({ id: 'session-one' }, turnStart());
+  listener({ id: 'session-one' }, wakeMessage('dsh-other-plugin'));
+  listener({ id: 'session-one' }, assistantMessage(0, '任意 plugin 也投'));
+  listener({ id: 'session-one' }, turnEnd());
+  await installed.whenIdle();
+
+  assert.deepEqual(sends, [{ botId: 'bot-b', target: BOUND, text: '任意 plugin 也投' }]);
+  installed.close();
+});
+
+test('Session sync stays silent when the wake conversation lookup fails', async () => {
+  const sends = [];
+  const warnings = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations() { throw new Error('state unavailable'); },
+    async send(...args) { sends.push(args); },
+  };
+  const coordinator = createSessionSyncCoordinator({
+    deliveryService,
+    logger: { warn: (...args) => warnings.push(args) },
+  });
+
+  void coordinator.enqueue('session-one', turnStart());
+  void coordinator.enqueue('session-one', wakeMessage(), 'wake');
+  void coordinator.enqueue('session-one', assistantMessage(0, '该喝水了'));
+  void coordinator.enqueue('session-one', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(sends, []);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0][0], /ignored Session sync wake lookup failure/);
 });

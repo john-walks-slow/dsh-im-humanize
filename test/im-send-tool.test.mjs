@@ -114,7 +114,7 @@ test('installImSendTool registers the tool and the prompt section, or refuses cl
   assert.equal(registered[0].name, IM_SEND_TOOL);
   assert.deepEqual(registered[0].parameters.required, ['text']);
   assert.equal(sections[0].name, 'dsh-im:send-im');
-  assert.match(sections[0].text, /a turn NOT initiated by dsh-im/);
+  assert.match(sections[0].text, /already delivered automatically/);
 
   assert.equal(installImSendTool({}, { send }), false);
   assert.equal(installImSendTool(ctx, {}), false);

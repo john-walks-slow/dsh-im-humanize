@@ -11,7 +11,8 @@ test('no-reply: tool definition has correct name and description', () => {
   const def = createNoReplyToolDefinition();
   assert.equal(def.name, NO_REPLY_TOOL);
   assert.equal(def.name, 'no_reply');
-  assert.match(def.description, /Do not use when the user message does not come from dsh-im/);
+  assert.match(def.description, /no IM reply should be sent/);
+  assert.match(def.description, /proactive wake on an IM-connected session/);
   assert.match(def.description, /ONLY action with no chat text/);
 });
 
@@ -34,11 +35,11 @@ test('no-reply: installNoReplyTool registers tool and system prompt section', ()
   assert.equal(result, true);
   assert.equal(registeredTools.length, 1);
   assert.equal(registeredTools[0].name, 'no_reply');
-  assert.match(registeredTools[0].description, /Do not use when the user message does not come from dsh-im/);
+  assert.match(registeredTools[0].description, /no IM reply should be sent/);
   assert.equal(sections.length, 1);
   assert.equal(sections[0].name, 'dsh-im:no-reply');
   assert.equal(sections[0].order, 118);
-  assert.match(sections[0].text, /Do not use when the user message does not come from dsh-im/);
+  assert.match(sections[0].text, /no IM reply should be sent/);
 });
 
 test('no-reply: tool definition has no required parameters', () => {
