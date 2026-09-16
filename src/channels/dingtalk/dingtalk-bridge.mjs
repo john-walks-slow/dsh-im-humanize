@@ -30,7 +30,11 @@ import {
 } from '../shared/preset-command.mjs';
 import { runWorkspaceCommand } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
-import { captureContextEnhancement, enhanceContextContent } from '../shared/context-enhancement.mjs';
+import {
+  captureContextEnhancement,
+  captureContextEnhancementSource,
+  enhanceContextContent,
+} from '../shared/context-enhancement.mjs';
 import {
   BatchInputManager,
   batchInputBusyMessage,
@@ -884,6 +888,17 @@ export class DingtalkHarnessBridge {
       signal: this.#signal, isDirect: String(message.conversationType) === '1',
       pendingInteraction: this.#pendingInteractions.has(key) || this.#approvals.hasPending(key),
       control: { owner: this, key }, deferredDelivery: this.#deferred,
+      enhancement: captureContextEnhancementSource(
+        this.#contextEnhancement,
+        String(message.conversationType) === '1' ? 'direct' : 'group',
+        () => ({
+          channel: 'dingtalk',
+          senderId: senderStaffId(message),
+          senderName: message.senderNick,
+          conversationTitle: message.conversationTitle,
+          chatId: message.conversationId,
+        }),
+      ),
     };
     const access = evaluateInboundAccess(this.#accessPolicy, {
       conversationType: options.isDirect ? 'direct' : 'group',
@@ -1148,6 +1163,17 @@ export class DingtalkHarnessBridge {
           || this.#approvals.hasPending(key),
         control: { owner: this, key },
         deferredDelivery: this.#deferred,
+        enhancement: captureContextEnhancementSource(
+          this.#contextEnhancement,
+          String(message.conversationType) === '1' ? 'direct' : 'group',
+          () => ({
+            channel: 'dingtalk',
+            senderId: senderStaffId(message),
+            senderName: message.senderNick,
+            conversationTitle: message.conversationTitle,
+            chatId: message.conversationId,
+          }),
+        ),
       },
     );
     if (result?.stopped) {
@@ -1350,6 +1376,7 @@ export class DingtalkHarnessBridge {
         text,
         content,
         titleText: batchSubmission?.title,
+        sourceGuidance: snapshot?.config?.guidance,
         contextEnhanced,
         createOptions: { signal: this.#signal },
         existsOptions: { signal: this.#signal },
