@@ -6,6 +6,22 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.21.2] - 2026-09-17
+
+### Fixed / 修复
+
+- 修复 Lark（飞书国际版）应用无法通过手动凭据入口接入的问题（[#212](https://github.com/xmanrui/dsh-im/issues/212)）。飞书设置页的「手动接入」可选择飞书或 Lark，绑定请求将所选平台传给 Host，并沿用该平台进行凭据验证、配置保存及 HTTP／WebSocket 连接；未指定平台的旧请求仍默认使用飞书。感谢 [@alpacachen](https://github.com/alpacachen) 的代码与测试贡献（[#219](https://github.com/xmanrui/dsh-im/pull/219)）。
+  Fixed Lark (international Feishu) applications being unable to connect through manual credential binding ([#212](https://github.com/xmanrui/dsh-im/issues/212)). The Feishu settings page now offers a Feishu/Lark platform selector for manual setup. The selected platform is passed to the Host and used for credential verification, persisted configuration, and HTTP/WebSocket connections; existing requests without a platform still default to Feishu. Thanks to [@alpacachen](https://github.com/alpacachen) for code and tests in [#219](https://github.com/xmanrui/dsh-im/pull/219).
+- 切换应用平台时清空已填写的 App ID、App Secret 和旧错误，避免跨平台复用凭据；提交期间锁定表单及平台选择，防止重复提交。补齐 Lark 绑定表单和成功提示的中英文文案，Host 仅接受 `feishu`、`lark` 或省略的平台值。
+  Changing platforms clears the entered App ID, App Secret, and previous error to avoid reusing credentials across platforms. The form and platform selector are locked during submission to prevent duplicate requests. Added bilingual Lark form and success messages; the Host accepts only `feishu`, `lark`, or an omitted platform value.
+
+### Documentation / 文档
+
+- 补充自定义域名访问 IM 管理接口时的 HTTP 403 排查说明：通过 DSH 的 `--trusted-host` 配置域名及可选端口，反向代理需保留匹配的 Host／Origin，浏览器认证仍然必需；该文档更新不放宽访问控制。
+  Documented HTTP 403 troubleshooting for IM management through custom domains: configure the domain and optional port with DSH's `--trusted-host`, preserve matching Host/Origin values through reverse proxies, and retain browser authentication. This documentation update does not relax access controls.
+- 扩展局域网管理验证脚本，覆盖回环地址、局域网地址、自定义域名、未认证访问及 Host／Origin 不匹配，并等待渠道初始化完成后检查业务状态；新增 Lark 界面、RPC、配置持久化和运行时域名选择的回归测试。
+  Expanded the LAN management verification script to cover loopback, LAN addresses, custom domains, unauthenticated access, and Host/Origin mismatches, waiting for channel initialization before checking business status. Added Lark regression tests for the UI, RPC validation, persisted configuration, and runtime domain selection.
+
 ## [4.21.1] - 2026-09-16
 
 ### Fixed / 修复
@@ -1081,7 +1097,8 @@ This file records the notable changes in each dsh-im release. Its format follows
 - 改进 npm 发布包结构，保留 CLI 入口并避免安装脚本拦截。
   Improved npm package contents to preserve the CLI entry point and avoid install-script blocking.
 
-[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.21.1...HEAD
+[Unreleased]: https://github.com/xmanrui/dsh-im/compare/v4.21.2...HEAD
+[4.21.2]: https://github.com/xmanrui/dsh-im/compare/v4.21.1...v4.21.2
 [4.21.1]: https://github.com/xmanrui/dsh-im/compare/v4.21.0...v4.21.1
 [4.21.0]: https://github.com/xmanrui/dsh-im/compare/v4.20.2...v4.21.0
 [4.20.2]: https://github.com/xmanrui/dsh-im/compare/v4.20.1...v4.20.2
