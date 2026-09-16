@@ -66,7 +66,10 @@ function gatewayCloseError(code) {
 
 function stripBotMention(text, botId) {
   if (typeof text !== 'string') return '';
-  return text.replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
+  return text
+    .split(`<@${botId}>`).join('')
+    .split(`<@!${botId}>`).join('')
+    .trim();
 }
 
 function cleanThreadName(message, botId) {

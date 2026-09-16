@@ -894,7 +894,7 @@ export class HarnessClient {
         stdio: ['ignore', 'inherit', 'inherit'],
       });
       this.#managedProcess.on('error', (error) => {
-        console.error(`[${this.#logPrefix}] failed to start Harness:`, error.message);
+        console.error('[dsh-im] failed to start Harness:', this.#logPrefix, error.message);
       });
     }
 
@@ -1124,7 +1124,7 @@ export class HarnessClient {
         });
       } catch (error) {
         if (signal.aborted) return;
-        console.warn(`[${this.#logPrefix}] Harness interaction stream disconnected:`, error.message);
+        console.warn('[dsh-im] Harness interaction stream disconnected:', this.#logPrefix, error.message);
       }
       if (signal.aborted) return;
       try {
@@ -1463,7 +1463,7 @@ export class HarnessClient {
           deliveredArtifactCount += 1;
         } catch (error) {
           outboundArtifactRegistry.release(artifact);
-          console.warn(`[${this.#logPrefix}] ignored an artifact handoff failure:`, error.message);
+          console.warn('[dsh-im] ignored an artifact handoff failure:', this.#logPrefix, error.message);
         }
       }
       return deliveredArtifactCount;
@@ -1541,7 +1541,8 @@ export class HarnessClient {
         } catch (stagingError) {
           if (signal?.aborted) throw signal.reason ?? stagingError;
           console.warn(
-            `[${this.#logPrefix}] unable to restage rejected images as workspace files:`,
+            '[dsh-im] unable to restage rejected images as workspace files:',
+            this.#logPrefix,
             stagingError?.message ?? String(stagingError),
           );
           throw error;
@@ -1593,7 +1594,7 @@ export class HarnessClient {
               try {
                 await onUpdate(update);
               } catch (error) {
-                console.warn(`[${this.#logPrefix}] ignored a progress update failure:`, error.message);
+                console.warn('[dsh-im] ignored a progress update failure:', this.#logPrefix, error.message);
               }
             }
           }
@@ -1650,7 +1651,7 @@ export class HarnessClient {
           try {
             await staged?.cleanup?.();
           } catch (error) {
-            console.warn(`[${this.#logPrefix}] unable to clean inbound files:`, error.message);
+            console.warn('[dsh-im] unable to clean inbound files:', this.#logPrefix, error.message);
           }
         }
       }
@@ -1684,7 +1685,7 @@ export class HarnessClient {
       try {
         onOpen?.();
       } catch (error) {
-        console.warn(`[${this.#logPrefix}] ignored an interaction open callback failure:`, error.message);
+        console.warn('[dsh-im] ignored an interaction open callback failure:', this.#logPrefix, error.message);
       }
       if (ownership) {
         void this.#refreshInteractionOwnerships(sessionId, signal).then(() => {
@@ -1776,7 +1777,7 @@ export class HarnessClient {
         if (!ownershipReady) bufferedEnvelopes.push(envelope);
         else processEnvelope(envelope);
       } catch (error) {
-        console.warn(`[${this.#logPrefix}] ignored a malformed Harness interaction frame:`, error.message);
+        console.warn('[dsh-im] ignored a malformed Harness interaction frame:', this.#logPrefix, error.message);
       }
     };
     try {
@@ -1813,7 +1814,7 @@ export class HarnessClient {
             try {
               onReconnect?.();
             } catch (error) {
-              console.warn(`[${this.#logPrefix}] mux reconnect hook failed:`, error.message);
+              console.warn('[dsh-im] mux reconnect hook failed:', this.#logPrefix, error.message);
             }
           },
           onEnvelope: (envelope) => {
@@ -1829,13 +1830,13 @@ export class HarnessClient {
                 || typeof payload.event !== 'object') return;
               onSessionEvent({ sessionId: payload.sessionId, event: payload.event });
             } catch (error) {
-              console.warn(`[${this.#logPrefix}] ignored a malformed global mux frame:`, error.message);
+              console.warn('[dsh-im] ignored a malformed global mux frame:', this.#logPrefix, error.message);
             }
           },
         });
       } catch (error) {
         if (signal.aborted) return;
-        console.warn(`[${this.#logPrefix}] Harness event mux disconnected:`, error.message);
+        console.warn('[dsh-im] Harness event mux disconnected:', this.#logPrefix, error.message);
       }
       if (signal.aborted) return;
       try {
@@ -1855,7 +1856,7 @@ export class HarnessClient {
       rpcId: `${this.#rpcIdPrefix}-${randomUUID()}`,
       ...options,
       onMalformed: (error) => {
-        console.warn(`[${this.#logPrefix}] ignored a malformed Harness mux frame:`, error.message);
+        console.warn('[dsh-im] ignored a malformed Harness mux frame:', this.#logPrefix, error.message);
       },
     });
   }

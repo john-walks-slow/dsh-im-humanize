@@ -8,8 +8,24 @@ function cleanString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function escapePattern(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function isHexString(value, uppercase) {
+  if (typeof value !== 'string' || value.length !== 24) return false;
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    const digit = code >= 48 && code <= 57;
+    const letter = uppercase
+      ? code >= 65 && code <= 70
+      : code >= 97 && code <= 102;
+    if (!digit && !letter) return false;
+  }
+  return true;
+}
+
+function matchesTokenIdentity(value, prefix, uppercaseHex) {
+  if (typeof value !== 'string') return false;
+  const marker = `${prefix}_`;
+  if (!value.startsWith(marker)) return false;
+  return isHexString(value.slice(marker.length), uppercaseHex);
 }
 
 export function deriveTokenBotIdentity(platformId, { botPrefix, tokenRefPrefix }) {
@@ -34,8 +50,6 @@ export class TokenBotConfigStore {
   #botPrefix;
   #tokenRefPrefix;
   #normalizeBotExtension;
-  #botIdPattern;
-  #tokenRefPattern;
   #value = EMPTY_DOCUMENT;
   #writeQueue = Promise.resolve();
 
@@ -53,8 +67,6 @@ export class TokenBotConfigStore {
     this.#botPrefix = botPrefix;
     this.#tokenRefPrefix = tokenRefPrefix;
     this.#normalizeBotExtension = normalizeBotExtension;
-    this.#botIdPattern = new RegExp(`^${escapePattern(botPrefix)}_[a-f0-9]{24}$`);
-    this.#tokenRefPattern = new RegExp(`^${escapePattern(tokenRefPrefix)}_[A-F0-9]{24}$`);
   }
 
   async load() {
@@ -102,7 +114,9 @@ export class TokenBotConfigStore {
   }
 
   async remove(botId) {
-    if (!this.#botIdPattern.test(botId)) throw new TypeError(`Invalid ${this.#channel} bot id`);
+    if (!matchesTokenIdentity(botId, this.#botPrefix, false)) {
+      throw new TypeError(`Invalid ${this.#channel} bot id`);
+    }
     return this.#mutate((bots) => {
       const index = bots.findIndex((bot) => bot.botId === botId);
       if (index === -1) return null;
@@ -131,7 +145,8 @@ export class TokenBotConfigStore {
     const tokenRef = cleanString(value.tokenRef);
     const name = cleanString(value.name);
     if (!platformId || !botId || !tokenRef || !name
-      || !this.#botIdPattern.test(botId) || !this.#tokenRefPattern.test(tokenRef)) return null;
+      || !matchesTokenIdentity(botId, this.#botPrefix, false)
+      || !matchesTokenIdentity(tokenRef, this.#tokenRefPrefix, true)) return null;
     const derived = deriveTokenBotIdentity(platformId, {
       botPrefix: this.#botPrefix,
       tokenRefPrefix: this.#tokenRefPrefix,

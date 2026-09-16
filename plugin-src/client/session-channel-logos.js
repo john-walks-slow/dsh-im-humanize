@@ -26,8 +26,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const installations = new WeakMap();
 
 function hasClassPart(element, part) {
-  const match = new RegExp(`(?:^|[_-])${part}(?:$|[_-])`, 'u');
-  return [...element.classList].some((token) => match.test(token));
+  return [...element.classList].some((token) => token.split(/[_-]/u).includes(part));
 }
 
 function titleOf(row) {

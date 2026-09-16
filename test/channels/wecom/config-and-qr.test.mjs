@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -9,6 +9,7 @@ import {
   WecomConfigStore,
 } from '../../../src/channels/wecom/config-store.mjs';
 import { WecomQrAuth } from '../../../src/channels/wecom/qr-auth.mjs';
+import { assertRestrictiveMode } from '../../support/filesystem.mjs';
 
 test('Enterprise WeChat config stores only non-secret bot identity with mode 0600', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-im-wecom-config-'));
@@ -24,7 +25,7 @@ test('Enterprise WeChat config stores only non-secret bot identity with mode 060
   const document = await readFile(path, 'utf8');
   assert.match(document, /bot-enterprise-1/);
   assert.doesNotMatch(document, /private-secret|"secret"/);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await assertRestrictiveMode(path, 0o600);
   assert.equal(store.get(identity.botId).remoteBotId, 'bot-enterprise-1');
 });
 

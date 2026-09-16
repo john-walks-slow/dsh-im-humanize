@@ -16,6 +16,7 @@ export default {
 
   '钉钉未能换取图片下载地址，请重新发送；若持续失败，请检查机器人的“企业内机器人发送消息权限”。': 'DingTalk could not provide the image download address. Please resend; if it keeps failing, check the bot\'s "Send messages as an internal robot" permission.',
   '钉钉没有返回图片下载地址，请重新发送。': 'DingTalk did not return an image download address. Please resend.',
+  '钉钉未提供引用附件的下载信息，无法读取原附件。请直接重新发送附件后再提问。': 'DingTalk did not provide download information for the quoted attachment, so it cannot be read. Please resend the attachment directly with your question.',
   '钉钉返回的图片临时地址无法读取，请重新发送。': 'The temporary image address returned by DingTalk could not be read. Please resend.',
   '结果文件「{name}」发送结果未能确认，请先检查聊天内是否已收到，不要立即重试。': 'Delivery of the result file "{name}" could not be confirmed. Please check whether it already arrived in the chat before retrying.',
   '结果文件「{name}」已生成，但钉钉应用或机器人缺少文件消息权限。请开通应用 qyapi_base 权限，并确认机器人具备文件消息发送能力。': 'Result file "{name}" was generated, but the DingTalk app or bot lacks file message permission. Enable the app\'s qyapi_base permission and make sure the bot can send file messages.',

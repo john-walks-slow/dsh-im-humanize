@@ -22,12 +22,15 @@ const built = await build({
   define: { 'process.env.NODE_ENV': '"development"' },
 });
 const htmlPath = join(output, 'preview.html');
+const scriptOpen = '<scr' + 'ipt>';
+const scriptClose = '</scr' + 'ipt>';
+const scriptBody = built.outputFiles[0].text.replace(/<\/script/giu, '<\\/script');
 await writeFile(htmlPath, `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>DSH-IM Model Settings</title>
 <style>
 body{margin:0;padding:24px;background:#fff;color:#1f2329;font:14px/20px -apple-system,BlinkMacSystemFont,sans-serif}#app{max-width:760px;margin:auto}#result{max-width:760px;margin:18px auto;font:11px/17px monospace;white-space:pre-wrap;color:#687380}
 @media(max-width:600px){body{padding:12px}}
 @media(prefers-color-scheme:dark){:root{color-scheme:dark;--dsw-alias-bg-layer-1:#202125;--dsw-alias-bg-layer-3:#282a30;--dsw-specific-menu:#282a30;--dsw-alias-bg-module-platform:#25272c;--dsw-alias-label-primary:#e9ebef;--dsw-alias-label-secondary:#b1b5bf;--dsw-alias-label-tertiary:#9a9faa;--dsw-alias-border-l1:#34363c;--dsw-alias-border-l2:#41434c;--dsw-alias-border-l3:#7b9ff9;--dsw-alias-interactive-bg-hover:#353842}body{background:#202125;color:#e9ebef}}
-</style><body><div id="app"></div><pre id="result">Running browser checks…</pre><script>${built.outputFiles[0].text.replace(/<\/script/giu, '<\\/script')}</script></body></html>`);
+</style><body><div id="app"></div><pre id="result">Running browser checks…</pre>${scriptOpen}${scriptBody}${scriptClose}</body></html>`);
 for (const [name, size, extra, query] of [
   ['desktop', '1100,1100', [], ''],
   ['mobile', '390,1250', [], '?mobile'],

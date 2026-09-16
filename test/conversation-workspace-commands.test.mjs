@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, realpath, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -11,6 +11,7 @@ import {
 import { ConversationStateStore } from '../src/channels/shared/conversation-state-store.mjs';
 import { runWorkspaceCommand } from '../src/channels/shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../src/channels/shared/workspace-session.mjs';
+import { symlinkOrSkip } from './support/filesystem.mjs';
 
 async function fixture(t) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-im-conversation-commands-')));
@@ -209,7 +210,7 @@ for (const sessionId of ['session-A', 'session-B']) {
 test('/conv preserves a legacy Session registered at the real path of a symlink override', async (t) => {
   const f = await fixture(t);
   const linked = join(f.root, 'alternate-link');
-  await symlink(f.alternateWorkspace, linked);
+  if (!await symlinkOrSkip(t, f.alternateWorkspace, linked)) return;
   await f.command(`/conv ${linked}`);
   await f.state.setSession(f.key, 'session-B');
   f.harness.rpc = async () => ({ items: [{ path: f.alternateWorkspace, sessionIds: ['session-B'] }] });

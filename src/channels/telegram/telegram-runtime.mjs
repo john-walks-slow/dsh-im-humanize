@@ -42,10 +42,6 @@ export const TELEGRAM_COMMAND_MENU = Object.freeze(
   commandMenuEntries(SHARED_COMMAND_CATALOG, (text) => text).map((item) => Object.freeze(item)),
 );
 
-function escaped(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function mentionedUsername(message, username) {
   if (!username) return false;
   return [
@@ -60,9 +56,27 @@ function mentionedUsername(message, username) {
     }));
 }
 
+function isUsernameBoundary(character) {
+  return character === undefined || !(/[a-z0-9_]/i).test(character);
+}
+
 function withoutBotMention(text, username) {
   if (!username || typeof text !== 'string') return text;
-  return text.replace(new RegExp(`@${escaped(username)}\\b`, 'ig'), '').trim();
+  const target = `@${username}`.toLowerCase();
+  let result = '';
+  let offset = 0;
+  while (offset < text.length) {
+    // Case-fold only the candidate: Unicode casing can change the full text's length.
+    if (text[offset] === '@'
+      && text.slice(offset, offset + target.length).toLowerCase() === target
+      && isUsernameBoundary(text[offset + target.length])) {
+      offset += target.length;
+    } else {
+      result += text[offset];
+      offset += 1;
+    }
+  }
+  return result.trim();
 }
 
 const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
@@ -207,6 +221,56 @@ function telegramReplyReference(message, { quote, loadReplyContent } = {}) {
     ...(!content.trim() && attachments.length === 0 && !load
       ? { unavailableReason: 'not-delivered' }
       : {}),
+  };
+}
+
+/**
+ * Normalize an inline-keyboard press into the same shape the bridge already
+ * consumes for messages, so a button reuses the existing conversation key,
+ * access policy, and pending-interaction routing instead of a parallel path.
+ * A press always counts as addressed: the user acted on a message the bot sent.
+ */
+export function normalizeTelegramCallback(update, { botId } = {}) {
+  const callback = update?.callback_query;
+  const message = callback?.message;
+  const chatId = message?.chat?.id;
+  const senderId = callback?.from?.id;
+  const providerMessageId = message?.message_id;
+  if (!Number.isSafeInteger(update?.update_id)
+    || typeof callback?.id !== 'string' || !callback.id
+    || chatId === undefined || senderId === undefined
+    || !Number.isSafeInteger(providerMessageId)) return null;
+  if (!['private', 'group', 'supergroup'].includes(message.chat?.type)) return null;
+  const direct = message.chat.type === 'private';
+  const messageThreadId = Number.isSafeInteger(message.message_thread_id)
+    ? message.message_thread_id : undefined;
+  const conversationId = messageThreadId === undefined
+    ? String(chatId) : `${chatId}:${messageThreadId}`;
+  return {
+    messageId: String(update.update_id),
+    callbackQueryId: callback.id,
+    providerMessageId,
+    senderId: String(senderId),
+    senderIsBot: callback.from?.is_bot === true,
+    kind: direct ? 'direct' : 'group',
+    conversationId,
+    data: typeof callback.data === 'string' ? callback.data : '',
+    addressed: true,
+    replyTarget: {
+      chatId,
+      chatType: message.chat.type,
+      messageThreadId,
+    },
+    reactionTarget: { chatId, messageId: providerMessageId },
+    contextSource: () => ({
+      senderName: [callback.from?.first_name, callback.from?.last_name]
+        .filter((value) => typeof value === 'string' && value.trim())
+        .map((value) => value.trim()).join(' ') || callback.from?.username,
+      conversationTitle: direct ? undefined : message.chat?.title,
+      chatId: String(chatId),
+      threadId: messageThreadId === undefined ? undefined : String(messageThreadId),
+    }),
+    ...(botId === undefined ? {} : { botId }),
   };
 }
 
@@ -461,6 +525,46 @@ export class TelegramBotClient {
       }
     }
     return { providerMessageIds };
+  }
+
+  /**
+   * Deliver a card whose inline keyboard carries the interaction payloads.
+   * Kept separate from sendText so a markup failure can be caught and degraded
+   * to the plain-text flow by the caller without losing the text itself.
+   */
+  async sendInteractionCard(target, { text, markup, replyToMessageId } = {}) {
+    const result = await this.#api.sendMessage({
+      chatId: target.chatId,
+      text,
+      replyToMessageId: replyToMessageId ?? target.replyToMessageId,
+      messageThreadId: target.messageThreadId,
+      replyMarkup: markup,
+      signal: this.#signal,
+    });
+    const providerMessageIds = [];
+    if (Number.isSafeInteger(result?.message_id)) {
+      providerMessageIds.push(String(result.message_id));
+    }
+    return { providerMessageIds };
+  }
+
+  /** Replace a delivered card's keyboard in place; an empty keyboard removes it. */
+  async updateInteractionCard(target, providerMessageId, { markup } = {}) {
+    await this.#api.editMessageReplyMarkup({
+      chatId: target.chatId,
+      messageId: Number(providerMessageId),
+      replyMarkup: markup,
+      signal: this.#signal,
+    });
+  }
+
+  /** Stop the client-side spinner on a pressed button. */
+  async answerInteractionCallback(callbackQueryId, notice) {
+    await this.#api.answerCallbackQuery({
+      callbackQueryId,
+      text: notice,
+      signal: this.#signal,
+    });
   }
 
   async addReaction(target, emoji, { signal } = {}) {
@@ -1086,7 +1190,8 @@ export class TelegramRuntime {
       // All updates have arrived together; cursor persistence must not move the
       // settings boundary for the later messages in this received batch.
       const received = updates.map((update) => {
-        const chatType = update?.message?.chat?.type;
+        const chatType = update?.message?.chat?.type
+          ?? update?.callback_query?.message?.chat?.type;
         return {
           update,
           contextSnapshot: captureContextEnhancement(this.#contextEnhancement,
@@ -1096,6 +1201,23 @@ export class TelegramRuntime {
       });
       for (const { update, contextSnapshot } of received) {
         if (signal.aborted) return;
+        const callback = normalizeTelegramCallback(update, {
+          botId: this.#config.platformId,
+        });
+        if (callback) {
+          if (typeof this.#bridge.acceptCallback === 'function') {
+            void this.#bridge.acceptCallback(callback, { contextSnapshot }).catch((error) => {
+              if (signal.aborted) return;
+              this.#logger.error?.(
+                `[dsh-im:telegram] bot ${this.#config.botId} callback handling failed:`,
+                error,
+              );
+            });
+          }
+          cursor = update.update_id + 1;
+          await this.#state.setCursor(cursor);
+          continue;
+        }
         const message = normalizeTelegramUpdate(update, {
           botId: this.#config.platformId,
           username: this.#config.username,

@@ -559,4 +559,3 @@ test('a nameless source row uses the Host label and foreign JSON is not claimed'
     assert.equal(rewriteInjectedContextMessages([forged], { newId: identityFactory() }), null, body);
   }
 });
-
