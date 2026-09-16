@@ -71,8 +71,6 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 企业微信自建应用的回调基址、代理地址和企业可信 IP 配置，见[企业微信自建应用接入说明](docs/企业微信自建应用接入.md)。
 
-Lark（国际版）使用飞书渠道的「手动接入」：先将「应用平台」选为「Lark（国际版）」，再填写 Lark 开放平台自建应用的 App ID 和 App Secret。应用需启用机器人能力、配置长连接事件订阅，并完成所需权限及发布。切换应用平台会清空已输入凭据，避免提交到错误的平台；未选择时仍默认飞书。此入口复用已有 Lark HTTP 与长连接支持，不改变扫码创建流程。
-
 其他 IM 平台可继续按同一渠道适配器结构接入。
 
 飞书群聊默认接收其他机器人明确 @ 当前机器人的消息，无需额外开关；未 @、仅 @ 其他成员或全体、机器人自身发送的消息和机器人私聊消息仍会忽略，即使群聊响应方式设为“全部”。消息仍受群聊白名单与命令权限约束。飞书应用需要租户权限 `im:message.group_at_msg.include_bot:readonly`（“获取群组中其他机器人和用户@当前机器人的消息”）；扫码新建应用会默认申请，已有或手动绑定的应用可点击“补全权限”或私聊执行 `/repair`，扫码并完成飞书要求的发布审批后生效。详见[飞书接收消息权限说明](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive)。

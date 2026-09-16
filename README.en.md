@@ -65,8 +65,6 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 | WhatsApp | Scan a QR code with mobile WhatsApp to link a device | WhatsApp Web connection; self-chat only by default, with optional selected-contact and open-response modes; read receipt and typing indicator, with tool progress and incremental answers shown by editing one message at one-second intervals; long replies split automatically and failed edits fall back to a complete text reply |
 | iMessage | Sign in to iMessage in macOS Messages.app and grant the local permissions described in the [channel notes](docs/imessage.md) | Native macOS Messages.app transport for text DMs; no BlueBubbles or third-party gateway; one local iMessage identity per macOS user account |
 
-For Lark (international), use **Manual setup** in the Feishu channel: select **Lark (international)** under **App platform**, then enter the App ID and App Secret of your Lark Developer custom app. Enable its bot capability, configure persistent-connection event subscriptions, and complete the required permissions and publication. Changing platforms clears entered credentials to avoid sending them to the wrong platform; Feishu remains the default. This entry reuses the existing Lark HTTP and WebSocket support and does not change QR-code creation.
-
 Other IM platforms can be added through the same channel-adapter structure.
 The iMessage contribution is documented separately in [the iMessage channel
 notes](docs/imessage.md); it uses the native macOS Messages.app and requires no
