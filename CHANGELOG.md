@@ -6,6 +6,13 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+## [4.21.1] - 2026-09-16
+
+### Fixed / 修复
+
+- 飞书渠道手动接入支持选择 Lark（国际版），管理接口接受并校验可选的 `feishu` / `lark` 平台字段，沿用已有 Lark 认证和长连接能力；缺省仍为飞书。切换平台会清空凭据，绑定过程中不可更改平台（[#212](https://github.com/xmanrui/dsh-im/issues/212)）。
+  Feishu manual setup now offers Lark (international). The management API validates the optional `feishu` / `lark` platform field and reuses existing Lark authentication and persistent connections, defaulting to Feishu when omitted. Switching platforms clears credentials, and the platform is locked while binding ([#212](https://github.com/xmanrui/dsh-im/issues/212)).
+
 ## [4.21.0] - 2026-09-16
 
 ### Added / 新增
