@@ -295,3 +295,25 @@ test('DeliveryService marks explicit remote Harness channels unavailable for Ses
   });
   assert.deepEqual(calls, [['bot_one', 'direct', false]]);
 });
+
+test('DeliveryService aggregates bound private conversations and revalidates targets', async () => {
+  const service = createDeliveryService();
+  const adapter = memoryAdapter();
+  adapter.listSessionConversations = async (sessionId) => (
+    sessionId === 'session-one'
+      ? [{ botId: 'bot_one', target: { kind: 'chat', route: { chatId: '123' } } }]
+      : []
+  );
+  service.registerAdapter(adapter);
+
+  assert.deepEqual(await service.listSessionConversations('session-one'), [{
+    channel: 'telegram', botId: 'bot_one', target: { kind: 'chat', route: { chatId: '123' } },
+  }]);
+  assert.deepEqual(await service.listSessionConversations('session-none'), []);
+
+  // A malformed target is dropped rather than surfacing to the caller.
+  adapter.listSessionConversations = async () => [
+    { botId: 'bot_one', target: { kind: 'chat', route: { chatId: '123' }, extra: true } },
+  ];
+  assert.deepEqual(await service.listSessionConversations('session-one'), []);
+});

@@ -21,7 +21,7 @@ const MAX_MESSAGE_BREAKS_PER_TURN = 20;
 export function createMessageBreakToolDefinition() {
   return Object.freeze({
     name: MESSAGE_BREAK_TOOL,
-    description: 'Insert a message break to split your response into multiple shorter messages, like a human chatting. Call this between natural paragraph or topic boundaries. The text you wrote before each break is sent as a separate message; text after the last break becomes the final message. Do not include any parameters.',
+    description: 'Insert a message break to split your response into multiple shorter messages, like a human chatting. Call this between natural paragraph or topic boundaries. The text you wrote before each break is sent as a separate message; text after the last break becomes the final message. Do not include any parameters. Do not use when the user message does not come from dsh-im.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -58,7 +58,7 @@ export function installMessageBreakTool(ctx) {
   ctx.systemPrompt.section({
     name: 'dsh-im:message-break',
     order: 116,
-    text: 'When your response is long, use the message_break tool to split it into multiple shorter messages. Each segment between message_break calls becomes a separate chat message, mimicking human chat style. Call message_break at natural paragraph or topic boundaries. The tool takes no parameters.',
+    text: 'When your response is long, use the message_break tool to split it into multiple shorter messages. Each segment between message_break calls becomes a separate chat message, mimicking human chat style. Call message_break at natural paragraph or topic boundaries. The tool takes no parameters. Do not use when the user message does not come from dsh-im.',
   });
   return true;
 }

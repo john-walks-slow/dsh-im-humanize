@@ -60,6 +60,7 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 | QQ 桥接 messageBreak 修复 | — | 修复上游 `messageBreakHandler` 作用域缺陷 |
 | QQ 输入状态会话重写 | — | 桥内自管理 55s/50s 替代失效的 SDK 中间件 |
 | 延迟窗口双回复修复 | — | 被取代回合静默取消，无双回复 |
+| `send_im` 投递工具 `imSendTool` | 开 | 注册模型工具，在默认静默（无 IM 可见性）的回合主动投递文字；`botId`/`targetId` 可省略，自动投到当前 Session 绑定的私聊（未绑定则报错） |
 
 > 上游同步说明：本分支为长期维护的 fork，会持续合并 `xmanrui/dsh-im` 上游更新；上游修复与功能在合并时保持完全兼容。**分步消息（message_break）、流式开关（streaming）、发送延迟与输入状态指示依赖本 fork 对 Harness 回复追踪（HarnessReplyTracker）与渠道桥接的扩展**，在上游仓库中不可用。
 

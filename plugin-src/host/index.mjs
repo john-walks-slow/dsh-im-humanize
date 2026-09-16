@@ -10,6 +10,8 @@ import { apply as applyWeixin } from './channels/weixin/index.mjs';
 import { apply as applyWhatsapp } from './channels/whatsapp/index.mjs';
 import { installOutboundArtifactTool } from '../../src/channels/shared/semantic/artifact.mjs';
 import { installMessageBreakTool } from '../../src/channels/shared/message-break.mjs';
+import { installNoReplyTool } from '../../src/channels/shared/no-reply.mjs';
+import { installImSendTool } from '../../src/channels/shared/im-send-tool.mjs';
 import { setImHostLanguage } from '../../src/channels/shared/i18n.mjs';
 import { installDeliveryRpc } from './delivery-rpc.mjs';
 import { installDeliveryHttp } from './delivery-http.mjs';
@@ -176,17 +178,31 @@ export function createImHostPlugin(internals = {}) {
       }
     }
 
+    const imSend = (botId, targetId, text, options) => (
+      deliveryService.send(botId, targetId, text, options)
+    );
+    const resolveBoundTargets = (sessionId) => (
+      deliveryService.listSessionConversations(sessionId)
+    );
     if (typeof ctx?.inject === 'function') {
       ctx.inject(['tools', 'systemPrompt'], (toolCtx) => {
         installOutboundArtifactTool(toolCtx);
+        installNoReplyTool(toolCtx);
         if (config.messageBreak !== false) {
           installMessageBreakTool(toolCtx);
+        }
+        if (config.imSendTool !== false) {
+          installImSendTool(toolCtx, { send: imSend, resolveBoundTargets });
         }
       });
     } else {
       installOutboundArtifactTool(ctx);
+      installNoReplyTool(ctx);
       if (config.messageBreak !== false) {
         installMessageBreakTool(ctx);
+      }
+      if (config.imSendTool !== false) {
+        installImSendTool(ctx, { send: imSend, resolveBoundTargets });
       }
     }
     const logger = typeof ctx?.logger === 'function'

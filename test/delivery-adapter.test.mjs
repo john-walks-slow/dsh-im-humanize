@@ -376,3 +376,53 @@ test('channel-specific route kinds stay strict', () => {
     (error) => error?.code === 'invalid-target',
   );
 });
+
+test('delivery adapter resolves the private chats bound to a session (not groups)', async () => {
+  const sessions = {
+    'direct:6110538394': 'session-x',
+    'group:-123': 'session-x',
+    'direct:9999999': 'session-other',
+  };
+  const workspaces = {
+    listBotIds: () => ['telegram_bot'],
+  };
+  const adapter = createDeliveryAdapter({
+    channel: 'telegram',
+    workspaces,
+    coreController: { sendProactiveText() {} },
+    stateFor: async () => ({ snapshot: () => ({ sessions }) }),
+  });
+
+  assert.deepEqual(await adapter.listSessionConversations('session-x'), [{
+    botId: 'telegram_bot',
+    target: { kind: 'chat', route: { chatId: '6110538394' } },
+  }]);
+  assert.deepEqual(await adapter.listSessionConversations('session-other'), [{
+    botId: 'telegram_bot',
+    target: { kind: 'chat', route: { chatId: '9999999' } },
+  }]);
+  assert.deepEqual(await adapter.listSessionConversations('session-none'), []);
+});
+
+test('delivery adapter skips bots whose session state cannot be read', async () => {
+  const workspaces = {
+    listBotIds: () => ['broken_bot', 'good_bot'],
+  };
+  let calls = 0;
+  const adapter = createDeliveryAdapter({
+    channel: 'telegram',
+    workspaces,
+    coreController: { sendProactiveText() {} },
+    stateFor: async (botId) => {
+      calls += 1;
+      if (botId === 'broken_bot') throw new Error('state unavailable');
+      return { snapshot: () => ({ sessions: { 'direct:42': 'session-x' } }) };
+    },
+  });
+
+  assert.deepEqual(await adapter.listSessionConversations('session-x'), [{
+    botId: 'good_bot',
+    target: { kind: 'chat', route: { chatId: '42' } },
+  }]);
+  assert.equal(calls, 2);
+});

@@ -5,12 +5,39 @@ import {
   MESSAGE_BREAK_TOOL,
   createMessageBreakToolDefinition,
   createMessageBreakHandler,
+  installMessageBreakTool,
 } from '../src/channels/shared/message-break.mjs';
 
-test('message-break: tool definition has correct name', () => {
+test('message-break: tool definition has correct name and description', () => {
   const def = createMessageBreakToolDefinition();
   assert.equal(def.name, MESSAGE_BREAK_TOOL);
   assert.equal(def.name, 'message_break');
+  assert.match(def.description, /Do not use when the user message does not come from dsh-im/);
+});
+
+test('message-break: installMessageBreakTool registers tool and system prompt section', () => {
+  const registeredTools = [];
+  const sections = [];
+  const fakeCtx = {
+    tools: {
+      register(tool) {
+        registeredTools.push(tool);
+      },
+    },
+    systemPrompt: {
+      section(sec) {
+        sections.push(sec);
+      },
+    },
+  };
+  const result = installMessageBreakTool(fakeCtx);
+  assert.equal(result, true);
+  assert.equal(registeredTools.length, 1);
+  assert.equal(registeredTools[0].name, 'message_break');
+  assert.match(registeredTools[0].description, /Do not use when the user message does not come from dsh-im/);
+  assert.equal(sections.length, 1);
+  assert.equal(sections[0].name, 'dsh-im:message-break');
+  assert.match(sections[0].text, /Do not use when the user message does not come from dsh-im/);
 });
 
 test('message-break: tool definition has no required parameters', () => {

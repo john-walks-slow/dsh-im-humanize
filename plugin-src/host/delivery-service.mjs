@@ -267,6 +267,38 @@ export class DeliveryService {
     return targets;
   }
 
+  async listSessionConversations(sessionId) {
+    if (typeof sessionId !== 'string' || !sessionId) {
+      throw deliveryError('bad-request', 'Invalid Session id');
+    }
+    const conversations = [];
+    for (const { adapter } of this.#adapters.values()) {
+      if (typeof adapter.listSessionConversations !== 'function') continue;
+      try {
+        const listed = await adapter.listSessionConversations(sessionId);
+        if (!Array.isArray(listed)) {
+          throw new TypeError('Adapter returned invalid session conversations');
+        }
+        for (const entry of listed) {
+          if (!entry || typeof entry !== 'object' || typeof entry.botId !== 'string') {
+            throw new TypeError('Adapter returned invalid session conversation');
+          }
+          conversations.push({
+            channel: adapter.channel,
+            botId: botIdOf(entry.botId),
+            target: draftTargetObject(entry.target),
+          });
+        }
+      } catch (error) {
+        console.warn(
+          `[dsh-im] ignored ${adapter.channel} session conversation lookup failure`
+            + ` (${error?.code ?? error?.name ?? 'unknown-error'})`,
+        );
+      }
+    }
+    return conversations;
+  }
+
   async sendSessionSyncText(botId, targetId, sessionId, text, { signal } = {}) {
     const id = botIdOf(botId);
     const targetKey = targetIdOf(targetId);

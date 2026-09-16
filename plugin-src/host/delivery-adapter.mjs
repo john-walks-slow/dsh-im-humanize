@@ -1,6 +1,7 @@
 import {
   deliverySuggestionsFromSessions,
   privateConversationKeyMatchesTarget,
+  privateDeliverySuggestionFromConversationKey,
   resolvePrivateConversationKey,
 } from './delivery-suggestions.mjs';
 
@@ -290,6 +291,34 @@ export function createDeliveryAdapter({ channel, workspaces, coreController, sta
         }
         if (sessions?.[configured.conversationKey] === sessionId) {
           matches.push({ botId: configured.botId, targetId: configured.targetId });
+        }
+      }
+      return matches;
+    },
+    async listSessionConversations(sessionId) {
+      if (typeof sessionId !== 'string' || !sessionId) {
+        throw new TypeError('sessionId is required');
+      }
+      // The ordinary chat binding (persisted session map), not the opt-in
+      // session-sync setting: which private chats are talking to this session
+      // right now. Wake/silent turns deliver here without any sync switch.
+      const matches = [];
+      for (const botId of workspaces.listBotIds()) {
+        let sessions;
+        try {
+          sessions = stateSessions(await stateFor(botId));
+        } catch {
+          continue;
+        }
+        if (!sessions) continue;
+        for (const [key, bound] of Object.entries(sessions)) {
+          if (bound !== sessionId) continue;
+          const suggestion = privateDeliverySuggestionFromConversationKey(channel, key);
+          if (!suggestion) continue;
+          matches.push({
+            botId,
+            target: normalizeDeliveryTarget(channel, suggestion, { targetIdRequired: false }),
+          });
         }
       }
       return matches;
