@@ -13,7 +13,8 @@ test('no-reply: tool definition has correct name and description', () => {
   assert.equal(def.name, 'no_reply');
   assert.match(def.description, /no IM reply should be sent/);
   assert.match(def.description, /proactive wake on an IM-connected session/);
-  assert.match(def.description, /ONLY action with no chat text/);
+  assert.match(def.description, /final action and no chat text/);
+  assert.match(def.description, /work tools may come first/);
 });
 
 test('no-reply: installNoReplyTool registers tool and system prompt section', () => {
