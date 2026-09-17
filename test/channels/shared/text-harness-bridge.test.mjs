@@ -21,6 +21,7 @@ import {
 } from '../../../src/channels/shared/text-harness-bridge.mjs';
 import { SlackHarnessBridge } from '../../../src/channels/slack/slack-bridge.mjs';
 import { TelegramHarnessBridge } from '../../../src/channels/telegram/telegram-bridge.mjs';
+import { TelegramBotClient } from '../../../src/channels/telegram/telegram-runtime.mjs';
 import { WhatsappHarnessBridge } from '../../../src/channels/whatsapp/whatsapp-bridge.mjs';
 
 function deferred() {
@@ -563,7 +564,7 @@ test('all four shared text channels expose structured model rate limits without 
 
     const failure = status.lastMessageError;
     assert.equal(failure.code, 'MODEL_RATE_LIMIT', name);
-    assert.equal(failure.reason, 'MODEL_RATE_LIMIT', name);
+    assert.equal(failure.reason, 'HARNESS_TURN_FAILED', name);
     assert.match(failure.referenceId, /^MF-[A-F0-9]{8}$/, name);
     assert.match(sent.at(-1), /模型服务正在限流，本次任务未完成。请稍后重试。/, name);
     assert.equal(sent.at(-1).endsWith(`参考号：${failure.referenceId}`), true, name);
@@ -2466,7 +2467,7 @@ test('keeps a failed interaction response pending so the actor can retry', async
   });
 
   const processing = bridge.accept(message('retry-start', '启动可重试交互'));
-  await eventually(() => sent.some(({ text }) => text.includes('请回答')));
+  await eventually(() => sent.some(({ text }) => text.includes('请回答')), 5_000);
   await bridge.accept(message('retry-first', '第一次答案', {
     reactionTarget: { id: 'source-retry-first' },
   }));
@@ -2519,7 +2520,7 @@ test('notifies the actor when an in-flight response resolves elsewhere before re
   });
 
   const processing = bridge.accept(message('response-race-start', '启动提交竞态'));
-  await eventually(() => sent.some(({ text }) => text.includes('请回答')));
+  await eventually(() => sent.some(({ text }) => text.includes('请回答')), 5_000);
   await bridge.accept(message('response-race-answer', '已经收到的答案'));
   await processing;
 
@@ -2757,3 +2758,320 @@ test('passes the runtime signal to Harness and safely cancels a pending question
     },
   });
 });
+
+test('shared bridge keepalives a short-lived draft stream and stops the timer on completion', async () => {
+  const fixture = stateFixture();
+  const refreshes = [];
+  const typings = [];
+  let releaseAsk;
+  const gate = new Promise((resolve) => { releaseAsk = resolve; });
+  const bridge = new TextHarnessBridge({
+    descriptor: { key: 'test', label: 'Test' },
+    bot: {
+      sendText: async () => 'done',
+      sendTyping: async () => { typings.push(Date.now()); },
+      openDeliveryStream: async () => ({
+        keepalive: true,
+        refresh: async () => { refreshes.push(Date.now()); },
+        update: async () => undefined,
+        finish: async () => undefined,
+        fail: async () => undefined,
+      }),
+    },
+    harness: {
+      createSession: async () => 'session-keepalive',
+      ask: async () => {
+        await gate;
+        return 'long answer';
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+    keepaliveIntervalMs: 15,
+  });
+
+  const accepted = bridge.accept(message('keepalive-draft', '跑一个长任务'));
+  await eventually(() => refreshes.length >= 2, 2_000);
+  assert.ok(refreshes.length >= 2, 'heartbeat refreshes the draft repeatedly during the long turn');
+  assert.ok(typings.length >= 1, 'heartbeat also refreshes the typing indicator');
+  releaseAsk();
+  await accepted;
+
+  const stoppedAt = refreshes.length;
+  const typingAt = typings.length;
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(refreshes.length, stoppedAt, 'no refresh after the turn ends');
+  assert.equal(typings.length, typingAt, 'no typing after the turn ends');
+});
+
+test('shared bridge clears the keepalive timer when a long turn fails', async () => {
+  const fixture = stateFixture();
+  const refreshes = [];
+  let releaseAsk;
+  const gate = new Promise((resolve) => { releaseAsk = resolve; });
+  const failure = new Error('private provider failure');
+  failure.code = 'harness-turn-failed';
+  const bridge = new TextHarnessBridge({
+    descriptor: { key: 'test', label: 'Test' },
+    bot: {
+      sendText: async () => 'done',
+      openDeliveryStream: async () => ({
+        keepalive: true,
+        refresh: async () => { refreshes.push(Date.now()); },
+        update: async () => undefined,
+        finish: async () => undefined,
+        fail: async () => undefined,
+      }),
+    },
+    harness: {
+      createSession: async () => 'session-keepalive-fail',
+      ask: async () => {
+        await gate;
+        throw failure;
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+    keepaliveIntervalMs: 15,
+  });
+
+  const accepted = bridge.accept(message('keepalive-fail', '会失败的長任务'));
+  await eventually(() => refreshes.length >= 2, 2_000);
+  releaseAsk();
+  await accepted;
+
+  const stoppedAt = refreshes.length;
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(refreshes.length, stoppedAt, 'no refresh leaks after a failed turn');
+});
+
+test('shared bridge never starts a keepalive timer for a non-keepalive stream', async () => {
+  const fixture = stateFixture();
+  const refreshes = [];
+  const typings = [];
+  const bridge = new TextHarnessBridge({
+    descriptor: { key: 'test', label: 'Test' },
+    bot: {
+      sendText: async () => 'done',
+      sendTyping: async () => { typings.push(Date.now()); },
+      openDeliveryStream: async () => ({
+        keepalive: false,
+        refresh: async () => { refreshes.push(Date.now()); },
+        update: async () => undefined,
+        finish: async () => undefined,
+      }),
+    },
+    harness: {
+      createSession: async () => 'session-non-keepalive',
+      ask: async () => 'plain answer',
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+    keepaliveIntervalMs: 10,
+  });
+
+  await bridge.accept(message('non-keepalive', '普通任务'));
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(refreshes.length, 0, 'non-keepalive carriers are never heartbeat-refreshed');
+  assert.equal(typings.length, 1, 'only the initial typing indicator is sent');
+});
+
+test('Telegram question clears the draft after pending writes and keeps replies enabled until the final answer', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const fixture = stateFixture();
+  const refreshGate = deferred();
+  const answered = deferred();
+  const drafts = [];
+  const messages = [];
+  const finals = [];
+  let options;
+  let draftActive = false;
+  const target = { chatId: 42, chatType: 'private' };
+  const bot = new TelegramBotClient({
+    api: {
+      sendChatAction: async () => true,
+      sendRichMessageDraft: async (payload) => {
+        drafts.push(payload);
+        if (drafts.length === 2) await refreshGate.promise;
+        draftActive = true;
+        return true;
+      },
+      sendMessage: async (payload) => {
+        // Telegram clears a live draft when a regular message arrives.
+        draftActive = false;
+        messages.push(payload);
+        return { message_id: 199 };
+      },
+      sendRichMessage: async (payload) => {
+        finals.push(payload);
+        return { message_id: 200 };
+      },
+    },
+  });
+  const bridge = new TelegramHarnessBridge({
+    bot,
+    state: fixture.state,
+    harness: {
+      createSession: async () => 'session-one',
+      ask: async (_sessionId, _text, askOptions) => {
+        options = askOptions;
+        await answered.promise;
+        return 'ISSUE199_DONE Green';
+      },
+    },
+  });
+  const processing = bridge.accept(message('draft-question', 'Choose a color', { replyTarget: target }));
+  t.after(async () => {
+    refreshGate.resolve();
+    answered.resolve();
+    await processing;
+  });
+  await eventually(() => options !== undefined);
+  t.mock.timers.tick(4_000);
+  await eventually(() => drafts.length === 2);
+  const presentation = options.onInteraction(questionInteraction({
+    questions: [{ id: 'color', question: 'Choose a color', options: [{ label: 'Blue' }, { label: 'Green' }] }],
+    respond: async (response) => {
+      if (!response.ok) return { accepted: true };
+      assert.deepEqual(response.value.answer.answers, [{ id: 'color', selected: ['Green'] }]);
+      answered.resolve();
+      return { accepted: true };
+    },
+  }));
+  const lateProgress = options.onUpdate({ type: 'tool', name: 'ask_user_question' });
+  await new Promise(setImmediate);
+  assert.equal(messages.length, 0, 'the question must wait for an in-flight draft to finish');
+  refreshGate.resolve();
+  await Promise.all([presentation, lateProgress]);
+  assert.equal(messages.length, 1);
+  assert.equal(draftActive, false, 'a late draft must not replace the question and block replies');
+  t.mock.timers.tick(40_000);
+  await options.onUpdate({ type: 'text', text: 'Waiting for your choice' });
+  assert.equal(drafts.length, 2, 'neither heartbeat nor progress may restart the draft');
+  await bridge.accept(message('draft-answer', '2', { replyTarget: target }));
+  await processing;
+  assert.equal(finals.length, 1);
+  assert.equal(finals[0].richMessage.markdown, 'ISSUE199_DONE Green');
+});
+
+test('slow Telegram heartbeat does not queue redundant drafts ahead of the final answer', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const fixture = stateFixture();
+  const askGate = deferred();
+  const refreshGate = deferred();
+  const drafts = [];
+  const finals = [];
+  let asked = false;
+  const bot = new TelegramBotClient({
+    api: {
+      // A failed typing request must not release the still-pending draft guard.
+      sendChatAction: async () => { throw new Error('typing unavailable'); },
+      sendRichMessageDraft: async (payload) => {
+        drafts.push(payload);
+        if (drafts.length === 2) await refreshGate.promise;
+        return true;
+      },
+      sendRichMessage: async (payload) => {
+        finals.push(payload);
+        return { message_id: 175 };
+      },
+    },
+    logger: { warn() {} },
+  });
+  const bridge = new TelegramHarnessBridge({
+    bot,
+    harness: {
+      createSession: async () => 'session-slow-heartbeat',
+      ask: async () => { asked = true; return askGate.promise; },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+  });
+  const accepted = bridge.accept(message('slow-heartbeat', 'long task', {
+    replyTarget: { chatId: 42, chatType: 'private' },
+  }));
+  t.after(async () => {
+    refreshGate.resolve();
+    askGate.resolve('final answer');
+    await accepted;
+  });
+  await eventually(() => asked);
+  t.mock.timers.tick(4_000);
+  await eventually(() => drafts.length === 2);
+  t.mock.timers.tick(40_000);
+  await new Promise(setImmediate);
+  askGate.resolve('final answer');
+  await new Promise(setImmediate);
+  assert.equal(finals.length, 0, 'the final frame still waits for the in-flight draft');
+  refreshGate.resolve();
+  await accepted;
+  assert.equal(drafts.length, 2, 'only the initial draft and one heartbeat were sent');
+  assert.equal(finals.length, 1);
+  assert.equal(finals[0].richMessage.markdown, 'final answer');
+  t.mock.timers.tick(40_000);
+  await new Promise(setImmediate);
+  assert.equal(drafts.length, 2, 'no heartbeat after final delivery');
+});
+
+for (const outcome of ['success', 'failure']) {
+  test(`heartbeat recovers after rejection and stops before ${outcome} delivery completes`, async (t) => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const fixture = stateFixture();
+    const askGate = deferred();
+    const deliveryGate = deferred();
+    let asked = false;
+    let finalizing = false;
+    let refreshes = 0;
+    let typings = 0;
+    const finalize = async () => {
+      finalizing = true;
+      await deliveryGate.promise;
+      return { deliveryOutcome: 'sent', providerMessageIds: ['175'] };
+    };
+    const bridge = new TextHarnessBridge({
+      descriptor: { key: 'test', label: 'Test' },
+      bot: {
+        sendText: async () => 'done',
+        sendTyping: async () => { typings += 1; },
+        openDeliveryStream: async () => ({
+          keepalive: true,
+          refresh: async () => {
+            refreshes += 1;
+            if (refreshes === 1) throw new Error('temporary refresh failure');
+          },
+          update: async () => undefined,
+          finish: finalize,
+          fail: finalize,
+        }),
+      },
+      harness: {
+        createSession: async () => `session-heartbeat-${outcome}`,
+        ask: async () => { asked = true; return askGate.promise; },
+      },
+      state: fixture.state,
+      logger: { warn() {}, error() {} },
+    });
+    const accepted = bridge.accept(message(`heartbeat-${outcome}`, 'long task'));
+    t.after(async () => {
+      askGate.resolve('answer');
+      deliveryGate.resolve();
+      await accepted;
+    });
+    await eventually(() => asked);
+    t.mock.timers.tick(4_000);
+    await new Promise(setImmediate);
+    t.mock.timers.tick(4_000);
+    await new Promise(setImmediate);
+    assert.equal(refreshes, 2, 'a rejected heartbeat does not disable later refreshes');
+    if (outcome === 'success') askGate.resolve('answer');
+    else askGate.reject(new Error('turn failed'));
+    await eventually(() => finalizing);
+    const typingAt = typings;
+    t.mock.timers.tick(40_000);
+    await new Promise(setImmediate);
+    assert.equal(refreshes, 2, 'no new refresh while final delivery is pending');
+    assert.equal(typings, typingAt, 'no typing while final delivery is pending');
+    deliveryGate.resolve();
+    await accepted;
+  });
+}

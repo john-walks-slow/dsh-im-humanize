@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import { TextHarnessBridge } from '../src/channels/shared/text-harness-bridge.mjs';
 import { runWorkspaceCommand } from '../src/channels/shared/workspace-command.mjs';
+import { toPosixPath } from './support/filesystem.mjs';
 
 test('/session binds exactly one safe Session ID to the current conversation', async () => {
   const calls = [];
@@ -21,7 +22,7 @@ test('/session binds exactly one safe Session ID to the current conversation', a
 
   assert.deepEqual(calls, [{ key: 'direct:conversation-1', sessionId: 'session-123' }]);
   assert.match(result.message, /^当前聊天已绑定会话：/);
-  assert.match(result.message, /工作区：\/workspace\/project/);
+  assert.match(toPosixPath(result.message), /工作区：(?:[A-Z]:)?\/workspace\/project/);
   assert.match(result.message, /标题：安全标题 伪造 下一行/);
   assert.doesNotMatch(result.message, /\u202e|\n下一行/);
   assert.match(result.message, /ID：session-123/);
@@ -211,7 +212,12 @@ test('all nine channel bridges advertise /session and pass their current convers
   ];
   for (const [file, key] of bridgeFamilies) {
     const source = await readFile(new URL(file, import.meta.url), 'utf8');
-    assert.match(source, /\/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话/);
+    if (file.endsWith('/shared/text-harness-bridge.mjs')) {
+      // Full rendered help for all four consumers is covered by command-help.test.mjs.
+      assert.match(source, /commandHelpLines\(this\.#descriptor\.key\)/);
+    } else {
+      assert.match(source, /\/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话/);
+    }
     assert.ok(
       source.includes(`runWorkspaceCommand(text, this.#harness, ${key})`),
       `${file} must pass ${key} to the shared command`,

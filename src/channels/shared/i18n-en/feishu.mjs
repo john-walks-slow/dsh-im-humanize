@@ -72,8 +72,8 @@ export default {
   '旧授权链接已作废，已生成新的修复链接。':
     'The previous authorization link was invalidated and a new repair link was generated.',
   '🔧 准备补全权限与回调。': '🔧 Preparing to complete permissions and the callback.',
-  '本次会增量添加当前缺少项：卡片回调 card.action.trigger；飞书显示为“获取单聊、群组消息”的租户权限 im:message:readonly（用于读取用户消息中的图片或文件）；im:resource（用于上传机器人发送的图片或文件）；以及原生命令面板所需的 application:app_slash_command:read / write。确认页只会显示当前缺少的项；若出现上述范围之外的配置，请取消。':
-    'This incrementally adds the currently missing items: the card callback card.action.trigger; the tenant scope im:message:readonly, shown by Feishu as “Read direct and group messages” and used to read images or files in user messages; im:resource, used to upload images or files sent by the bot; and application:app_slash_command:read / write for the native command panel. The confirmation page shows only items the app is currently missing; cancel if anything outside this scope appears.',
+  '本次会增量添加当前缺少项：卡片回调 card.action.trigger；飞书显示为“获取单聊、群组消息”的租户权限 im:message:readonly（用于读取用户消息中的图片或文件）；im:resource（用于上传机器人发送的图片或文件）；im:message.group_at_msg.include_bot:readonly（用于接收群内其他机器人 @ 当前机器人的消息）；以及原生命令面板所需的 application:app_slash_command:read / write。确认页只会显示当前缺少的项；若出现上述范围之外的配置，请取消。':
+    'This incrementally adds the currently missing items: the card callback card.action.trigger; the tenant scope im:message:readonly, shown by Feishu as “Read direct and group messages” and used to read images or files in user messages; im:resource, used to upload images or files sent by the bot; im:message.group_at_msg.include_bot:readonly, used to receive group messages from other bots that mention this bot; and application:app_slash_command:read / write for the native command panel. The confirmation page shows only items the app is currently missing; cancel if anything outside this scope appears.',
   '当前设备直接打开：': 'Open directly on this device:',
   '若要用另一台设备扫码，发送 /repair qr。{expiry}。':
     'To scan with another device, send /repair qr. {expiry}.',
@@ -323,6 +323,14 @@ export default {
   '🔙 返回菜单': '🔙 Back to menu',
   '已完成': 'Completed',
   '已停止': 'Stopped',
+  '运行中': 'Running',
+  '⚙️ 任务过程': '⚙️ Task progress',
+  '📋 过程详情': '📋 Process details',
+  '🛠️ 工具摘要（{count}）': '🛠️ Tool summary ({count})',
+  '💭 思考过程（{count}）': '💭 Thinking ({count})',
+  '🛠️ 工具': '🛠️ Tools',
+  '💭 思考': '💭 Thinking',
+  '📋 过程详情（工具 {tools} · 思考 {notes}）': '📋 Process details (tools {tools} · thinking {notes})',
   '已中止': 'Aborted',
   '已取消': 'Cancelled',
   '已结束': 'Ended',
@@ -375,4 +383,16 @@ export default {
   '任务失败': 'Failed',
   // feishu/bridge.mjs — step push context injection
   '📎 已注入会话上下文': '📎 Context injected',
+  // feishu/feishu-cards.mjs — question card answered state + custom entry (issue #162)
+  '✏️ 其他答案…': '✏️ Other answer…',
+  '✅ 已回答{progress}': '✅ Answered{progress}',
+  '✅ 已选择：{label}': '✅ Selected: {label}',
+  '回答已提交，对话将继续。': 'Answer submitted. The conversation will continue.',
+  // feishu/bridge.mjs — answered interaction notices + custom answer guidance (issue #162)
+  '这个问题已经回答过了。': 'This question has already been answered.',
+  '想自定义答案？直接发送文字消息即可，将作为本题答案提交。':
+    'Want a custom answer? Just send a text message and it will be submitted as your answer.',
+  // feishu/bridge.mjs — thinking status heartbeat
+  '⏳ 正在思考中…（已运行 {elapsed}）': '⏳ Thinking… (elapsed {elapsed})',
+  '⏳ 正在思考中…': '⏳ Thinking…',
 };

@@ -1,10 +1,12 @@
+import { SET_ALIAS_ENDPOINT, validAliasPayload } from '../shared/bot-alias-rpc.mjs';
+import { registerManagementRpc } from '../../../management-rpc.mjs';
 import QRCode from 'qrcode';
+import { createWeixinDiagnostics, weixinStageError } from '../../../../src/channels/weixin/connection-error.mjs';
 import { SET_CONTEXT_ENHANCEMENT_ENDPOINT, validContextEnhancementPayload } from '../shared/context-enhancement-rpc.mjs';
 import { SET_HUMANIZE_ENDPOINT, validHumanizeSectionPayload } from '../shared/humanize-bot-rpc.mjs';
 import { SET_ACCESS_POLICY_ENDPOINT, validAccessPolicyPayload } from '../shared/access-policy-rpc.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import {
-  publicWorkspaceError,
   SET_WORKSPACE_ENDPOINT,
   validWorkspacePayload,
 } from '../shared/workspace-rpc.mjs';
@@ -33,6 +35,7 @@ export const WEIXIN_ENDPOINTS = Object.freeze({
   setContextEnhancement: SET_CONTEXT_ENHANCEMENT_ENDPOINT,
   setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
+  setAlias: SET_ALIAS_ENDPOINT,
 });
 export const WEIXIN_RPC_ENDPOINTS = Object.freeze(Object.values(WEIXIN_ENDPOINTS));
 
@@ -106,6 +109,10 @@ function payloadFailure(endpoint, payload) {
     return validAccessPolicyPayload(payload)
       ? null : '请提交有效的访问设置。';
   }
+  if (endpoint === WEIXIN_ENDPOINTS.setAlias) {
+    return validAliasPayload(payload)
+      ? null : '请输入有效的别名（最多 80 个字符）。';
+  }
   return 'Unknown Weixin endpoint.';
 }
 
@@ -115,13 +122,6 @@ function badRequest(message) {
 
 function cancelled() {
   return { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } };
-}
-
-function internalFailure() {
-  return {
-    ok: false,
-    error: { code: 'weixin-operation-failed', message: '微信操作失败，请稍后重试。' },
-  };
 }
 
 async function qrDataUrl(value) {
@@ -142,7 +142,9 @@ async function withEncodedQr(value, encodeQr) {
 }
 
 async function publicStatus(status, encodeQr) {
-  const safe = structuredClone(status);
+  let safe;
+  try { safe = structuredClone(status); }
+  catch (error) { throw weixinStageError('status-read-failed', error); }
   if (safe.provisioning) safe.provisioning = await withEncodedQr(safe.provisioning, encodeQr);
   return safe;
 }
@@ -160,14 +162,17 @@ function assertController(controller) {
   }
 }
 
-export function createWeixinRpcHandler(controller, { encodeQr = qrDataUrl } = {}) {
+export function createWeixinRpcHandler(controller, { encodeQr = qrDataUrl, logger = console, diagnostics = createWeixinDiagnostics({ logger }) } = {}) {
   assertController(controller);
   const qrCache = new Map();
   const cachedEncode = (url) => {
     let encoded = qrCache.get(url);
     if (!encoded) {
       if (qrCache.size >= 16) qrCache.delete(qrCache.keys().next().value);
-      encoded = Promise.resolve().then(() => encodeQr(url));
+      encoded = Promise.resolve().then(() => encodeQr(url)).catch(error => {
+        qrCache.delete(url);
+        throw weixinStageError('qr-encode-failed', error);
+      });
       qrCache.set(url, encoded);
     }
     return encoded;
@@ -192,7 +197,7 @@ export function createWeixinRpcHandler(controller, { encodeQr = qrDataUrl } = {}
         value = await withEncodedQr(started, cachedEncode);
       } else if (endpoint === WEIXIN_ENDPOINTS.pollProvisioning) {
         const current = await controller.registrationStatus(payload.attemptId);
-        if (!current) return badRequest('The provisioning attempt no longer exists.');
+        if (!current) throw weixinStageError('provision-attempt-not-found', undefined, 'qr.poll');
         value = await withEncodedQr(current, cachedEncode);
       } else if (endpoint === WEIXIN_ENDPOINTS.submitVerification) {
         value = await withEncodedQr(
@@ -201,7 +206,7 @@ export function createWeixinRpcHandler(controller, { encodeQr = qrDataUrl } = {}
         );
       } else if (endpoint === WEIXIN_ENDPOINTS.cancelProvisioning) {
         value = await controller.cancelProvisioning(payload.attemptId);
-        if (!value) return badRequest('The provisioning attempt no longer exists.');
+        if (!value) throw weixinStageError('provision-attempt-not-found', undefined, 'qr.cancel');
       } else if (endpoint === WEIXIN_ENDPOINTS.reconnectBot) {
         const snapshot = await controller.reconnectBot(payload.botId);
         if (signal?.aborted) return cancelled();
@@ -241,6 +246,11 @@ export function createWeixinRpcHandler(controller, { encodeQr = qrDataUrl } = {}
         value = await controller.updateContextEnhancement(
           payload.botId, payload.config, (status) => publicStatus(status, cachedEncode),
         );
+      } else if (endpoint === WEIXIN_ENDPOINTS.setAlias) {
+        if (typeof controller.updateAlias !== 'function') throw new Error('Alias update is unavailable');
+        value = await controller.updateAlias(
+          payload.botId, payload.alias, (status) => publicStatus(status, cachedEncode),
+        );
       } else if (endpoint === WEIXIN_ENDPOINTS.setHumanize) {
         if (typeof controller.updateHumanize !== 'function') throw new Error('Humanization update is unavailable');
         value = await controller.updateHumanize(
@@ -262,19 +272,23 @@ export function createWeixinRpcHandler(controller, { encodeQr = qrDataUrl } = {}
       }
       return signal?.aborted ? cancelled() : { ok: true, value };
     } catch (error) {
-      const workspaceError = publicWorkspaceError(error);
-      return signal?.aborted ? cancelled() : workspaceError
-        ? { ok: false, error: workspaceError }
-        : internalFailure();
+      if (signal?.aborted) return cancelled();
+      const context = {
+        'connection.status': ['status.read', 'status-read-failed'],
+        'provision.begin': ['qr.begin', 'qr-start-failed'],
+        'provision.poll': ['qr.poll'], 'provision.verify': ['qr.verify'], 'provision.cancel': ['qr.cancel'],
+        'bot.reconnect': ['connection.start', 'connection-start-failed'],
+        'bot.delete': ['account.remove'], 'bot.workspace.set': ['workspace.write', 'workspace-save-failed'],
+      }[endpoint] ?? ['workspace.write', 'workspace-save-failed'];
+      return { ok: false, error: diagnostics.report(error, {
+        operation: endpoint, stage: context[0], code: context[1], botId: payload.botId,
+      }).publicError };
     }
   };
 }
 
 export function installWeixinRpc(ctx, controller, options, authority) {
-  if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
-    throw new TypeError('DSH Host Connection RPC is required');
-  }
-  return ctx.connection.rpc.handle(
+  return registerManagementRpc(ctx,
     WEIXIN_RPC_CHANNEL,
     createWeixinRpcHandler(controller, options),
     { authority: resolveRpcAuthority(authority) },

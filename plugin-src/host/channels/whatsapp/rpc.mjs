@@ -1,3 +1,5 @@
+import { SET_ALIAS_ENDPOINT, validAliasPayload } from '../shared/bot-alias-rpc.mjs';
+import { registerManagementRpc } from '../../../management-rpc.mjs';
 import QRCode from 'qrcode';
 
 import { publicConnectionTestResult } from '../../../../src/channels/shared/connection-test.mjs';
@@ -18,6 +20,7 @@ export const WHATSAPP_ENDPOINTS = Object.freeze({
   reconnectBot: 'bot.reconnect',
   deleteBot: 'bot.delete',
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
+  setAlias: SET_ALIAS_ENDPOINT,
   setWorkspace: SET_WORKSPACE_ENDPOINT,
   setModel: SET_MODEL_ENDPOINT,
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
@@ -61,6 +64,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === WHATSAPP_ENDPOINTS.setAccessPolicy) {
     return validAccessPolicyPayload(payload)
       ? null : '请提交有效的访问设置。';
+  }
+  if (endpoint === WHATSAPP_ENDPOINTS.setAlias) {
+    return validAliasPayload(payload)
+      ? null : '请输入有效的别名（最多 80 个字符）。';
   }
   if (endpoint === WHATSAPP_ENDPOINTS.setWorkspace) {
     return validWorkspacePayload(payload)
@@ -200,6 +207,13 @@ export function createWhatsappRpcHandler(controller, { encodeQr = qrDataUrl } = 
           await controller.updateAgentPreset(payload.botId, payload.agentPreset),
           cachedEncode,
         );
+      } else if (endpoint === WHATSAPP_ENDPOINTS.setAlias) {
+        if (typeof controller.updateAlias !== 'function') throw new Error('Alias update is unavailable');
+        value = await controller.updateAlias(
+          payload.botId,
+          payload.alias,
+          (status) => publicStatus(status, cachedEncode),
+        );
       } else if (endpoint === WHATSAPP_ENDPOINTS.setHumanize) {
         if (typeof controller.updateHumanize !== 'function') throw new Error('Humanization update is unavailable');
         value = await controller.updateHumanize(
@@ -229,10 +243,7 @@ export function createWhatsappRpcHandler(controller, { encodeQr = qrDataUrl } = 
 }
 
 export function installWhatsappRpc(ctx, controller, options, authority) {
-  if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
-    throw new TypeError('DSH Host Connection RPC is required');
-  }
-  return ctx.connection.rpc.handle(
+  return registerManagementRpc(ctx,
     WHATSAPP_RPC_CHANNEL,
     createWhatsappRpcHandler(controller, options),
     { authority: resolveRpcAuthority(authority) },

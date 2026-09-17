@@ -1,3 +1,5 @@
+import { SET_ALIAS_ENDPOINT, validAliasPayload } from '../shared/bot-alias-rpc.mjs';
+import { registerManagementRpc } from '../../../management-rpc.mjs';
 import QRCode from 'qrcode';
 import { SET_CONTEXT_ENHANCEMENT_ENDPOINT, validContextEnhancementPayload } from '../shared/context-enhancement-rpc.mjs';
 import { SET_HUMANIZE_ENDPOINT, validHumanizeSectionPayload } from '../shared/humanize-bot-rpc.mjs';
@@ -26,6 +28,7 @@ export const WECOM_ENDPOINTS = Object.freeze({
   setContextEnhancement: SET_CONTEXT_ENHANCEMENT_ENDPOINT,
   setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
+  setAlias: SET_ALIAS_ENDPOINT,
 });
 export const WECOM_RPC_ENDPOINTS = Object.freeze(Object.values(WECOM_ENDPOINTS));
 
@@ -98,6 +101,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === WECOM_ENDPOINTS.setAccessPolicy) {
     return validAccessPolicyPayload(payload)
       ? null : '请提交有效的访问设置。';
+  }
+  if (endpoint === WECOM_ENDPOINTS.setAlias) {
+    return validAliasPayload(payload)
+      ? null : '请输入有效的别名（最多 80 个字符）。';
   }
   return 'Unknown Enterprise WeChat endpoint.';
 }
@@ -206,6 +213,11 @@ export function createWecomRpcHandler(controller, { encodeQr = qrDataUrl } = {})
         value = await controller.updateContextEnhancement(
           payload.botId, payload.config, (status) => publicStatus(status, cachedEncode),
         );
+      } else if (endpoint === WECOM_ENDPOINTS.setAlias) {
+        if (typeof controller.updateAlias !== 'function') throw new Error('Alias update is unavailable');
+        value = await controller.updateAlias(
+          payload.botId, payload.alias, (status) => publicStatus(status, cachedEncode),
+        );
       } else if (endpoint === WECOM_ENDPOINTS.setHumanize) {
         if (typeof controller.updateHumanize !== 'function') throw new Error('Humanization update is unavailable');
         value = await controller.updateHumanize(
@@ -239,12 +251,14 @@ export function createWecomRpcHandler(controller, { encodeQr = qrDataUrl } = {})
 }
 
 export function installWecomRpc(ctx, controller, options, authority) {
-  if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
-    throw new TypeError('DSH Host Connection RPC is required');
-  }
-  return ctx.connection.rpc.handle(
+  return installWecomRpcHandler(ctx, createWecomRpcHandler(controller, options), authority);
+}
+
+/** Mount the existing Connection transport before the production controller is ready. */
+export function installWecomRpcHandler(ctx, handler, authority) {
+  return registerManagementRpc(ctx,
     WECOM_RPC_CHANNEL,
-    createWecomRpcHandler(controller, options),
+    handler,
     { authority: resolveRpcAuthority(authority) },
   );
 }

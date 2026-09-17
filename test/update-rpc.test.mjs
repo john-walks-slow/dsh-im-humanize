@@ -1,3 +1,4 @@
+import { managementFetch } from './fixtures/management-rpc.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createUpdateRpcHandler, installUpdateRpc } from '../plugin-src/host/update-rpc.mjs';
@@ -19,16 +20,16 @@ test('update RPC rejects arbitrary commands, paths, profiles, sources and invali
   assert.deepEqual(calls, []);
 });
 
-test('update RPC keeps local authority even when other management uses trusted-host', () => {
+test('update RPC keeps local authority even when other management uses trusted-host', async () => {
   const calls = [];
   const service = { close: async () => {} };
   const ctx = {
-    connection: { rpc: { handle: (...args) => calls.push(args) } },
+    connection: { fetch: managementFetch((...args) => calls.push(args)) },
     effect: () => {},
   };
   installUpdateRpc(ctx, { service, runtime: {} });
   assert.equal(calls[0][0], '/dsh-im');
-  assert.deepEqual(calls[0][2], { authority: 'loopback' });
+  await assert.rejects(calls[0][1]('update.status', {}, undefined, { host: 'trusted.example' }), /HTTP 403/);
 });
 
 test('update RPC returns only safe codes for unanticipated runtime errors', async () => {
@@ -53,14 +54,16 @@ test('aborting a submitted browser request does not cancel the Host installation
 
 test('Host update initialization failure leaves all channel activations available', async () => {
   const calls = [];
-  const channels = ['Feishu', 'Weixin', 'Dingtalk', 'Wecom', 'Qq', 'Slack', 'Telegram', 'Discord', 'Whatsapp', 'Office'];
+  const channels = ['Feishu', 'Weixin', 'Dingtalk', 'Wecom', 'WecomApp', 'Qq', 'Slack', 'Telegram', 'Discord', 'Whatsapp', 'IMessage', 'Office'];
   const internals = Object.fromEntries(channels.map((channel) => [`apply${channel}`, async () => calls.push(channel)]));
   internals.installUpdateRpc = () => { throw new Error('updater unavailable'); };
   internals.installDeliveryRpc = () => {};
   internals.installInboundTtlRpc = () => {};
+  internals.installHostLanguage = () => undefined;
+  internals.installHostLanguageRpc = () => {};
   const errors = [];
   await createImHostPlugin(internals).apply({
-    connection: { rpc: {} }, logger: { error: (...args) => errors.push(args) },
+    connection: { fetch: {} }, logger: { error: (...args) => errors.push(args) },
   });
   assert.deepEqual(calls, channels);
   assert.equal(errors.length, 1);

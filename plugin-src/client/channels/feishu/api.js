@@ -1,3 +1,4 @@
+import { normalizeBotAlias } from '../../../../src/channels/shared/bot-alias.mjs';
 /**
  * Browser-safe contract for the Feishu Host plugin.
  *
@@ -12,6 +13,7 @@ import { normalizeLastMessageError } from "../../last-message-error.js";
 import { normalizeAccessPolicy } from "../../../../src/channels/shared/access-policy.mjs";
 import { normalizeContextEnhancementConfig } from "../../../../src/channels/shared/context-enhancement.mjs";
 import { normalizeHumanizeOverride, SET_HUMANIZE_ENDPOINT } from "../../../../src/channels/shared/humanize-override.mjs";
+import { normalizeFeishuStepPushMode } from "../../../../src/channels/feishu/step-push-mode.mjs";
 
 export const FEISHU_RPC_CHANNEL = "/feishu";
 
@@ -32,9 +34,11 @@ export const FEISHU_ENDPOINTS = Object.freeze({
   setContextEnhancement: "bot.context-enhancement.set",
   setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: "bot.access-policy.set",
+  setAlias: 'bot.alias.set',
   setGroupResponseMode: "bot.group-response-mode.set",
   setGroupTopicReply: "bot.group-topic-reply.set",
   setStepPush: "bot.step-push.set",
+  setStepPushMode: "bot.step-push-mode.set",
   // Kept for rolling upgrades. The multi-bot UI never calls these endpoints.
   testConnection: "connection.test",
   disconnect: "connection.disconnect",
@@ -157,6 +161,7 @@ export function normalizeProvisioning(value, now = Date.now()) {
 function normalizeBot(value) {
   const source = isRecord(value) ? value : {};
   return {
+    ...normalizeBotAlias(source),
     name: optionalString(source.name) ?? "飞书机器人",
     avatarUrl: optionalString(source.avatarUrl),
     appIdMasked: optionalString(source.appIdMasked),
@@ -224,6 +229,7 @@ export function normalizeBotConnection(value, fallbackBotId) {
     groupResponseMode: normalizeGroupResponseMode(value.groupResponseMode),
     groupTopicReply: value.groupTopicReply === true,
     stepPush: value.stepPush === true,
+    stepPushMode: normalizeFeishuStepPushMode(value.stepPushMode),
     groupMessagePermissionGranted: value.groupMessagePermissionGranted === true,
     bot: normalizeBot(value.bot),
     health: normalizeHealth(value.health, connected),

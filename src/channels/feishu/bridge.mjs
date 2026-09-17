@@ -28,6 +28,9 @@ import {
   validHarnessQuestion,
 } from '../shared/harness-question.mjs';
 import { HarnessApprovalQueue } from '../shared/harness-approval.mjs';
+import { AssistantTextAccumulator, textFromHarnessContent } from '../shared/harness-client.mjs';
+import { registerSessionSyncMirror } from '../shared/session-sync-registry.mjs';
+import { extractCompletedTurnAnswer } from '../shared/deferred-delivery.mjs';
 import {
   BatchInputManager,
   batchInputBusyMessage,
@@ -63,7 +66,11 @@ import {
 } from '../shared/send-delay.mjs';
 import { resolveHumanizeSettings } from '../shared/humanize-resolver.mjs';
 import { createDeferredDeliveryCoordinator, deferredOutcomeText } from '../shared/deferred-delivery-coordinator.mjs';
-import { captureContextEnhancement, enhanceContextContent } from '../shared/context-enhancement.mjs';
+import {
+  captureContextEnhancement,
+  captureContextEnhancementSource,
+  enhanceContextContent,
+} from '../shared/context-enhancement.mjs';
 import { deliverOutboundArtifacts } from '../shared/semantic/artifact-delivery.mjs';
 import {
   createDeliveryReceipt,
@@ -100,12 +107,16 @@ import {
   menuHelpText,
   modelCard,
   presetCard,
+  answeredQuestionCard,
   questionCard,
   sessionListCard,
+  splitStepStreamCardBlocks,
   statusCard,
+  stepStreamCard,
   steerCard,
   watchListCard,
   workspaceListCard,
+  stepStatusText,
 } from './feishu-cards.mjs';
 import { t } from '../shared/i18n.mjs';
 import { MAX_WATCHES_PER_KEY } from './state-store.mjs';
@@ -113,6 +124,10 @@ import {
   FEISHU_GROUP_RESPONSE_MODES,
   normalizeFeishuGroupResponseMode,
 } from './group-response-mode.mjs';
+import {
+  FEISHU_STEP_PUSH_MODES,
+  normalizeFeishuStepPushMode,
+} from './step-push-mode.mjs';
 
 // Lazily evaluated: t() must run after setImHostLanguage, not at import time.
 const INTERACTION_RESOLVED_TEXT = () => t('这个问题已在其他客户端处理，无需再次回答。');
@@ -179,9 +194,31 @@ const STEP_PUSH_MAX_MESSAGES_PER_TURN = 200;
 const STEP_PUSH_SUMMARY_MAX_CHARS = 120;
 const STEP_PUSH_ARGUMENTS_MAX_CHARS = 400;
 const STEP_PUSH_ERROR_MAX_CHARS = 200;
+/** Silence threshold before the thinking status heartbeat appears. */
+const STEP_PUSH_HEARTBEAT_AFTER_MS = 20_000;
+/** The thinking heartbeat refreshes its elapsed time at this cadence. */
+const STEP_PUSH_HEARTBEAT_REFRESH_MS = 30_000;
+/** One turn never refreshes the thinking heartbeat more than this. */
+const STEP_PUSH_HEARTBEAT_MAX_UPDATES = 30;
+/** One pending heartbeat id is retried at most this many times across
+ *  recall boundaries before it is abandoned (with a warning). */
+const STEP_PUSH_HEARTBEAT_RECALL_ATTEMPTS = 3;
 /** One post message carries at most this many UTF-8 bytes after its rich-text
  *  content has been JSON encoded (Feishu caps rich-text requests at 30KB). */
 const STEP_PUSH_POST_CHUNK_MAX_BYTES = 24_000;
+/** Streaming-card mode coalesces card renders behind one PATCH per interval —
+ *  patching the same message is far more rate sensitive than posting. */
+const STEP_STREAM_PATCH_MIN_INTERVAL_MS = 1_000;
+/** Confirm missed boundaries from history; elapsed time is never completion. */
+const MIRROR_CHECK_MS = 30_000;
+/** One answer chunk inside the streaming card: small enough that the block
+ *  splitter can always distribute blocks across sealed/live cards. */
+const STEP_STREAM_ANSWER_CHUNK_MAX_BYTES = 18_000;
+/** Panels (tool summary / thinking) shed their oldest lines past this budget
+ *  so a single panel can never outgrow the card on its own. */
+const STEP_STREAM_PANEL_MAX_BYTES = 12_000;
+/** One thinking note is excerpted to this many characters inside its panel. */
+const STEP_STREAM_NOTE_MAX_CHARS = 500;
 
 /** Split one markdown answer into post-sized chunks at paragraph bounds,
  *  budgeted by the encoded rich-text content rather than the source string.
@@ -542,6 +579,9 @@ export class FeishuHarnessBridge {
   #pendingInteractions = new Map();
   #interactionKeys = new Map();
   #resolvedQuestionReplies = new Map();
+  // issue #162：已提交答案的 interactionId → 过期时间（TTL-only，惰性清理，
+  // 与 #resolvedQuestionReplies 同风格）。陈旧点击据此给出「已回答」提示。
+  #answeredInteractionIds = new Map();
   // Keep the accepted configuration through the existing queue/reply lifecycle.
   #acceptedMessageIds = new Map();
   #interactionTasks = new Set();
@@ -580,8 +620,14 @@ export class FeishuHarnessBridge {
   #groupTopicReply = false;
   /** When true, streaming turns push tool calls and interim notes as discrete messages. */
   #stepPush = false;
+  /** Step push presentation: 'post' (discrete messages) or 'streaming_card'. */
+  #stepPushMode = FEISHU_STEP_PUSH_MODES.POST;
   /** Per-conversation step push state: key → { lastSentAt, count, breakerLogged }. */
   #stepPushSendState = new Map();
+  /** Live streaming step cards: key → per-turn card state (streaming_card mode). */
+  #stepCards = new Map();
+  /** In-flight turn stop markers: key → { requested } for 已停止 sealing. */
+  #stepStopFlags = new Map();
   /** Injectable clock for step push throttling (tests pass a fake one). */
   #stepPushClock;
   /** Group chats this bot has seen; only these may use topic replies. */
@@ -610,6 +656,14 @@ export class FeishuHarnessBridge {
   #observedCompletionEvents = new Map();
   /** Earliest completion that still needs delivery for each watch. */
   #failedWatchSeqs = new Map();
+  /** Host resolver: sessionId -> synced DM targets [{ openId, botId }]. */
+  #sessionSyncTargetsFor = null;
+  /** Per-turn mirrors and recent delivery receipts, scoped to this bot. */
+  #sessionSyncTurns = new Map();
+  #sessionSyncCurrentTurns = new Map();
+  #sessionSyncIdleTimers = new Map();
+  /** Conversation keys with an IM ask in flight (set BEFORE the turn starts). */
+  #imTurnKeys = new Set();
   #cardDataTimeoutMs;
   /** When true, approval/question interactions render as Feishu cards (buttons). */
   #interactionCards = true;
@@ -646,6 +700,7 @@ export class FeishuHarnessBridge {
     messageBreak = false,
     onNewMessage = 'interrupt',
     humanize = null,
+    stepPushMode = FEISHU_STEP_PUSH_MODES.POST,
     stepPushClock = null,
     repair,
     repairPollIntervalMs = REPAIR_POLL_INTERVAL_MS,
@@ -653,6 +708,7 @@ export class FeishuHarnessBridge {
     cardDataTimeoutMs = CARD_DATA_TIMEOUT_MS,
     replyTimeoutMs = 600_000,
     interactionCards = true,
+    sessionSyncTargetsFor = null,
     logger = console,
     signal,
   }) {
@@ -694,6 +750,7 @@ export class FeishuHarnessBridge {
     this.#groupResponseMode = normalizeFeishuGroupResponseMode(groupResponseMode);
     this.#groupTopicReply = groupTopicReply === true;
     this.#stepPush = stepPush === true;
+    this.#stepPushMode = normalizeFeishuStepPushMode(stepPushMode);
     this.#stepPushClock = stepPushClock ?? DEFAULT_STEP_PUSH_CLOCK;
     this.#repair = repair ?? null;
     this.#repairPollIntervalMs = repairPollIntervalMs;
@@ -705,6 +762,9 @@ export class FeishuHarnessBridge {
     this.#streaming = streaming !== false;
     this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#humanize = humanize ?? null;
+    this.#sessionSyncTargetsFor = typeof sessionSyncTargetsFor === 'function'
+      ? sessionSyncTargetsFor
+      : null;
     this.#logger = logger;
     this.#approvals = new HarnessApprovalQueue({ label: 'Feishu', logger });
     this.#signal = signal;
@@ -713,11 +773,62 @@ export class FeishuHarnessBridge {
       harness, state, signal, logger, watch: false,
       deliver: (entry, outcome) => this.#deliverDeferredOutcome(entry, outcome),
     });
-    // Persisted watches must resume at runtime start, not on the first
-    // message. Older hosts without the mux watcher simply skip this.
+    if (this.#sessionSyncTargetsFor && this.#botId && !this.#signal?.aborted) {
+      const unregister = registerSessionSyncMirror({ channel: 'feishu', botId: this.#botId },
+        (request) => this.#deliverSessionSyncMirror(request));
+      this.#signal?.addEventListener('abort', () => {
+        unregister();
+        for (const timer of this.#sessionSyncIdleTimers.values()) clearTimeout(timer);
+        this.#sessionSyncIdleTimers.clear();
+      }, { once: true });
+    }
+    // Persisted watches and mirrors resume without waiting for an IM message.
     if (typeof this.#harness?.watchHarnessEvents === 'function') {
       queueMicrotask(() => {
         this.#ensureEventWatcher();
+        void this.#sealOrphanMirrors();
+      });
+    }
+  }
+
+  /** Recover only a known finished turn, using its last successful card JSON. */
+  async #sealOrphanMirrors() {
+    for (const [key, entry] of this.#state.mirrorEntries?.() ?? []) {
+      if (!entry?.chatId || !entry.sessionId || !Number.isSafeInteger(entry.turn)
+        || !Array.isArray(entry.cardIds) || !entry.cardIds.length) continue;
+      await this.#queueEventTask(entry.sessionId, async () => {
+        if (this.#signal?.aborted) return;
+        // An adopted turn now owns this record and will finish through its queue.
+        if (this.#sessionSyncTurns.has(key)) return;
+        try {
+          const events = await this.#mirrorHistory(entry.sessionId, entry.turn);
+          const outcome = extractCompletedTurnAnswer(events, { turn: entry.turn });
+          if (outcome.endSeq < 0) {
+            this.#scheduleMirrorCheck(`recovery\0${key}`, () => this.#sealOrphanMirrors());
+            return;
+          }
+          if (this.#restoreMirrorCard(key, entry)) {
+            const result = await this.#finishStepCard(key, {
+              answerText: outcome.text, stopped: outcome.reason !== 'completed',
+            });
+            if (!result?.ok) throw new Error('Recovered mirror could not deliver its final answer');
+            await this.#state.clearMirror?.(key);
+            return;
+          }
+          const content = JSON.parse(entry.lastContent);
+          const elements = content?.body?.elements;
+          if (!Array.isArray(elements)) return;
+          const last = elements.at(-1);
+          const status = `_${stepStatusText(outcome.reason === 'completed' ? 'completed' : 'stopped')}_`;
+          if (last?.tag === 'markdown' && /^_.*_$/s.test(last.content ?? '')) last.content = status;
+          else elements.push({ tag: 'markdown', content: status });
+          // Earlier chunks are sealed history; update only the live card.
+          await this.#patchStepCard(entry.cardIds.at(-1), JSON.stringify(content));
+          await this.#state.clearMirror?.(key);
+        } catch (error) {
+          this.#logger.warn?.('[dsh-feishu] mirror recovery failed:', error?.message ?? error);
+          this.#scheduleMirrorCheck(`recovery\0${key}`, () => this.#sealOrphanMirrors());
+        }
       });
     }
   }
@@ -732,6 +843,14 @@ export class FeishuHarnessBridge {
 
   setStepPush(value) {
     this.#stepPush = value === true;
+  }
+
+  setStepPushMode(value) {
+    this.#stepPushMode = normalizeFeishuStepPushMode(value);
+  }
+
+  get stepPushMode() {
+    return this.#stepPushMode;
   }
 
   #isAddressed(event) {
@@ -769,10 +888,13 @@ export class FeishuHarnessBridge {
   /**
    * Record whether replies anchored on `messageId` should stay in a topic.
    * `asRoot` marks a main-feed question this bot will auto-open as a topic.
+   * The flag is keyed on the conversation shape alone: once a conversation is
+   * happening inside a topic, its replies belong to that topic whether the
+   * bot auto-opens topics (群话题回复) or the user maintains them manually.
    */
   #rememberTopicReply(messageId, key) {
     if (!nonEmptyString(messageId)) return;
-    this.#anchorTopicReply.set(messageId, this.#groupTopicReply && isTopicGroupKey(key));
+    this.#anchorTopicReply.set(messageId, isTopicGroupKey(key));
     if (this.#anchorTopicReply.size > 2048) {
       const oldest = this.#anchorTopicReply.keys().next().value;
       if (oldest !== undefined) this.#anchorTopicReply.delete(oldest);
@@ -785,8 +907,10 @@ export class FeishuHarnessBridge {
 
   /** Whether a reply anchored on `replyTo` must ask Feishu to keep it in a topic. */
   #replyInThreadFor(replyTo) {
-    return this.#groupTopicReply
-      && nonEmptyString(replyTo)
+    // Topic membership is decided by the conversation shape alone (see
+    // #rememberTopicReply): a manual-topic chat threads its replies even
+    // when the 群话题回复 switch is off.
+    return nonEmptyString(replyTo)
       && this.#anchorTopicReply.get(replyTo) === true;
   }
 
@@ -845,14 +969,21 @@ export class FeishuHarnessBridge {
   async accept(event) {
     if (this.#signal?.aborted) return Promise.resolve();
     const messageId = nonEmptyString(event?.message?.message_id);
-    if (!messageId || isBotSender(event)) return Promise.resolve();
+    if (!messageId) return Promise.resolve();
+    const addressed = this.#isAddressed(event);
+    // Bot messages require a known, explicit group mention even in all-message mode.
+    if (isBotSender(event) && (
+      event?.message?.chat_type !== 'group'
+      || !this.#botOpenId
+      || !addressed
+      || senderOpenId(event) === this.#botOpenId
+    )) return Promise.resolve();
     if (!this.#accessPolicy && !isAllowedSender(event, this.#allowedSenderOpenIds)) {
       this.#status.messagesRejected += 1;
       this.#status.lastRejectedAt = new Date().toISOString();
       this.#logger.warn?.('[dsh-feishu] ignored a message from a sender outside the legacy allowlist');
       return Promise.resolve();
     }
-    const addressed = this.#isAddressed(event);
     if (event?.message?.chat_type !== 'p2p'
       && this.#groupResponseMode === FEISHU_GROUP_RESPONSE_MODES.MENTION
       && !addressed) {
@@ -944,12 +1075,16 @@ export class FeishuHarnessBridge {
         if (result.kind === 'submit') {
           const submissionEvent = {
             ...event,
-            batchSubmission: { token: result.token },
+            batchSubmission: { token: result.token, title: result.title },
             message: {
               ...event.message,
               message_type: 'text',
               content: JSON.stringify({ text: result.prompt }),
               mentions: [],
+              // The submission is exactly the collected text, so quoting the
+              // message that carried /send must not attach it to the batch.
+              parent_id: undefined,
+              root_id: undefined,
             },
           };
           return this.#enqueueMessage(
@@ -1377,6 +1512,16 @@ export class FeishuHarnessBridge {
         pendingInteraction: this.#hasPendingInteraction(key),
         control: { owner: this, key },
         abortPreAsk: () => this.#abortPreAskPhase(key),
+        enhancement: captureContextEnhancementSource(
+          this.#contextEnhancement,
+          event.message.chat_type === 'p2p' ? 'direct' : 'group',
+          () => ({
+            channel: 'feishu',
+            senderId: senderOpenId(event),
+            chatId: event.message.chat_id,
+            threadId: event.message.thread_id,
+          }),
+        ),
       },
     );
     if (result?.stopped) {
@@ -1858,7 +2003,7 @@ export class FeishuHarnessBridge {
       : t('链接约 {minutes} 分钟后过期', { minutes: Math.max(1, Math.ceil(remaining / 60)) });
     await this.#send(chatId, [
       restarted ? t('旧授权链接已作废，已生成新的修复链接。') : t('🔧 准备补全权限与回调。'),
-      t('本次会增量添加当前缺少项：卡片回调 card.action.trigger；飞书显示为“获取单聊、群组消息”的租户权限 im:message:readonly（用于读取用户消息中的图片或文件）；im:resource（用于上传机器人发送的图片或文件）；以及原生命令面板所需的 application:app_slash_command:read / write。确认页只会显示当前缺少的项；若出现上述范围之外的配置，请取消。'),
+      t('本次会增量添加当前缺少项：卡片回调 card.action.trigger；飞书显示为“获取单聊、群组消息”的租户权限 im:message:readonly（用于读取用户消息中的图片或文件）；im:resource（用于上传机器人发送的图片或文件）；im:message.group_at_msg.include_bot:readonly（用于接收群内其他机器人 @ 当前机器人的消息）；以及原生命令面板所需的 application:app_slash_command:read / write。确认页只会显示当前缺少的项；若出现上述范围之外的配置，请取消。'),
       '',
       t('当前设备直接打开：'),
       url,
@@ -2231,6 +2376,7 @@ export class FeishuHarnessBridge {
     chatId,
     key,
     messageId = null,
+    conversationWorkspace,
     sessionWorkspace = null,
     sessionPage = 0,
     sessionLimit = null,
@@ -2272,7 +2418,35 @@ export class FeishuHarnessBridge {
         if (pending && pending.kind === 'question' && !pending.submitting
           && pending.actor === actor
           && Number(indexText) === pending.index) {
-          await this.#submitQuestionAnswer(pending, optionLabel, { chatId });
+          await this.#submitQuestionAnswer(pending, optionLabel, { chatId, questionMessageId: messageId });
+        } else {
+          // issue #162：pending 已清除时区分「已答过」与「其他客户端处理」，
+          // 避免对同一张提问卡的重复点击弹出误导提示。
+          const staleNotice = pending
+            ? INTERACTION_RESOLVED_TEXT()
+            : this.#isAnsweredInteraction(interactionId)
+              ? t('这个问题已经回答过了。')
+              : INTERACTION_RESOLVED_TEXT();
+          await reply(staleNotice).catch(() => undefined);
+        }
+      }
+      return;
+    }
+    // issue #162：自定义答案入口——与 answer: 同构校验；通过后引导用户直接
+    // 发送文字消息（canClaimInteractionReply 语义：同 actor 的文本即答案）。
+    if (action.startsWith('answerCustom:')) {
+      const rest = action.slice('answerCustom:'.length);
+      const sep = rest.indexOf(':');
+      if (sep !== -1) {
+        const interactionId = rest.slice(0, sep);
+        const indexText = rest.slice(sep + 1);
+        const qKey = this.#interactionKeys.get(interactionId);
+        const pending = qKey ? this.#pendingInteractions.get(qKey) : null;
+        if (pending && pending.kind === 'question' && !pending.submitting
+          && pending.actor === actor && Number(indexText) === pending.index) {
+          await reply(t('想自定义答案？直接发送文字消息即可，将作为本题答案提交。')).catch(() => undefined);
+        } else if (!pending && this.#isAnsweredInteraction(interactionId)) {
+          await reply(t('这个问题已经回答过了。')).catch(() => undefined);
         } else {
           await reply(INTERACTION_RESOLVED_TEXT()).catch(() => undefined);
         }
@@ -2407,7 +2581,7 @@ export class FeishuHarnessBridge {
         await this.#sendCard(chatId, customSteerCard(), { key, updateMessageId: messageId, replyTo: messageId });
         return;
       }
-      await this.#sendSteer({ key, chatId, messageId }, raw);
+      await this.#sendSteer({ key, chatId, messageId, actor }, raw);
       return;
     }
     if (action === 'presets') {
@@ -2450,6 +2624,10 @@ export class FeishuHarnessBridge {
       return;
     }
     if (action.startsWith('use:')) {
+      if (conversationWorkspace !== undefined && conversationWorkspace !== this.#conversationWorkspace(key)) {
+        await reply(t('这个菜单已过期，请回复 /m 重新打开。'));
+        return;
+      }
       await this.#bindSession(key, chatId, action.slice('use:'.length), { updateMessageId: messageId, replyTo: messageId });
       return;
     }
@@ -2531,7 +2709,9 @@ export class FeishuHarnessBridge {
         return;
       }
       // The number label sits on the session (bind) button of the row.
-      await this.#handleCardAction(`use:${session.sessionId}`, { chatId, key, messageId: replyTo });
+      await this.#handleCardAction(`use:${session.sessionId}`, {
+        chatId, key, messageId: replyTo, conversationWorkspace: menu.conversationWorkspace,
+      });
       return;
     }
     if (menu.kind === 'workspaces') {
@@ -2561,6 +2741,12 @@ export class FeishuHarnessBridge {
     return sessions;
   }
 
+  #conversationWorkspace(key) {
+    return typeof this.#harness.currentConversationWorkspace === 'function'
+      ? this.#harness.currentConversationWorkspace(key)
+      : this.#harness.currentWorkspace?.();
+  }
+
   async #showSessions(
     { chatId, key, replyTo = null },
     selector,
@@ -2568,13 +2754,20 @@ export class FeishuHarnessBridge {
     { updateMessageId = null, limit = null } = {},
   ) {
     try {
+      const conversationWorkspace = this.#conversationWorkspace(key);
       const signal = this.#cardDataSignal();
-      const resolved = await resolveSessionListWorkspace(selector ?? '', this.#harness, { signal });
+      const resolved = await resolveSessionListWorkspace(selector ?? '', this.#harness, {
+        signal, conversationKey: key,
+      });
       if (resolved.error) {
         await this.#send(chatId, resolved.error, { replyTo });
         return;
       }
       const listed = await this.#harness.listWorkspaceSessions(resolved.workspace, { signal });
+      if (conversationWorkspace !== undefined && conversationWorkspace !== this.#conversationWorkspace(key)) {
+        await this.#send(chatId, t('这个菜单已过期，请回复 /m 重新打开。'), { replyTo });
+        return;
+      }
       const visibleSessions = this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : []);
       const sessionLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : null;
       const sessions = sessionLimit === null
@@ -2593,6 +2786,7 @@ export class FeishuHarnessBridge {
       const pageSlice = sessions.slice(safePage * MENU_PAGE_SIZE, (safePage + 1) * MENU_PAGE_SIZE);
       this.#rememberMenu(key, {
         kind: 'sessions',
+        conversationWorkspace,
         sessions: pageSlice.map((session) => ({ ...session, watched: watchedSet.has(session.sessionId) })),
       });
       await this.#sendCard(
@@ -2602,6 +2796,9 @@ export class FeishuHarnessBridge {
           key,
           updateMessageId,
           replyTo,
+          // The effective conversation workspace is separate from an explicit
+          // list selector, which may intentionally point at another workspace.
+          conversationWorkspace,
           // Keep the canonical selector result for later page callbacks. The
           // list response's workspace is display data and is not authoritative.
           sessionWorkspace: resolved.workspace,
@@ -2669,6 +2866,7 @@ export class FeishuHarnessBridge {
     this.#cardKeys.set(messageId, {
       key: options.key,
       chatId,
+      conversationWorkspace: options.conversationWorkspace,
       sessionWorkspace: typeof options.sessionWorkspace === 'string' && options.sessionWorkspace
         ? options.sessionWorkspace
         : null,
@@ -2685,9 +2883,49 @@ export class FeishuHarnessBridge {
     }
   }
 
+  /**
+   * issue #162：已答状态卡的原地替换。patch 失败仅记录警告并明确降级——
+   * 回执缺失不应影响答案提交，也不得像 #sendCard 那样回退成发送新卡。
+   */
+  async #patchCardMessage(chatId, messageId, cardJson) {
+    if (!messageId) return null;
+    try {
+      const response = await this.#client.im.v1.message.patch({
+        path: { message_id: messageId },
+        data: { content: cardJson },
+      });
+      if (response?.code && response.code !== 0) {
+        throw new Error(`Feishu card update failed: ${response.msg || response.code}`);
+      }
+      return messageId;
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] answered-state card patch failed:', error?.message ?? error);
+      return null;
+    }
+  }
+
   async #sendCard(chatId, cardJson, options = {}) {
     const updateMessageId = nonEmptyString(options.updateMessageId);
     const replyTo = nonEmptyString(options.replyTo);
+
+    // Session-sync cards target the user's openId (the synced DM is a user,
+    // not a chat), delivered fresh without topic/thread handling.
+    if (options.receiveIdType === 'open_id') {
+      const response = await this.#client.im.v1.message.create({
+        params: { receive_id_type: 'open_id' },
+        data: {
+          receive_id: chatId,
+          msg_type: 'interactive',
+          content: cardJson,
+        },
+      });
+      if (response?.code && response.code !== 0) {
+        throw new Error(`Feishu card send failed: ${response.msg || response.code}`);
+      }
+      const sentId = nonEmptyString(response?.data?.message_id);
+      if (!sentId) throw new Error('Feishu card send returned no message_id');
+      return sentId;
+    }
 
     if (updateMessageId) {
       try {
@@ -2747,13 +2985,14 @@ export class FeishuHarnessBridge {
   }
 
   async #sendMenuCard(key, chatId, { updateMessageId = null, replyTo = null } = {}) {
+    const conversationWorkspace = this.#conversationWorkspace(key);
     let currentSessionId = null;
     let directSessionTitle = null;
     try {
       const sessionId = this.#state.sessionFor(key);
       if (typeof sessionId === 'string' && sessionId) {
         currentSessionId = sessionId;
-        const session = this.#harness.workspaceSession?.(sessionId);
+        const session = this.#harness.workspaceSession?.(sessionId, key);
         directSessionTitle = nonEmptyString(session?.title)
           ?? nonEmptyString(session?.name)
           ?? nonEmptyString(session?.displayName);
@@ -2771,12 +3010,13 @@ export class FeishuHarnessBridge {
         return { current, paths: current ? [current] : [] };
       });
     const sessionTask = (async () => {
-      const current = typeof this.#harness.currentWorkspace === 'function'
-        ? this.#harness.currentWorkspace()
-        : null;
-      if (!current || typeof this.#harness.listWorkspaceSessions !== 'function') return [];
+      if (typeof this.#harness.listWorkspaceSessions !== 'function') return [];
       try {
-        const listed = await this.#harness.listWorkspaceSessions(current, { signal: dataSignal });
+        const resolved = await resolveSessionListWorkspace('', this.#harness, {
+          signal: dataSignal, conversationKey: key,
+        });
+        if (resolved.error) return [];
+        const listed = await this.#harness.listWorkspaceSessions(resolved.workspace, { signal: dataSignal });
         return this.#visibleSessions(Array.isArray(listed?.sessions) ? listed.sessions : []);
       } catch {
         return [];
@@ -2793,7 +3033,7 @@ export class FeishuHarnessBridge {
     const modelTask = (async () => {
       try {
         if (currentSessionId) {
-          const session = this.#harness.workspaceSession?.(currentSessionId);
+          const session = this.#harness.workspaceSession?.(currentSessionId, key);
           if (typeof session?.models === 'function') {
             return await session.models({ signal: dataSignal });
           }
@@ -2810,6 +3050,10 @@ export class FeishuHarnessBridge {
       presetTask,
       modelTask,
     ]);
+    if (conversationWorkspace !== undefined && conversationWorkspace !== this.#conversationWorkspace(key)) {
+      await this.#send(chatId, t('这个菜单已过期，请回复 /m 重新打开。'), { replyTo });
+      return;
+    }
     const workspaces = Array.isArray(snapshot.paths) ? snapshot.paths : [];
     const currentWorkspace = snapshot.current ?? null;
     const currentMatch = listedSessions.find((session) => session.sessionId === currentSessionId);
@@ -2841,7 +3085,7 @@ export class FeishuHarnessBridge {
         currentSession: currentSessionId ? { id: currentSessionId, title: currentSessionTitle } : null,
         sessions, archiveVisible, presetCatalog, modelCatalog,
       }),
-      { key, updateMessageId, replyTo },
+      { key, updateMessageId, replyTo, conversationWorkspace },
     );
   }
 
@@ -2853,7 +3097,7 @@ export class FeishuHarnessBridge {
   async #resolveSessionTitle(key, sessionId) {
     try {
       if (typeof this.#harness.workspaceSession === 'function') {
-        const session = this.#harness.workspaceSession(sessionId);
+        const session = this.#harness.workspaceSession(sessionId, key);
         if (session && typeof session === 'object') {
           const direct = nonEmptyString(session.title)
             ?? nonEmptyString(session.name)
@@ -2906,7 +3150,7 @@ export class FeishuHarnessBridge {
       const sessionId = this.#state?.sessionFor?.(key);
       let catalog;
       if (typeof sessionId === 'string' && sessionId) {
-        const session = this.#harness.workspaceSession(sessionId);
+        const session = this.#harness.workspaceSession(sessionId, key);
         if (session?.models) {
           catalog = await session.models({ signal });
         }
@@ -2975,7 +3219,7 @@ export class FeishuHarnessBridge {
       try {
         const sessionId = this.#state?.sessionFor?.(key);
         if (typeof sessionId === 'string' && sessionId) {
-          const session = this.#harness.workspaceSession(sessionId);
+          const session = this.#harness.workspaceSession(sessionId, key);
           if (session?.models) {
             const cat = await session.models({ signal });
             if (cat.current) info.model = `${cat.current.provider}/${cat.current.model}`;
@@ -3037,6 +3281,7 @@ export class FeishuHarnessBridge {
         },
       );
       if (result?.stopped) {
+        this.#markStepStopRequested(key);
         await Promise.allSettled([
           this.#cancelPendingInteraction(key),
           this.#approvals.closeRoute(key),
@@ -3062,11 +3307,26 @@ export class FeishuHarnessBridge {
    */
   async #sendSteer(entry, text) {
     const { key, chatId } = entry;
+    // Card routes carry the conversation key, not the raw event, so the topic
+    // id is recovered from the key the channel itself minted.
+    const threadId = typeof key === 'string'
+      ? /(?:^|:)thread:(.+)$/u.exec(key)?.[1]
+      : undefined;
     const result = await runControlCommand(
       `/steer ${text}`, this.#harness, this.#state, key, {
         signal: this.#signal,
         pendingInteraction: this.#hasPendingInteraction(key),
         control: { owner: this, key },
+        enhancement: captureContextEnhancementSource(
+          this.#contextEnhancement,
+          typeof key === 'string' && key.startsWith('p2p:') ? 'direct' : 'group',
+          () => ({
+            channel: 'feishu',
+            senderId: entry.actor ?? entry.operatorOpenId,
+            chatId,
+            threadId,
+          }),
+        ),
       },
     );
     await this.#send(chatId, result?.message || t('已提交补充指令。'), { replyTo: entry.messageId ?? null });
@@ -3208,16 +3468,24 @@ export class FeishuHarnessBridge {
 
   #ensureEventWatcher() {
     if (this.#eventWatcher) return;
-    if (typeof this.#harness?.watchHarnessEvents !== 'function') return;
+    if (typeof this.#harness?.watchHarnessEvents !== 'function') {
+      this.#logger.warn?.('[dsh-feishu] harness lacks watchHarnessEvents; session-sync mirror disabled');
+      return;
+    }
     if (this.#signal?.aborted) return;
     const signal = this.#signal ?? new AbortController().signal;
     try {
       this.#eventWatcher = this.#harness.watchHarnessEvents({
         signal,
-        onSessionEvent: (payload) => this.#onHarnessEvent(payload),
+        onSessionEvent: (payload) => {
+          this.#onHarnessEvent(payload);
+        },
         onReconnect: () => {
           void this.#compensateMissedEvents();
           void this.#deferred.resume();
+          for (const mirror of this.#sessionSyncTurns.values()) {
+            if (!mirror.finishedAt) void this.#checkMirror(mirror);
+          }
         },
       });
       Promise.resolve(this.#eventWatcher).catch((error) => {
@@ -3556,14 +3824,199 @@ export class FeishuHarnessBridge {
     );
   }
 
-  /** Queue live turn completions behind any reconnect compensation. */
+  /** True while this bridge owns the IM ask; capture before queuing events. */
+  #isImTurn(sessionId) {
+    for (const key of this.#imTurnKeys) {
+      if (this.#state.sessionFor?.(key) === sessionId) return true;
+    }
+    return false;
+  }
+
+  #beginImTurn(key) { this.#imTurnKeys.add(key); }
+  #endImTurn(key) { this.#imTurnKeys.delete(key); }
+
+  #mirrorKey(sessionId, turn) { return `session-sync\0${sessionId}\0${turn}`; }
+
+  #restoreMirrorCard(key, entry) {
+    if (!Array.isArray(entry?.blocks) || !entry.cardIds?.length) return false;
+    const card = this.#ensureStepCard(key, entry.chatId, null);
+    Object.assign(card, {
+      blocks: structuredClone(entry.blocks), cardIds: [...entry.cardIds],
+      messageId: entry.cardIds.at(-1), chunkCount: entry.cardIds.length,
+      answerStart: entry.answerStart ?? null, answerEnd: entry.answerEnd ?? null,
+      deliveryViaOpenId: true,
+    });
+    return true;
+  }
+
+  #scheduleMirrorCheck(key, task) {
+    if (this.#signal?.aborted || this.#sessionSyncIdleTimers.has(key)) return;
+    const timer = setTimeout(() => {
+      this.#sessionSyncIdleTimers.delete(key);
+      if (!this.#signal?.aborted) void task();
+    }, MIRROR_CHECK_MS);
+    timer.unref?.();
+    this.#sessionSyncIdleTimers.set(key, timer);
+  }
+
+  async #mirrorHistory(sessionId, turn) {
+    if (typeof this.#harness.rpc !== 'function') return null;
+    const events = [];
+    let beforeSeq;
+    for (let page = 0; page < 10; page += 1) {
+      const history = await this.#harness.rpc('session.history', {
+        sessionId, maxMessages: 100,
+        ...(beforeSeq === undefined ? {} : { beforeSeq }),
+      }, 10_000, { signal: this.#signal });
+      const batch = orderedHistoryEvents(history);
+      events.unshift(...batch);
+      if (!history?.hasMore || batch.some((event) => event.type === 'turn/start' && event.data?.turn === turn)) {
+        return events;
+      }
+      const oldest = batch[0]?.seq;
+      if (!validEventSeq(oldest) || oldest === beforeSeq) break;
+      beforeSeq = oldest;
+    }
+    return null; // A truncated history cannot prove the final answer is complete.
+  }
+
+  #checkMirror(mirror) {
+    return this.#queueEventTask(mirror.sessionId, async () => {
+      if (mirror.finishedAt || this.#signal?.aborted) return;
+      try {
+        const events = await this.#mirrorHistory(mirror.sessionId, mirror.turn);
+        const outcome = extractCompletedTurnAnswer(events, { turn: mirror.turn });
+        if (outcome.endSeq >= 0) {
+          await this.#finishSessionSyncMirror(mirror, outcome.text ?? mirror.assistant.text, outcome.reason);
+        }
+      } catch (error) {
+        this.#logger.warn?.('[dsh-feishu] mirror history check failed:', error?.message ?? error);
+      }
+      if (!mirror.finishedAt) this.#scheduleMirrorCheck(mirror.key, () => this.#checkMirror(mirror));
+    });
+  }
+
+  async #finishSessionSyncMirror(mirror, text, reason = 'completed') {
+    if (mirror.finishedAt) return mirror.result?.ok === true && mirror.result.text === text;
+    const recovering = mirror.recovered;
+    if (mirror.recovered) {
+      const events = await this.#mirrorHistory(mirror.sessionId, mirror.turn);
+      const outcome = extractCompletedTurnAnswer(events, { turn: mirror.turn });
+      if (outcome.endSeq < 0) return false;
+      text = outcome.text ?? text;
+      reason = outcome.reason;
+      mirror.recovered = false;
+    }
+    clearTimeout(this.#sessionSyncIdleTimers.get(mirror.key));
+    this.#sessionSyncIdleTimers.delete(mirror.key);
+    const result = await this.#finishStepCard(mirror.key, {
+      stopped: reason !== 'completed', answerText: text,
+    });
+    mirror.result = { ok: result?.ok === true, text };
+    mirror.finishedAt = Date.now();
+    // Keep the last successful snapshot on failure so recovery can preserve it.
+    if (result?.ok) await this.#state.clearMirror?.(mirror.key);
+    else if (recovering) {
+      this.#sessionSyncTurns.delete(mirror.key);
+      this.#scheduleMirrorCheck(`recovery\0${mirror.key}`, () => this.#sealOrphanMirrors());
+    }
+    return result?.ok === true;
+  }
+
+  async #deliverSessionSyncMirror({ target, sessionId, turn, text }) {
+    if (this.#signal?.aborted) return false;
+    return await this.#queueEventTask(sessionId, async () => {
+      const mirror = this.#sessionSyncTurns.get(this.#mirrorKey(sessionId, turn));
+      if (!mirror || mirror.target.targetId !== target.targetId) return false;
+      return this.#finishSessionSyncMirror(mirror, text);
+    }) === true;
+  }
+
+  async #feedSessionSyncTurn(sessionId, event, imOwned = false) {
+    if (this.#signal?.aborted || imOwned) return;
+    const type = event.type;
+    // Retain recent receipts for coordinator callbacks that lag the event mux.
+    for (const [key, prior] of this.#sessionSyncTurns) {
+      if (prior.finishedAt && Date.now() - prior.finishedAt > 300_000) this.#sessionSyncTurns.delete(key);
+    }
+    let turn = event.data?.turn;
+    if (!Number.isSafeInteger(turn)) turn = this.#sessionSyncCurrentTurns.get(sessionId);
+    if (!Number.isSafeInteger(turn)) return;
+    const key = this.#mirrorKey(sessionId, turn);
+    let mirror = this.#sessionSyncTurns.get(key);
+    if (!mirror) {
+      if (!['turn/start', 'user/message', 'assistant/message', 'tool/call'].includes(type)) return;
+      const targets = await this.#sessionSyncTargetsFor(sessionId);
+      const target = (Array.isArray(targets) ? targets : []).find((item) => item.botId === this.#botId);
+      if (!target?.openId || !target?.targetId || this.#signal?.aborted) return;
+      mirror = { key, sessionId, turn, target, assistant: new AssistantTextAccumulator(), pendingStep: null, lastSeq: -1 };
+      this.#sessionSyncTurns.set(key, mirror);
+      this.#sessionSyncCurrentTurns.set(sessionId, turn);
+      const saved = this.#state.mirrorEntries?.().find(([entryKey]) => entryKey === key)?.[1];
+      if (saved?.targetId === target.targetId && saved.chatId === target.openId
+        && this.#restoreMirrorCard(key, saved)) {
+        mirror.recovered = true;
+        mirror.lastSeq = saved.lastSeq ?? -1;
+        mirror.pendingStep = saved.pendingStep ?? null;
+      }
+      const card = this.#ensureStepCard(key, target.openId, null);
+      Object.assign(card, {
+        deliveryViaOpenId: true, sessionSyncSessionId: sessionId,
+        sessionSyncTargetId: target.targetId, sessionSyncTurn: turn, sessionSyncKey: key,
+      });
+    }
+    if (mirror.finishedAt || event.seq <= mirror.lastSeq) return;
+    mirror.lastSeq = event.seq;
+    this.#scheduleMirrorCheck(key, () => this.#checkMirror(mirror));
+    const openId = mirror.target.openId;
+    if (type === 'user/message' && event.surfaceOp === 'append') {
+      const text = textFromHarnessContent(event.data?.content);
+      if (text.trim()) {
+        const excerpt = text.length > 400 ? `${text.slice(0, 399)}…` : text;
+        await this.#appendStepCardUpdate(key, openId, null,
+          { kind: 'message', text: `> 👤 **我问：**${excerpt.replaceAll('\n', '\n> ')}` }, { billable: false });
+      }
+    } else if (type === 'tool/call') {
+      if (mirror.pendingStep) {
+        this.#morphStepCardAnswerToNote(key, mirror.pendingStep);
+        mirror.pendingStep = null;
+      }
+      await this.#appendStepCardUpdate(key, openId, null, this.#stepCardToolBlock({
+        name: event.data?.name ?? '',
+        arguments: typeof event.data?.arguments === 'string' ? event.data.arguments : '',
+      }), { billable: false });
+    } else if (type === 'assistant/message' && event.surfaceOp === 'append' && event.data?.interrupted !== true) {
+      const text = textFromHarnessContent(event.data?.message?.content);
+      if (text.trim()) {
+        mirror.assistant.setCanonical(event.data?.step, text);
+        mirror.pendingStep = text;
+        this.#streamStepCardAnswer(key, openId, null, text);
+      }
+    } else if (type === 'turn/end') {
+      const reason = typeof event.data?.reason === 'string' ? event.data.reason : event.data?.reason?.kind;
+      await this.#finishSessionSyncMirror(mirror, mirror.assistant.text, reason);
+    }
+  }
+
   #onHarnessEvent({ sessionId, event }) {
     if (this.#signal?.aborted
       || !sessionId
       || !event
       || typeof event !== 'object'
-      || event.type !== 'turn/end'
       || !validEventSeq(event.seq)) return;
+
+    // Session-sync mirror: turns opened OUTSIDE the IM (DSH Web / CLI) are
+    // rendered into the synced DM with the same #stepCards ladder as IM
+    // turns. The mirror consumes EVERY event type (turn/start opens the
+    // card, tool/call and assistant/message feed it, turn/end seals it);
+    // IM-opened turns are skipped — they already own their card via the ask
+    // callbacks. turn/end ALSO continues below for watch completions.
+    if (this.#sessionSyncTargetsFor) {
+      const imOwned = this.#isImTurn(sessionId);
+      void this.#queueEventTask(sessionId, () => this.#feedSessionSyncTurn(sessionId, event, imOwned));
+      if (event.type !== 'turn/end') return;
+    }
+    if (event.type !== 'turn/end') return;
     // Record before consulting state: /watch may still be resolving its target
     // or waiting for setWatch persistence and therefore have no visible entry.
     this.#recordObservedCompletion(sessionId, event);
@@ -3851,6 +4304,10 @@ export class FeishuHarnessBridge {
     const state = this.#stepPushSendState.get(key)
       ?? { lastSentAt: 0, count: 0, breakerLogged: false };
     this.#stepPushSendState.set(key, state);
+    // 真实事件到达：先撤回思考中心跳再推真实消息。
+    // pendingRecallIds 是唯一撤回清单（live 心跳创建时即入队），避免同一 id 双撤回；
+    // 撤回失败的 id 留在队列里待下个边界重试，不能在这里无条件清空。
+    await this.#recallPendingHeartbeats(state);
     if (billable && state.count >= STEP_PUSH_MAX_MESSAGES_PER_TURN) {
       if (!state.breakerLogged) {
         state.breakerLogged = true;
@@ -3858,6 +4315,11 @@ export class FeishuHarnessBridge {
           `[dsh-feishu] step push hit ${STEP_PUSH_MAX_MESSAGES_PER_TURN} messages for this turn; staying silent until it ends`,
         );
       }
+      // 熔断静默期内同样刷新 silenceSince：用户仍在活动，静默窗口重新计时，
+      // 避免看门狗在每个被拦截的事件后重建/撤回心跳。activitySeq 单调递增，
+      // 供心跳创建返回后识别「创建在途期间出现了真实活动」（同毫秒事件也能识别）。
+      state.silenceSince = this.#stepPushClock.now();
+      state.activitySeq = (state.activitySeq ?? 0) + 1;
       return;
     }
     this.#signal?.throwIfAborted();
@@ -3867,9 +4329,395 @@ export class FeishuHarnessBridge {
     // message land after the teardown has begun.
     this.#signal?.throwIfAborted();
     state.lastSentAt = this.#stepPushClock.now();
+    state.silenceSince = state.lastSentAt;
+    state.activitySeq = (state.activitySeq ?? 0) + 1;
     if (billable) state.count += 1;
     this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
     await this.#sendStepPost(chatId, replyToMessageId, paragraphs, fallbackText);
+  }
+
+  // ── Streaming step card (流式过程卡片) ─────────────────────────────────────
+
+  /** Ensure the per-turn card state exists without scheduling a render. */
+  #ensureStepCard(key, chatId, replyToMessageId) {
+    let card = this.#stepCards.get(key);
+    if (!card) {
+      card = {
+        blocks: [],
+        messageId: null,
+        chatId,
+        replyToMessageId,
+        broken: false,
+        lastRenderAt: 0,
+        renderQueued: false,
+        renderChain: null,
+        chunkCount: 1,
+        cardIds: [],
+        answerStart: null,
+        answerEnd: null,
+        // Answer-integrity tracking: the version bumps every time the draft
+        // is rewritten in memory; `renderedAnswerVersion` records the version
+        // covered by the last SUCCESSFUL render. The seal may only skip the
+        // post fallback when both match (the final answer is provably
+        // visible on a delivered card).
+        answerVersion: 0,
+        renderedAnswerVersion: 0,
+      };
+      this.#stepCards.set(key, card);
+    }
+    return card;
+  }
+
+  /**
+   * Append one process block to the turn's live streaming card: the first
+   * block of a turn opens a card in the request topic, later blocks re-render
+   * the same message via im.v1.message.patch. Consecutive tool lines merge
+   * into one collapsible panel. Renders are coalesced behind
+   * STEP_STREAM_PATCH_MIN_INTERVAL_MS; failures permanently downgrade the
+   * turn (card.broken) — the final answer still delivers through the normal
+   * ladder, and a flaky card never breaks the ask.
+   */
+  async #appendStepCardUpdate(key, chatId, replyToMessageId, block, { billable = true } = {}) {
+    const card = this.#ensureStepCard(key, chatId, replyToMessageId);
+    if (card.broken) return;
+    const last = card.blocks[card.blocks.length - 1];
+    if ((block.kind === 'tools' || block.kind === 'notes') && last?.kind === block.kind) {
+      for (const line of block.lines) this.#pushPanelLine(last, line);
+    } else {
+      card.blocks.push(block);
+    }
+    if (billable) {
+      this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
+    }
+    this.#queueStepCardRender(key, chatId);
+  }
+
+  /** Append one line to a foldable panel, shedding oldest lines past budget. */
+  #pushPanelLine(block, line) {
+    if (!Array.isArray(block.lines)) block.lines = [];
+    block.omitted = Number(block.omitted) || 0;
+    let size = Buffer.byteLength(block.lines.join('\n'), 'utf8');
+    const incoming = Buffer.byteLength(line, 'utf8');
+    while (block.lines.length > 0 && size + incoming > STEP_STREAM_PANEL_MAX_BYTES) {
+      const removed = block.lines.shift();
+      block.omitted += 1;
+      size -= Buffer.byteLength(`${removed}\n`, 'utf8');
+    }
+    block.lines.push(line);
+  }
+
+  /**
+   * Stream one finalized assistant step into the card as the live answer
+   * draft: the newest step rewrites the draft blocks, so the answer grows in
+   * place like ZCode's streaming card. Long answers are pre-chunked at
+   * paragraph bounds so the block splitter can always spill them across
+   * sealed cards. When a later tool call proves the draft interim,
+   * #morphStepCardAnswerToNote folds it into the thinking panel.
+   */
+  #streamStepCardAnswer(key, chatId, replyToMessageId, text) {
+    const card = this.#ensureStepCard(key, chatId, replyToMessageId);
+    if (card.broken) return;
+    const body = String(text ?? '');
+    if (!body.trim()) return;
+    this.#writeStepCardAnswer(card, body);
+    this.#queueStepCardRender(key, chatId);
+  }
+
+  /** Replace the draft interval with `text` chunked into splitter-safe blocks. */
+  #writeStepCardAnswer(card, text) {
+    const blocks = splitStepPostMarkdown(text, STEP_STREAM_ANSWER_CHUNK_MAX_BYTES)
+      .map((chunk) => ({ kind: 'message', text: chunk }));
+    if (card.answerStart !== null) {
+      card.blocks.splice(card.answerStart, card.answerEnd - card.answerStart + 1, ...blocks);
+    } else {
+      card.blocks.push(...blocks);
+    }
+    card.answerStart = card.blocks.length - blocks.length;
+    card.answerEnd = card.blocks.length - 1;
+    // The in-memory draft changed; nothing rendered so far can prove the new
+    // answer is visible. The next successful render re-aligns the versions.
+    card.answerVersion = (card.answerVersion ?? 0) + 1;
+  }
+
+  /** Convert the live answer draft into a folded thinking note in place. */
+  #morphStepCardAnswerToNote(key, text) {
+    const card = this.#stepCards.get(key);
+    if (!card || card.broken) return;
+    const body = String(text ?? '');
+    if (!body.trim()) return;
+    if (card.answerStart !== null) {
+      card.blocks.splice(card.answerStart, card.answerEnd - card.answerStart + 1);
+      card.answerStart = null;
+      card.answerEnd = null;
+    }
+    const excerpt = body.length > STEP_STREAM_NOTE_MAX_CHARS
+      ? `${body.slice(0, STEP_STREAM_NOTE_MAX_CHARS)}…`
+      : body;
+    const last = card.blocks[card.blocks.length - 1];
+    if (last?.kind === 'notes') {
+      this.#pushPanelLine(last, excerpt);
+    } else {
+      card.blocks.push({ kind: 'notes', lines: [excerpt], omitted: 0 });
+    }
+    this.#queueStepCardRender(key, card.chatId);
+  }
+
+  #queueStepCardRender(key, chatId) {
+    const card = this.#stepCards.get(key);
+    if (!card || card.broken || card.renderQueued) return;
+    card.renderQueued = true;
+    // The coalescing delay lives inside the serial chain, so a finish that
+    // awaits the chain can never race a pending first render.
+    const wait = Math.max(
+      0,
+      card.lastRenderAt + STEP_STREAM_PATCH_MIN_INTERVAL_MS - this.#stepPushClock.now(),
+    );
+    const previous = card.renderChain ?? Promise.resolve();
+    card.renderChain = previous
+      .catch(() => {})
+      .then(() => this.#stepPushClock.delay(wait))
+      .then(() => this.#renderStepCardNow(chatId, card))
+      .finally(() => {
+        card.renderQueued = false;
+      });
+  }
+
+  /**
+   * Persist the mirror state for a session-sync card after a successful
+   * render. Plain IM cards (no sessionSyncSessionId) are never recorded —
+   * their lifecycle is owned by the ask path, not the mirror recovery.
+   * lastContent keeps stepStreamCard's raw JSON string (single-encoded).
+   */
+  async #persistMirrorState(card, liveBlocks, status) {
+    const sessionId = card.sessionSyncSessionId;
+    if (!sessionId || typeof this.#state.setMirror !== 'function') return;
+    await this.#state.setMirror(card.sessionSyncKey, {
+      sessionId, turn: card.sessionSyncTurn, targetId: card.sessionSyncTargetId,
+      chatId: card.chatId,
+      cardIds: [...card.cardIds],
+      claimedAt: Date.now(),
+      lastContent: stepStreamCard(liveBlocks, { status }),
+      blocks: structuredClone(card.blocks), answerStart: card.answerStart, answerEnd: card.answerEnd,
+      lastSeq: this.#sessionSyncTurns.get(card.sessionSyncKey)?.lastSeq ?? -1,
+      pendingStep: this.#sessionSyncTurns.get(card.sessionSyncKey)?.pendingStep ?? null,
+    });
+  }
+
+  async #renderStepCardNow(chatId, card) {
+    if (card.broken) return;
+    const chunks = splitStepStreamCardBlocks(card.blocks);
+    const live = chunks[chunks.length - 1] ?? [];
+    try {
+      if (card.messageId === null) {
+        // First render: deliver every chunk. When the turn opens with a long
+        // answer already in memory, chunks.length can exceed one — sending
+        // only the live chunk here would silently drop its prefix, and the
+        // chunkCount bookkeeping below would then rewrite the delivered
+        // message with chunk 0 on the next render.
+        for (let index = 0; index < chunks.length; index += 1) {
+          const isLive = index === chunks.length - 1;
+          const id = await this.#sendCard(
+            chatId,
+            stepStreamCard(chunks[index], { status: isLive ? 'running' : 'sealed' }),
+            card.deliveryViaOpenId
+              ? { receiveIdType: 'open_id' }
+              : { replyTo: card.replyToMessageId },
+          );
+          card.cardIds.push(id);
+          if (isLive) card.messageId = id;
+        }
+        card.chunkCount = chunks.length;
+        await this.#persistMirrorState(card, live, 'running');
+        card.lastRenderAt = this.#stepPushClock.now();
+        card.renderedAnswerVersion = card.answerVersion ?? 0;
+        return;
+      }
+      // Overflow: the accumulated blocks outgrew one card. Seal the current
+      // message (no status line), spill extra chunks, and keep the last one
+      // live. Chunk boundaries are stable because blocks only append.
+      if (chunks.length > card.chunkCount) {
+        await this.#patchStepCard(
+          card.messageId,
+          stepStreamCard(chunks[card.chunkCount - 1], { status: 'sealed' }),
+        );
+        for (let index = card.chunkCount; index < chunks.length; index += 1) {
+          const isLive = index === chunks.length - 1;
+          const id = await this.#sendCard(
+            chatId,
+            stepStreamCard(chunks[index], { status: isLive ? 'running' : 'sealed' }),
+            card.deliveryViaOpenId
+              ? { receiveIdType: 'open_id' }
+              : { replyTo: card.replyToMessageId },
+          );
+          card.cardIds.push(id);
+          if (isLive) card.messageId = id;
+        }
+        card.chunkCount = chunks.length;
+      } else {
+        await this.#patchStepCard(card.messageId, stepStreamCard(live, { status: 'running' }));
+      }
+      await this.#persistMirrorState(card, live, 'running');
+      card.lastRenderAt = this.#stepPushClock.now();
+      card.renderedAnswerVersion = card.answerVersion ?? 0;
+    } catch (error) {
+      card.broken = true;
+      this.#logger.warn?.(
+        '[dsh-feishu] step streaming card render failed; the turn continues without it:',
+        error?.message ?? String(error),
+      );
+      if (card.deliveryViaOpenId) {
+        this.#logger.warn?.('[dsh-feishu] session-sync mirror card render failed:',
+          error?.message ?? String(error));
+      }
+    }
+  }
+
+  /**
+   * Seal the turn's card with a terminal status and the final answer. The
+   * streamed answer draft is rewritten in place with the delivery text; when
+   * no draft exists the answer is appended. Returns `{ ok, cardIds }` when
+   * the answer is visible on the cards, or null when the caller must fall
+   * back to the post ladder (absent/broken card, or the answer never reached
+   * a successful render). Safe to call twice.
+   */
+  async #finishStepCard(key, { stopped = false, answerText = null } = {}) {
+    const card = this.#stepCards.get(key);
+    this.#stepCards.delete(key);
+    if (!card) return null;
+    try {
+      await card.renderChain?.catch?.(() => {});
+    } catch { /* the seal below decides what the user sees */ }
+    if (card.broken) return null;
+    const status = stopped ? 'stopped' : 'completed';
+    const body = typeof answerText === 'string' ? answerText : '';
+    // Whether the answer was already visible from a streamed draft render —
+    // decided BEFORE the seal writes the final text.
+    const streamedDraft = card.answerStart !== null;
+    if (body.trim()) {
+      this.#writeStepCardAnswer(card, body);
+    }
+    const chunks = splitStepStreamCardBlocks(card.blocks);
+    const live = chunks[chunks.length - 1] ?? [];
+    try {
+      if (card.messageId === null) {
+        // A turn without any queued render (plain Q&A): open the cards
+        // directly with their terminal status; every overflow chunk before
+        // the last one is sealed. An empty turn still opens the status card.
+        const groups = chunks.length > 0 ? chunks : [[]];
+        for (let index = 0; index < groups.length; index += 1) {
+          const isLive = index === groups.length - 1;
+          const id = await this.#sendCard(
+            card.chatId,
+            stepStreamCard(groups[index], { status: isLive ? status : 'sealed' }),
+            card.deliveryViaOpenId
+              ? { receiveIdType: 'open_id' }
+              : { replyTo: card.replyToMessageId },
+          );
+          card.cardIds.push(id);
+        }
+        return { ok: true, cardIds: card.cardIds };
+      }
+      // The live message only ever shows the last chunk; spill every chunk
+      // that has not been delivered yet as sealed cards before patching the
+      // live one, otherwise a long answer finishing on an existing card
+      // would silently drop its prefix.
+      if (chunks.length > card.chunkCount) {
+        await this.#patchStepCard(
+          card.messageId,
+          stepStreamCard(chunks[card.chunkCount - 1], { status: 'sealed' }),
+        );
+        for (let index = card.chunkCount; index < chunks.length; index += 1) {
+          const isLast = index === chunks.length - 1;
+          const id = await this.#sendCard(
+            card.chatId,
+            stepStreamCard(chunks[index], { status: isLast ? status : 'sealed' }),
+            card.deliveryViaOpenId
+              ? { receiveIdType: 'open_id' }
+              : { replyTo: card.replyToMessageId },
+          );
+          card.cardIds.push(id);
+          if (isLast) card.messageId = id;
+        }
+        card.chunkCount = chunks.length;
+      } else {
+        await this.#patchStepCard(card.messageId, stepStreamCard(live, { status }));
+      }
+      card.renderedAnswerVersion = card.answerVersion ?? 0;
+      return { ok: true, cardIds: card.cardIds };
+    } catch (error) {
+      // Only trust the streamed draft when the LAST SUCCESSFUL render actually
+      // covered the current answer version. A draft sitting in memory while
+      // its render failed (or never ran) does not prove the answer is visible.
+      const answerVisible = card.messageId !== null
+        && body.trim()
+        && (card.renderedAnswerVersion ?? 0) === (card.answerVersion ?? 0)
+        && streamedDraft;
+      if (answerVisible) {
+        this.#logger.warn?.(
+          '[dsh-feishu] step streaming card seal failed; the delivered answer stays visible:',
+          error?.message ?? String(error),
+        );
+        return { ok: true, cardIds: card.cardIds };
+      }
+      this.#logger.warn?.(
+        '[dsh-feishu] step streaming card finish failed:',
+        error?.message ?? String(error),
+      );
+      return null;
+    }
+  }
+
+  #stepCardToolBlock(update) {
+    const summary = this.#stepIntentSummary(update.arguments);
+    const name = stepPushLine(update.name) || t('工具');
+    return { kind: 'tools', lines: [`✅ ${name}${summary ? ` — ${summary}` : ''}`], omitted: 0 };
+  }
+
+  /** Flag the in-flight streaming-card turn as user-stopped (seals 已停止). */
+  #markStepStopRequested(key) {
+    const flag = this.#stepStopFlags.get(key);
+    if (flag) flag.requested = true;
+  }
+
+  /**
+   * Freeze the live process card before an approval/question card renders;
+   * later steps stream into a fresh card below the interaction (mirrors the
+   * main streaming path's rotate). A failed seal never blocks the
+   * interaction — the old card keeps its last rendered state.
+   */
+  async #rotateStepCard(key) {
+    const card = this.#stepCards.get(key);
+    if (!card || card.broken) return;
+    await card.renderChain?.catch?.(() => {});
+    if (card.broken) return;
+    if (card.messageId === null) return;
+    try {
+      const chunks = splitStepStreamCardBlocks(card.blocks);
+      const live = chunks[chunks.length - 1] ?? [];
+      await this.#patchStepCard(card.messageId, stepStreamCard(live, { status: 'sealed' }));
+    } catch (error) {
+      this.#logger.warn?.(
+        '[dsh-feishu] step streaming card rotate seal failed:',
+        error?.message ?? String(error),
+      );
+    }
+    // Restart the stream on a fresh card below the interaction message.
+    card.blocks = [];
+    card.messageId = null;
+    card.chunkCount = 1;
+    card.answerStart = null;
+    card.answerEnd = null;
+    card.lastRenderAt = 0;
+  }
+
+  async #patchStepCard(messageId, cardJson) {
+    const response = await this.#client.im.v1.message.patch({
+      path: { message_id: messageId },
+      data: { content: cardJson },
+    });
+    if (response?.code && response.code !== 0) {
+      throw new Error(`Feishu step card patch failed: ${response.msg || response.code}`);
+    }
   }
 
   /**
@@ -3969,6 +4817,154 @@ export class FeishuHarnessBridge {
       || /230020|230006/.test(error?.message ?? '');
   }
 
+  #formatElapsed(ms) {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, '0')}`;
+  }
+
+  /**
+   * 撤回待撤回心跳清单：撤回成功（recallMessage 返回 true）的 id 移出队列；
+   * 失败的保留，待下个真实事件/回合结束边界重试，单条最多尝试
+   * STEP_PUSH_HEARTBEAT_RECALL_ATTEMPTS 次后放弃并告警（消息可能已被手动
+   * 删除或接口持续受限，避免队列无限增长）。live 心跳撤回失败且仍在队列时
+   * 保留 heartbeatMessageId：消息仍在会话里，看门狗继续原地刷新同一条，
+   * 而不是另建一条造成重复。
+   */
+  async #recallPendingHeartbeats(state) {
+    const remaining = [];
+    for (const entry of state.pendingRecallIds ?? []) {
+      let recalled = false;
+      try {
+        recalled = (await this.#channel?.recallMessage?.(entry.id)) === true;
+      } catch (error) {
+        this.#logger.warn?.('[dsh-feishu] heartbeat recall failed:', error?.message ?? String(error));
+      }
+      if (recalled) continue;
+      const attempts = (entry.attempts ?? 0) + 1;
+      if (attempts >= STEP_PUSH_HEARTBEAT_RECALL_ATTEMPTS) {
+        this.#logger.warn?.(`[dsh-feishu] heartbeat recall gave up after ${attempts} attempts: ${entry.id}`);
+        continue;
+      }
+      remaining.push({ id: entry.id, attempts });
+    }
+    state.pendingRecallIds = remaining;
+    const liveId = state.heartbeatMessageId;
+    if (liveId && !remaining.some((entry) => entry.id === liveId)) state.heartbeatMessageId = null;
+  }
+
+  /**
+   * 撤回一条刚创建、但创建返回时已过时（回合已结束或创建在途期间出现了
+   * 真实活动）的心跳：成功即丢弃；失败则按失败保留策略入队，待下个边界重试。
+   */
+  async #recallLateHeartbeat(state, messageId) {
+    let recalled = false;
+    try {
+      recalled = (await this.#channel?.recallMessage?.(messageId)) === true;
+    } catch (error) {
+      this.#logger.warn?.('[dsh-feishu] late heartbeat recall failed:', error?.message ?? String(error));
+    }
+    if (recalled) return;
+    state.pendingRecallIds = [...(state.pendingRecallIds ?? []), { id: messageId, attempts: 1 }];
+  }
+
+  /**
+   * 思考中状态看门狗：直推回合内静默满阈值时推送/原地刷新一条「⏳ 正在思考中…」
+   * 心跳 post；真实事件或回合结束时撤回。轮询检查可注入 stepPushClock（测试
+   * 手动推进时钟），生命周期归属当前回合（stop 后循环退出）。
+   */
+  #startThinkingStatusWatchdog(key, chatId, replyToMessageId) {
+    const state = this.#stepPushSendState.get(key);
+    if (!state) return { stop: async () => {} };
+    state.heartbeatStopped = false;
+    state.heartbeatMessageId = null;
+    state.heartbeatNextAttemptAt = 0;
+    const watchdog = { stopped: false };
+    void (async () => {
+      try {
+        // 轮询式看门狗：每 10ms 检查一次（真实时间），静默判定读取可注入
+        // 时钟——生产随真实时间自然触发；测试手动推进时钟即可确定性验证。
+        while (!watchdog.stopped && !this.#signal?.aborted && !state.heartbeatStopped) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          if (watchdog.stopped || this.#signal?.aborted || state.heartbeatStopped) return;
+          const now = this.#stepPushClock.now();
+          // 静默基线 = silenceSince（回合开始播种，每次真实推送刷新）。
+          const silentFor = now - (state.silenceSince ?? state.turnStartedAt ?? now);
+          if (state.heartbeatMessageId) {
+            if (now - (state.heartbeatUpdatedAt ?? 0) < STEP_PUSH_HEARTBEAT_REFRESH_MS) continue;
+            const elapsed = this.#formatElapsed(now - (state.heartbeatShownAt ?? state.heartbeatUpdatedAt));
+            state.heartbeatUpdatedAt = this.#stepPushClock.now();
+            state.heartbeatUpdates = (state.heartbeatUpdates ?? 0) + 1;
+            if (state.heartbeatUpdates > STEP_PUSH_HEARTBEAT_MAX_UPDATES) {
+              state.heartbeatStopped = true;
+              continue;
+            }
+            try {
+              const response = await this.#client.im.v1.message.update({
+                path: { message_id: state.heartbeatMessageId },
+                data: {
+                  msg_type: 'post',
+                  content: JSON.stringify({
+                    zh_cn: { content: [[{ tag: 'text', text: t('⏳ 正在思考中…（已运行 {elapsed}）', { elapsed }) }]] },
+                  }),
+                },
+              });
+              if (response?.code && response.code !== 0) {
+                this.#logger.warn?.('[dsh-feishu] heartbeat update failed:', response.msg || response.code);
+              }
+            } catch (error) {
+              // 更新失败：保留心跳（消息仍在会话中），留待真实事件/回合结束撤回。
+              this.#logger.warn?.('[dsh-feishu] heartbeat update failed:', error.message);
+            }
+            continue;
+          }
+          if (now < (state.heartbeatNextAttemptAt ?? 0)) continue;
+          if (silentFor < STEP_PUSH_HEARTBEAT_AFTER_MS) continue;
+          // 记录发起创建时的活动序号：创建请求在途期间若出现真实活动
+          // （真实推送或熔断分支都会推进 activitySeq），这条心跳返回时
+          // 已过时，必须立即撤回而不是登记为当前状态。
+          const activitySeqAtDispatch = state.activitySeq ?? 0;
+          const shownAt = now;
+          const result = await this.#sendStepPost(
+            chatId, replyToMessageId,
+            [[{ tag: 'text', text: t('⏳ 正在思考中…（已运行 {elapsed}）', { elapsed: this.#formatElapsed(0) }) }]],
+            t('⏳ 正在思考中…'),
+          );
+          if (watchdog.stopped || this.#signal?.aborted) {
+            // 创建期间回合已结束：立即撤回刚发出的心跳，避免残留。
+            if (result.ok && result.messageId) await this.#recallLateHeartbeat(state, result.messageId);
+            return;
+          }
+          if ((state.activitySeq ?? 0) !== activitySeqAtDispatch) {
+            // 创建期间出现真实活动：这条「正在思考中」会排在真实步骤之后，
+            // 立即撤回且不登记（不进入原地刷新，也不作为 live 心跳）。
+            if (result.ok && result.messageId) await this.#recallLateHeartbeat(state, result.messageId);
+            continue;
+          }
+          if (result.ok) {
+            state.heartbeatMessageId = result.messageId ?? null;
+            state.pendingRecallIds = [...(state.pendingRecallIds ?? []), { id: result.messageId, attempts: 0 }];
+            state.heartbeatShownAt = shownAt;
+            state.heartbeatUpdatedAt = shownAt;
+          } else {
+            // 发送失败：退避后再试，避免每个轮询都重试造成堆积。
+            state.heartbeatNextAttemptAt = now + 5_000;
+          }
+        }
+      } catch (error) {
+        if (!this.#signal?.aborted) {
+          this.#logger.warn?.('[dsh-feishu] thinking status watchdog failed:', error.message);
+        }
+      }
+    })();
+    return {
+      stop: async () => {
+        watchdog.stopped = true;
+        // 回合结束撤回：失败项保留在队列里（跨回合携带），待下个边界重试。
+        await this.#recallPendingHeartbeats(state);
+      },
+    };
+  }
+
   /**
    * 分步直推：`#answerWithStream` 流式分支在开关开启时的完整替代路径。
    * 过程（工具调用、助手中间说明）与最终答案均以富文本 post 逐条直推
@@ -4000,6 +4996,7 @@ export class FeishuHarnessBridge {
   }
 
   async #answerWithStepPush(event, key, message, { onAskComplete, preAskSignal = null } = {}) {
+    this.#beginImTurn(key);
     const chatId = event.message.chat_id;
     const messageId = event.message.message_id;
     const text = message.content;
@@ -4007,6 +5004,7 @@ export class FeishuHarnessBridge {
     const markAskComplete = () => {
       if (askCompleted) return;
       askCompleted = true;
+      this.#endImTurn(key);
       onAskComplete?.();
     };
     // 与流式分支一致的提示内容构造：图片与回复引用展开为富提示内容，已接受
@@ -4037,21 +5035,51 @@ export class FeishuHarnessBridge {
       if (oldest !== undefined) this.#stepPushSendState.delete(oldest);
     }
     this.#stepPushSendState.set(key, {
+      // 思考中状态的静默基线 = 回合开始时刻；lastSentAt 仅供真实推送刷新，
+      // 不参与心跳判定（否则首个真实步骤的节流等待会被误判/误伤）。
+      silenceSince: this.#stepPushClock.now(),
+      turnStartedAt: this.#stepPushClock.now(),
       lastSentAt: priorState?.lastSentAt ?? 0,
+      // 撤回失败的心跳跨回合携带：回合边界没撤掉的「正在思考中」在下个
+      // 回合的真实事件/结束时继续重试，而不是被 reopen 静默丢弃。
+      pendingRecallIds: priorState?.pendingRecallIds ?? [],
+      activitySeq: 0,
       count: 0,
       breakerLogged: false,
     });
+    // 流式卡片模式：每轮一张过程卡（原地 patch），过程与最终答案都进卡；
+    // post 模式维持逐条直推。先预建卡片状态，纯问答回合也能在收尾时开卡。
+    const streamingCard = this.#stepPushMode === FEISHU_STEP_PUSH_MODES.STREAMING_CARD;
+    if (streamingCard) {
+      if (this.#stepCards.has(key)) {
+        // 上一轮异常退出留下的「运行中」卡片先收尾，避免与本轮混淆。
+        await this.#finishStepCard(key);
+      }
+      this.#ensureStepCard(key, chatId, messageId);
+    }
+    // /stop 打标：回合进行中收到停止请求时，封存为「已停止」而非「已完成」。
+    const stepStopFlag = streamingCard ? { requested: false } : null;
+    if (streamingCard) this.#stepStopFlags.set(key, stepStopFlag);
+    const baseAskOptions = this.#interactionAskOptions(event, key, message.files);
 
     // 上下文注入动作在详细级别下也体现为一条步骤（注入细节可忽略）。
     // 不计入工具/助手消息的熔断计数（规格口径：熔断只管「工具 + 助手」）。
     if (contextEnhanced || content) {
-      await this.#sendStepMessage(
-        chatId, key,
-        [[{ tag: 'text', text: t('📎 已注入会话上下文') }]],
-        t('📎 已注入会话上下文'),
-        messageId,
-        { billable: false },
-      );
+      if (streamingCard) {
+        await this.#appendStepCardUpdate(
+          key, chatId, messageId,
+          { kind: 'message', text: t('📎 已注入会话上下文') },
+          { billable: false },
+        );
+      } else {
+        await this.#sendStepMessage(
+          chatId, key,
+          [[{ tag: 'text', text: t('📎 已注入会话上下文') }]],
+          t('📎 已注入会话上下文'),
+          messageId,
+          { billable: false },
+        );
+      }
     }
 
     // 缓冲-确认策略：每步定稿的助手文本先进缓冲；工具调用或更大 step 的定稿
@@ -4078,6 +5106,11 @@ export class FeishuHarnessBridge {
       if (!pendingStep) return;
       const note = pendingStep;
       pendingStep = null;
+      if (streamingCard) {
+        // 答案草稿被后续工具证实为过程说明：原位收进折叠的思考面板。
+        this.#morphStepCardAnswerToNote(key, note.text);
+        return;
+      }
       await this.#sendStepMessage(
         chatId, key,
         [[{ tag: 'md', text: `💬 ${note.text}` }]],
@@ -4085,19 +5118,34 @@ export class FeishuHarnessBridge {
         messageId,
       );
     };
-    const completed = await askInWorkspaceSession({
+    const watchdog = streamingCard ? null : this.#startThinkingStatusWatchdog(key, chatId, messageId);
+    let completed;
+    try {
+      completed = await askInWorkspaceSession({
       deferredDelivery: () => ({ coordinator: this.#deferred, chatId, replyToMessageId: messageId }),
       harness: this.#harness,
       state: this.#state,
       key,
       text,
       content,
+      titleText: event.batchSubmission?.title,
+      sourceGuidance: snapshot?.config?.guidance,
       contextEnhanced,
       createOptions: { signal: this.#signal },
       existsOptions: { signal: this.#signal },
       askOptions: {
-        ...this.#interactionAskOptions(event, key, message.files),
+        ...baseAskOptions,
         progressMode: 'all',
+        // 提问/审批卡弹出前先定格当前过程卡，答案随之流到交互消息之后
+        // 的新卡上（与主流式路径的 rotate 语义一致）。
+        ...(streamingCard ? {
+          onInteraction: async (interaction) => {
+            if (interaction?.kind === 'question' || interaction?.kind === 'approval') {
+              await this.#rotateStepCard(key);
+            }
+            await baseAskOptions.onInteraction?.(interaction);
+          },
+        } : {}),
         onUpdate: async (update) => {
           // message_break handler intercepts break updates and sends the
           // segment text as a 💬 step message. Returns null when consumed.
@@ -4118,10 +5166,17 @@ export class FeishuHarnessBridge {
               await flushPendingStep();
             }
             pendingStep = update;
+            if (streamingCard) {
+              this.#streamStepCardAnswer(key, chatId, messageId, update.text);
+            }
             return;
           }
           if (update.type === 'tool') {
             if (!messageBreakHandler) await flushPendingStep();
+            if (streamingCard) {
+              await this.#appendStepCardUpdate(key, chatId, messageId, this.#stepCardToolBlock(update));
+              return;
+            }
             const { paragraphs, fallbackText } = this.#formatStepToolPost(update);
             await this.#sendStepMessage(chatId, key, paragraphs, fallbackText, messageId);
             return;
@@ -4129,6 +5184,13 @@ export class FeishuHarnessBridge {
           if (update.type === 'status' && update.error) {
             const name = stepPushLine(update.toolName) || t('工具');
             const excerpt = stepPushLine(update.error).slice(0, STEP_PUSH_ERROR_MAX_CHARS);
+            if (streamingCard) {
+              await this.#appendStepCardUpdate(
+                key, chatId, messageId,
+                { kind: 'message', text: `⚠️ **${name}** — ${excerpt}` },
+              );
+              return;
+            }
             await this.#sendStepMessage(
               chatId, key,
               [[{ tag: 'md', text: `⚠️ **${name}** — ${excerpt}` }]],
@@ -4139,7 +5201,17 @@ export class FeishuHarnessBridge {
           // text / status（无错误）保持静默：详细级直推完全取代简略级进度行。
         },
       },
-    });
+      });
+    } catch (error) {
+      if (streamingCard) {
+        this.#stepStopFlags.delete(key);
+        await this.#finishStepCard(key, { stopped: true });
+      }
+      throw error;
+    } finally {
+      // 回合结束（成功/失败/中断）：停看门狗并撤回残留思考中心跳。
+      await watchdog?.stop();
+    }
     markAskComplete();
     const finalStepText = pendingStep ? pendingStep.text : null;
     pendingStep = null;
@@ -4148,10 +5220,33 @@ export class FeishuHarnessBridge {
       : completed.answer;
     // When message_break sent segments, the final message is only the
     // remaining text after the last break point.
-    const finalText = messageBreakHandler?.hasBreaks()
+    const deliveryText = messageBreakHandler?.hasBreaks()
       ? messageBreakHandler.remainingText(answerTextForDelivery(baseText, completed.artifacts ?? []))
       : answerTextForDelivery(baseText, completed.artifacts ?? []);
-    const deliveryText = finalText;
+    // 流式卡模式：答案已随步骤流进过程卡，封存后直接以卡片作回执；
+    // 无卡/坏卡/封存失败时才回退到下方 post 阶梯。
+    if (streamingCard) {
+      const seal = await this.#finishStepCard(key, {
+        answerText: deliveryText,
+        stopped: stepStopFlag?.requested === true,
+      });
+      this.#stepStopFlags.delete(key);
+      if (seal?.ok) {
+        const cardReceipt = createDeliveryReceipt({
+          deliveryId: messageId,
+          presentation: 'feishu-step-push-card',
+          providerMessageIds: seal.cardIds,
+        });
+        this.#status.streamResponses = (this.#status.streamResponses ?? 0) + 1;
+        const delivery = await this.#deliverArtifacts(
+          chatId,
+          messageId,
+          completed.artifacts ?? [],
+          cardReceipt,
+        );
+        return { ...delivery, textDeliveryErrors: 0 };
+      }
+    }
     let textReceipt;
     let postDeliveryError = null;
     try {
@@ -4254,6 +5349,7 @@ export class FeishuHarnessBridge {
   }
 
   async #answerWithStream(event, key, message, { onAskComplete } = {}) {
+    this.#beginImTurn(key);
     const chatId = event.message.chat_id;
     const messageId = event.message.message_id;
     const text = message.content;
@@ -4267,6 +5363,13 @@ export class FeishuHarnessBridge {
     const preAskSignal = this.#signal
       ? AbortSignal.any([this.#signal, preAsk.signal])
       : preAsk.signal;
+    let askCompleted = false;
+    const markAskComplete = () => {
+      if (askCompleted) return;
+      askCompleted = true;
+      this.#endImTurn(key);
+      onAskComplete?.();
+    };
     try {
       await applyReadDelay({
         settings: humanize,
@@ -4280,16 +5383,12 @@ export class FeishuHarnessBridge {
         superseded.code = 'superseded';
         throw superseded;
       }
-      let askCompleted = false;
-      const markAskComplete = () => {
-        if (askCompleted) return;
-        askCompleted = true;
-        onAskComplete?.();
-      };
       // 分步直推：开关开启且通道支持流式卡时，在构造提示内容之前分流到完整替
       // 代路径（`#answerWithStepPush` 自行构造一次，回复引用回合不做第二次
       // promptContentForInboundMessage 往返）；关闭或无流式卡通道时与 main
-      // 零差异（含下方 `!this.#channel?.stream` 纯文本路径）。
+      // 零差异（含下方 `!this.#channel?.stream` 纯文本路径）。分流位于阅读延迟
+      // 之后：直推路径同样获得拟人化阅读延迟，其图片 staging 经 preAskSignal
+      // 保持可被取代。
       if (this.#stepPush && this.#channel?.stream) {
         return this.#answerWithStepPush(event, key, message, { onAskComplete, preAskSignal });
       }
@@ -4341,6 +5440,8 @@ export class FeishuHarnessBridge {
           key,
           text,
           content,
+          titleText: event.batchSubmission?.title,
+          sourceGuidance: snapshot?.config?.guidance,
           contextEnhanced,
           createOptions: { signal: this.#signal },
           existsOptions: { signal: this.#signal },
@@ -4412,18 +5513,26 @@ export class FeishuHarnessBridge {
               // issue #86：独立交互消息（提问/审批）会落在占位卡下方，呈现前
               // 先换卡，让最终答案落在交互消息之后的新流式卡上。
               onInteraction: async (interaction) => {
-                if ((interaction?.kind === 'question' || interaction?.kind === 'approval')
-                  && typeof controller?.rotate === 'function') {
-                  await controller.rotate();
+                try {
+                  if ((interaction?.kind === 'question' || interaction?.kind === 'approval')
+                    && typeof controller?.rotate === 'function') {
+                    await controller.rotate();
+                  }
+                  await baseAskOptions.onInteraction(interaction);
+                } finally {
+                  // issue #163：呈现完成（或失败）即解除换卡挂起，此后建的新卡
+                  // 必然位于交互消息下方；interactionPresented 不存在时静默跳过。
+                  controller?.interactionPresented?.();
                 }
-                await baseAskOptions.onInteraction(interaction);
               },
               onUpdate: async (update) => {
                 // progressStatus=false: drop tool/status progress text
                 // ("正在使用{name}…", "正在整理结果…"); only stream real text.
                 if (!progressHintsEnabled
                   && update.type !== 'text' && update.type !== 'assistant-message') return;
-                await controller.setContent(this.#progressText(update));
+                await controller.setContent(this.#progressText(update), {
+                  transient: update.type !== 'text',
+                });
                 this.#status.streamUpdates = (this.#status.streamUpdates ?? 0) + 1;
               },
             };
@@ -4434,6 +5543,8 @@ export class FeishuHarnessBridge {
               key,
               text,
               content,
+              titleText: event.batchSubmission?.title,
+              sourceGuidance: snapshot?.config?.guidance,
               contextEnhanced,
               createOptions: { signal: this.#signal },
               existsOptions: { signal: this.#signal },
@@ -4504,6 +5615,8 @@ export class FeishuHarnessBridge {
           key,
           text,
           content,
+          titleText: event.batchSubmission?.title,
+          sourceGuidance: snapshot?.config?.guidance,
           contextEnhanced,
           createOptions: { signal: this.#signal },
           existsOptions: { signal: this.#signal },
@@ -4622,13 +5735,34 @@ export class FeishuHarnessBridge {
     await this.#submitQuestionAnswer(pending, text, {
       chatId: event.message.chat_id,
       messageId,
+      questionMessageId: pending.questionCardMessageId,
     });
   }
 
-  async #submitQuestionAnswer(pending, answerText, { chatId, messageId } = {}) {
+  async #submitQuestionAnswer(pending, answerText, { chatId, messageId, questionMessageId } = {}) {
     const question = pending.questions[pending.index];
     if (!question) return;
     pending.chatId = chatId ?? pending.chatId;
+
+    // issue #162：已答状态卡以推进前的题号渲染，并整卡替换原提问卡。
+    const answeredIndex = pending.index;
+    const answeredCardJson = answeredQuestionCard({
+      interactionId: pending.interactionId,
+      // 评审补充（#162）：与呈现提问卡保持一致，传入原题的文本/标题/说明，
+      // 否则回执会退化为「请输入你的回答。」。
+      question: question.question,
+      header: question.header,
+      detail: question.detail,
+      options: Array.isArray(question?.options) ? question.options : [],
+      chosen: answerText,
+      index: answeredIndex,
+      total: pending.questions.length,
+    });
+    const patchAnsweredCard = () => this.#patchCardMessage(
+      pending.chatId,
+      questionMessageId ?? pending.questionCardMessageId,
+      answeredCardJson,
+    );
 
     pending.answers.push(harnessAnswerForQuestion(question, answerText));
     pending.index += 1;
@@ -4637,6 +5771,7 @@ export class FeishuHarnessBridge {
         pending.claimedReplyMessageId = null;
       }
       pending.needsPresentation = true;
+      await patchAnsweredCard();
       try {
         await this.#presentInteraction(pending);
       } catch {
@@ -4657,6 +5792,8 @@ export class FeishuHarnessBridge {
           answer: { answers: pending.answers },
         },
       });
+      await patchAnsweredCard();
+      this.#answeredInteractionIds.set(pending.interactionId, Date.now() + RESOLVED_REPLY_TTL_MS);
       this.#rememberResolvedInteraction(key, pending);
       this.#clearPendingInteraction(key, pending.interactionId);
       this.#status.lastError = null;
@@ -4793,6 +5930,7 @@ export class FeishuHarnessBridge {
       submitting: false,
       needsPresentation: true,
       questionMessageIds: new Set(),
+      questionCardMessageId: null,
       inactive: false,
     };
     this.#pendingInteractions.set(key, pending);
@@ -4822,6 +5960,10 @@ export class FeishuHarnessBridge {
       && options.length > 0
       && question.multiSelect !== true;
     let messageId;
+    let presentedAsCard = false;
+    // 评审补充（#162）：每次呈现先重置——本题走文本路径（或卡片回退到文本）
+    // 时不得沿用上一题的卡消息 id，否则后一题的回执会覆盖前一张已答卡。
+    pending.questionCardMessageId = null;
     if (interactive) {
       // Single-choice question with options: render each option as a button.
       messageId = await this.#sendCard(
@@ -4836,7 +5978,10 @@ export class FeishuHarnessBridge {
           total: pending.questions.length,
         }),
         { key: pending.key, replyTo: pending.replyToMessageId },
-      ).catch(async () => {
+      ).then((sent) => {
+        presentedAsCard = true;
+        return sent;
+      }).catch(async () => {
         // Fall back to the plain-text question if the card cannot be sent.
         // If the text send also fails, let the error propagate so the pending
         // question is not marked as presented and the existing retry logic runs.
@@ -4863,9 +6008,19 @@ export class FeishuHarnessBridge {
     }
     if (messageId) {
       pending.questionMessageIds.add(messageId);
+      // issue #162：仅卡片路径成功时记录——文本回退产生的消息 id 不参与已答回写。
+      if (presentedAsCard) pending.questionCardMessageId = messageId;
       if (pending.inactive) this.#rememberResolvedInteraction(pending.key, pending);
     }
     pending.needsPresentation = false;
+  }
+
+  #isAnsweredInteraction(interactionId) {
+    const now = Date.now();
+    for (const [id, expiresAt] of this.#answeredInteractionIds) {
+      if (expiresAt <= now) this.#answeredInteractionIds.delete(id);
+    }
+    return this.#answeredInteractionIds.has(interactionId);
   }
 
   #rememberResolvedInteraction(key, pending) {

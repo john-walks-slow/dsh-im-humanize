@@ -1,3 +1,6 @@
+import { normalizeBotAlias } from '../../../../src/channels/shared/bot-alias.mjs';
+import { SET_ALIAS_ENDPOINT, validAliasPayload } from '../shared/bot-alias-rpc.mjs';
+import { registerManagementRpc } from '../../../management-rpc.mjs';
 import QRCode from 'qrcode';
 import {
   normalizeAgentPresetCatalog,
@@ -24,6 +27,10 @@ import {
   normalizeFeishuGroupResponseMode,
 } from '../../../../src/channels/feishu/group-response-mode.mjs';
 import {
+  isFeishuStepPushMode,
+  normalizeFeishuStepPushMode,
+} from '../../../../src/channels/feishu/step-push-mode.mjs';
+import {
   FEISHU_ENDPOINTS as FEISHU_CLIENT_ENDPOINTS,
   FEISHU_RPC_CHANNEL,
 } from '../../../client/channels/feishu/api.js';
@@ -32,6 +39,7 @@ export const FEISHU_ENDPOINTS = Object.freeze({
   ...FEISHU_CLIENT_ENDPOINTS,
   setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
+  setAlias: SET_ALIAS_ENDPOINT,
 });
 export { FEISHU_RPC_CHANNEL };
 export const FEISHU_MULTI_ENDPOINTS = Object.freeze({
@@ -212,6 +220,7 @@ function connectionFacts(connection) {
 function publicBot(bot) {
   const source = bot && typeof bot === 'object' ? bot : {};
   const result = {
+    ...normalizeBotAlias(source),
     name: typeof source.name === 'string' && source.name.length > 0 ? source.name : '飞书机器人',
   };
   if (typeof source.avatarUrl === 'string') result.avatarUrl = source.avatarUrl;
@@ -299,6 +308,7 @@ function publicBotEntry(entry) {
     groupResponseMode: normalizeFeishuGroupResponseMode(source.groupResponseMode),
     groupTopicReply: source.groupTopicReply === true,
     stepPush: source.stepPush === true,
+    stepPushMode: normalizeFeishuStepPushMode(source.stepPushMode),
     groupMessagePermissionGranted: source.groupMessagePermissionGranted === true,
     bot: publicBot(source.bot),
     health: publicHealth(source, connected),
@@ -395,9 +405,10 @@ function validPayload(endpoint, payload) {
       : 'Group message permission update requires a single valid botId.';
   }
   if (endpoint === FEISHU_ENDPOINTS.bindCredentials) {
-    return hasOnlyKeys(payload, new Set(['appId', 'appSecret']))
+    return hasOnlyKeys(payload, new Set(['appId', 'appSecret', 'domain']))
       && validCredential(payload.appId, 256)
       && validCredential(payload.appSecret, 1024)
+      && (payload.domain === undefined || payload.domain === 'feishu' || payload.domain === 'lark')
       ? null
       : 'Credential binding requires App ID and App Secret.';
   }
@@ -453,6 +464,10 @@ function validPayload(endpoint, payload) {
     return validAccessPolicyPayload(payload)
       ? null : '请提交有效的访问设置。';
   }
+  if (endpoint === FEISHU_ENDPOINTS.setAlias) {
+    return validAliasPayload(payload)
+      ? null : '请输入有效的别名（最多 80 个字符）。';
+  }
   if (endpoint === FEISHU_ENDPOINTS.setGroupResponseMode) {
     return hasOnlyKeys(payload, new Set(['botId', 'groupResponseMode']))
       && safeOpaqueId(payload.botId)
@@ -473,6 +488,13 @@ function validPayload(endpoint, payload) {
       && typeof payload.stepPush === 'boolean'
       ? null
       : '请选择是否分步直推。';
+  }
+  if (endpoint === FEISHU_ENDPOINTS.setStepPushMode) {
+    return hasOnlyKeys(payload, new Set(['botId', 'stepPushMode']))
+      && safeOpaqueId(payload.botId)
+      && isFeishuStepPushMode(payload.stepPushMode)
+      ? null
+      : '请选择分步直推的呈现方式。';
   }
   return 'Unknown Feishu endpoint.';
 }
@@ -730,6 +752,12 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
           payload.botId, payload.config,
           (status) => toPublicFeishuStatus(status, { encodeQr: cachedEncodeQr }),
         );
+      } else if (endpoint === FEISHU_ENDPOINTS.setAlias) {
+        if (typeof controller.updateAlias !== 'function') throw new Error('Alias update is unavailable');
+        value = await controller.updateAlias(
+          payload.botId, payload.alias,
+          (status) => toPublicFeishuStatus(status, { encodeQr: cachedEncodeQr }),
+        );
       } else if (endpoint === FEISHU_ENDPOINTS.setHumanize) {
         if (typeof controller.updateHumanize !== 'function') throw new Error('Humanization update is unavailable');
         value = await controller.updateHumanize(
@@ -772,6 +800,14 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
           await controller.updateStepPush(payload.botId, payload.stepPush),
           { encodeQr: cachedEncodeQr },
         );
+      } else if (endpoint === FEISHU_ENDPOINTS.setStepPushMode) {
+        if (typeof controller.updateStepPushMode !== 'function') {
+          throw new Error('Step push mode update is unavailable');
+        }
+        value = await toPublicFeishuStatus(
+          await controller.updateStepPushMode(payload.botId, payload.stepPushMode),
+          { encodeQr: cachedEncodeQr },
+        );
       } else {
         if (typeof controller.deleteBot !== 'function') throw new Error('Multi-bot delete is unavailable');
         value = await toPublicFeishuStatus(await controller.deleteBot(payload.botId), { encodeQr: cachedEncodeQr });
@@ -789,10 +825,7 @@ export function createFeishuRpcHandler(controller, { encodeQr = qrCodeDataUrl } 
 
 /** Register the `/feishu` logical channel with its configured browser authority. */
 export function installFeishuRpc(ctx, controller, options, authority) {
-  if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
-    throw new TypeError('DSH Host Connection RPC is required');
-  }
-  return ctx.connection.rpc.handle(
+  return registerManagementRpc(ctx,
     FEISHU_RPC_CHANNEL,
     createFeishuRpcHandler(controller, options),
     { authority: resolveRpcAuthority(authority) },

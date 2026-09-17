@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { createWeixinDiagnostics, knownWeixinErrorCode, weixinStageError } from './connection-error.mjs';
 
 import {
   normalizeWeixinApiBaseUrl,
@@ -22,26 +23,6 @@ const ACTIVE_ATTEMPT_STATES = new Set([
 ]);
 const TERMINAL_ATTEMPT_STATES = new Set(['connected', 'expired', 'failed', 'cancelled']);
 const QR_TTL_MS = 5 * 60_000;
-const ACTIVATION_ERROR_MESSAGES = Object.freeze({
-  'credential-read-failed': '微信已授权，但无法读取现有登录凭据。请检查 DSH 凭据存储。',
-  'credential-save-failed': '微信已授权，但登录凭据无法写入 DSH 凭据存储。请检查凭据存储是否可写。',
-  'account-config-save-failed': '微信已授权，但账号配置无法写入本机。请检查 DSH_HOME 目录权限。',
-  'runtime-prepare-failed': '微信已授权，但无法初始化账号状态或工作区。请检查 DSH_HOME 和工作区目录。',
-  'harness-connect-failed': '微信已授权，但插件无法连接本机 Harness。请检查 dsh web 地址和端口。',
-  'harness-timeout': '微信已授权，但 Harness 健康检查超时。请确认 dsh web 未阻塞。',
-  'harness-auth-required': '微信已授权，但 Harness 健康检查需要身份认证。请检查代理、网关或自定义鉴权配置。',
-  'harness-proxy-auth-required': '微信已授权，但本机 Harness 请求被代理要求认证。请让回环地址绕过代理，并检查 NO_PROXY 配置。',
-  'harness-loopback-forbidden': '微信已授权，但 Harness 异常拒绝了回环地址的健康检查。请检查 HTTP 代理、Harness 源码版本和构建产物。',
-  'harness-host-untrusted': '微信已授权，但 Harness 的 Host 信任检查拒绝了非回环地址请求。请检查 harnessBaseUrl 与 trustedHosts 配置。',
-  'harness-request-forbidden': '微信已授权，但健康检查收到了非 Harness 标准的 403 拒绝响应。请检查代理或网关配置。',
-  'harness-api-not-found': '微信已授权，但找不到 Harness 健康检查接口。请确认 Harness 与插件版本兼容。',
-  'harness-http-failed': '微信已授权，但 Harness 健康检查返回服务错误。请查看 dsh web 日志。',
-  'harness-response-invalid': '微信已授权，但 Harness 返回了无法识别的响应。请确认 Harness 与插件版本兼容。',
-  'harness-rpc-rejected': '微信已授权，但 Harness 拒绝了健康检查请求。请查看 dsh web 日志。',
-  'harness-check-unknown-failed': '微信已授权，但 Harness 健康检查发生未知错误。请查看 dsh web 日志。',
-  'connection-start-failed': '微信已授权，但消息连接初始化失败。请查看 dsh web 日志后重试。',
-});
-
 function cleanString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -75,24 +56,8 @@ function safeAccountError(code, message) {
   return Object.freeze({ code, message });
 }
 
-function activationStageError(code, cause) {
-  const error = new Error(`Weixin activation failed during ${code}`, { cause });
-  error.name = 'WeixinActivationStageError';
-  error.code = code;
-  return error;
-}
-
-function publicProvisioningError(error) {
-  if (error instanceof WeixinApiError) return safeAccountError(error.code, error.message);
-  const message = ACTIVATION_ERROR_MESSAGES[error?.code];
-  return message
-    ? safeAccountError(error.code, t(message))
-    : safeAccountError('activation-unknown-failed', t('微信已授权，但激活过程中发生未知错误。请查看 dsh web 日志。'));
-}
-
 function preserveActivationError(error, fallbackCode) {
-  if (error instanceof WeixinApiError || ACTIVATION_ERROR_MESSAGES[error?.code]) return error;
-  return activationStageError(fallbackCode, error);
+  return knownWeixinErrorCode(error?.code) ? error : weixinStageError(fallbackCode, error);
 }
 
 export class WeixinController {
@@ -101,7 +66,7 @@ export class WeixinController {
   #configStore;
   #createRuntime;
   #deleteState;
-  #logger;
+  #diagnostics;
   #runtimes = new Map();
   #errors = new Map();
   #attempts = new Map();
@@ -117,6 +82,7 @@ export class WeixinController {
     createRuntime,
     deleteState = async () => {},
     logger = console,
+    diagnostics,
   }) {
     if (!api || typeof api.beginLogin !== 'function' || typeof api.pollLogin !== 'function') {
       throw new TypeError('WeixinController requires a Weixin API client');
@@ -139,7 +105,7 @@ export class WeixinController {
     this.#configStore = configStore;
     this.#createRuntime = createRuntime;
     this.#deleteState = deleteState;
-    this.#logger = logger;
+    this.#diagnostics = diagnostics ?? createWeixinDiagnostics({ logger });
   }
 
   async initialize() {
@@ -152,27 +118,31 @@ export class WeixinController {
         if (!latest || this.#closed) return;
         try {
           const token = await this.#resolveToken(latest.tokenRef);
-          if (!token) {
-            this.#errors.set(
-              latest.botId,
-              safeAccountError('missing-token', t('登录凭据缺失，请移除账号后重新扫码。')),
-            );
-            return;
-          }
-          await this.#startRuntime(latest, token);
+          if (!token) throw weixinStageError('missing-token');
+          await this.#startRuntime(latest, token, { operation: 'connection.restore', automatic: true });
           this.#errors.delete(latest.botId);
+          this.#diagnostics.clear(latest.botId);
         } catch (error) {
-          this.#errors.set(
-            latest.botId,
-            safeAccountError('connection-failed', t('微信连接未就绪，插件会自动重试。')),
-          );
-          this.#logger.warn?.(`[dsh-weixin] account ${latest.botId} failed to initialize:`, error);
+          this.#errors.set(latest.botId, this.#diagnostics.report(error, {
+            operation: 'connection.restore', stage: 'connection.start', botId: latest.botId, automatic: true,
+          }).publicError);
         } finally {
           this.#touch();
         }
       });
     }
     return this.status();
+  }
+
+  reportRestoreFailure(error) {
+    for (const config of this.#configStore.list()) {
+      if (this.#runtimes.get(config.botId)?.status?.ready) continue;
+      this.#errors.set(config.botId, this.#diagnostics.report(error, {
+        operation: 'connection.restore', stage: 'harness.check', code: 'harness-check-unknown-failed',
+        botId: config.botId, automatic: true,
+      }).publicError);
+    }
+    this.#touch();
   }
 
   async startProvisioning() {
@@ -198,7 +168,13 @@ export class WeixinController {
 
     try {
       const localTokens = (await Promise.all(
-        this.#configStore.list().slice(-10).map(async (config) => this.#resolveToken(config.tokenRef)),
+        this.#configStore.list().slice(-10).map(async (config) => {
+          try { return await this.#resolveToken(config.tokenRef); }
+          catch (error) {
+            this.#diagnostics.report(error, { operation: 'provision.begin', botId: config.botId, warning: true });
+            return undefined;
+          }
+        }),
       )).filter(Boolean);
       const login = await this.#api.beginLogin({
         localTokens,
@@ -218,10 +194,8 @@ export class WeixinController {
         record.error = safeAccountError('cancelled', t('扫码绑定已取消。'));
       } else {
         record.state = 'failed';
-        record.error = safeAccountError(
-          error instanceof WeixinApiError ? error.code : 'qr-start-failed',
-          error instanceof WeixinApiError ? error.message : t('无法生成微信二维码，请稍后重试。'),
-        );
+        error = this.#diagnostics.report(error, { operation: 'provision.begin', stage: 'qr.begin', code: 'qr-start-failed' });
+        record.error = error.publicError;
       }
       if (this.#activeAttemptId === record.id) this.#activeAttemptId = null;
       this.#touch();
@@ -236,7 +210,7 @@ export class WeixinController {
   async submitVerification(attemptId, verifyCode) {
     const record = this.#attempts.get(attemptId);
     if (!record || record.state !== 'needs_verification') {
-      throw new Error('The provisioning attempt is not waiting for a verification code');
+      throw weixinStageError(record ? 'provision-state-invalid' : 'provision-attempt-not-found', undefined, 'qr.verify');
     }
     const code = cleanString(verifyCode);
     if (!code || !/^\d{4,8}$/.test(code)) {
@@ -270,14 +244,16 @@ export class WeixinController {
     const config = this.#configStore.get(botId);
     if (!config) throw new Error('Unknown Weixin account');
     await this.#withBotTransition(botId, async () => {
-      const token = await this.#resolveToken(config.tokenRef);
-      if (!token) throw new Error('The Weixin token is missing');
       try {
-        await this.#startRuntime(config, token);
+        const token = await this.#resolveToken(config.tokenRef);
+        if (!token) throw weixinStageError('missing-token');
+        await this.#startRuntime(config, token, { operation: 'bot.reconnect' });
         this.#errors.delete(botId);
+        this.#diagnostics.clear(botId);
       } catch (error) {
-        this.#errors.set(botId, safeAccountError('connection-failed', t('微信连接仍未就绪，请稍后重试。')));
-        throw error;
+        const failure = this.#diagnostics.report(error, { operation: 'bot.reconnect', stage: 'connection.start', botId });
+        this.#errors.set(botId, failure.publicError);
+        throw failure;
       } finally {
         this.#touch();
       }
@@ -315,29 +291,53 @@ export class WeixinController {
 
   async deleteBot(botId) {
     const config = this.#configStore.get(botId);
-    if (!config) throw new Error('Unknown Weixin account');
+    if (!config) throw weixinStageError('workspace-bot-not-found', undefined, 'account.remove');
+    const warnings = [];
+    const context = { operation: 'bot.delete', botId };
     await this.#withBotTransition(botId, async () => {
-      const previousToken = await this.#credentials.resolve(config.tokenRef).catch(() => undefined);
-      await this.#stopRuntime(botId);
+      const previousToken = await this.#credentials.resolve(config.tokenRef).catch(error => {
+        warnings.push(this.#diagnostics.report(weixinStageError('credential-read-failed', error), { ...context, warning: true }).publicError);
+      });
+      warnings.push(...await this.#stopRuntime(botId));
+      let stage = 'credential-remove-failed';
       try {
-        await this.#credentials.unset(config.tokenRef);
+        await this.#writeCredential(config.tokenRef, undefined);
+        stage = 'account-config-remove-failed';
         await this.#configStore.remove(botId);
       } catch (error) {
-        if (previousToken?.value) {
-          await this.#credentials.set(config.tokenRef, previousToken.value).catch(() => undefined);
-          await this.#startRuntime(config, previousToken.value).catch(() => undefined);
+        // A config removal observer may throw after the account was durably removed.
+        if (stage === 'account-config-remove-failed' && !this.#configStore.get(botId)) {
+          warnings.push(this.#diagnostics.report(weixinStageError('workspace-cleanup-failed', error), { ...context, warning: true }).publicError);
+        } else {
+          const failure = this.#diagnostics.report(weixinStageError(stage, error), context);
+          let rollback = previousToken?.value ? 'succeeded' : 'unknown';
+          if (previousToken?.value) {
+            for (const restore of [
+              () => this.#credentials.set(config.tokenRef, previousToken.value),
+              () => this.#startRuntime(config, previousToken.value, context),
+            ]) {
+              try { await restore(); }
+              catch (restoreError) {
+                rollback = 'failed';
+                this.#diagnostics.report(weixinStageError('rollback-failed', restoreError), { ...context, warning: true, parentReferenceId: failure.publicError.details.referenceId });
+              }
+            }
+          }
+          if (rollback === 'succeeded' && !this.#runtimes.get(botId)?.status?.ready) rollback = 'unknown';
+          this.#diagnostics.outcome(failure, rollback);
+          throw failure;
         }
-        throw new Error('Unable to remove the Weixin account safely.', { cause: error });
       }
       try {
         await this.#deleteState({ botId, config });
       } catch (error) {
-        this.#logger.warn?.(`[dsh-weixin] account ${botId} state cleanup failed:`, error);
+        warnings.push(this.#diagnostics.report(weixinStageError('account-state-cleanup-failed', error), { ...context, warning: true }).publicError);
       }
       this.#errors.delete(botId);
+      this.#diagnostics.clear(botId);
       this.#touch();
     });
-    return this.status();
+    return { ...this.status(), ...(warnings.length ? { warnings } : {}) };
   }
 
   status() {
@@ -353,7 +353,7 @@ export class WeixinController {
           : this.#errors.has(config.botId) || runtimeStatus?.weixinConnectionState === 'failed'
             ? 'error'
             : 'offline';
-      const error = this.#errors.get(config.botId) ?? (state === 'error'
+      const error = connected ? null : this.#errors.get(config.botId) ?? runtimeStatus?.connectionError ?? (state === 'error'
         ? safeAccountError('connection-failed', t('微信连接未就绪，插件会自动重试。'))
         : null);
       return {
@@ -409,6 +409,7 @@ export class WeixinController {
     this.#closed = true;
     if (this.#activeAttemptId) await this.cancelProvisioning(this.#activeAttemptId);
     await Promise.allSettled([...this.#runtimes.keys()].map((botId) => this.#stopRuntime(botId)));
+    this.#diagnostics.clear();
   }
 
   async #runProvisioning(record) {
@@ -494,9 +495,12 @@ export class WeixinController {
         record.state = 'cancelled';
         record.error = safeAccountError('cancelled', t('扫码绑定已取消。'));
       } else {
+        const failedStage = record.state === 'connecting' ? 'activation' : 'qr.poll';
         record.state = 'failed';
-        record.error = publicProvisioningError(error);
-        this.#logger.error?.('[dsh-weixin] provisioning failed:', error);
+        record.error = this.#diagnostics.report(error, {
+          operation: 'provision.poll', stage: failedStage,
+          code: 'activation-unknown-failed', rollback: error?.rollback,
+        }).publicError;
       }
     } finally {
       record.pendingVerifyCode = null;
@@ -524,49 +528,64 @@ export class WeixinController {
     try {
       previousToken = await this.#credentials.resolve(identity.tokenRef);
     } catch (error) {
-      throw activationStageError('credential-read-failed', error);
+      throw weixinStageError('credential-read-failed', error);
     }
 
     return this.#withBotTransition(identity.botId, async () => {
       try {
         try {
-          await this.#credentials.set(identity.tokenRef, token);
+          await this.#writeCredential(identity.tokenRef, token);
         } catch (error) {
-          throw activationStageError('credential-save-failed', error);
+          throw weixinStageError('credential-save-failed', error);
         }
         this.#assertAttemptActive(record);
         try {
           await this.#configStore.save(config);
         } catch (error) {
-          throw activationStageError('account-config-save-failed', error);
+          throw weixinStageError('account-config-save-failed', error);
         }
         this.#assertAttemptActive(record);
-        await this.#startRuntime(config, token);
+        await this.#startRuntime(config, token, { operation: 'provision.poll' });
         this.#assertAttemptActive(record);
         this.#errors.delete(identity.botId);
         this.#touch();
         return identity.botId;
       } catch (error) {
-        await this.#stopRuntime(identity.botId);
-        if (previousConfig) await this.#configStore.save(previousConfig).catch(() => undefined);
-        else if (this.#configStore.get(identity.botId)) {
-          const removed = await this.#configStore.remove(identity.botId).catch(() => null);
-          if (removed) {
-            await this.#deleteState({ botId: identity.botId, config }).catch((cleanupError) => {
-              this.#logger.warn?.('[dsh-weixin] failed to clean up cancelled bot state:', cleanupError);
+        const cancelled = record.controller.signal.aborted || error?.name === 'AbortError';
+        const failure = cancelled ? error : this.#diagnostics.report(error, {
+          operation: 'provision.poll', stage: 'activation', code: 'activation-unknown-failed', botId: identity.botId,
+        });
+        let rollback = 'succeeded';
+        const recover = async (action) => {
+          try { return await action(); }
+          catch (restoreError) {
+            rollback = 'failed';
+            this.#diagnostics.report(weixinStageError('rollback-failed', restoreError), {
+              operation: cancelled ? 'provision.cancel' : 'provision.poll', botId: identity.botId, warning: true,
+              parentReferenceId: failure.publicError?.details.referenceId,
             });
           }
+        };
+        await this.#stopRuntime(identity.botId);
+        if (previousConfig) await recover(() => this.#configStore.save(previousConfig));
+        else if (this.#configStore.get(identity.botId)) {
+          const removed = await recover(() => this.#configStore.remove(identity.botId));
+          if (removed) await recover(() => this.#deleteState({ botId: identity.botId, config }));
         }
-        await this.#restoreCredential(identity.tokenRef, previousToken);
+        await recover(() => previousToken?.value
+          ? this.#credentials.set(identity.tokenRef, previousToken.value)
+          : this.#credentials.unset(identity.tokenRef));
         if (previousConfig && previousToken?.value) {
-          await this.#startRuntime(previousConfig, previousToken.value).catch(() => undefined);
+          await recover(() => this.#startRuntime(previousConfig, previousToken.value, { operation: 'provision.poll' }));
+          if (rollback === 'succeeded' && !this.#runtimes.get(identity.botId)?.status?.ready) rollback = 'unknown';
         }
-        throw error;
+        this.#diagnostics.outcome(failure, rollback);
+        throw failure;
       }
     });
   }
 
-  async #startRuntime(config, token) {
+  async #startRuntime(config, token, context = {}) {
     await this.#stopRuntime(config.botId);
     let runtime;
     try {
@@ -575,13 +594,13 @@ export class WeixinController {
       throw preserveActivationError(error, 'runtime-prepare-failed');
     }
     if (!runtime || typeof runtime.start !== 'function' || typeof runtime.stop !== 'function') {
-      throw activationStageError(
+      throw weixinStageError(
         'runtime-prepare-failed',
         new TypeError('createRuntime returned an invalid Weixin runtime'),
       );
     }
     try {
-      await runtime.start();
+      await runtime.start({ ...context, botId: config.botId });
       this.#runtimes.set(config.botId, runtime);
     } catch (error) {
       await runtime.stop().catch(() => undefined);
@@ -592,22 +611,32 @@ export class WeixinController {
   async #stopRuntime(botId) {
     const runtime = this.#runtimes.get(botId);
     this.#runtimes.delete(botId);
-    await runtime?.stop().catch((error) => {
-      this.#logger.warn?.(`[dsh-weixin] account ${botId} failed to stop cleanly:`, error);
-    });
+    try {
+      const stopped = await runtime?.stop();
+      return stopped?.warnings ?? [];
+    } catch (error) {
+      return [this.#diagnostics.report(error, {
+        operation: 'connection.close', stage: 'connection.stop', code: 'connection-stop-failed', botId, warning: true,
+      }).publicError];
+    }
   }
 
   async #resolveToken(ref) {
-    const result = await this.#credentials.resolve(ref).catch(() => undefined);
-    return cleanString(result?.value);
+    try { return cleanString((await this.#credentials.resolve(ref))?.value); }
+    catch (error) { throw weixinStageError('credential-read-failed', error); }
   }
 
-  async #restoreCredential(ref, previous) {
+  async #writeCredential(ref, value) {
     try {
-      if (previous?.value) await this.#credentials.set(ref, previous.value);
-      else await this.#credentials.unset(ref);
-    } catch (error) {
-      this.#logger.error?.(`[dsh-weixin] failed to restore credential ${ref}:`, error);
+      if (value === undefined) await this.#credentials.unset(ref);
+      else await this.#credentials.set(ref, value);
+    } catch (cause) {
+      let description;
+      try { description = await this.#credentials.describe?.(ref); } catch { /* Preserve the original write failure. */ }
+      if (description?.writable === false) {
+        cause = Object.assign(new Error('Credential source is read-only', { cause }), { code: 'read-only' });
+      }
+      throw weixinStageError(value === undefined ? 'credential-remove-failed' : 'credential-save-failed', cause);
     }
   }
 

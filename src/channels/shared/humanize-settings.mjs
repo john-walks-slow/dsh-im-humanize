@@ -5,6 +5,7 @@
  * and progressStatus to a JSON file.
  */
 import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { normalizeOnNewMessage } from './new-message-policy.mjs';
 import {
@@ -145,6 +146,25 @@ export class HumanizeSettingsStore {
     if (this.#loaded) return this.#settings;
     try {
       const raw = await readFile(this.#path, 'utf8');
+      const parsed = JSON.parse(raw);
+      this.#settings = normalizeHumanizeSettings(parsed);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      // File doesn't exist yet — use defaults
+    }
+    this.#loaded = true;
+    return this.#settings;
+  }
+
+  /**
+   * Synchronous twin of load() for activation paths that must not defer
+   * their caller past the first tick (plugin route mounting). Idempotent
+   * with load(): whichever runs first populates the shared snapshot.
+   */
+  loadSync() {
+    if (this.#loaded) return this.#settings;
+    try {
+      const raw = readFileSync(this.#path, 'utf8');
       const parsed = JSON.parse(raw);
       this.#settings = normalizeHumanizeSettings(parsed);
     } catch (error) {

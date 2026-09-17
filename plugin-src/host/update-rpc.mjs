@@ -1,3 +1,4 @@
+import { registerManagementRpc } from '../management-rpc.mjs';
 import { createUpdateRuntime } from './update-runtime.mjs';
 import { createUpdateService } from './update-service.mjs';
 
@@ -42,7 +43,7 @@ export function createUpdateRpcHandler(service) {
 export function installUpdateRpc(ctx, options = {}) {
   const runtime = options.runtime ?? createUpdateRuntime({ ctx, moduleUrl: import.meta.url });
   const service = options.service ?? createUpdateService({ runtime });
-  const dispose = ctx.connection.rpc.handle(UPDATE_RPC_CHANNEL, createUpdateRpcHandler(service), {
+  const dispose = registerManagementRpc(ctx, UPDATE_RPC_CHANNEL, createUpdateRpcHandler(service), {
     authority: 'loopback',
   });
   ctx.effect(() => () => service.close(), 'dsh-im: close update installer');

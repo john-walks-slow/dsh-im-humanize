@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 
 import { normalizeWeixinApiBaseUrl } from './weixin-api.mjs';
 import { t } from '../shared/i18n.mjs';
+import { configValidationError, withConfigResource } from '../shared/config-read-error.mjs';
 
 const EMPTY_DOCUMENT = Object.freeze({ version: 1, accounts: Object.freeze([]) });
 
@@ -37,20 +38,24 @@ export function maskWeixinAccountId(accountId) {
   return `${value.slice(0, 6)}••••${value.slice(-4)}`;
 }
 
-function normalizeAccount(value) {
-  if (!value || typeof value !== 'object') return null;
+function normalizeAccount(value, invalid = () => null) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid('', 'expected-object');
   const accountId = cleanString(value.accountId);
   const ownerUserId = cleanString(value.ownerUserId);
   const botId = safeBotId(value.botId);
   const tokenRef = safeTokenRef(value.tokenRef);
-  if (!accountId || !ownerUserId || !botId || !tokenRef) return null;
+  if (!accountId) return invalid('.accountId', 'invalid-string');
+  if (!ownerUserId) return invalid('.ownerUserId', 'invalid-string');
+  if (!botId) return invalid('.botId', 'invalid-identifier');
+  if (!tokenRef) return invalid('.tokenRef', 'invalid-identifier');
   const derived = deriveWeixinBotIdentity(accountId);
-  if (derived.botId !== botId || derived.tokenRef !== tokenRef) return null;
+  if (derived.botId !== botId) return invalid('.botId', 'identity-mismatch');
+  if (derived.tokenRef !== tokenRef) return invalid('.tokenRef', 'identity-mismatch');
   let baseUrl;
   try {
     baseUrl = normalizeWeixinApiBaseUrl(value.baseUrl);
-  } catch {
-    return null;
+  } catch (error) {
+    return invalid('.baseUrl', error?.code === 'untrusted-base-url' ? 'untrusted-api-url' : 'invalid-api-url');
   }
   return Object.freeze({
     botId,
@@ -64,16 +69,21 @@ function normalizeAccount(value) {
 }
 
 function normalizeDocument(value) {
-  if (!value || value.version !== 1 || !Array.isArray(value.accounts)) return null;
-  const accounts = value.accounts.map(normalizeAccount);
-  if (accounts.some((account) => account === null)) return null;
+  const invalid = (field, issue) => {
+    throw configValidationError('dsh-weixin config contains invalid account data', field, issue);
+  };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid('$', 'expected-object');
+  if (value.version !== 1) return invalid('version', 'unsupported-version');
+  if (!Array.isArray(value.accounts)) return invalid('accounts', 'expected-array');
+  const accounts = value.accounts.map((account, index) => normalizeAccount(account,
+    (field, issue) => invalid(`accounts[${index}]${field}`, issue)));
   const ids = new Set();
   const accountIds = new Set();
   const refs = new Set();
-  for (const account of accounts) {
-    if (ids.has(account.botId) || accountIds.has(account.accountId) || refs.has(account.tokenRef)) {
-      return null;
-    }
+  for (const [index, account] of accounts.entries()) {
+    if (ids.has(account.botId)) return invalid(`accounts[${index}].botId`, 'duplicate-identity');
+    if (accountIds.has(account.accountId)) return invalid(`accounts[${index}].accountId`, 'duplicate-identity');
+    if (refs.has(account.tokenRef)) return invalid(`accounts[${index}].tokenRef`, 'duplicate-identity');
     ids.add(account.botId);
     accountIds.add(account.accountId);
     refs.add(account.tokenRef);
@@ -93,10 +103,9 @@ export class WeixinConfigStore {
   async load() {
     try {
       const normalized = normalizeDocument(JSON.parse(await readFile(this.#path, 'utf8')));
-      if (!normalized) throw new Error('dsh-weixin config contains invalid account data');
       this.#value = normalized;
     } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
+      if (error?.code !== 'ENOENT') throw withConfigResource(error, 'account-config');
       this.#value = EMPTY_DOCUMENT;
     }
     return this;

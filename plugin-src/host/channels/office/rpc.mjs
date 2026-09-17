@@ -1,3 +1,4 @@
+import { registerManagementRpc } from '../../../management-rpc.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { OFFICE_RPC_CHANNEL, OFFICE_RPC_ENDPOINTS } from '../../../../src/channels/office/protocol.mjs';
 
@@ -40,7 +41,7 @@ export function createOfficeRpcHandler(controller) {
 }
 
 export function installOfficeRpc(ctx, controller, authority) {
-  return ctx.connection.rpc.handle(
+  return registerManagementRpc(ctx,
     OFFICE_RPC_CHANNEL,
     createOfficeRpcHandler(controller),
     { authority: resolveRpcAuthority(authority) },

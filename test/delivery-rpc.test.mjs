@@ -1,3 +1,4 @@
+import { managementFetch } from './fixtures/management-rpc.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -128,13 +129,15 @@ test('delivery RPC returns only stable public errors and handles pre-cancelled c
   });
 });
 
-test('delivery RPC uses its own channel and the configured management authority', () => {
+test('delivery RPC uses its own channel and accepts Harness-admitted LAN requests by default', async () => {
   const { service } = serviceFixture();
   const calls = [];
   installDeliveryRpc({
-    connection: { rpc: { handle: (...args) => calls.push(args) } },
-  }, service, { authority: 'trusted-host' });
+    connection: { fetch: managementFetch((...args) => calls.push(args)) },
+  }, service);
   assert.equal(calls[0][0], DELIVERY_RPC_CHANNEL);
   assert.equal(typeof calls[0][1], 'function');
-  assert.deepEqual(calls[0][2], { authority: 'trusted-host' });
+  assert.deepEqual(await calls[0][1]('target.list', { botId: 'bot_one' }, undefined, {
+    host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
+  }), { ok: true, value: { method: 'listTargets' } });
 });

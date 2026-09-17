@@ -1,3 +1,4 @@
+import { managementFetch } from '../../fixtures/management-rpc.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -25,21 +26,23 @@ test('Host exports the DingTalk plugin identity and required services', () => {
   assert.deepEqual(plugin.inject, inject);
 });
 
-test('Host installs loopback RPC for an injected controller', async () => {
+test('Host installs RPC for an injected controller that accepts Harness-admitted LAN requests by default', async () => {
   const calls = [];
   const dispose = () => {};
   const ctx = {
     connection: {
-      rpc: {
-        handle: (...args) => {
-          calls.push(args);
-          return dispose;
-        },
-      },
+      fetch: managementFetch((...args) => {
+        calls.push(args);
+        return dispose;
+      }),
     },
   };
 
   assert.equal(await apply(ctx, { controller: controller() }), dispose);
   assert.equal(calls[0][0], '/dingtalk');
-  assert.deepEqual(calls[0][2], { authority: 'loopback' });
+  assert.equal(calls[0][2].path, '/api/dsh-im/dingtalk');
+  assert.equal((await calls[0][1]('connection.status', {})).ok, true);
+  assert.equal((await calls[0][1]('connection.status', {}, undefined, {
+    host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
+  })).ok, true);
 });

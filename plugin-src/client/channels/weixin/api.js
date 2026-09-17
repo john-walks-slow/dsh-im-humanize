@@ -1,3 +1,5 @@
+import { normalizeWeixinDiagnosticDetails } from '../../../../src/channels/weixin/diagnostic-details.mjs';
+import { normalizeBotAlias } from '../../../../src/channels/shared/bot-alias.mjs';
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
 import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } from '../../model-setting.js';
 import { normalizeLastMessageError } from '../../last-message-error.js';
@@ -20,6 +22,7 @@ export const WEIXIN_ENDPOINTS = Object.freeze({
   setContextEnhancement: 'bot.context-enhancement.set',
   setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: 'bot.access-policy.set',
+  setAlias: 'bot.alias.set',
 });
 
 const ACCOUNT_STATES = new Set(['connected', 'connecting', 'offline', 'error']);
@@ -57,13 +60,38 @@ function normalizeTestMessage(value) {
   return { sent: false, code };
 }
 
+export function normalizeConnectionError(value, fallbackCode = 'WEIXIN_ERROR', fallbackMessage = '微信操作失败，请稍后重试') {
+  const details = normalizeWeixinDiagnosticDetails(value?.details);
+  return {
+    code: string(value?.code, fallbackCode).slice(0, 100),
+    message: string(value?.message, fallbackMessage).slice(0, 500),
+    ...(Object.keys(details).length ? { details } : {}),
+  };
+}
+
+export function managementRequestError(cause, operation) {
+  if (cause?.name === 'AbortError') return cause;
+  const error = new Error('无法完成微信管理请求，请检查 DSH 连接后重新读取状态。');
+  error.code = 'weixin-management-unreachable';
+  error.details = normalizeWeixinDiagnosticDetails({ operation, stage: 'management.request', occurredAt: new Date().toISOString() });
+  return error;
+}
+
+function invalidResponse() {
+  const error = new Error('DSH 微信管理接口返回了无法识别的响应，请重新读取状态。');
+  error.code = 'weixin-management-invalid-response';
+  error.details = { stage: 'management.request', occurredAt: new Date().toISOString() };
+  return error;
+}
+
 export function unwrapRpcResult(result) {
   if (!isRecord(result) || typeof result.ok !== 'boolean') {
-    throw new Error('微信服务返回了无法识别的响应');
+    throw invalidResponse();
   }
   if (!result.ok) {
-    const error = new Error(string(result.error?.message, '微信操作失败'));
-    error.code = string(result.error?.code, 'WEIXIN_RPC_ERROR');
+    if (!isRecord(result.error)) throw invalidResponse();
+    const visible = normalizeConnectionError(result.error, 'WEIXIN_RPC_ERROR', '微信操作失败');
+    const error = Object.assign(new Error(visible.message), visible);
     throw error;
   }
   return result.value;
@@ -93,7 +121,7 @@ export function safeVerificationUrl(value) {
 
 export function normalizeProvisioning(value) {
   if (!isRecord(value) || !string(value.attemptId)) {
-    throw new Error('微信扫码服务没有返回有效的绑定任务');
+    throw invalidResponse();
   }
   const status = PROVISION_STATES.has(value.status) ? value.status : 'failed';
   const result = {
@@ -110,10 +138,7 @@ export function normalizeProvisioning(value) {
   if (string(value.botId)) result.botId = string(value.botId);
   if (value.alreadyConnected === true) result.alreadyConnected = true;
   if (isRecord(value.error)) {
-    result.error = {
-      code: string(value.error.code, 'WEIXIN_PROVISION_FAILED'),
-      message: string(value.error.message, '微信绑定没有完成'),
-    };
+    result.error = normalizeConnectionError(value.error, 'WEIXIN_PROVISION_FAILED', '微信绑定没有完成');
   }
   return result;
 }
@@ -138,6 +163,7 @@ function normalizeBot(value) {
       ? { accessPolicy: normalizeAccessPolicy(value.accessPolicy) }
       : {}),
     bot: {
+      ...normalizeBotAlias(value.bot),
       name: string(value.bot.name, '微信机器人'),
       accountIdMasked: string(value.bot.accountIdMasked, '已安全保存'),
     },
@@ -152,17 +178,14 @@ function normalizeBot(value) {
     },
     lastMessageError: normalizeLastMessageError(value.lastMessageError),
     error: isRecord(value.error)
-      ? {
-          code: string(value.error.code, 'WEIXIN_ACCOUNT_ERROR'),
-          message: string(value.error.message, '微信连接未就绪'),
-        }
+      ? normalizeConnectionError(value.error, 'WEIXIN_ACCOUNT_ERROR', '微信连接未就绪')
       : null,
   };
 }
 
 export function normalizeSnapshot(value) {
   if (!isRecord(value) || !Array.isArray(value.bots)) {
-    throw new Error('微信服务没有返回有效的账号列表');
+    throw invalidResponse();
   }
   const bots = value.bots.map(normalizeBot).filter(Boolean);
   return {
@@ -176,6 +199,7 @@ export function normalizeSnapshot(value) {
     },
     provisioning: value.provisioning ? normalizeProvisioning(value.provisioning) : null,
     testMessage: normalizeTestMessage(value.testMessage),
+    warnings: Array.isArray(value.warnings) ? value.warnings.filter(isRecord).slice(0, 8).map(error => normalizeConnectionError(error)) : [],
     agentPresetCatalog: normalizeAgentPresetCatalog(value.agentPresetCatalog),
     ...(isRecord(value.humanizeDefaults)
       ? { humanizeDefaults: value.humanizeDefaults }
@@ -185,10 +209,7 @@ export function normalizeSnapshot(value) {
 }
 
 export function presentError(error) {
-  return {
-    code: string(error?.code, 'WEIXIN_ERROR'),
-    message: string(error?.message, '微信操作失败，请稍后重试'),
-  };
+  return normalizeConnectionError(error);
 }
 
 export function formatRemaining(milliseconds) {

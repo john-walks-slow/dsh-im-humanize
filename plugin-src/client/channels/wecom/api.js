@@ -1,3 +1,4 @@
+import { normalizeBotAlias } from '../../../../src/channels/shared/bot-alias.mjs';
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
 import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } from '../../model-setting.js';
 import { normalizeLastMessageError } from '../../last-message-error.js';
@@ -21,6 +22,7 @@ export const WECOM_ENDPOINTS = Object.freeze({
   setContextEnhancement: 'bot.context-enhancement.set',
   setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: 'bot.access-policy.set',
+  setAlias: 'bot.alias.set',
 });
 
 const PROVISION_STATES = new Set(['starting', 'pending', 'refreshing', 'connecting', 'connected', 'failed', 'cancelled']);
@@ -113,6 +115,7 @@ function normalizeBot(value) {
       ? { accessPolicy: normalizeAccessPolicy(value.accessPolicy) }
       : {}),
     bot: {
+      ...normalizeBotAlias(value.bot),
       name: text(value.bot?.name, '企业微信机器人', 100),
       appIdMasked: text(value.bot?.appIdMasked, '应用标识已安全保存', 140),
     },

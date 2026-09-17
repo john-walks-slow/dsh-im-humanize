@@ -57,8 +57,8 @@ export default {
     'This conversation exceeds the model context limit. Send /compact or /new, then try again.',
   '当前模型不存在或暂不可用。请发送 /models 查看并使用 /model 切换模型。':
     'The current model does not exist or is unavailable. Send /models and use /model to switch models.',
-  '当前模型不存在或不支持所选配置。请发送 /models，并使用 /model 重新选择。':
-    'The current model does not exist or does not support the selected settings. Send /models and use /model to choose again.',
+  '当前模型不存在或不支持所选配置。请发送 /models，再用 /model <序号> 为当前聊天重新选择。若要修改后续新会话的默认模型，请到 DSH 设置 → IM机器人 → 对应机器人卡片修改。':
+    'The current model does not exist or does not support the selected settings. Send /models, then use /model <index> to choose a model for the current conversation. To change the default model for new conversations, open DSH Settings → IM Bots → the corresponding bot card.',
   '当前模型不支持这类内容或所选配置。请调整内容、模型或推理等级后重试。':
     'The current model does not support this content or the selected settings. Adjust the content, model, or reasoning effort and try again.',
   '当前模型不支持所选配置。请切换模型或推理等级后重试。':
@@ -89,8 +89,8 @@ export default {
     'The Workspace or Session state just changed. Please send this message again.',
   '当前工作区不存在或暂不可用。请重新选择工作区后重试。':
     'The current Workspace does not exist or is unavailable. Select another Workspace and try again.',
-  '当前 Agent Preset 不存在或暂不可用。请发送 /presetlist 后重新选择。':
-    'The current Agent Preset does not exist or is unavailable. Send /presetlist and select another one.',
+  '当前 Agent Preset 无法使用。请发送 /presetlist 查看可用项，使用 /preset <序号或 ID> 重新选择，再发送 /new 创建新会话后重试。如需继续原会话，请联系管理员恢复原 Preset。':
+    'The current Agent Preset is unavailable. Send /presetlist to see available options, select one with /preset <index or ID>, then send /new to create a new Session and try again. To continue the original Session, ask an administrator to restore the original Preset.',
   '回复已经生成，但机器人没有发送权限。请联系管理员检查渠道权限或重新绑定机器人。':
     'The reply was generated, but the bot cannot send it. Ask an administrator to check channel permissions or reconnect the bot.',
   '回复已经生成，但当前渠道正在限流，暂时无法发送。请稍后重试。':
@@ -118,10 +118,54 @@ export default {
   '直接发送文字、图片、文件或带文字识别结果的语音即可继续当前会话。':
     'Send text, an image, a file, or a voice message already transcribed to text to continue the current session.',
   '{label}机器人已连接 DeepSeek Harness。': 'The {label} bot is connected to DeepSeek Harness.',
+  '查看最近历史消息（仅私聊）': 'Show recent history (private chats only)',
+  '按序号列出当前模型可用推理等级': 'List reasoning efforts for the current model by index',
+  '查看或切换当前推理等级': 'Show or switch the current reasoning effort',
   '/new  开启一个全新会话': '/new  Start a brand-new session',
   '/compact  压缩当前会话的较早上下文': '/compact  Compact the earlier context of the current session',
   '/workspace 工作区序号或绝对路径  切换工作区':
     '/workspace <workspace index or absolute path>  Switch workspace',
+  '设置当前对话专属工作区': 'Set a workspace dedicated to this conversation',
+  '/conv 或 /conversation  查看当前对话工作区':
+    '/conv or /conversation  Show the workspace of this conversation',
+  '/conv 工作区绝对路径或序号  设置当前对话专属工作区':
+    '/conv <workspace absolute path or index>  Set a workspace dedicated to this conversation',
+  '/conv clear  清除专属工作区，回到 bot 默认工作区':
+    '/conv clear  Clear the dedicated workspace and fall back to the bot default',
+  '对话专属：/conv 工作区序号或绝对路径（仅影响当前对话）':
+    'Dedicated to this conversation: /conv <workspace index or absolute path> (affects this conversation only)',
+  '当前对话工作区：{workspace}': 'This conversation uses the workspace: {workspace}',
+  '状态：已为该对话显式绑定，之后修改 bot 默认工作区不会影响本对话。':
+    'Status: explicitly bound for this conversation; changing the bot default workspace later will not affect it.',
+  '状态：未显式绑定，当前跟随 bot 默认工作区。':
+    'Status: not explicitly bound; this conversation currently follows the bot default workspace.',
+  '当前对话工作区已切换为：{workspace}': 'This conversation now uses the workspace: {workspace}',
+  '已清除对话专属工作区，当前使用 bot 默认工作区：{workspace}（之后默认工作区的变化会同步到本对话）':
+    'Cleared the dedicated workspace. This conversation now uses the bot default: {workspace} (later changes to that default follow here as well)',
+  '可切换的工作区（{count}）：': 'Available workspaces ({count}):',
+  '用法：/conv 工作区序号或绝对路径': 'Usage: /conv <workspace index or absolute path>',
+  '清除：/conv clear': 'Clear: /conv clear',
+  '{message}\n用法：/conv 工作区绝对路径': '{message}\nUsage: /conv <workspace absolute path>',
+  '当前机器人暂不支持按对话设置专属工作区。':
+    'This bot does not support per-conversation workspaces yet.',
+  '当前机器人暂不支持设置对话工作区。':
+    'This bot does not support setting a conversation workspace yet.',
+  '当前消息缺少可设置的对话上下文。':
+    'This message has no conversation context to bind a workspace to.',
+  '暂时无法读取当前对话工作区，请稍后重试。':
+    'This conversation workspace is temporarily unavailable. Please try again later.',
+  '暂时无法清除对话工作区，请稍后重试。':
+    'The conversation workspace could not be cleared right now. Please try again later.',
+  '机器人正在移除或已重新接入，无法读取对话工作区。':
+    'The bot is being removed or was reconnected, so the conversation workspace cannot be read.',
+  '机器人正在移除或已重新接入，无法清除对话工作区。':
+    'The bot is being removed or was reconnected, so the conversation workspace cannot be cleared.',
+  '机器人正在移除或已重新接入，无法切换对话工作区。':
+    'The bot is being removed or was reconnected, so the conversation workspace cannot be switched.',
+  '不带工作区参数时，/sessionlist 默认列出当前对话的有效工作区。':
+    'Without a workspace argument, /sessionlist lists the workspace this conversation effectively uses.',
+  '不带工作区参数时，默认列出当前对话的有效工作区（未设置对话专属工作区时即 bot 默认工作区）。':
+    'Without a workspace argument it lists the workspace this conversation effectively uses (the bot default when no conversation workspace is set).',
   '/workspacelist  列出工作区绝对路径': '/workspacelist  List absolute workspace paths',
   '/ws、/wsl、/workspaces  工作区命令别名': '/ws, /wsl, /workspaces  Workspace command aliases',
   '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题':
@@ -182,4 +226,15 @@ export default {
     'Failed to submit the answer. Please resend your answer to the current question.',
   '检测到这个 Session 中遗留的待回答问题，已安全取消并继续处理你刚才的消息。':
     'A pending question left over in this Session was detected. It has been safely cancelled, and your latest message is being processed.',
+  // Inline-keyboard question cards (text-harness-bridge.mjs).
+  '该问题已处理，无需再次选择。':
+    'This question has already been handled; no further choice is needed.',
+  '只有发起当前任务的用户可以处理这条问题。':
+    'Only the user who started this task can answer this question.',
+  '正在提交你的选择，请稍候。': 'Submitting your choice, please wait.',
+  '这个选项已失效，请使用最新一条问题。':
+    'This option has expired. Please use the most recent question message.',
+  '多选问题请直接回复文字。':
+    'Please answer a multi-select question by replying with text.',
+  '已选择：{label}': 'Selected: {label}',
 };

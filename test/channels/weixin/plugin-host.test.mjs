@@ -1,3 +1,4 @@
+import { managementFetch } from '../../fixtures/management-rpc.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -43,34 +44,40 @@ function controllerFixture() {
   return controller;
 }
 
-test('Host plugin registers the Weixin RPC channel as loopback-only', async () => {
+test('Host plugin accepts Harness-admitted LAN requests on the Weixin RPC channel by default', async () => {
   let registration;
   const dispose = async () => {};
   const ctx = {
-    connection: { rpc: { handle: (channel, handler, options) => {
+    connection: { fetch: managementFetch((channel, handler, options) => {
       registration = { channel, handler, options };
       return dispose;
-    } } },
+    }) },
   };
   const returned = await apply(ctx, { controller: controllerFixture() });
   assert.equal(returned, dispose);
   assert.equal(registration.channel, '/weixin');
-  assert.deepEqual(registration.options, { authority: 'loopback' });
+  assert.equal(registration.options.path, '/api/dsh-im/weixin');
+  assert.equal((await registration.handler('connection.status', {}, undefined, {
+    host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
+  })).ok, true);
 });
 
-test('Host plugin opts the Weixin RPC channel into trusted Host authorities', async () => {
+test('Host plugin preserves an explicit loopback restriction on the Weixin RPC channel', async () => {
   let registration;
   const ctx = {
-    connection: { rpc: { handle: (channel, handler, options) => {
+    connection: { fetch: managementFetch((channel, handler, options) => {
       registration = { channel, handler, options };
       return async () => {};
-    } } },
+    }) },
   };
   await apply(ctx, {
     controller: controllerFixture(),
-    rpcAuthority: 'trusted-host',
+    rpcAuthority: 'loopback',
   });
-  assert.deepEqual(registration.options, { authority: 'trusted-host' });
+  await assert.rejects(registration.handler('connection.status', {}, undefined, {
+    host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
+  }), /HTTP 403/);
+  assert.equal((await registration.handler('connection.status', {})).ok, true);
 });
 
 test('RPC returns QR data and verification states without exposing secret-shaped fields', async () => {

@@ -66,7 +66,10 @@ function gatewayCloseError(code) {
 
 function stripBotMention(text, botId) {
   if (typeof text !== 'string') return '';
-  return text.replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
+  return text
+    .split(`<@${botId}>`).join('')
+    .split(`<@!${botId}>`).join('')
+    .trim();
 }
 
 function cleanThreadName(message, botId) {
@@ -149,7 +152,7 @@ async function sendThreadUncertainNotice(api, normalized, signal) {
     await api.createMessage({
       channelId: normalized.replyTarget.channelId,
       replyToMessageId: normalized.replyTarget.replyToMessageId,
-      content: 'Thread 创建结果暂时无法确认。若已创建，请在对应 Thread 中重试；若未创建，请稍后重新 @机器人。',
+      content: t('Thread 创建结果暂时无法确认。若已创建，请在对应 Thread 中重试；若未创建，请稍后重新 @机器人。'),
       signal,
     });
   } catch (error) {

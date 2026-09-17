@@ -40,7 +40,9 @@ function decodeSlackText(value) {
 
 function stripBotMention(value, botUserId) {
   return decodeSlackText(value)
-    .replace(new RegExp(`<@${botUserId}>`, 'gi'), '')
+    .split(`<@${botUserId}>`).join('')
+    .split(`<@${String(botUserId).toLowerCase()}>`).join('')
+    .split(`<@${String(botUserId).toUpperCase()}>`).join('')
     .trim();
 }
 

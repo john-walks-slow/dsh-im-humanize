@@ -21,6 +21,8 @@ const ILINK_CLIENT_VERSION = (2 << 16) | (4 << 8) | 6;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const WEIXIN_CDN_UPLOAD_RETRIES = 3;
+const WEIXIN_CDN_UPLOAD_IDLE_TIMEOUT_MS = 60_000;
+const WEIXIN_CDN_UPLOAD_CHUNK_BYTES = 64 * 1024;
 const WEIXIN_MESSAGE_ID_TIMESTAMP_SHIFT = 22n;
 const WEIXIN_MESSAGE_ID_MIN_TIMESTAMP_MS = Date.UTC(2020, 0, 1);
 const WEIXIN_MESSAGE_ID_MAX_FUTURE_MS = 24 * 60 * 60 * 1_000;
@@ -79,6 +81,9 @@ function weixinArtifactError(cause, { fallback = 'artifact-provider-rejected' } 
     || /(?:rate.?limit|too.?many)/i.test(providerText)) {
     code = 'artifact-rate-limited';
     message = 'Weixin rate-limited file delivery.';
+  } else if (cause?.code === 'upload-timeout') {
+    code = 'artifact-upload-timeout';
+    message = 'Weixin file upload stalled; the file message was not sent.';
   } else if (fallback === 'artifact-provider-rejected') {
     message = 'Weixin rejected the file message.';
   }
@@ -93,9 +98,9 @@ function uncertainWeixinDelivery(cause) {
   return preserveArtifactMetadata(error, cause);
 }
 
-function rejectedProviderResponse(value) {
+export function rejectedProviderResponse(value, fields = ['ret', 'errcode']) {
   if (!value || typeof value !== 'object') return null;
-  for (const field of ['ret', 'errcode']) {
+  for (const field of fields) {
     if (value[field] !== undefined && value[field] !== 0 && value[field] !== '0') {
       return safeProviderCode(value[field]) ?? 'rejected';
     }
@@ -339,25 +344,54 @@ function weixinCdnUploadUrl(response, fileKey) {
   return trustedWeixinCdnUploadUrl(url);
 }
 
-function encryptWeixinUpload(bytes, key) {
+async function* encryptWeixinUpload(bytes, key, { signal, onProgress }) {
   const cipher = createCipheriv('aes-128-ecb', key, null);
-  return Buffer.concat([cipher.update(bytes), cipher.final()]);
+  // Let fetch backpressure drive encryption, without keeping whole-file
+  // ciphertext copies alongside a potentially large artifact buffer.
+  for (let offset = 0; offset < bytes.byteLength; offset += WEIXIN_CDN_UPLOAD_CHUNK_BYTES) {
+    signal.throwIfAborted();
+    const chunk = cipher.update(bytes.subarray(offset, offset + WEIXIN_CDN_UPLOAD_CHUNK_BYTES));
+    onProgress();
+    if (chunk.byteLength) yield chunk;
+  }
+  signal.throwIfAborted();
+  onProgress();
+  yield cipher.final();
 }
 
-async function uploadWeixinCdn(fetchImpl, url, ciphertext, { signal } = {}) {
+async function uploadWeixinCdn(fetchImpl, url, bytes, key, { signal } = {}) {
   let lastError;
   for (let attempt = 1; attempt <= WEIXIN_CDN_UPLOAD_RETRIES; attempt += 1) {
     signal?.throwIfAborted();
+    const idleController = new AbortController();
+    const uploadSignal = signal
+      ? AbortSignal.any([signal, idleController.signal])
+      : idleController.signal;
+    let timer;
+    let active = true;
+    const onProgress = () => {
+      if (!active) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => idleController.abort(new WeixinApiError(
+        'upload-timeout', '微信文件上传长时间没有进展，已超时。',
+      )), WEIXIN_CDN_UPLOAD_IDLE_TIMEOUT_MS);
+    };
+    const body = encryptWeixinUpload(bytes, key, { signal: uploadSignal, onProgress });
+    let response;
+    onProgress();
     try {
-      const response = await fetchImpl(url, {
+      response = await fetchImpl(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/octet-stream' },
-        body: ciphertext,
-        signal: signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(60_000)])
-          : AbortSignal.timeout(60_000),
+        headers: {
+          'content-type': 'application/octet-stream',
+          'content-length': String(aesEcbPaddedSize(bytes.byteLength)),
+        },
+        body,
+        duplex: 'half',
+        signal: uploadSignal,
         redirect: 'error',
       });
+      uploadSignal.throwIfAborted();
       if (response.status >= 400 && response.status < 500) {
         throw new WeixinApiError(
           'upload-rejected',
@@ -373,16 +407,21 @@ async function uploadWeixinCdn(fetchImpl, url, ciphertext, { signal } = {}) {
         );
       }
       const downloadParam = nonEmptyString(response.headers.get('x-encrypted-param'));
-      await response.body?.cancel?.().catch(() => undefined);
       if (!downloadParam) {
         throw new WeixinApiError('invalid-upload-response', '微信文件上传响应缺少下载参数。');
       }
       return downloadParam;
     } catch (error) {
       if (signal?.aborted) throw abortError(signal);
+      if (idleController.signal.aborted) error = idleController.signal.reason;
       if (error instanceof WeixinApiError
         && (error.code === 'upload-rejected' || error.status < 500)) throw error;
       lastError = error;
+    } finally {
+      active = false;
+      clearTimeout(timer);
+      await body.return();
+      await response?.body?.cancel?.().catch(() => undefined);
     }
   }
   if (lastError instanceof WeixinApiError) throw lastError;
@@ -411,6 +450,7 @@ async function requestJson(fetchImpl, {
   }
 
   const controller = new AbortController();
+  const startedAt = Date.now();
   let timedOut = false;
   const onAbort = () => controller.abort(signal?.reason);
   if (signal?.aborted) throw abortError(signal);
@@ -441,11 +481,16 @@ async function requestJson(fetchImpl, {
     }
   } catch (error) {
     if (signal?.aborted) throw abortError(signal);
+    let failure;
     if (timedOut) {
-      throw new WeixinApiError('timeout', '微信服务请求超时。', { cause: error });
+      failure = new WeixinApiError('timeout', '微信服务请求超时。', { cause: error });
+    } else {
+      failure = error instanceof WeixinApiError ? error
+        : new WeixinApiError('network-error', '暂时无法访问微信服务。', { cause: error });
     }
-    if (error instanceof WeixinApiError) throw error;
-    throw new WeixinApiError('network-error', '暂时无法访问微信服务。', { cause: error });
+    failure.durationMs = Date.now() - startedAt;
+    failure.timeoutMs = timeoutMs;
+    throw failure;
   } finally {
     if (timer) clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
@@ -518,10 +563,10 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
       ));
     }
     const uploadUrl = weixinCdnUploadUrl(upload, fileKey);
-    const ciphertext = encryptWeixinUpload(file.bytes, aesKey);
+    const ciphertextSize = aesEcbPaddedSize(file.bytes.byteLength);
     let downloadParam;
     try {
-      downloadParam = await uploadWeixinCdn(fetchImpl, uploadUrl, ciphertext, { signal });
+      downloadParam = await uploadWeixinCdn(fetchImpl, uploadUrl, file.bytes, aesKey, { signal });
     } catch (error) {
       if (signal?.aborted) throw abortError(signal);
       const status = Number(error?.status);
@@ -558,7 +603,7 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
             client_id: clientId,
             message_type: 2,
             message_state: 2,
-            item_list: [createItem({ file, media, ciphertextSize: ciphertext.byteLength })],
+            item_list: [createItem({ file, media, ciphertextSize })],
             ...(nonEmptyString(contextToken) ? { context_token: contextToken.trim() } : {}),
             ...(nonEmptyString(runId) ? { run_id: runId.trim() } : {}),
           },
@@ -599,6 +644,8 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
         signal,
       });
       const qrcode = nonEmptyString(response?.qrcode);
+      const providerCode = rejectedProviderResponse(response, ['errcode', 'ret']);
+      if (providerCode) throw new WeixinApiError('qr-request-rejected', '微信服务拒绝了二维码申请。', { providerCode });
       if (!qrcode) throw new WeixinApiError('invalid-qr', '微信服务没有返回二维码令牌。');
       return {
         qrcode,
@@ -764,14 +811,15 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
         timeoutMs: 10_000,
         body: { base_info: baseInfo() },
       });
-      if (response?.ret !== undefined && response.ret !== 0) {
-        throw new WeixinApiError('start-rejected', '微信账号连接启动失败。');
+      const providerCode = rejectedProviderResponse(response, ['errcode', 'ret']);
+      if (providerCode) {
+        throw new WeixinApiError(providerCode === '-14' ? 'stale-token' : 'start-rejected', '微信账号连接启动失败。', { providerCode });
       }
       return response;
     },
 
     async notifyStop({ baseUrl, token, signal }) {
-      return requestJson(fetchImpl, {
+      const response = await requestJson(fetchImpl, {
         method: 'POST',
         baseUrl,
         endpoint: 'ilink/bot/msg/notifystop',
@@ -780,6 +828,9 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
         timeoutMs: 10_000,
         body: { base_info: baseInfo() },
       });
+      const providerCode = rejectedProviderResponse(response, ['errcode', 'ret']);
+      if (providerCode) throw new WeixinApiError('stop-rejected', '微信服务未确认停止通知。', { providerCode });
+      return response;
     },
   });
 }

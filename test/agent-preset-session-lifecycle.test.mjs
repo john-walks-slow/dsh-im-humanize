@@ -9,6 +9,7 @@ import {
   createBotWorkspaceScope,
 } from '../src/channels/shared/bot-workspace-store.mjs';
 import { ConversationStateStore } from '../src/channels/shared/conversation-state-store.mjs';
+import { HarnessRpcError } from '../src/channels/shared/harness-client.mjs';
 import { TextHarnessBridge } from '../src/channels/shared/text-harness-bridge.mjs';
 
 function message(messageId, content) {
@@ -132,4 +133,77 @@ test('/preset changes only the sessions created after /new and --default follows
     { sessionId: 'session-c', text: 'first prompt using Host default' },
   ]);
   assert.equal(sent.at(-1), 'answer-from-session-c');
+});
+
+test('a missing preset is recoverable by selecting an available preset and starting a new Session', async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-im-preset-recovery-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const botId = 'bot-one';
+  const key = 'direct:chat-one';
+  const workspaces = await new BotWorkspaceStore(join(root, 'workspaces.json'), {
+    defaultWorkspace: root,
+  }).load();
+  await workspaces.ensure(botId, { defaultAgentPreset: 'preset-old' });
+  const state = await new ConversationStateStore(join(root, 'state.json')).load();
+  const sessions = new Map();
+  const availablePresets = new Set(['preset-old', 'preset-new']);
+  const harness = {
+    async createSession({ agentPreset }) {
+      const id = `session-${sessions.size + 1}`;
+      sessions.set(id, agentPreset);
+      return id;
+    },
+    async sessionExists(id) { return sessions.has(id); },
+    async ask(id) {
+      if (!availablePresets.has(sessions.get(id))) {
+        throw new HarnessRpcError('session.prompt', {
+          code: 'agent-preset/not-found', message: 'The Session preset was removed',
+        });
+      }
+      return `answer-from-${id}`;
+    },
+  };
+  const scope = createBotWorkspaceScope(harness, {
+    botId,
+    workspaces,
+    state,
+    agentPresetCatalog: () => ({
+      defaultId: 'preset-new',
+      items: [...availablePresets].map((id) => ({ id, label: id })),
+    }),
+  });
+  const sent = [];
+  const bridge = new TextHarnessBridge({
+    descriptor: { key: 'test', label: 'Test' },
+    bot: { async sendText(_target, text) { sent.push(text); } },
+    harness: scope.harness,
+    state: scope.state,
+    logger: { warn() {}, error() {} },
+  });
+
+  await bridge.accept(message('initial', 'first prompt'));
+  assert.equal(sent.at(-1), 'answer-from-session-1');
+  availablePresets.delete('preset-old');
+  await bridge.accept(message('missing', 'continue the original Session'));
+  assert.equal(bridge.status.lastMessageError.code, 'PRESET_UNAVAILABLE');
+  assert.equal(bridge.status.lastMessageError.reason, 'AGENT_PRESET_NOT_FOUND');
+  assert.equal(state.sessionFor(key), 'session-1');
+
+  await bridge.accept(message('list', '/presetlist'));
+  assert.match(sent.at(-1), /1\. preset-new/u);
+  await bridge.accept(message('select', '/preset 1'));
+  assert.equal(workspaces.agentPresetFor(botId), 'preset-new');
+  await bridge.accept(message('before-new', 'retry without a new Session'));
+  assert.equal(bridge.status.lastMessageError.code, 'PRESET_UNAVAILABLE');
+  assert.equal(state.sessionFor(key), 'session-1');
+  assert.equal(sessions.size, 1);
+
+  await bridge.accept(message('new', '/new'));
+  assert.equal(state.sessionFor(key), null);
+  await bridge.accept(message('recovered', 'retry in the new Session'));
+  assert.equal(state.sessionFor(key), 'session-2');
+  assert.equal(sessions.get('session-2'), 'preset-new');
+  assert.equal(sent.at(-1), 'answer-from-session-2');
+  assert.equal(bridge.status.lastMessageError, null);
+  assert.equal(sessions.get('session-1'), 'preset-old');
 });

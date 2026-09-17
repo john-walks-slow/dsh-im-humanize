@@ -65,6 +65,13 @@ const CHANNEL_DEFINITIONS = Object.freeze({
       group: [{ key: 'chatId', label: '群 Chat ID', placeholder: '填写群 chatid' }],
     },
   },
+  wecomApp: {
+    label: '企业微信应用',
+    kinds: [{ value: 'user', label: '私聊' }],
+    fields: {
+      user: [{ key: 'chatId', label: '用户 ID', placeholder: '填写企业微信用户 ID' }],
+    },
+  },
   qq: {
     label: 'QQ',
     kinds: [{ value: 'user', label: '单聊' }, { value: 'group', label: '群聊' }],
@@ -107,6 +114,11 @@ const CHANNEL_DEFINITIONS = Object.freeze({
       user: [{ key: 'jid', label: '用户 JID', placeholder: '8613800000000@s.whatsapp.net' }],
       group: [{ key: 'jid', label: '群 JID', placeholder: '1234567890@g.us' }],
     },
+  },
+  imessage: {
+    label: 'iMessage',
+    kinds: [{ value: 'user', label: '私聊' }],
+    fields: { user: [{ key: 'chatGuid', label: 'Chat GUID', placeholder: 'iMessage;+;chat123' }] },
   },
 });
 

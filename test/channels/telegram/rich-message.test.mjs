@@ -10,6 +10,7 @@ import {
   createOutboundArtifactTool,
   releaseOutboundArtifact,
 } from '../../../src/channels/shared/semantic/artifact.mjs';
+import { getImHostLanguage, setImHostLanguage } from '../../../src/channels/shared/i18n.mjs';
 import { TelegramApi } from '../../../src/channels/telegram/telegram-api.mjs';
 import { TelegramHarnessBridge } from '../../../src/channels/telegram/telegram-bridge.mjs';
 import {
@@ -196,6 +197,85 @@ test('Telegram API uses the documented Rich Message, Draft, and rich edit fields
     draftId: 0,
     richMessage: { markdown: 'draft' },
   }), /non-zero integer/);
+});
+
+test('Telegram sends no Chinese in English mode, on the Draft and placeholder paths', async (t) => {
+  const previous = getImHostLanguage();
+  t.after(() => setImHostLanguage(previous));
+  setImHostLanguage('en');
+  const outbound = [];
+  const client = new TelegramBotClient({
+    api: {
+      sendRichMessageDraft: async (payload) => {
+        outbound.push(payload.richMessage?.markdown ?? '');
+        return true;
+      },
+      sendRichMessage: async (payload) => {
+        outbound.push(payload.richMessage?.markdown ?? '');
+        return { message_id: 801 };
+      },
+      sendMessage: async (payload) => {
+        outbound.push(payload.text);
+        return { message_id: 802 };
+      },
+      editMessageText: async (payload) => {
+        outbound.push(payload.text);
+        return true;
+      },
+    },
+    logger: { warn() {} },
+  });
+
+  // The private path opens a Rich Draft; the group path sends a plain
+  // placeholder. Both emit the "working on it" text before any model output,
+  // which is the first thing a reader ever sees from the bot.
+  const privateStream = await client.openDeliveryStream({ chatId: 42, chatType: 'private' });
+  await privateStream.finish({ kind: 'text', text: '# done', format: 'markdown' });
+  const groupStream = await client.openDeliveryStream({ chatId: 43, chatType: 'group' });
+  await groupStream.finish({ kind: 'text', text: 'done', format: 'plain' });
+
+  assert.ok(outbound.length >= 4, `expected both paths to emit, got ${JSON.stringify(outbound)}`);
+  assert.equal(
+    outbound.filter((text) => /[\p{Script=Han}]/u.test(text)).join(' | '),
+    '',
+    'no message sent to Telegram may contain Chinese while the host language is English',
+  );
+  assert.ok(outbound.includes('Processing…'), `expected a translated placeholder, got ${JSON.stringify(outbound)}`);
+});
+
+test('the Telegram placeholder follows a language switch in both directions, per message', async (t) => {
+  const previous = getImHostLanguage();
+  t.after(() => setImHostLanguage(previous));
+  const placeholders = [];
+  const client = new TelegramBotClient({
+    api: {
+      sendMessage: async (payload) => {
+        placeholders.push(payload.text);
+        return { message_id: 700 + placeholders.length };
+      },
+      editMessageText: async () => true,
+    },
+    logger: { warn() {} },
+  });
+
+  // Unlike the command menu -- which the platform stores and Telegram clients
+  // cache -- the placeholder is message content, read from t() at send time.
+  // So it must track the current language on every single message, with no
+  // reconnect and no cache to invalidate, in both directions and repeatedly.
+  const sequence = ['zh', 'en', 'zh', 'en', 'en', 'zh'];
+  for (const language of sequence) {
+    setImHostLanguage(language);
+    await client.openDeliveryStream({ chatId: 44, chatType: 'group' });
+  }
+
+  assert.deepEqual(placeholders, [
+    '正在处理…',
+    'Processing…',
+    '正在处理…',
+    'Processing…',
+    'Processing…',
+    '正在处理…',
+  ], 'every message must use the language in force when it was sent');
 });
 
 test('Telegram private stream reuses one non-zero Draft id and persists one Rich final', async () => {
@@ -949,4 +1029,137 @@ test('Telegram group processing failure replaces its placeholder instead of leav
   assert.match(edits[0].text, /任务未完成，暂时无法确定原因/);
   assert.match(edits[0].text, /错误码：INTERNAL_UNKNOWN；参考号：MF-[A-F0-9]{8}/);
   assert.equal(Object.hasOwn(edits[0], 'richMessage'), false);
+});
+
+test('Telegram private Draft refresh re-sends the last frame for keepalive', async () => {
+  const drafts = [];
+  const finals = [];
+  const client = new TelegramBotClient({
+    api: {
+      sendRichMessageDraft: async (payload) => { drafts.push(payload); return true; },
+      sendRichMessage: async (payload) => { finals.push(payload); return { message_id: 811 }; },
+    },
+    logger: { warn() {} },
+  });
+  const stream = await client.openDeliveryStream({
+    chatId: 42,
+    chatType: 'private',
+    replyToMessageId: 44,
+    messageThreadId: 66,
+  });
+
+  assert.equal(stream.keepalive, true, 'the private Draft carrier asks for keepalive');
+  await stream.update({ kind: 'text', text: '## partial', format: 'markdown' });
+  const before = drafts.length;
+  const refreshResult = await stream.refresh();
+  assert.deepEqual(refreshResult, {
+    presentation: 'telegram-rich-draft',
+    providerMessageIds: [],
+    deliveryOutcome: 'sent',
+  }, 'refresh resolves with the draft delivery result');
+  assert.equal(drafts.length, before + 1, 'refresh re-sends the draft');
+  assert.equal(drafts[before].draftId, drafts[before - 1].draftId, 'refresh keeps the same Draft id');
+  assert.deepEqual(drafts[before].richMessage, { markdown: '## partial' }, 'refresh re-sends the latest frame');
+
+  await stream.finish({ kind: 'text', text: '## final', format: 'markdown' });
+  assert.equal(finals.length, 1);
+});
+
+test('Telegram Draft refresh is a no-op after the stream is finished', async () => {
+  const drafts = [];
+  const client = new TelegramBotClient({
+    api: {
+      sendRichMessageDraft: async (payload) => { drafts.push(payload); return true; },
+      sendRichMessage: async () => ({ message_id: 821 }),
+    },
+    logger: { warn() {} },
+  });
+  const stream = await client.openDeliveryStream({
+    chatId: 42,
+    chatType: 'private',
+    replyToMessageId: 44,
+  });
+
+  await stream.update({ kind: 'text', text: 'partial', format: 'plain' });
+  await stream.finish({ kind: 'text', text: 'final', format: 'plain' });
+  const settled = drafts.length;
+  await stream.refresh();
+  assert.equal(drafts.length, settled, 'refresh after finish never re-sends');
+});
+
+test('Telegram group placeholder stream does not refresh (real message needs no keepalive)', async () => {
+  const created = [];
+  const edited = [];
+  const client = new TelegramBotClient({
+    api: {
+      sendMessage: async () => { created.push('created'); return { message_id: 901 }; },
+      editMessageText: async (payload) => { edited.push(payload); return { message_id: 901 }; },
+      sendRichMessage: async () => ({ message_id: 902 }),
+    },
+    logger: { warn() {} },
+  });
+  const stream = await client.openDeliveryStream({
+    chatId: -100123,
+    chatType: 'supergroup',
+    replyToMessageId: 44,
+    messageThreadId: 55,
+  });
+
+  assert.equal(stream.keepalive, false, 'the group placeholder carrier does not ask for keepalive');
+  await stream.update({ kind: 'text', text: '## partial', format: 'markdown' });
+  const editsBefore = edited.length;
+  await stream.refresh();
+  assert.equal(edited.length, editsBefore, 'refresh does not edit the placeholder again');
+  await stream.finish({ kind: 'text', text: '## final', format: 'markdown' });
+  assert.equal(edited.length, editsBefore + 1, 'only the final frame edits the placeholder');
+});
+
+test('Telegram keepalive refresh serializes ahead of finish so the final frame lands last', async () => {
+  const order = [];
+  let draftCalls = 0;
+  let releaseRefreshGate;
+  const refreshGate = new Promise((resolve) => { releaseRefreshGate = resolve; });
+  const client = new TelegramBotClient({
+    api: {
+      sendRichMessageDraft: async (payload) => {
+        draftCalls += 1;
+        order.push(`draft:${payload.richMessage.markdown}`);
+        // The third Draft call is the keepalive refresh re-sending the latest
+        // frame; hold it in flight to prove finish() queues behind it.
+        if (draftCalls === 3) await refreshGate;
+      },
+      sendRichMessage: async (payload) => {
+        order.push(`final:${payload.richMessage.markdown}`);
+        return { message_id: 831 };
+      },
+    },
+    logger: { warn() {} },
+  });
+  const stream = await client.openDeliveryStream({
+    chatId: 42,
+    chatType: 'private',
+    replyToMessageId: 44,
+  });
+
+  // 正在处理… (openDeliveryStream) -> partial (update).
+  await stream.update({ kind: 'text', text: 'partial', format: 'markdown' });
+  assert.deepEqual(order, ['draft:正在处理…', 'draft:partial']);
+  // The heartbeat fires refresh() while its draft request is still in flight.
+  const refreshing = stream.refresh();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(order, ['draft:正在处理…', 'draft:partial', 'draft:partial'],
+    'the keepalive refresh re-sent the latest frame and is now in flight');
+  // finish() is called while the refresh is still pending; it must queue behind it.
+  const finishing = stream.finish({ kind: 'text', text: 'final', format: 'markdown' });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(order, ['draft:正在处理…', 'draft:partial', 'draft:partial'],
+    'finish waits for the in-flight refresh');
+  releaseRefreshGate();
+  await Promise.all([refreshing, finishing]);
+  assert.deepEqual(order, [
+    'draft:正在处理…',
+    'draft:partial',
+    'draft:partial',
+    'final:final',
+  ], 'the final frame is the last write');
 });

@@ -13,7 +13,6 @@ export function validModelPayload(payload) {
     || !/^[A-Za-z0-9_-]{1,128}$/.test(payload.botId)) return false;
   if (payload.model === null) return true;
   return isRecord(payload.model)
-    && Object.keys(payload.model).length === 2
-    && Object.keys(payload.model).every((key) => ['provider', 'model'].includes(key))
+    && Object.keys(payload.model).every((key) => ['provider', 'model', 'reasoningEffort'].includes(key))
     && normalizeModelSelection(payload.model) !== null;
 }

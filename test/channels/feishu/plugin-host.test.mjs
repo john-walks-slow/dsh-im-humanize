@@ -1,3 +1,4 @@
+import { managementFetch } from '../../fixtures/management-rpc.mjs';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -13,6 +14,7 @@ import {
   createProductionController,
   createProvisioningBackedController,
 } from '../../../plugin-src/host/channels/feishu/index.mjs';
+import { assertPathMatches, toPosixPath } from '../../support/filesystem.mjs';
 
 const signal = () => new AbortController().signal;
 
@@ -38,12 +40,10 @@ async function rpcFixture(controller) {
   let disposed = false;
   const ctx = {
     connection: {
-      rpc: {
-        handle(channel, handler, options) {
-          registration = { channel, handler, options };
-          return async () => { disposed = true; };
-        },
-      },
+      fetch: managementFetch((channel, handler, options) => {
+        registration = { channel, handler, options };
+        return async () => { disposed = true; };
+      }),
     },
   };
   const dispose = await apply(ctx, { controller });
@@ -54,7 +54,7 @@ async function rpcFixture(controller) {
   };
 }
 
-test('Host plugin registers the real rc.6 Connection RPC shape as loopback-only', async () => {
+test('Host plugin accepts Harness-admitted LAN requests on the public management Fetch route by default', async () => {
   const controller = {
     status: async () => status(),
     startRegistration: async () => status(),
@@ -64,7 +64,10 @@ test('Host plugin registers the real rc.6 Connection RPC shape as loopback-only'
   const fx = await rpcFixture(controller);
 
   assert.equal(fx.registration.channel, '/feishu');
-  assert.deepEqual(fx.registration.options, { authority: 'loopback' });
+  assert.equal(fx.registration.options.path, '/api/dsh-im/feishu');
+  assert.equal((await fx.registration.handler(FEISHU_ENDPOINTS.status, {}, undefined, {
+    host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
+  })).ok, true);
   const result = await fx.registration.handler(FEISHU_ENDPOINTS.status, {}, signal());
   assert.equal(result.ok, true);
   assert.equal(result.value.state, 'disconnected');
@@ -352,6 +355,36 @@ test('Host validates and updates the Feishu step push flag', async () => {
   assert.equal(invalid.ok, false);
   assert.equal(invalid.error.code, 'bad-request');
   await fx.dispose();
+});
+
+test('manual credentials accept only supported optional domains and forward them unchanged', async (t) => {
+  const calls = [];
+  const fx = await rpcFixture({
+    status: async () => status(),
+    startRegistration: async () => status(),
+    cancelRegistration: async () => status(),
+    disconnect: async () => status(),
+    bindCredentials: async (payload) => {
+      calls.push(payload);
+      return status();
+    },
+  });
+  t.after(() => fx.dispose());
+  const credentials = { appId: 'cli_manual', appSecret: 'manual-private-secret' };
+  for (const payload of [credentials, { ...credentials, domain: 'feishu' }, { ...credentials, domain: 'lark' }]) {
+    const result = await fx.registration.handler(FEISHU_ENDPOINTS.bindCredentials, payload, signal());
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls.at(-1), payload);
+    assert.doesNotMatch(JSON.stringify(result), /manual-private-secret|appSecret/);
+  }
+  for (const domain of ['', 'Lark', 'https://open.larksuite.com', 'unknown', null, false, 1, {}]) {
+    const result = await fx.registration.handler(
+      FEISHU_ENDPOINTS.bindCredentials, { ...credentials, domain }, signal(),
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'bad-request');
+  }
+  assert.equal(calls.length, 3);
 });
 
 test('RPC dispatch matches every endpoint in client/api.js', async () => {
@@ -1302,7 +1335,7 @@ test('production assembly uses ctx credentials and the active Host apiProxy with
   assert.equal(constructed.harness.apiProxy, apiProxy);
   assert.equal(Object.hasOwn(constructed.harness, 'baseUrl'), false);
   assert.equal(constructed.harness.autostart, false);
-  assert.match(constructed.configPath, /integrations\/dsh-feishu\/config\.json$/);
+  assertPathMatches(constructed.configPath, /integrations\/dsh-feishu\/config\.json$/);
 
   await constructed.controller.createRuntime({
     config: {
@@ -1312,7 +1345,7 @@ test('production assembly uses ctx credentials and the active Host apiProxy with
     },
     appSecret: 'host-only',
   });
-  assert.match(constructed.statePath, /integrations\/dsh-feishu\/state\.json$/);
+  assertPathMatches(constructed.statePath, /integrations\/dsh-feishu\/state\.json$/);
   assert.equal(constructed.runtime.appSecret, 'host-only');
   assert.equal(constructed.runtime.wsAgent, wsAgent);
   assert.equal(constructed.runtime.slashCommands, false);
@@ -1347,8 +1380,8 @@ test('production assembly uses ctx credentials and the active Host apiProxy with
   const betaState = constructed.runtime.state;
   assert.equal(Object.hasOwn(constructed.runtime, 'outboundArtifactsEnabled'), false);
   assert.notEqual(alphaState, betaState);
-  assert.ok(constructed.statePaths.some((path) => /bots\/bot_alpha\/state\.json$/.test(path)));
-  assert.ok(constructed.statePaths.some((path) => /bots\/bot_beta\/state\.json$/.test(path)));
+  assert.ok(constructed.statePaths.some((path) => /bots\/bot_alpha\/state\.json$/.test(toPosixPath(path))));
+  assert.ok(constructed.statePaths.some((path) => /bots\/bot_beta\/state\.json$/.test(toPosixPath(path))));
   await production.close();
   assert.equal(constructed.closed, true);
   assert.equal(constructed.harnessStopped, true);

@@ -75,6 +75,12 @@ function stateFixture(initialSessions = []) {
   };
 }
 
+function botEvent(messageId, text, overrides = {}) {
+  const result = event(messageId, text, { senderOpenId: 'ou_peer_bot', ...overrides });
+  result.sender.sender_type = 'bot';
+  return result;
+}
+
 function bridgeStatus() {
   return {
     messagesReceived: 0,
@@ -896,6 +902,151 @@ test('mention response mode ignores unaddressed groups and only accepts this bot
     chat_type: 'group', chat_id: 'oc_group_mentions',
   }));
   assert.deepEqual(asked, ['你好', '无需提及']);
+});
+
+for (const groupResponseMode of ['mention', 'all']) {
+  test(`bot group mentions are accepted by default and deduplicated in ${groupResponseMode} mode`, async () => {
+    const fixture = stateFixture([['group:oc_bot_group', 'session-bot-group']]);
+    const asked = [];
+    const sent = [];
+    const status = bridgeStatus();
+    const bridge = new FeishuHarnessBridge({
+      client: textClient(async ({ text }) => sent.push(text)),
+      channel: {},
+      harness: {
+        sessionExists: async () => true,
+        ask: async (sessionId, text) => {
+          asked.push({ sessionId, text });
+          return '收到';
+        },
+      },
+      state: fixture.state,
+      status,
+      allowedSenderOpenIds: new Set(['ou_peer_bot']),
+      botOpenId: 'ou_bot',
+      groupResponseMode,
+    });
+
+    const message = botEvent('bot-mention', '@_bot 帮忙检查', {
+      chat_type: 'group', chat_id: 'oc_bot_group',
+      mentions: [{ key: '@_bot', id: { open_id: 'ou_bot' } }],
+    });
+    await Promise.all([bridge.accept(message), bridge.accept(message)]);
+    await bridge.accept(message);
+    assert.deepEqual(asked, [{ sessionId: 'session-bot-group', text: '帮忙检查' }]);
+    assert.deepEqual(sent, ['收到']);
+    assert.equal(status.messagesReceived, 1);
+    assert.equal(status.messagesReplied, 1);
+
+    await bridge.accept(botEvent('bot-mention-flat-id', '@_bot 再检查一次', {
+      chat_type: 'group', chat_id: 'oc_bot_group',
+      mentions: [{ key: '@_bot', open_id: 'ou_bot' }],
+    }));
+    assert.equal(asked.at(-1).text, '再检查一次');
+    assert.equal(status.messagesReceived, 2);
+  });
+
+  test(`bot messages without an explicit mention of this bot are ignored in ${groupResponseMode} mode`, async () => {
+    for (const { name, overrides, botOpenId = 'ou_bot' } of [
+      { name: 'no mentions', overrides: { mentions: [] } },
+      { name: 'another bot', overrides: { mentions: [{ id: { open_id: 'ou_other_bot' } }] } },
+      { name: 'mention everyone', overrides: { mentions: [{ id: { open_id: 'all' } }] } },
+      { name: 'malformed mentions', overrides: { mentions: { open_id: 'ou_bot' } } },
+      { name: 'missing mention id', overrides: { mentions: [{ name: 'This Bot' }, null] } },
+      { name: 'unknown bot identity', botOpenId: null },
+      { name: 'self message', overrides: { senderOpenId: 'ou_bot' } },
+      { name: 'direct message', overrides: { chat_type: 'p2p' } },
+      { name: 'unknown chat type', overrides: { chat_type: 'unknown' } },
+      { name: 'missing message id', overrides: { message_id: '' } },
+      { name: 'reply without mention', overrides: { mentions: [], parent_id: 'om_bot_reply' } },
+    ]) {
+      const fixture = stateFixture();
+      const status = bridgeStatus();
+      const bridge = new FeishuHarnessBridge({
+        client: textClient(async () => assert.fail(`unexpected reply: ${name}`)),
+        channel: {},
+        harness: { ensureRunning: async () => assert.fail(`unexpected Harness work: ${name}`) },
+        state: fixture.state,
+        status,
+        allowedSenderOpenIds: new Set(['*']),
+        botOpenId,
+        groupResponseMode,
+      });
+      await bridge.accept(botEvent(name, '@_bot 你好', {
+        chat_type: 'group', chat_id: 'oc_bot_group',
+        mentions: [{ key: '@_bot', id: { open_id: 'ou_bot' } }],
+        ...overrides,
+      }));
+      assert.equal(status.messagesReceived, 0, name);
+      assert.equal(fixture.seen.size, 0, name);
+      assert.equal(fixture.sessions.size, 0, name);
+    }
+  });
+}
+
+test('bot group mentions still obey the group allowlist and command permissions', async () => {
+  const fixture = stateFixture([['group:oc_bot_group', 'session-bot-group']]);
+  const accessPolicy = directAccessPolicy();
+  const settings = accessPolicy.getSettings();
+  const asked = [];
+  const sent = [];
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async (_sessionId, text) => {
+        asked.push(text);
+        return '收到';
+      },
+    },
+    state: fixture.state,
+    status: bridgeStatus(),
+    accessPolicy,
+    botOpenId: 'ou_bot',
+  });
+  const group = {
+    chat_type: 'group', chat_id: 'oc_bot_group',
+    mentions: [{ key: '@_bot', id: { open_id: 'ou_bot' } }],
+  };
+
+  await bridge.accept(botEvent('bot-not-allowed', '@_bot 帮忙检查', group));
+  assert.deepEqual(asked, []);
+  assert.deepEqual(sent, []);
+
+  settings.group.allowlist.users.push({ id: 'ou_peer_bot', canExecuteCommands: false });
+  await bridge.accept(botEvent('bot-allowed', '@_bot 帮忙检查', group));
+  assert.deepEqual(asked, ['帮忙检查']);
+  assert.deepEqual(sent, ['收到']);
+
+  await bridge.accept(botEvent('bot-command-denied', '@_bot /new', group));
+  assert.equal(sent.at(-1), COMMAND_PERMISSION_DENIED_MESSAGE);
+  assert.equal(fixture.sessions.get('group:oc_bot_group'), 'session-bot-group');
+  assert.deepEqual(asked, ['帮忙检查']);
+
+  settings.group.allowlist.users[0].canExecuteCommands = true;
+  await bridge.accept(botEvent('bot-command-allowed', '@_bot /new', group));
+  assert.equal(fixture.sessions.has('group:oc_bot_group'), false);
+});
+
+test('bot group mentions still obey the legacy sender allowlist', async () => {
+  const status = bridgeStatus();
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async () => assert.fail('unexpected reply')),
+    channel: {},
+    harness: {},
+    state: stateFixture().state,
+    status,
+    allowedSenderOpenIds: new Set(['ou_owner']),
+    botOpenId: 'ou_bot',
+    logger: { warn() {} },
+  });
+  await bridge.accept(botEvent('bot-legacy-rejected', '@_bot 你好', {
+    chat_type: 'group', chat_id: 'oc_bot_group',
+    mentions: [{ key: '@_bot', id: { open_id: 'ou_bot' } }],
+  }));
+  assert.equal(status.messagesReceived, 0);
+  assert.equal(status.messagesRejected, 1);
 });
 
 test('bridge downloads an inbound Feishu image once and submits structured Harness content', async () => {
@@ -4302,12 +4453,65 @@ test('issue #86: even without any progress update, the final answer must not pre
   );
 });
 
+test('streamed tool updates between questions do not replay the frozen answer prefix', async () => {
+  const secondAnswerAccepted = deferred();
+  const context = issue86RotationFixture({
+    onInteractionOverride: async (sessionId, options) => {
+      const question = (interactionId, respond) => ({
+        kind: 'question', interactionId, rpcId: interactionId, sessionId,
+        payload: {
+          type: 'question/requested', sessionId,
+          questions: [{ id: 'environment', question: '请选择测试环境', options: [{ label: '测试环境' }] }],
+        },
+        respond,
+      });
+      await options.onUpdate({ type: 'text', text: '最终回答：' });
+      await options.onInteraction(question('question-86', async (result) => {
+        context.submitStarted.resolve(result);
+        await context.answerAccepted.promise;
+        return { accepted: true };
+      }));
+      await context.answerAccepted.promise;
+      await options.onUpdate({ type: 'tool', name: 'read_file' });
+      await options.onInteraction(question('question-followup', async () => {
+        secondAnswerAccepted.resolve();
+        return { accepted: true };
+      }));
+      await secondAnswerAccepted.promise;
+    },
+  });
+  const questions = () => context.timeline.filter(
+    (entry) => entry.kind === 'text-message' && entry.text.includes('请选择测试环境'),
+  );
+  const turn = context.bridge.accept(event('om-86-prompt', '请先提问两次再回答'));
+  await eventually(() => questions().length === 1);
+  const firstReply = context.bridge.accept(event('om-first-answer', '1', {
+    root_id: 'om-86-prompt', parent_id: questions()[0].messageId, thread_id: 'omt-86',
+  }));
+  await context.submitStarted.promise;
+  context.answerAccepted.resolve();
+  await firstReply;
+  await eventually(() => questions().length === 2);
+  await context.bridge.accept(event('om-second-answer', '1', {
+    root_id: 'om-86-prompt', parent_id: questions()[1].messageId, thread_id: 'omt-86',
+  }));
+  await turn;
+  await context.bridge.waitForIdle();
+  const contents = context.timeline.filter((entry) => entry.kind === 'card-content');
+  assert.ok(contents.some((entry) => entry.cardId === 'card-86-2'
+    && entry.content.includes('read_file')), 'the tool status is still presented');
+  assert.equal(contents.at(-1).content, '选择了测试环境');
+});
+
 function issue86RotationFixture({
   postAnswerUpdate = false,
   onInteractionOverride = null,
   failFinalize = false,
   failFinishCardId = null,
   skipInteraction = false,
+  interactionCards = false,
+  questions: questionsOverride = null,
+  patchFails = false,
 } = {}) {
   const fixture = stateFixture([['p2p:ou_user', 'session-issue-86']]);
   const timeline = [];
@@ -4348,15 +4552,33 @@ function issue86RotationFixture({
   client.im.v1.message.reply = async (request) => {
     replySequence += 1;
     const messageId = `om-86-${replySequence}`;
-    const content = JSON.parse(request.data.content);
+    let parsedText = '';
+    let card;
+    try {
+      const content = JSON.parse(request.data.content);
+      parsedText = typeof content.text === 'string' ? content.text : '';
+      if (request.data.msg_type === 'interactive') card = content;
+    } catch {
+      // 保持默认空文本
+    }
     timeline.push({
       kind: request.data.msg_type === 'text' ? 'text-message' : 'card-message',
       messageId,
-      text: typeof content.text === 'string' ? content.text : '',
+      text: parsedText,
+      ...(card ? { card } : {}),
     });
     return { code: 0, data: { message_id: messageId } };
   };
   client.im.v1.message.delete = async () => ({ code: 0 });
+  client.im.v1.message.patch = async (request) => {
+    timeline.push({
+      kind: 'card-patch',
+      messageId: request.path.message_id,
+      content: request.data.content,
+    });
+    if (patchFails) throw new Error('patch failed');
+    return { code: 0 };
+  };
   client.im.v1.messageReaction = {
     create: async () => ({ code: 0, data: { reaction_id: 'reaction-86' } }),
     delete: async () => ({ code: 0 }),
@@ -4368,7 +4590,7 @@ function issue86RotationFixture({
     // issue #86 rotation tests assert the streaming-card flow with the
     // plain-text question reply; the interaction card path is tested
     // separately, so pin the text presentation here.
-    interactionCards: false,
+    interactionCards,
     harness: {
       sessionExists: async () => true,
       currentWorkspace: () => null,
@@ -4391,7 +4613,7 @@ function issue86RotationFixture({
             payload: {
               type: 'question/requested',
               sessionId,
-              questions: [{
+              questions: questionsOverride ?? [{
                 id: 'environment',
                 header: '测试环境',
                 question: '请选择测试环境',
@@ -4445,6 +4667,84 @@ async function bridge_accept_and_answer({ bridge, timeline, submitStarted, answe
   const receipt = await turn;
   await bridge.waitForIdle();
   return { receipt, questionIndex };
+}
+
+function bridge_ask(context) {
+  if (!context.turn) context.turn = context.bridge.accept(event('om-86-prompt', '请先调用 ask_user_question'));
+  return context.turn;
+}
+
+function questionCardEntries(timeline) {
+  return timeline.filter((entry) => entry.kind === 'card-message'
+    && entry.card && JSON.stringify(entry.card).includes('请补充信息'));
+}
+
+async function waitQuestionCard(context) {
+  bridge_ask(context);
+  await eventually(
+    () => questionCardEntries(context.timeline).length > 0,
+    'the question card was not presented',
+  );
+  return questionCardEntries(context.timeline).at(-1);
+}
+
+async function settleAnswer(context, { waitFinal = true } = {}) {
+  if (!waitFinal) return;
+  await Promise.race([
+    context.submitStarted.promise,
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error('the card answer never reached the Harness interaction')),
+      1_000,
+    )),
+  ]);
+  context.answerAccepted.resolve();
+  await context.turn;
+  await context.bridge.waitForIdle();
+}
+
+async function bridge_click_option(context, label, { waitFinal = true, index = 0 } = {}) {
+  const entry = await waitQuestionCard(context);
+  const clicked = context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, `answer:question-86:${index}:${label}`, 'ou_user'),
+  );
+  await settleAnswer(context, { waitFinal });
+  await clicked;
+  const patches = context.timeline.filter((e) => e.kind === 'card-patch');
+  return { timeline: context.timeline, cardPatch: patches.at(-1) ?? null, cardPatchCount: patches.length };
+}
+
+async function bridge_click_custom(context, { waitFinal = true, index = 0 } = {}) {
+  const entry = await waitQuestionCard(context);
+  const clicked = context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, `answerCustom:question-86:${index}`, 'ou_user'),
+  );
+  await settleAnswer(context, { waitFinal });
+  await clicked;
+  return {
+    timeline: context.timeline,
+    replyText: context.timeline.filter((e) => e.kind === 'text-message').at(-1)?.text ?? '',
+  };
+}
+
+async function bridge_answer_by_text(context, text) {
+  const entry = await waitQuestionCard(context);
+  const turn = context.bridge.accept(event('om-86-text-answer', text, {
+    root_id: 'om-86-prompt',
+    parent_id: entry.messageId,
+    thread_id: 'omt-86',
+  }));
+  await Promise.race([
+    context.submitStarted.promise,
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error('the text answer never reached the Harness interaction')),
+      1_000,
+    )),
+  ]);
+  context.answerAccepted.resolve();
+  await turn;
+  await context.bridge.waitForIdle();
+  const patches = context.timeline.filter((e) => e.kind === 'card-patch');
+  return { timeline: context.timeline, cardPatch: patches.at(-1) ?? null };
 }
 
 test('issue #86: post-interaction progress and the final answer land on the rotated card', async () => {
@@ -4522,6 +4822,188 @@ test('issue #86: a failure after rotation still falls back to plain text', async
     ),
     'the final answer must be delivered as fallback text',
   );
+});
+
+test('issue #163: 换卡挂起期的并发进度更新，其落卡必须晚于提问呈现', async () => {
+  const context = issue86RotationFixture({
+    onInteractionOverride: async (sessionId, options) => {
+      const interaction = {
+        kind: 'question',
+        interactionId: 'question-86',
+        rpcId: 'question-86',
+        sessionId,
+        payload: {
+          type: 'question/requested',
+          sessionId,
+          questions: [{
+            id: 'environment',
+            header: '测试环境',
+            question: '请选择测试环境',
+            options: [{ label: '测试环境' }, { label: '生产环境' }],
+          }],
+        },
+        respond: async (result) => {
+          context.submitStarted.resolve(result);
+          await context.answerAccepted.promise;
+          return { accepted: true };
+        },
+      };
+      // 先启动呈现（内部先 rotate 定格再发提问），随后并发到达的进度更新
+      // 处于换卡挂起期：不得在提问呈现完成前建新卡。
+      const presentation = options.onInteraction(interaction);
+      const progress = options.onUpdate({ type: 'tool', name: 'read_file' });
+      await presentation;
+      await progress;
+    },
+  });
+  const { receipt } = await bridge_accept_and_answer(context);
+  const entries = context.timeline;
+  const questionIndex = entries.findIndex((entry) => entry.kind === 'text-message'
+    && entry.text.includes('请选择测试环境'));
+  assert.ok(questionIndex > -1, '提问文本消息必须存在');
+  const newCardCreatedIndex = entries.findIndex((entry) => entry.kind === 'card-created'
+    && entry.cardId === 'card-86-2');
+  assert.ok(newCardCreatedIndex > questionIndex, '换卡后的新卡必须创建在提问呈现之后');
+  const oldCardWrites = entries.filter((e) => e.kind === 'card-content' && e.cardId === 'card-86-1');
+  assert.ok(oldCardWrites.at(-1).content.includes('最终结果见下方'), '旧卡定格后零写回');
+  assert.deepEqual(receipt.providerMessageIds, ['om-86-1', 'om-86-3'], 'receipt 契约不变');
+});
+
+test('issue #162: 点选后原提问卡被 patch 为已答状态卡（内容为卡 JSON 字符串，不双重编码）', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const cardPatch = context.timeline.filter((e) => e.kind === 'card-patch').at(-1);
+  assert.ok(cardPatch, '必须发生已答卡回写');
+  const questionCardEntry = questionCardEntries(context.timeline)[0];
+  assert.equal(cardPatch.messageId, questionCardEntry.messageId, '必须 patch 原提问卡消息');
+  assert.ok(!cardPatch.content.startsWith('"'), 'content 不得是二次序列化的字符串');
+  const card = JSON.parse(cardPatch.content);
+  const json = JSON.stringify(card);
+  assert.ok(json.includes('✅ 已回答') && json.includes('✅ 已选择：生产环境'));
+  assert.ok(!json.includes('"tag":"button"'), '已答卡不得再含按钮');
+});
+
+test('issue #162: 多问题交互第 1 题卡先回写已答，再呈现第 2 题', async () => {
+  const questions = [
+    { id: 'environment', header: '测试环境', question: '请选择测试环境', options: [{ label: '测试环境' }, { label: '生产环境' }] },
+    { id: 'scope', header: '改动范围', question: '请选择改动范围', options: [{ label: '前端' }, { label: '后端' }] },
+  ];
+  const context = issue86RotationFixture({ interactionCards: true, questions });
+  await bridge_click_option(context, '生产环境', { waitFinal: false });
+  await eventually(
+    () => questionCardEntries(context.timeline).length >= 2,
+    '第 2 题提问卡未呈现',
+  );
+  const entries = context.timeline;
+  const cardPatchIndex = entries.findIndex((e) => e.kind === 'card-patch');
+  const nextQuestionIndex = entries.findIndex((e) => e.kind === 'card-message'
+    && e.card && JSON.stringify(e.card).includes('2/2'));
+  assert.ok(cardPatchIndex > -1 && nextQuestionIndex > -1, '回写与第 2 题都必须发生');
+  assert.ok(nextQuestionIndex > cardPatchIndex, '必须先回写第 1 题卡，再呈现第 2 题');
+  await bridge_click_option(context, '前端', { index: 1 });
+});
+
+test('issue #162: 文本答案提交后提问卡同样回写', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  const { cardPatch } = await bridge_answer_by_text(context, '自定义文字回答');
+  assert.ok(cardPatch, '文本路径必须同样回写');
+  assert.ok(JSON.stringify(JSON.parse(cardPatch.content)).includes('✅ 已选择：自定义文字回答'));
+});
+
+test('issue #162: patch 失败时降级为 warn，答案提交不受影响', async () => {
+  const context = issue86RotationFixture({ interactionCards: true, patchFails: true });
+  const { cardPatchCount } = await bridge_click_option(context, '生产环境');
+  assert.equal(cardPatchCount, 1, '仅一次 patch 尝试');
+  assert.ok(context.answerAccepted, 'respond 必须照常成功');
+  assert.ok(
+    !context.timeline.some((e) => e.kind === 'text-message' && e.text.includes('回答提交失败')),
+    '不得误报提交失败',
+  );
+});
+
+test('issue #162: 已答 interaction 的陈旧点击回复「已经回答过了」', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const entry = questionCardEntries(context.timeline)[0];
+  const textCount = context.timeline.filter((e) => e.kind === 'text-message').length;
+  await context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, 'answer:question-86:0:测试环境', 'ou_user'),
+  );
+  await context.bridge.waitForIdle();
+  const textsAfter = context.timeline.filter((e) => e.kind === 'text-message').slice(textCount);
+  assert.ok(textsAfter.some((e) => e.text.includes('已经回答过了')), '必须提示已回答过');
+  assert.ok(textsAfter.every((e) => !e.text.includes('其他客户端')), '不得再弹误导提示');
+});
+
+test('issue #162: answerCustom 校验通过回复引导文本', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  const { replyText } = await bridge_click_custom(context, { waitFinal: false });
+  assert.ok(replyText.includes('直接发送文字'), '引导文案必须与 canClaimInteractionReply 语义一致');
+});
+
+test('issue #162: 已答卡上的 answerCustom 陈旧点击走提示逻辑', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const entry = questionCardEntries(context.timeline)[0];
+  const textCount = context.timeline.filter((e) => e.kind === 'text-message').length;
+  await context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, 'answerCustom:question-86:0', 'ou_user'),
+  );
+  await context.bridge.waitForIdle();
+  const textsAfter = context.timeline.filter((e) => e.kind === 'text-message').slice(textCount);
+  assert.ok(textsAfter.some((e) => e.text.includes('已经回答过了')));
+});
+
+test('issue #162: 未答过的陈旧 interaction 点击保持现有「其他客户端」提示（回归锚）', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  const entry = await waitQuestionCard(context);
+  const textCount = context.timeline.filter((e) => e.kind === 'text-message').length;
+  await context.bridge.onCardAction(
+    cardActionEvent(entry.messageId, 'answer:unknown-86:0:测试环境', 'ou_user'),
+  );
+  const textsAfter = context.timeline.filter((e) => e.kind === 'text-message').slice(textCount);
+  assert.ok(textsAfter.some((e) => e.text.includes('其他客户端')), '未答过的 id 保持现有提示');
+});
+
+test('issue #162: 卡片题后的文本题不再回写前一张卡', async () => {
+  const questions = [
+    { id: 'environment', header: '测试环境', question: '请选择测试环境', options: [{ label: '测试环境' }, { label: '生产环境' }] },
+    { id: 'scope', header: '改动范围', question: '请用文字描述改动范围' },
+  ];
+  const context = issue86RotationFixture({ interactionCards: true, questions });
+  await bridge_click_option(context, '生产环境', { waitFinal: false });
+  await eventually(
+    () => context.timeline.some((e) => e.kind === 'text-message' && e.text.includes('请用文字描述改动范围')),
+    '第 2 题（文本题）未呈现',
+  );
+  const textQuestion = context.timeline.filter(
+    (e) => e.kind === 'text-message' && e.text.includes('请用文字描述改动范围'),
+  ).at(-1);
+  const turn = context.bridge.accept(event('om-86-scope-answer', '后端模块', {
+    root_id: 'om-86-prompt',
+    parent_id: textQuestion.messageId,
+    thread_id: 'omt-86',
+  }));
+  await Promise.race([
+    context.submitStarted.promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('text answer never reached')), 1_000)),
+  ]);
+  context.answerAccepted.resolve();
+  await turn;
+  await context.bridge.waitForIdle();
+  const patches = context.timeline.filter((e) => e.kind === 'card-patch');
+  assert.equal(patches.length, 1, '文本题不得回写任何卡');
+  assert.ok(JSON.stringify(JSON.parse(patches[0].content)).includes('✅ 已选择：生产环境'),
+    '唯一的回执必须是第 1 题的答案');
+});
+
+test('issue #162: 已答回执保留原题文本、标题与说明', async () => {
+  const context = issue86RotationFixture({ interactionCards: true });
+  await bridge_click_option(context, '生产环境');
+  const cardPatch = context.timeline.filter((e) => e.kind === 'card-patch').at(-1);
+  const json = JSON.stringify(JSON.parse(cardPatch.content));
+  assert.ok(json.includes('请选择测试环境'), '原题文本必须保留（不得退化为「请输入你的回答。」）');
+  assert.ok(json.includes('测试环境'), '题头必须保留');
 });
 
 test('issue #86: finalize failure degrades without blocking the interaction', async () => {
@@ -4674,7 +5156,7 @@ test('Feishu exposes a structured model rate limit without changing connection s
 
   const failure = status.lastMessageError;
   assert.equal(failure.code, 'MODEL_RATE_LIMIT');
-  assert.equal(failure.reason, 'MODEL_RATE_LIMIT');
+  assert.equal(failure.reason, 'HARNESS_TURN_FAILED');
   assert.match(failure.referenceId, /^MF-[A-F0-9]{8}$/);
   assert.match(sent.at(-1), /模型服务正在限流，本次任务未完成。请稍后重试。/);
   assert.equal(sent.at(-1).endsWith(`参考号：${failure.referenceId}`), true);
@@ -8493,7 +8975,7 @@ function stepPushClockFixture() {
   };
 }
 
-function stepPushChannel({ cardWrites, streamCalls, streamError = null } = {}) {
+function stepPushChannel({ cardWrites, streamCalls, streamError = null, recalls = [], recallFailure = null } = {}) {
   const writes = cardWrites ?? [];
   const calls = streamCalls ?? [];
   return {
@@ -8502,6 +8984,12 @@ function stepPushChannel({ cardWrites, streamCalls, streamError = null } = {}) {
       calls.push({ chatId, options });
       await markdown({ setContent: async (content) => writes.push(content) });
       return { messageId: 'om_step_card' };
+    },
+    // recallMessage 契约：成功返回 true、失败返回 false（bridge 据此保留重试）。
+    recallMessage: async (messageId) => {
+      if (recallFailure?.(messageId)) return false;
+      recalls.push(messageId);
+      return true;
     },
   };
 }
@@ -8610,6 +9098,428 @@ test('step push: tool error appends a warning line message', async () => {
     ['✅ bash — pwd\n{"command":"pwd"}', '⚠️ **bash** — boom', '完成。'],
     'the tool error arrives as its own warning message before the final answer post',
   );
+});
+
+function stepCardClient() {
+  let sequence = 100;
+  const interactiveCreates = [];
+  const patches = [];
+  const text = [];
+  const ids = [];
+  const emit = (request) => {
+    const messageId = `om_card_${++sequence}`;
+    if (request.data.msg_type === 'interactive') {
+      interactiveCreates.push(JSON.parse(request.data.content));
+      ids.push(messageId);
+      return { code: 0, data: { message_id: messageId } };
+    }
+    text.push(stepPushMessageText(request));
+    return { code: 0, data: { message_id: messageId } };
+  };
+  return {
+    client: {
+      im: { v1: { message: {
+        create: async (request) => emit(request),
+        reply: async (request) => emit(request),
+        patch: async (request) => {
+          patches.push({
+            messageId: request.path.message_id,
+            content: JSON.parse(request.data.content),
+          });
+          return { code: 0, data: {} };
+        },
+      } } },
+    },
+    interactiveCreates,
+    patches,
+    text,
+    ids,
+  };
+}
+
+test('step push streaming_card mode: one process card patched in place, answer sealed inside', async () => {
+  const fixture = stateFixture();
+  const streamCalls = [];
+  const { client, interactiveCreates, patches, text } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: stepPushChannel({ streamCalls }),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      await options.onUpdate({ type: 'tool', name: 'read', arguments: '{"path":"a.md"}' });
+      await options.onUpdate({ type: 'assistant-message', step: 0, text: '正在整理' });
+      await options.onUpdate({ type: 'tool', name: 'write', arguments: '{"path":"b.md"}' });
+      return '最终答案';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_card_in_1', '跑一下'));
+  await bridge.waitForIdle();
+
+  assert.ok(interactiveCreates.length >= 1, 'the process card is created');
+  const serialized = JSON.stringify(patches.at(-1)?.content ?? {});
+  assert.ok(serialized.includes('collapsible_panel'), 'the process panel is rendered');
+  assert.ok(serialized.includes('📋 过程详情'), 'the finished turn merges panels into one process-details panel');
+  assert.ok(serialized.includes('💭 思考'), 'the thinking section keeps its header inside the merged panel');
+  assert.ok(serialized.includes('正在整理'), 'the interim note morphed from the answer draft');
+  assert.ok(serialized.includes('ls'), 'tool summaries land in the panel');
+  assert.ok(serialized.includes('最终答案'), 'the final answer is sealed inside the card');
+  assert.ok(serialized.includes('已完成'), 'the final patch seals the card as completed');
+  assert.deepEqual(text, [], 'no separate answer post is sent in streaming_card mode');
+  assert.equal(streamCalls.length, 0, 'streaming_card mode never uses channel.stream');
+});
+
+test('step push streaming_card mode: a fast single-tool turn still seals the card completed', async () => {
+  const fixture = stateFixture();
+  const { client, interactiveCreates, patches, text } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: stepPushChannel({}),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"pwd"}' });
+      return '秒完成';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_card_in_2', '快任务'));
+  await bridge.waitForIdle();
+
+  assert.equal(interactiveCreates.length, 1, 'exactly one process card is opened');
+  assert.equal(patches.length, 1, 'the only patch is the final seal');
+  const sealed = JSON.stringify(patches[0]?.content ?? {});
+  assert.ok(sealed.includes('秒完成'), 'the answer is sealed inside the card');
+  assert.ok(sealed.includes('已完成'), 'the seal marks the card completed');
+  assert.ok(!sealed.includes('_运行中_'), 'no running status remains after the seal');
+  assert.deepEqual(text, [], 'the answer ships in the card, not as a post');
+});
+
+test('step push streaming_card mode: patch failure downgrades without breaking the turn', async () => {
+  const fixture = stateFixture();
+  const { client, interactiveCreates, patches, text } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const bridge = new FeishuHarnessBridge({
+    client: {
+      im: { v1: { message: {
+        create: client.im.v1.message.create,
+        reply: client.im.v1.message.reply,
+        patch: async (request) => {
+          patches.push({
+            messageId: request.path.message_id,
+            content: JSON.parse(request.data.content),
+          });
+          return { code: 230020, msg: 'too many requests' };
+        },
+      } } },
+    },
+    channel: stepPushChannel({}),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"pwd"}' });
+      return '答案仍在';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_card_in_3', '降级'));
+  await bridge.waitForIdle();
+
+  assert.ok(patches.length >= 1, 'at least one patch was attempted');
+  assert.deepEqual(text, ['答案仍在'], 'the final answer still delivers after the card breaks');
+});
+
+test('step push streaming_card mode: the answer draft streams live and interim steps morph to notes', async () => {
+  const fixture = stateFixture();
+  const { client, interactiveCreates, patches, text } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: stepPushChannel({}),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      await options.onUpdate({ type: 'assistant-message', step: 0, text: '我先看看' });
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      await options.onUpdate({ type: 'assistant-message', step: 1, text: '结论如下' });
+      return '结论如下';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_card_in_5', '边看边答'));
+  await bridge.waitForIdle();
+
+  const sealed = JSON.stringify(patches.at(-1)?.content ?? {});
+  assert.ok(sealed.includes('📋 过程详情'), 'the finished turn merges panels into one process-details panel');
+  assert.ok(sealed.includes('💭 思考'), 'the superseded draft keeps its thinking section header');
+  assert.ok(sealed.includes('我先看看'), 'the interim note text survives the fold');
+  assert.ok(sealed.includes('结论如下'), 'the last step sealed as the answer');
+  assert.ok(sealed.includes('已完成'), 'the card seals completed');
+  assert.deepEqual(text, [], 'the answer never duplicates as a post');
+  assert.equal(interactiveCreates.length, 1, 'still a single card');
+});
+
+test('step push streaming_card mode: a card broken mid-turn falls back to the answer post', async () => {
+  const fixture = stateFixture();
+  const { client, interactiveCreates, patches, text } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const bridge = new FeishuHarnessBridge({
+    client: {
+      im: { v1: { message: {
+        create: client.im.v1.message.create,
+        reply: client.im.v1.message.reply,
+        patch: async (request) => {
+          patches.push({
+            messageId: request.path.message_id,
+            content: JSON.parse(request.data.content),
+          });
+          return { code: 230020, msg: 'too many requests' };
+        },
+      } } },
+    },
+    channel: stepPushChannel({}),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      await options.onUpdate({ type: 'assistant-message', step: 0, text: '草稿中' });
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"pwd"}' });
+      return '最终答案';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_card_in_6', '降级草稿'));
+  await bridge.waitForIdle();
+
+  assert.ok(interactiveCreates.length >= 1, 'the card was opened before the failure');
+  assert.ok(patches.length >= 1, 'at least one patch was attempted');
+  assert.deepEqual(text, ['最终答案'], 'the broken card downgrades to the answer post');
+});
+
+test('step push streaming_card mode: a plain Q&A turn opens one card with the answer', async () => {
+  const fixture = stateFixture();
+  const { client, interactiveCreates, patches, text } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: stepPushChannel({}),
+    harness: stepPushHarness(async () => '直接回答'),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_card_in_7', '纯问答'));
+  await bridge.waitForIdle();
+
+  assert.equal(interactiveCreates.length, 1, 'one card opens at seal time');
+  const created = JSON.stringify(interactiveCreates[0] ?? {});
+  assert.ok(created.includes('直接回答'), 'the answer lands in the card');
+  assert.ok(created.includes('已完成'), 'the card opens already sealed');
+  assert.equal(patches.length, 0, 'no intermediate patch was needed');
+  assert.deepEqual(text, [], 'no post is sent');
+});
+
+test('step push streaming_card mode: an oversized answer is chunked across sealed cards', async () => {
+  const fixture = stateFixture();
+  const { client, interactiveCreates, patches, text } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const answer = '长'.repeat(30_000);
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: stepPushChannel({}),
+    harness: stepPushHarness(async () => answer),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_card_in_8', '长答案'));
+  await bridge.waitForIdle();
+
+  assert.ok(interactiveCreates.length >= 2, 'the answer spilled across multiple cards');
+  for (const card of interactiveCreates) {
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(card), 'utf8') < 30_000,
+      'every card stays under the Feishu size cap',
+    );
+  }
+  const last = JSON.stringify(interactiveCreates.at(-1) ?? {});
+  assert.ok(last.includes('已完成'), 'the final card seals completed');
+  assert.ok(!JSON.stringify(interactiveCreates[0]).includes('已完成'), 'earlier spill cards are sealed without a status line');
+  assert.equal(patches.length, 0, 'no patch failures were triggered');
+  assert.deepEqual(text, [], 'the long answer never falls back to posts');
+});
+
+test('step push streaming_card mode: an oversized tool panel sheds its oldest lines', async () => {
+  const fixture = stateFixture();
+  const { client, interactiveCreates, patches, text } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: stepPushChannel({}),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      for (let index = 0; index < 150; index += 1) {
+        await options.onUpdate({
+          type: 'tool',
+          name: 'bash',
+          arguments: JSON.stringify({ command: `run-task-${index} ${'参数'.repeat(60)}` }),
+        });
+      }
+      return '面板压测完成';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_card_in_9', '面板压测'));
+  await bridge.waitForIdle();
+
+  const sealed = JSON.stringify(patches.at(-1)?.content ?? {});
+  assert.ok(sealed.includes('工具摘要（150）'), 'the nested tool panel header keeps the full tool count');
+  assert.ok(sealed.includes('📋 过程详情'), 'the finished turn wraps the panels in one details wrapper');
+  assert.ok(sealed.includes('面板压测完成'), 'the answer still seals inside the card');
+  for (const patch of patches) {
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(patch.content), 'utf8') < 30_000,
+      'every patched card stays under the Feishu size cap',
+    );
+  }
+  assert.deepEqual(text, [], 'no post fallback was needed');
+});
+
+test('step push streaming_card mode: an approval interaction rotates to a fresh card below', async () => {
+  const fixture = stateFixture();
+  const { client, interactiveCreates, patches, text } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: stepPushChannel({}),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"pwd"}' });
+      await options.onUpdate({ type: 'assistant-message', step: 0, text: '旋转前说明' });
+      // 无效的审批载荷：审批机只记日志忽略，但换卡钩子必须先于它执行。
+      await options.onInteraction({ kind: 'approval', payload: {} });
+      await options.onUpdate({ type: 'assistant-message', step: 1, text: '旋转后答案' });
+      return '旋转后答案';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_card_in_10', '触发审批'));
+  await bridge.waitForIdle();
+
+  assert.equal(interactiveCreates.length, 2, 'the rotate opened one fresh card below the interaction');
+  assert.equal(patches.length, 2, 'rotate seal plus the final seal');
+  const rotated = JSON.stringify(patches[0]?.content ?? {});
+  assert.ok(rotated.includes('pwd'), 'the old card keeps the process so far');
+  assert.ok(!rotated.includes('_运行中_') && !rotated.includes('已完成'), 'the old card is sealed without a status line');
+  assert.ok(!rotated.includes('旋转后答案'), 'the old card does not contain the post-interaction answer');
+  const sealed = JSON.stringify(patches[1]?.content ?? {});
+  assert.ok(sealed.includes('旋转后答案'), 'the answer streams into the fresh card');
+  assert.ok(sealed.includes('已完成'), 'the fresh card seals completed');
+  assert.deepEqual(text, [], 'no post fallback');
+});
+
+test('step push streaming_card mode: /stop during a turn seals the card 已停止', async () => {
+  const fixture = stateFixture([['p2p:ou_owner', 'session-active']]);
+  const { client, interactiveCreates, patches, text, ids } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const { harness } = activeTurnHarness();
+  const release = deferred();
+  harness.ask = async (_sessionId, _text, options) => {
+    await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"sleep"}' });
+    await release.promise;
+    return '被停止的答案';
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: stepPushChannel({}),
+    harness,
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_owner']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_card_in_11', '/m', { senderOpenId: 'ou_owner' }));
+  await bridge.waitForIdle();
+  const menuCardId = ids[0];
+  const turn = bridge.accept(event('om_card_in_12', '跑长任务', { senderOpenId: 'ou_owner' }));
+  await new Promise((resolve) => setImmediate(resolve));
+  await bridge.onCardAction(cardActionEvent(menuCardId, 'stop', 'ou_owner'));
+  release.resolve();
+  await turn;
+  await bridge.waitForIdle();
+
+  const sealed = JSON.stringify(patches.at(-1)?.content ?? {});
+  assert.ok(sealed.includes('已停止'), 'the card seals as stopped, not completed');
+  assert.ok(!sealed.includes('已完成'), 'no completed status leaks in');
+  assert.ok(!text.some((line) => line.includes('被停止的答案')), 'the answer stays inside the card');
+});
+
+test('step push streaming_card mode without the step push flag keeps the main streaming path', async () => {
+  const fixture = stateFixture();
+  const streamCalls = [];
+  const { client, interactiveCreates } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: stepPushChannel({ streamCalls }),
+    harness: stepPushHarness(async () => '普通流式'),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: false,
+    stepPushMode: 'streaming_card',
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_card_in_4', '普通'));
+  await bridge.waitForIdle();
+
+  assert.equal(interactiveCreates.length, 0, 'no step card is created without the step push flag');
+  assert.equal(streamCalls.length, 1, 'the main streaming-card path still handles the turn');
 });
 
 test('step push off: behavior identical to main', async () => {
@@ -9713,4 +10623,923 @@ test('step push: post chunks include JSON escape expansion in the byte budget', 
     requestSizes.every((size) => size <= 24_000),
     `encoded post contents exceeded the byte budget: ${requestSizes.join(', ')}`,
   );
+});
+
+test('step push: manual topics stay threaded even with the group-topic switch off', async () => {
+  const fixture = stateFixture();
+  const creates = [];
+  const replies = [];
+  const { stepPushClock } = stepPushClockFixture();
+  const bridge = new FeishuHarnessBridge({
+    client: { im: { v1: { message: {
+      reply: async (request) => {
+        replies.push({
+          msgType: request.data.msg_type,
+          replyInThread: request.data.reply_in_thread === true,
+          messageId: request.path.message_id,
+          text: stepPushMessageText(request),
+        });
+        return { code: 0, data: { message_id: `om_r_${replies.length}` } };
+      },
+      create: async (request) => {
+        creates.push(stepPushMessageText(request));
+        return { code: 0, data: { message_id: `om_c_${creates.length}` } };
+      },
+    } } } },
+    channel: stepPushChannel(),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      await options.onUpdate({ type: 'assistant-message', step: 0, text: '进入话题处理' });
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      return '话题内回答。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    // NOTE: groupTopicReply stays at its default (false) on purpose — a manual
+    // topic conversation must still thread its replies.
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_manual_topic', '处理话题任务', {
+    chat_type: 'group',
+    thread_id: 'omt_manual',
+    mentions: [{ id: { open_id: 'ou_bot' }, key: '@_user_1' }],
+  }));
+  await bridge.waitForIdle();
+
+  assert.ok(replies.length >= 3, 'steps plus the final answer must use the reply path');
+  for (const reply of replies) {
+    assert.equal(reply.replyInThread, true, 'manual-topic replies must carry reply_in_thread');
+    assert.equal(reply.msgType, 'post', 'each message is a rich-text post');
+    assert.equal(reply.messageId, 'om_manual_topic', 'anchored on the inbound message');
+  }
+  assert.equal(creates.length, 0, 'no message may leak to the main chat');
+  assert.deepEqual(
+    replies.map((reply) => reply.text),
+    ['💬 进入话题处理', '✅ bash — ls\n{"command":"ls"}', '话题内回答。'],
+  );
+});
+
+/**
+ * Rebuild each delivered card's FINAL visible content by applying every
+ * patch to the card it targeted (messageId keyed), mirroring what a Feishu
+ * client would end up showing after the turn.
+ */
+function deliveredCardContents(interactiveCreates, patches, ids) {
+  const state = new Map();
+  interactiveCreates.forEach((content, index) => {
+    state.set(ids[index], { content, patched: false });
+  });
+  for (const { messageId, content } of patches) {
+    if (state.has(messageId)) state.set(messageId, { content, patched: true });
+  }
+  return [...state.values()].map((entry) => JSON.stringify(entry.content));
+}
+
+function numberedStepAnswer(paragraphs) {
+  return Array.from({ length: paragraphs }, (_, index) =>
+    `第${String(index + 1).padStart(4, '0')}段：${'完整顺序校验'.repeat(6)}`
+  ).join('\n\n');
+}
+
+function deliveredStepAnswer(fx) {
+  return deliveredCardContents(fx.interactiveCreates, fx.patches, fx.ids)
+    .flatMap((raw) => JSON.parse(raw).body.elements)
+    .filter((element) => element.tag === 'markdown' && !/^_(运行中|已完成|已停止)_$/.test(element.content))
+    .map((element) => element.content)
+    .join('\n\n');
+}
+
+for (const scenario of [
+  { name: 'existing card, two answer cards', paragraphs: 250, tool: true, expectedCards: 2 },
+  { name: 'existing card, multiple answer cards', paragraphs: 800, tool: true },
+  { name: 'first streamed answer', paragraphs: 800, tool: false },
+]) {
+  test('step push streaming_card mode: preserves full answer order: ' + scenario.name, async () => {
+    const fx = stepCardClient();
+    const answer = numberedStepAnswer(scenario.paragraphs);
+    const bridge = new FeishuHarnessBridge({
+      client: fx.client,
+      channel: stepPushChannel({}),
+      harness: stepPushHarness(async (_id, _text, options) => {
+        if (scenario.tool) {
+          await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"prepare"}' });
+          await new Promise((resolve) => setImmediate(resolve));
+        } else {
+          await options.onUpdate({ type: 'assistant-message', step: 0, text: answer });
+        }
+        return answer;
+      }),
+      state: stateFixture().state,
+      status: bridgeStatus(),
+      allowedSenderOpenIds: new Set(['ou_user']),
+      stepPush: true,
+      stepPushMode: 'streaming_card',
+      stepPushClock: stepPushClockFixture().stepPushClock,
+    });
+    await bridge.accept(event('om_full_answer', '生成长答案'));
+    await bridge.waitForIdle();
+    assert.equal(deliveredStepAnswer(fx), answer, 'each paragraph arrives exactly once and in order');
+    if (scenario.expectedCards) assert.equal(fx.ids.length, scenario.expectedCards);
+    else assert.ok(fx.ids.length > 2);
+    const cards = deliveredCardContents(fx.interactiveCreates, fx.patches, fx.ids).map(JSON.parse);
+    assert.equal(cards.filter((card) => JSON.stringify(card).includes('_已完成_')).length, 1);
+    assert.ok(JSON.stringify(cards.at(-1)).includes('_已完成_'), 'only the last card is completed');
+    assert.ok(cards.every((card) => Buffer.byteLength(JSON.stringify(card)) < 30_000));
+    assert.deepEqual(fx.text, []);
+  });
+}
+
+test('step push streaming_card mode: a seal failure never trusts an in-flight draft', async () => {
+  const fx = stepCardClient();
+  const started = deferred();
+  const release = deferred();
+  const reply = fx.client.im.v1.message.reply;
+  fx.client.im.v1.message.reply = async (request) => {
+    if (request.data.msg_type === 'interactive') {
+      started.resolve();
+      await release.promise;
+    }
+    return reply(request);
+  };
+  fx.client.im.v1.message.patch = async () => ({ code: 230020, msg: 'rate limited' });
+  const answer = '唯一的最终答案';
+  const bridge = new FeishuHarnessBridge({
+    client: fx.client,
+    channel: stepPushChannel({}),
+    harness: stepPushHarness(async (_id, _text, options) => {
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      await started.promise;
+      await options.onUpdate({ type: 'assistant-message', step: 0, text: answer });
+      release.resolve();
+      return answer;
+    }),
+    state: stateFixture().state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock: stepPushClockFixture().stepPushClock,
+  });
+  await bridge.accept(event('om_seal_failure', '封存失败'));
+  await bridge.waitForIdle();
+  assert.deepEqual(fx.text, [answer]);
+  assert.ok(!JSON.stringify(fx.interactiveCreates).includes(answer));
+});
+
+test('step push streaming_card mode: failed overflow creation falls back with the whole answer', async () => {
+  const fx = stepCardClient();
+  let failCards = false;
+  for (const method of ['create', 'reply']) {
+    const send = fx.client.im.v1.message[method];
+    fx.client.im.v1.message[method] = async (request) => failCards && request.data.msg_type === 'interactive'
+      ? { code: 230001, msg: 'card rejected' }
+      : send(request);
+  }
+  const answer = numberedStepAnswer(800);
+  const status = bridgeStatus();
+  const bridge = new FeishuHarnessBridge({
+    client: fx.client,
+    channel: stepPushChannel({}),
+    harness: stepPushHarness(async (_id, _text, options) => {
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"prepare"}' });
+      await new Promise((resolve) => setImmediate(resolve));
+      failCards = true;
+      return answer;
+    }),
+    state: stateFixture().state,
+    status,
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock: stepPushClockFixture().stepPushClock,
+  });
+  await bridge.accept(event('om_overflow_failure', '长答案降级'));
+  await bridge.waitForIdle();
+  assert.equal(fx.text.join('\n\n'), answer);
+  assert.equal(status.messagesReplied, 1);
+  assert.ok(!deliveredCardContents(fx.interactiveCreates, fx.patches, fx.ids).join('').includes('_已完成_'));
+});
+
+// ── 思考中状态（静默期心跳）────────────────────────────────────────────────
+
+function stepPushPostClient({ onPost, onUpdateMessage, onDelete } = {}) {
+  let sequence = 0;
+  return {
+    im: { v1: { message: {
+      reply: async (request) => {
+        sequence += 1;
+        onPost(request, `om_post_${sequence}`);
+        return { code: 0, data: { message_id: `om_post_${sequence}` } };
+      },
+      create: async (request) => {
+        sequence += 1;
+        onPost(request, `om_post_${sequence}`);
+        return { code: 0, data: { message_id: `om_post_${sequence}` } };
+      },
+      update: async (request) => {
+        onUpdateMessage(request);
+        return { code: 0 };
+      },
+      delete: async (request) => {
+        onDelete?.(request);
+        return { code: 0 };
+      },
+    } } },
+  };
+}
+
+test('step push: silence over the threshold surfaces a thinking heartbeat, recalled at turn end', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const order = [];
+  const recalls = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => {
+        const entry = { kind: 'post', id: messageId, text: stepPushMessageText(request) };
+        order.push(entry);
+        sent.push(entry);
+      },
+      onUpdateMessage: () => {},
+    }),
+    channel: {
+      stream: async () => { throw new Error('not used'); },
+      recallMessage: async (messageId) => {
+        order.push({ kind: 'recall', id: messageId });
+        recalls.push(messageId);
+        return true;
+      },
+    },
+    harness: stepPushHarness(async () => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '思考后的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_1', '想一想'));
+  await bridge.waitForIdle();
+
+  const heartbeat = sent.find((entry) => entry.text.includes('⏳ 正在思考中…'));
+  assert.ok(heartbeat, 'the thinking heartbeat must appear after the silence threshold');
+  assert.deepEqual(recalls, [heartbeat.id], 'the heartbeat must be recalled when the turn ends');
+  const recallOrder = order.findIndex((entry) => entry.kind === 'recall');
+  const finalOrder = order.findIndex((entry) => entry.kind === 'post' && entry.text === '思考后的答案。');
+  assert.ok(recallOrder !== -1 && finalOrder !== -1, 'recall and final answer both delivered');
+  assert.ok(recallOrder < finalOrder, 'the heartbeat recall must precede the final answer post');
+  assert.equal(sent.at(-1).text, '思考后的答案。');
+});
+
+test('step push: the thinking heartbeat refreshes elapsed time in place', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const updates = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: (request) => updates.push({ messageId: request.path.message_id, text: stepPushMessageText(request) }),
+    }),
+    channel: stepPushChannel(),
+    harness: stepPushHarness(async () => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      clock.now += 30_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '思考后的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_2', '想一想'));
+  await bridge.waitForIdle();
+
+  assert.ok(sent.some((entry) => entry.text.includes('⏳ 正在思考中…')), 'the heartbeat appears');
+  assert.equal(updates.length, 1, 'one in-place refresh within the silence window');
+  assert.match(updates[0].text, /已运行 \d+:\d\d/);
+  const heartbeatPostId = sent.find((entry) => entry.text.includes('⏳ 正在思考中…'))?.id;
+  assert.ok(heartbeatPostId, 'the heartbeat post id is captured');
+  assert.equal(updates[0].messageId, heartbeatPostId, 'the refresh must edit the same heartbeat message');
+  assert.deepEqual(sent.at(-1).text, '思考后的答案。');
+});
+
+test('step push: a real event recalls the heartbeat before pushing the step', async () => {
+  const fixture = stateFixture();
+  const order = [];
+  const recalls = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => order.push({ kind: 'post', id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: {
+      stream: async () => { throw new Error('not used'); },
+      recallMessage: async (messageId) => { order.push({ kind: 'recall', id: messageId }); recalls.push(messageId); return true; },
+    },
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      return '工具结果后的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_3', '想一想再查'));
+  await bridge.waitForIdle();
+
+  const heartbeat = order.find((entry) => entry.text?.includes('⏳ 正在思考中…'));
+  assert.ok(heartbeat, 'the heartbeat appeared');
+  const toolIndex = order.findIndex((entry) => entry.text?.includes('✅ bash — ls'));
+  const recallIndex = order.findIndex((entry) => entry.kind === 'recall');
+  assert.ok(recallIndex !== -1, 'the heartbeat must be recalled when a real event lands');
+  assert.ok(recallIndex < toolIndex, 'the recall must happen before the real step pushes');
+  assert.equal(recalls.length, 1, 'exactly one recall');
+});
+
+// ── 思考中状态：评审补充覆盖（关模式/熔断隔离/更新失败/上限/abort 撤回）────
+
+function thinkingClock() {
+  const clock = { now: 1_700_000_000_000 };
+  return {
+    clock,
+    stepPushClock: {
+      now: () => clock.now,
+      delay: async (ms) => { clock.now += ms; },
+    },
+    advance: (ms) => { clock.now += ms; },
+  };
+}
+
+test('thinking status: off mode never pushes a heartbeat', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const cardWrites = [];
+  const think = thinkingClock();
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: stepPushChannel({ cardWrites }),
+    harness: stepPushHarness(async () => {
+      think.advance(30_000);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '关模式答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: false,
+    stepPushClock: think.stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_off', '关模式长任务'));
+  await bridge.waitForIdle();
+
+  assert.ok(
+    !sent.some((entry) => entry.text.includes('⏳ 正在思考中…')),
+    'off mode must never push a thinking heartbeat',
+  );
+  assert.deepEqual(cardWrites, ['关模式答案。'], 'off mode keeps the streaming-card final answer');
+});
+
+test('thinking status: the heartbeat never counts toward the 200-message breaker', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const think = thinkingClock();
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: stepPushChannel(),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      for (let index = 0; index < 200; index += 1) {
+        think.advance(250);
+        await options.onUpdate({ type: 'tool', name: 'bash', arguments: `{"command":"cmd-${index}"}` });
+      }
+      think.advance(25_000);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '熔断后答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock: think.stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_breaker', '两百步任务'));
+  await bridge.waitForIdle();
+
+  const stepMessages = sent.filter((entry) => entry.text.includes('✅ bash'));
+  assert.equal(stepMessages.length, 200, 'every real step must land despite the long turn');
+  assert.ok(
+    sent.some((entry) => entry.text.includes('⏳ 正在思考中…')),
+    'the heartbeat still appears on a turn that outlives the silence threshold',
+  );
+  assert.equal(sent.at(-1).text, '熔断后答案。');
+});
+
+test('thinking status: heartbeat update failure never breaks the turn', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const recalls = [];
+  let updateCalls = 0;
+  const think = thinkingClock();
+  const bridge = new FeishuHarnessBridge({
+    client: {
+      im: { v1: { message: {
+        reply: async (request) => {
+          const text = stepPushMessageText(request);
+          sent.push({ id: `om_r_${sent.length + 1}`, text });
+          return { code: 0, data: { message_id: `om_r_${sent.length}` } };
+        },
+        create: async (request) => {
+          const text = stepPushMessageText(request);
+          sent.push({ id: `om_c_${sent.length + 1}`, text });
+          return { code: 0, data: { message_id: `om_c_${sent.length}` } };
+        },
+        update: async () => {
+          updateCalls += 1;
+          throw new Error('update rejected');
+        },
+      } } },
+    },
+    channel: stepPushChannel({ recalls }),
+    harness: stepPushHarness(async () => {
+      think.advance(25_000);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      think.advance(30_000);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '更新失败回合的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    logger: { debug() {}, error() {}, warn() {} },
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock: think.stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_upd_fail', '更新失败场景'));
+  await bridge.waitForIdle();
+
+  assert.ok(updateCalls >= 1, 'the in-place refresh was attempted');
+  assert.deepEqual(recalls, [sent.find((entry) => entry.text.includes('⏳ 正在思考中…'))?.id],
+    'the heartbeat is still recalled at turn end despite the update failure');
+  assert.deepEqual(sent.at(-1).text, '更新失败回合的答案。', 'the turn completes despite the update failure');
+});
+
+test('thinking status: heartbeat updates stop at the 30-update cap', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  let updateCalls = 0;
+  const think = thinkingClock();
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => { updateCalls += 1; },
+    }),
+    channel: stepPushChannel(),
+    harness: stepPushHarness(async () => {
+      think.advance(25_000);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      for (let index = 0; index < 31; index += 1) {
+        think.advance(30_000);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      return '超长静默后的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock: think.stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_cap', '超长静默'));
+  await bridge.waitForIdle();
+
+  assert.ok(updateCalls >= 10 && updateCalls <= 30, 'the in-place refresh respects the 30-update cap');
+  assert.equal(sent.at(-1).text, '超长静默后的答案。');
+});
+
+test('thinking status: abort recalls the live heartbeat', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const recalls = [];
+  const controller = new AbortController();
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: stepPushChannel({ recalls }),
+    harness: stepPushHarness(async () => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      controller.abort();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '中止后的说明。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    signal: controller.signal,
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_abort', 'abort 场景'));
+  await bridge.waitForIdle();
+
+  assert.deepEqual(recalls, ['om_post_1'], 'the live heartbeat must be recalled on abort');
+  assert.equal(sent.at(-1).text, '中止后的说明。');
+});
+
+test('thinking status: breaker-tripped events do not cause heartbeat churn', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const think = thinkingClock();
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: stepPushChannel(),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      // 250 events at 250ms virtual spacing (over the 200 breaker): the
+      // silence window restarts per event, so no heartbeat should appear
+      // mid-stretch and none should be create/recall churned.
+      for (let index = 0; index < 250; index += 1) {
+        think.advance(250);
+        await options.onUpdate({ type: 'tool', name: 'bash', arguments: `{"command":"cmd-${index}"}` });
+      }
+      return '超限回合的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock: think.stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_churn', '超限回合'));
+  await bridge.waitForIdle();
+
+  const heartbeats = sent.filter((entry) => entry.text.includes('⏳ 正在思考中…'));
+  assert.equal(heartbeats.length, 0, 'breaker-tripped events must not churn heartbeats');
+  assert.equal(sent.at(-1).text, '超限回合的答案。');
+});
+
+test('thinking status: two silence periods recall each heartbeat exactly once', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const recalls = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: stepPushChannel({ recalls }),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '两段思考的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_two', '两段思考'));
+  await bridge.waitForIdle();
+
+  const heartbeatIds = sent.filter((entry) => entry.text.includes('⏳ 正在思考中…')).map((entry) => entry.id);
+  assert.equal(heartbeatIds.length, 2, 'two heartbeats created across two silence periods');
+  assert.deepEqual([...recalls].sort(), [...heartbeatIds].sort(), 'each heartbeat recalled exactly once');
+  assert.equal(sent.at(-1).text, '两段思考的答案。');
+});
+
+test('thinking status: a failed recall is retried at the next boundary without duplicating the heartbeat', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const updates = [];
+  const recalls = [];
+  const recallAttempts = [];
+  const stuckId = { current: null };
+  let failedOnce = false;
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: (request) => updates.push({ messageId: request.path.message_id, text: stepPushMessageText(request) }),
+    }),
+    channel: stepPushChannel({
+      recalls,
+      recallFailure: (messageId) => {
+        recallAttempts.push(messageId);
+        if (failedOnce) return false;
+        failedOnce = true;
+        stuckId.current = messageId;
+        return true;
+      },
+    }),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      // 真实事件边界：第一次撤回失败——id 必须保留重试，而不是被清空。
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      clock.now += 30_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return '重试撤回的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_retry', '撤回重试'));
+  await bridge.waitForIdle();
+
+  const heartbeat = sent.find((entry) => entry.text.includes('⏳ 正在思考中…'));
+  assert.ok(heartbeat, 'the heartbeat appears');
+  assert.equal(stuckId.current, heartbeat.id, 'the first recall attempt failed for the live heartbeat');
+  assert.deepEqual(recallAttempts, [heartbeat.id, heartbeat.id], 'the failed id is retried at the next boundary (turn end)');
+  assert.deepEqual(recalls, [heartbeat.id], 'the retry succeeds exactly once — no double recall');
+  assert.equal(updates.length, 1, 'while the recall was stuck the watchdog kept refreshing instead of recreating');
+  assert.equal(updates[0].messageId, heartbeat.id, 'the refresh must stay on the same stuck heartbeat');
+  assert.equal(sent.filter((entry) => entry.text.includes('⏳ 正在思考中…')).length, 1, 'no duplicate heartbeat was created');
+  assert.equal(sent.at(-1).text, '重试撤回的答案。');
+});
+
+test('thinking status: a permanently failing recall is retried at most three times', async () => {
+  const fixture = stateFixture();
+  const sent = [];
+  const recalls = [];
+  const recallAttempts = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  const bridge = new FeishuHarnessBridge({
+    client: stepPushPostClient({
+      onPost: (request, messageId) => sent.push({ id: messageId, text: stepPushMessageText(request) }),
+      onUpdateMessage: () => {},
+    }),
+    channel: stepPushChannel({
+      recalls,
+      recallFailure: (messageId) => { recallAttempts.push(messageId); return true; },
+    }),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      clock.now += 25_000;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"pwd"}' });
+      return '放弃重试的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_giveup', '撤回放弃'));
+  await bridge.waitForIdle();
+
+  assert.equal(recallAttempts.length, 3, 'exactly three attempts: two real events plus turn end');
+  assert.equal(new Set(recallAttempts).size, 1, 'all attempts target the same stuck heartbeat');
+  assert.deepEqual(recalls, [], 'a permanently failing recall never reports success');
+  assert.ok(sent.some((entry) => entry.text.includes('⏳ 正在思考中…')), 'the heartbeat was created');
+});
+
+test('thinking status: a heartbeat created while a real step pushes is recalled late, not registered', async () => {
+  const fixture = stateFixture();
+  const updates = [];
+  const order = [];
+  const recalls = [];
+  const clock = { now: 1_700_000_000_000 };
+  const stepPushClock = {
+    now: () => clock.now,
+    delay: async (ms) => { clock.now += ms; },
+  };
+  let releaseHeartbeat;
+  const heartbeatInFlight = new Promise((resolve) => { releaseHeartbeat = resolve; });
+  let replyCalls = 0;
+  let lateRecallObservedDuringAsk = false;
+  const bridge = new FeishuHarnessBridge({
+    client: { im: { v1: { message: {
+      reply: async (request) => {
+        replyCalls += 1;
+        const text = stepPushMessageText(request);
+        const id = `om_post_${replyCalls}`;
+        order.push({ kind: 'post', id, text });
+        if (text.includes('⏳ 正在思考中…')) await heartbeatInFlight;
+        return { code: 0, data: { message_id: id } };
+      },
+      update: async (request) => {
+        updates.push(request.path.message_id);
+        return { code: 0 };
+      },
+    } } } },
+    channel: {
+      stream: async () => { throw new Error('not used'); },
+      recallMessage: async (messageId) => {
+        order.push({ kind: 'recall', id: messageId });
+        recalls.push(messageId);
+        return true;
+      },
+    },
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      clock.now += 25_000;
+      // 心跳创建请求已在途并阻塞；此时真实工具步骤到达并直推。
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      releaseHeartbeat();
+      // 留出真实时间让看门狗处理迟到的心跳创建返回。
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const heartbeatIdDuringAsk = order.find((entry) => entry.text.includes('⏳ 正在思考中…'))?.id;
+      lateRecallObservedDuringAsk = heartbeatIdDuringAsk !== undefined
+        && recalls.includes(heartbeatIdDuringAsk);
+      return '并发回合的答案。';
+    }),
+    state: fixture.state,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_hb_late', '并发心跳'));
+  await bridge.waitForIdle();
+
+  const heartbeatId = order.find((entry) => entry.text.includes('⏳ 正在思考中…'))?.id;
+  assert.ok(heartbeatId, 'the heartbeat post was dispatched');
+  assert.equal(lateRecallObservedDuringAsk, true, 'the late heartbeat must be recalled as soon as its create returns — not parked until turn end');
+  const recallEntries = order.filter((entry) => entry.kind === 'recall' && entry.id === heartbeatId);
+  assert.equal(recallEntries.length, 1, 'the late heartbeat is recalled exactly once');
+  assert.deepEqual(recalls, [heartbeatId], 'the late recall went through the channel');
+  const finalOrder = order.findIndex((entry) => entry.text === '并发回合的答案。');
+  assert.ok(order.findIndex((entry) => entry.kind === 'recall') < finalOrder, 'the late recall precedes the final answer');
+  assert.deepEqual(updates, [], 'the late heartbeat must never be registered for in-place refresh');
+  assert.deepEqual(recalls, [...new Set(recalls)], 'the late heartbeat is not recalled again at turn end');
+  assert.equal(order.at(-1).text, '并发回合的答案。');
+});
+
+test('StateStore mirrors survive a fresh store without a state file', async () => {
+  const { StateStore } = await import('../../../src/channels/feishu/state-store.mjs');
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-feishu-mirrors-'));
+  const path = join(dir, 'state.json');
+  try {
+    const store = await new StateStore(path).load();
+    // A brand-new store must accept mirror writes (regression: setMirror
+    // used to throw TypeError because mirrors was not initialized).
+    await store.setMirror('session-m', { chatId: 'ou_1', cardIds: ['om_1'], claimedAt: Date.now(), lastContent: '{}' });
+    assert.deepEqual(store.mirrorEntries(), [['session-m', { chatId: 'ou_1', cardIds: ['om_1'], claimedAt: store.mirrorEntries()[0][1].claimedAt, lastContent: '{}' }]]);
+    await store.clearMirror('session-m');
+    assert.deepEqual(store.mirrorEntries(), []);
+    // The persisted file must round-trip the mirror through a reload.
+    await store.setMirror('session-m2', { chatId: 'ou_2', cardIds: ['om_2'], claimedAt: 5, lastContent: '{}' });
+    const reloaded = await new StateStore(path).load();
+    assert.deepEqual(reloaded.mirrorEntries().map(([k]) => k), ['session-m2']);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test('plain IM process cards never write session-sync mirror state', async () => {
+  const fixture = stateFixture();
+  const { client, interactiveCreates, patches, ids } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const mirrorWrites = [];
+  const stateWithMirrorCapture = {
+    ...fixture.state,
+    setMirror: async (sessionId, entry) => mirrorWrites.push({ sessionId, entry }),
+    clearMirror: async (sessionId) => {
+      const index = mirrorWrites.findIndex((write) => write.sessionId === sessionId);
+      if (index >= 0) mirrorWrites.splice(index, 1);
+    },
+    mirrorEntries: () => mirrorWrites.map((write) => [write.sessionId, write.entry]),
+  };
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: stepPushChannel({ streamCalls: [] }),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      return 'IM 答案';
+    }),
+    state: stateWithMirrorCapture,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_imirror_1', 'IM 提问'));
+  await bridge.waitForIdle();
+
+  assert.ok(interactiveCreates.length >= 1, 'the IM process card is created');
+  // Regression: renderStepCardNow used to persist every card (with an empty
+  // session key) into the mirror state, so a later restart wiped finished
+  // IM cards. Plain IM cards must leave no mirror entries behind.
+  assert.deepEqual(
+    mirrorWrites.filter((write) => write.sessionId === '').map((write) => write.sessionId),
+    [],
+    'no empty-session mirror entries may be written for IM cards',
+  );
+  assert.deepEqual(mirrorWrites, [], 'IM cards write no mirror entries at all');
+});
+
+test('plain IM replies (stepPush off) register the in-flight turn and never open a mirror', async () => {
+  const fixture = stateFixture();
+  const { client, interactiveCreates, text } = stepCardClient();
+  const { stepPushClock } = stepPushClockFixture();
+  const mirrorWrites = [];
+  const stateWithMirrorCapture = {
+    ...fixture.state,
+    setMirror: async (sessionId, entry) => mirrorWrites.push({ sessionId, entry }),
+    clearMirror: async () => {},
+    mirrorEntries: () => mirrorWrites.map((write) => [write.sessionId, write.entry]),
+  };
+  const streamCalls = [];
+  const bridge = new FeishuHarnessBridge({
+    client,
+    channel: stepPushChannel({ streamCalls }),
+    harness: stepPushHarness(async (_sessionId, _text, options) => {
+      await options.onUpdate({ type: 'tool', name: 'bash', arguments: '{"command":"ls"}' });
+      return '普通回答';
+    }),
+    state: stateWithMirrorCapture,
+    status: bridgeStatus(),
+    allowedSenderOpenIds: new Set(['ou_user']),
+    // stepPush defaults to false: the plain reply path handles the turn.
+    sessionSyncTargetsFor: async (sessionId) => (
+      sessionId === 'session-plain-im'
+        ? [{ openId: 'ou_user', botId: 'bot_test', targetId: 'tgt_plain' }]
+        : []),
+    stepPushClock,
+  });
+
+  await bridge.accept(event('om_plain_1', '普通 IM 提问'));
+  await bridge.waitForIdle();
+
+  // Regression: imTurnKeys were only registered on the stepPush path, so the
+  // mirror adopted plain IM turns and double-delivered their answers.
+  assert.deepEqual(mirrorWrites, [], 'plain IM replies must never open a mirror card');
+  assert.ok(streamCalls.length >= 1, 'the plain reply still delivers via the stream channel');
 });

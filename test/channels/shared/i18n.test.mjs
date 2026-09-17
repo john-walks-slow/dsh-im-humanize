@@ -6,6 +6,8 @@ import { after, test } from 'node:test';
 
 import {
   getImHostLanguage,
+  normalizeImHostLanguage,
+  onImHostLanguageChange,
   setImHostLanguage,
   t,
 } from '../../../src/channels/shared/i18n.mjs';
@@ -36,6 +38,62 @@ test('setImHostLanguage accepts English spellings and falls back to Chinese', ()
   }
 });
 
+test('normalizeImHostLanguage resolves a tag without changing the active language', () => {
+  setImHostLanguage('zh');
+  assert.equal(normalizeImHostLanguage('en-GB'), 'en');
+  assert.equal(normalizeImHostLanguage('zh-CN'), 'zh');
+  assert.equal(normalizeImHostLanguage(undefined), 'zh');
+  assert.equal(getImHostLanguage(), 'zh');
+});
+
+test('subscribers are notified only when the resolved host language changes', () => {
+  setImHostLanguage('zh');
+  const seen = [];
+  const stop = onImHostLanguageChange((next, previous) => seen.push([next, previous]));
+  try {
+    setImHostLanguage('en');
+    // Different spellings of the same resolved language must stay silent.
+    setImHostLanguage('en-US');
+    setImHostLanguage(' english ');
+    // An unrecognized tag falls back to Chinese, which is a real change.
+    setImHostLanguage('fr');
+  } finally {
+    stop();
+  }
+  setImHostLanguage('en');
+  assert.deepEqual(seen, [['en', 'zh'], ['zh', 'en']]);
+});
+
+test('a failing subscriber cannot block later subscribers or the language switch', () => {
+  setImHostLanguage('zh');
+  const seen = [];
+  const stopFirst = onImHostLanguageChange(() => {
+    throw new Error('subscriber failure');
+  });
+  const stopSecond = onImHostLanguageChange((next) => seen.push(next));
+  try {
+    setImHostLanguage('en');
+  } finally {
+    stopFirst();
+    stopSecond();
+  }
+  assert.deepEqual(seen, ['en']);
+  assert.equal(getImHostLanguage(), 'en');
+});
+
+test('onImHostLanguageChange rejects non-subscribers and disposes idempotently', () => {
+  for (const value of [undefined, null, 'en', {}]) {
+    assert.throws(() => onImHostLanguageChange(value), TypeError);
+  }
+  setImHostLanguage('zh');
+  let calls = 0;
+  const stop = onImHostLanguageChange(() => { calls += 1; });
+  stop();
+  stop();
+  setImHostLanguage('en');
+  assert.equal(calls, 0);
+});
+
 test('t() translates known keys and fills placeholders in English mode', () => {
   setImHostLanguage('en');
   const [key] = Object.keys(EN);
@@ -51,6 +109,19 @@ test('t() translates known keys and fills placeholders in English mode', () => {
   assert.equal(
     t('卡片已结束，请查看后续消息。'),
     'This card has ended. Please check the next message.',
+  );
+  // Text a reader sees before any model output, so an untranslated literal
+  // here is the first thing that looks broken (see issue #185).
+  assert.equal(t('正在处理…'), 'Processing…');
+  // Terminal status rewritten over a rejected Telegram placeholder: the last
+  // thing a reader sees on a degraded reply.
+  assert.equal(t('回复已发送。'), 'The reply was sent.');
+  assert.equal(t('回复发送结果未能确认。'), 'The reply delivery result could not be confirmed.');
+  assert.equal(t('消息发送失败，请稍后重试。'), 'The message could not be sent. Try again later.');
+  assert.equal(
+    t('Thread 创建结果暂时无法确认。若已创建，请在对应 Thread 中重试；若未创建，请稍后重新 @机器人。'),
+    'The Thread creation result cannot be confirmed yet. If the Thread was created,'
+    + ' retry inside it; if it was not, mention the bot again shortly.',
   );
   assert.equal(
     t('工具调用「{name}」未成功，请检查工具配置或稍后重试。', { name: 'search' }),

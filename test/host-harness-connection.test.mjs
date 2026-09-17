@@ -3,10 +3,11 @@ import test from 'node:test';
 
 import { harnessConnection } from '../plugin-src/host/harness-connection.mjs';
 import { inject as hostInject } from '../plugin-src/host/index.mjs';
+import { toPosixPath } from './support/filesystem.mjs';
 
 const IM_CHANNELS = [
   'weixin', 'feishu', 'dingtalk', 'wecom', 'qq',
-  'slack', 'telegram', 'discord', 'whatsapp',
+  'slack', 'telegram', 'discord', 'whatsapp', 'imessage',
 ];
 
 test('Host connections share the current Cordis root without depending on a webServer', () => {
@@ -114,7 +115,7 @@ for (const channel of [...IM_CHANNELS, 'office']) {
     assert.equal(options.apiProxy, apiProxy);
     assert.equal(options.interactionScope, root);
     assert.equal(Object.hasOwn(options, 'baseUrl'), false);
-    assert.equal(options.workspace, '/test/workspace');
+    assert.match(toPosixPath(options.workspace), /\/test\/workspace$/);
     assert.equal(options.autostart, false);
   });
 

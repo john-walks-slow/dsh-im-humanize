@@ -1,3 +1,4 @@
+import { BotName } from '../../bot-alias.js';
 import * as React from "react";
 
 import { FeishuLogoGlyph } from "../../channel-logos.js";
@@ -311,7 +312,7 @@ function QrPane({ provision, now, onRefresh, onCancel, busy }) {
               ? "使用飞书确认群消息权限"
               : "使用飞书扫码创建机器人"),
         h("p", null, repairing
-          ? "扫码会更新现有飞书应用，增量补充当前缺少的卡片按钮回调、读取用户消息内图片或文件所需的 im:message:readonly（飞书显示为“获取单聊、群组消息”）、上传机器人图片或文件所需的 im:resource，以及原生命令面板所需的 application:app_slash_command:read / write；不会创建新应用。确认页只显示当前缺少项，完成后此机器人会短暂重连，其他机器人不受影响。"
+          ? "扫码会更新现有飞书应用，增量补充当前缺少的卡片按钮回调、读取用户消息内图片或文件所需的 im:message:readonly（飞书显示为“获取单聊、群组消息”）、上传机器人图片或文件所需的 im:resource、接收群内其他机器人 @ 当前机器人所需的 im:message.group_at_msg.include_bot:readonly，以及原生命令面板所需的 application:app_slash_command:read / write；不会创建新应用。确认页只显示当前缺少项，完成后此机器人会短暂重连，其他机器人不受影响。"
           : grantingGroupMessages
             ? "扫码会更新现有飞书应用，只增量开通“获取群组中所有消息”权限；不会创建新应用。确认后会自动启用“响应所有群消息”，其他机器人不受影响。"
             : "扫码只会新增一个机器人，已接入的机器人会继续正常收发消息。"),
@@ -465,20 +466,20 @@ function RemoveConfirmation({ bot, busy, onConfirm, onCancel }) {
   );
 }
 
-/** Toggle row for 分步直推, mirroring the group-topic reply toggle pattern. */
-function StepPushEditor({ value = false, disabled = false, onSave }) {
+/** One select for the step-push presentation: off / per-step posts / process card. */
+function StepPushEditor({ value = false, mode = "post", disabled = false, onSave, onModeSave }) {
   const titleId = React.useId();
-  const current = value === true ? "on" : "off";
+  const helpId = `${titleId}-help`;
+  const current = value === true ? mode : "off";
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState(null);
 
-  const change = async (event) => {
-    const next = event.target.value === "on";
-    if ((next ? "on" : "off") === current || saving || disabled) return;
+  const save = async (run) => {
+    if (saving || disabled) return;
     setSaving(true);
     setError(null);
     try {
-      await onSave?.(next);
+      await run();
     } catch (cause) {
       setError(cause?.message ?? "分步直推设置保存失败，请重试。");
     } finally {
@@ -486,12 +487,49 @@ function StepPushEditor({ value = false, disabled = false, onSave }) {
     }
   };
 
+  const change = (event) => {
+    const next = event.target.value;
+    if (next === current) return;
+    void save(async () => {
+      if (next === "off") {
+        // Turning off only needs the flag when it was on.
+        if (value === true) await onSave?.(false);
+        return;
+      }
+      const nextMode = next === "streaming_card" ? "streaming_card" : "post";
+      // Enabling (or switching presentation) may need both writes; the flag
+      // must land before the mode so the runtime never sees a mode without
+      // step push enabled.
+      if (value !== true) await onSave?.(true);
+      if (nextMode !== mode) await onModeSave?.(nextMode);
+    });
+  };
+
+  const helpText = current === "off"
+    ? "适合日常问答：执行过程中不显示工具调用等中间步骤，只回复最终结果"
+    : current === "streaming_card"
+      ? "推荐长任务使用：过程与最终答案都在同一张卡片里实时更新，不刷屏"
+      : "每一步都单独发一条消息（含工具调用和过程说明）；注意长任务会连续发送较多消息";
+
   return h("section", {
     className: "dim-feishuGroupControl",
     "aria-labelledby": titleId,
   },
   h("div", { className: "dim-feishuGroupControlHeader" },
-    h("h3", { id: titleId }, "分步直推"),
+    h("div", { className: "dim-presetTitle" },
+      h("h3", { id: titleId }, "任务过程展示"),
+      h("span", { className: "dim-presetHelp" },
+        h("button", {
+          type: "button",
+          className: "dim-presetHelpButton",
+          "aria-label": "查看分步直推说明",
+          "aria-describedby": helpId,
+        }, h("span", { "aria-hidden": "true" }, "?")),
+        h("span", {
+          id: helpId,
+          className: "dim-presetTooltip",
+          role: "tooltip",
+        }, "设置任务执行过程的呈现方式：不显示、实时卡片或逐步消息"))),
     saving
       ? h("span", { className: "dim-feishuGroupControlStatus", role: "status" }, "保存中…")
       : null),
@@ -499,13 +537,13 @@ function StepPushEditor({ value = false, disabled = false, onSave }) {
     className: "dim-feishuGroupSelect",
     value: current,
     disabled: disabled || saving,
-    "aria-label": "分步直推",
-    onChange: (event) => { void change(event); },
+    "aria-label": "任务过程展示",
+    onChange: change,
   },
-  h("option", { value: "off" }, "关闭（保持流式卡模式）"),
-  h("option", { value: "on" }, "开启（逐步推送工具调用与过程说明）")),
-  h("p", { className: "dim-feishuGroupHelp" },
-    "开启后逐步推送工具调用与过程说明"),
+  h("option", { value: "off" }, "不显示过程（只发送最终答案）"),
+  h("option", { value: "streaming_card" }, "实时过程卡（全程一张卡片动态更新）"),
+  h("option", { value: "post" }, "逐步直播（每一步单独发一条消息）")),
+  h("p", { className: "dim-feishuGroupHelp" }, helpText),
   error ? h("p", {
     className: "dim-feishuGroupError",
     role: "alert",
@@ -524,11 +562,13 @@ export function BotCard({
   onReconnect,
   onRepairCallback,
   onWorkspaceSave,
+  onAliasSave,
   onModelSave,
   onAgentPresetSave,
   onContextEnhancementSave,
   onHumanizeSave,
   onStepPushSave,
+  onStepPushModeSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -564,7 +604,7 @@ export function BotCard({
             h("div", { className: "bxf-avatar dim-botAvatar", "aria-hidden": "true" },
               h(FeishuLogoGlyph, { size: 34 })),
             h("div", { className: "bxf-botName dim-botName" },
-              h("h3", { id: titleId, title: bot.name }, bot.name),
+              h(BotName, { bot, id: titleId, disabled: Boolean(busy), onSave: onAliasSave }),
               h("p", { title: bot.appIdMasked }, bot.appIdMasked ?? "应用标识已安全保存")),
           ),
           h("div", {
@@ -624,8 +664,10 @@ export function BotCard({
       }),
       h(StepPushEditor, {
         value: connection.stepPush,
+        mode: connection.stepPushMode,
         disabled: Boolean(busy),
         onSave: onStepPushSave,
+        onModeSave: onStepPushModeSave,
       }),
       provisionContent
         ? h("section", {
@@ -716,11 +758,13 @@ function BotList(props) {
           onReconnect: () => props.onReconnect(bot),
           onRepairCallback: () => props.onRepairCallback(bot),
           onWorkspaceSave: (workspace) => props.onWorkspaceSave(bot, workspace),
+          onAliasSave: (alias) => props.onAliasSave(bot, alias),
           onModelSave: (model) => props.onModelSave(bot, model),
           onAgentPresetSave: (agentPreset) => props.onAgentPresetSave(bot, agentPreset),
           onContextEnhancementSave: (config) => props.onContextEnhancementSave(bot, config),
           onHumanizeSave: (humanize) => props.onHumanizeSave(bot, humanize),
           onStepPushSave: (stepPush) => props.onStepPushSave(bot, stepPush),
+          onStepPushModeSave: (stepPushMode) => props.onStepPushModeSave(bot, stepPushMode),
           onRequestRemove: () => props.onRequestRemove(bot),
           onConfirmRemove: () => props.onConfirmRemove(bot),
           onCancelRemove: props.onCancelRemove,
@@ -792,6 +836,7 @@ export function FeishuSettingsTab({ rpcCall }) {
   const [pageBusy, setPageBusy] = React.useState(false);
   const [provisionBusy, setProvisionBusy] = React.useState(false);
   const [credentialOpen, setCredentialOpen] = React.useState(false);
+  const [credentialDomain, setCredentialDomain] = React.useState("feishu");
   const [credentialBusy, setCredentialBusy] = React.useState(false);
   const [credentialError, setCredentialError] = React.useState(null);
   const [busyByBot, setBusyByBot] = React.useState({});
@@ -1007,13 +1052,13 @@ export function FeishuSettingsTab({ rpcCall }) {
     try {
       const snapshot = normalizeBotsSnapshot(await invoke(
         FEISHU_ENDPOINTS.bindCredentials,
-        { appId: identity, appSecret: secret },
+        { appId: identity, appSecret: secret, domain: credentialDomain },
       ));
       if (mountedRef.current && workspaceFence.canCommitMutation(snapshotVersion)) {
         mergeSnapshot(snapshot);
       }
       setCredentialOpen(false);
-      announce("飞书机器人凭据已绑定。");
+      announce(credentialDomain === "lark" ? "Lark 机器人凭据已绑定。" : "飞书机器人凭据已绑定。");
     } catch (error) {
       setCredentialError(presentError(error));
     } finally {
@@ -1021,7 +1066,7 @@ export function FeishuSettingsTab({ rpcCall }) {
       if (shouldRefresh && mountedRef.current) void loadStatus({ silent: true });
       setCredentialBusy(false);
     }
-  }, [announce, invoke, loadStatus, mergeSnapshot, workspaceFence]);
+  }, [announce, credentialDomain, invoke, loadStatus, mergeSnapshot, workspaceFence]);
 
   const cancelProvisioning = React.useCallback(async () => {
     const activeProvision = model.provisioning;
@@ -1415,16 +1460,30 @@ export function FeishuSettingsTab({ rpcCall }) {
 
   const credentialContent = credentialOpen
     ? h(CredentialBindingPanel, {
-        channel: "飞书",
+        key: credentialDomain,
+        channel: credentialDomain === "lark" ? "Lark" : "飞书",
         identityLabel: "App ID",
-        identityPlaceholder: "填写飞书开放平台 App ID",
+        identityPlaceholder: credentialDomain === "lark" ? "填写 Lark 开放平台 App ID" : "填写飞书开放平台 App ID",
         secretLabel: "App Secret",
-        secretPlaceholder: "填写飞书开放平台 App Secret",
+        secretPlaceholder: credentialDomain === "lark" ? "填写 Lark 开放平台 App Secret" : "填写飞书开放平台 App Secret",
         busy: credentialBusy,
         error: credentialError,
         onSubmit: bindCredentials,
         onCancel: () => { setCredentialOpen(false); setCredentialError(null); },
-      })
+      }, h("label", { className: "dim-credentialField" },
+        h("span", null, "应用平台"),
+        h("select", {
+          className: "dim-feishuGroupSelect",
+          "aria-label": "应用平台",
+          value: credentialDomain,
+          disabled: credentialBusy,
+          onChange: (event) => {
+            setCredentialDomain(event.target.value);
+            setCredentialError(null);
+          },
+        },
+        h("option", { value: "feishu" }, "飞书"),
+        h("option", { value: "lark" }, "Lark（国际版）"))))
     : null;
 
   const setCardRef = React.useCallback((botId, node) => {
@@ -1486,6 +1545,9 @@ export function FeishuSettingsTab({ rpcCall }) {
                   onReconnect: (bot) => void reconnectOneBot(bot),
                   onRepairCallback: repairCallback,
                   onWorkspaceSave: saveWorkspace,
+                  onAliasSave: (connection, alias) => saveBotSetting(
+                    connection, 'alias', FEISHU_ENDPOINTS.setAlias, { alias },
+                  ),
                   onModelSave: (connection, selectedModel) => saveBotSetting(
                     connection, "model", FEISHU_ENDPOINTS.setModel, { model: selectedModel },
                   ),
@@ -1500,6 +1562,9 @@ export function FeishuSettingsTab({ rpcCall }) {
                   ),
                   onStepPushSave: (connection, stepPush) => saveBotSetting(
                     connection, "step-push", FEISHU_ENDPOINTS.setStepPush, { stepPush },
+                  ),
+                  onStepPushModeSave: (connection, stepPushMode) => saveBotSetting(
+                    connection, "step-push-mode", FEISHU_ENDPOINTS.setStepPushMode, { stepPushMode },
                   ),
                   onRequestRemove: requestRemove,
                   onConfirmRemove: (bot) => void confirmRemove(bot),

@@ -1,3 +1,4 @@
+import { registerManagementRpc } from '../management-rpc.mjs';
 import { resolveRpcAuthority } from './rpc-authority.mjs';
 
 export const DELIVERY_RPC_CHANNEL = '/dsh-im-delivery';
@@ -159,10 +160,7 @@ export function createDeliveryRpcHandler(service) {
 }
 
 export function installDeliveryRpc(ctx, service, { authority } = {}) {
-  if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
-    throw new TypeError('DSH Host Connection RPC is required');
-  }
-  return ctx.connection.rpc.handle(
+  return registerManagementRpc(ctx,
     DELIVERY_RPC_CHANNEL,
     createDeliveryRpcHandler(service),
     { authority: resolveRpcAuthority(authority) },

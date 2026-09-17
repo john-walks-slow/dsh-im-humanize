@@ -1,3 +1,4 @@
+import { normalizeBotAlias } from '../../../../src/channels/shared/bot-alias.mjs';
 import { normalizeAgentPresetCatalog, normalizeAgentPresetId, SET_AGENT_PRESET_ENDPOINT } from '../../agent-preset.js';
 import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } from '../../model-setting.js';
 import { normalizeLastMessageError } from '../../last-message-error.js';
@@ -37,6 +38,7 @@ export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   setContextEnhancement: 'bot.context-enhancement.set',
   setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: 'bot.access-policy.set',
+  setAlias: 'bot.alias.set',
 });
 
 export function createTokenChannelApi(channel, connectionSummary, {
@@ -74,6 +76,7 @@ export function createTokenChannelApi(channel, connectionSummary, {
         ? { accessPolicy: normalizeAccessPolicy(value.accessPolicy) }
         : {}),
       bot: {
+      ...normalizeBotAlias(value.bot),
         name: text(value.bot?.name, `${channel}机器人`, 100),
         username: text(value.bot?.username, '', 100),
         idMasked: text(value.bot?.idMasked, '机器人标识已安全保存', 140),
@@ -109,6 +112,7 @@ export function createTokenChannelApi(channel, connectionSummary, {
       ...(isRecord(source.humanizeDefaults)
         ? { humanizeDefaults: source.humanizeDefaults }
         : {}),
+      ...(isRecord(source.permissions) ? { permissions: source.permissions } : {}),
     };
   };
 

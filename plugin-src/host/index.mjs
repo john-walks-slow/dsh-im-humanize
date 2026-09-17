@@ -6,18 +6,23 @@ import { apply as applyQq } from './channels/qq/index.mjs';
 import { apply as applySlack } from './channels/slack/index.mjs';
 import { apply as applyTelegram } from './channels/telegram/index.mjs';
 import { apply as applyWecom } from './channels/wecom/index.mjs';
+import { apply as applyWecomApp } from './channels/wecom-app/index.mjs';
 import { apply as applyWeixin } from './channels/weixin/index.mjs';
 import { apply as applyWhatsapp } from './channels/whatsapp/index.mjs';
+import { apply as applyIMessage } from './channels/imessage/index.mjs';
 import { installOutboundArtifactTool } from '../../src/channels/shared/semantic/artifact.mjs';
 import { installMessageBreakTool } from '../../src/channels/shared/message-break.mjs';
 import { installNoReplyTool } from '../../src/channels/shared/no-reply.mjs';
 import { installImSendTool } from '../../src/channels/shared/im-send-tool.mjs';
-import { setImHostLanguage } from '../../src/channels/shared/i18n.mjs';
+import { installHostLanguage } from './host-language.mjs';
+import { installHostLanguageRpc } from './host-language-rpc.mjs';
 import { installDeliveryRpc } from './delivery-rpc.mjs';
 import { installDeliveryHttp } from './delivery-http.mjs';
 import { createDeliveryService } from './delivery-service.mjs';
 import { installInboundTtlRpc } from './inbound-ttl-rpc.mjs';
+import { installInjectedContext } from './injected-context.mjs';
 import { installSessionSyncCoordinator } from './session-sync-coordinator.mjs';
+import { installSessionTitlePrefix } from './session-title-prefix.mjs';
 import { installUpdateRpc } from './update-rpc.mjs';
 import { installHumanizeRpc } from './humanize-rpc.mjs';
 
@@ -65,8 +70,11 @@ function channelConfig(config, name, deliveryService) {
 }
 
 export function createImHostPlugin(internals = {}) {
+  const startHostLanguage = internals.installHostLanguage ?? installHostLanguage;
+  const startHostLanguageRpc = internals.installHostLanguageRpc ?? installHostLanguageRpc;
   const startUpdate = internals.installUpdateRpc ?? installUpdateRpc;
   const startInboundTtl = internals.installInboundTtlRpc ?? installInboundTtlRpc;
+  const startInjectedContext = internals.installInjectedContext ?? installInjectedContext;
   const startDelivery = internals.installDeliveryRpc ?? installDeliveryRpc;
   const startDeliveryHttp = internals.installDeliveryHttp ?? installDeliveryHttp;
   const startSessionSync = internals.installSessionSyncCoordinator
@@ -76,22 +84,26 @@ export function createImHostPlugin(internals = {}) {
   const startWeixin = internals.applyWeixin ?? applyWeixin;
   const startDingtalk = internals.applyDingtalk ?? applyDingtalk;
   const startWecom = internals.applyWecom ?? applyWecom;
+  const startWecomApp = internals.applyWecomApp ?? applyWecomApp;
   const startQq = internals.applyQq ?? applyQq;
   const startSlack = internals.applySlack ?? applySlack;
   const startTelegram = internals.applyTelegram ?? applyTelegram;
   const startDiscord = internals.applyDiscord ?? applyDiscord;
   const startOffice = internals.applyOffice ?? applyOffice;
   const startWhatsapp = internals.applyWhatsapp ?? applyWhatsapp;
+  const startIMessage = internals.applyIMessage ?? applyIMessage;
   const channels = [
     ['feishu', startFeishu],
     ['weixin', startWeixin],
     ['dingtalk', startDingtalk],
     ['wecom', startWecom],
+    ['wecomApp', startWecomApp],
     ['qq', startQq],
     ['slack', startSlack],
     ['telegram', startTelegram],
     ['discord', startDiscord],
     ['whatsapp', startWhatsapp],
+    ['imessage', startIMessage],
     ['office', startOffice],
   ];
   return Object.freeze({
@@ -134,8 +146,10 @@ export function createImHostPlugin(internals = {}) {
   });
 
   async function activateChannels(ctx, config, deliveryService) {
-    setImHostLanguage(config.language ?? process.env.DSH_IM_LANGUAGE);
-
+    // Bind the bot message language before any channel connects, so the first
+    // command menu a platform stores is already in the interface language.
+    const hostLanguage = startHostLanguage(ctx, config);
+    await hostLanguage?.ready;
     // Load humanization settings from the file-backed store and merge them
     // into the config so all channels receive the same values. The
     // humanizeDefaults accessor lets bridges re-read the store on every
@@ -148,7 +162,12 @@ export function createImHostPlugin(internals = {}) {
         authority: config.rpcAuthority,
       });
       humanizeStore = result.store;
-      await humanizeStore.load();
+      // Channels mount their management RPC synchronously during the
+      // activation below; awaiting an async load here would defer route
+      // mounting past the caller's first tick. Read the settings file
+      // synchronously instead so saved panel values reach runtime
+      // constructors, then confirm through the regular async load.
+      humanizeStore.loadSync();
     } catch (error) {
       ctx?.logger?.error?.('[dsh-im] humanization settings load failed; using defaults:', error);
     }
@@ -184,6 +203,19 @@ export function createImHostPlugin(internals = {}) {
     const resolveBoundTargets = (sessionId) => (
       deliveryService.listSessionConversations(sessionId)
     );
+    const startTitlePrefix = (titleCtx) => {
+      // The installer owns its cleanup through ctx.effect(). Cordis startup
+      // callbacks must not return its controller object as an effect.
+      installSessionTitlePrefix(titleCtx, {
+        logger: typeof titleCtx?.logger === 'function'
+          ? titleCtx.logger('dsh-im:session-title') : (titleCtx?.logger ?? console),
+      });
+    };
+    if (typeof ctx?.inject === 'function') {
+      ctx.inject(['sessions'], startTitlePrefix);
+    } else if (ctx?.sessions && typeof ctx.on === 'function') {
+      startTitlePrefix(ctx);
+    }
     if (typeof ctx?.inject === 'function') {
       ctx.inject(['tools', 'systemPrompt'], (toolCtx) => {
         installOutboundArtifactTool(toolCtx);
@@ -208,7 +240,19 @@ export function createImHostPlugin(internals = {}) {
     const logger = typeof ctx?.logger === 'function'
       ? ctx.logger(name)
       : (ctx?.logger ?? console);
-    if (ctx?.connection?.rpc) {
+    try {
+      startInjectedContext(ctx, { logger });
+    } catch (error) {
+      logger.error?.('[dsh-im] failed to activate injected-context pairing; prompts keep the inline prefix', error);
+    }
+    if (ctx?.connection?.fetch) {
+      if (hostLanguage) {
+        try {
+          startHostLanguageRpc(ctx, hostLanguage, config.rpcAuthority);
+        } catch (error) {
+          logger.error?.('[dsh-im] failed to activate interface language mirroring; continuing with channels', error);
+        }
+      }
       try {
         startUpdate(ctx);
       } catch (error) {
@@ -226,14 +270,16 @@ export function createImHostPlugin(internals = {}) {
       }
     }
     const failures = [];
-    for (const [channel, start] of channels) {
+    // Each channel mounts its management RPC before awaiting initialization.
+    // Start them together so a slow channel cannot leave later routes absent.
+    await Promise.all(channels.map(async ([channel, start]) => {
       try {
         await start(ctx, channelConfig(config, channel, deliveryService));
       } catch (error) {
         failures.push(error);
         logger.error?.(`[dsh-im] failed to activate ${channel}; continuing with the remaining channels`, error);
       }
-    }
+    }));
     if (failures.length === channels.length) {
       throw new AggregateError(failures, 'dsh-im failed to activate every channel');
     }

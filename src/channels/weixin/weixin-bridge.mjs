@@ -41,7 +41,11 @@ import {
   applySegmentGap,
 } from '../shared/send-delay.mjs';
 import { resolveHumanizeSettings } from '../shared/humanize-resolver.mjs';
-import { captureContextEnhancement, enhanceContextContent } from '../shared/context-enhancement.mjs';
+import {
+  captureContextEnhancement,
+  captureContextEnhancementSource,
+  enhanceContextContent,
+} from '../shared/context-enhancement.mjs';
 import {
   hasInboundImages,
   imagePromptDiagnostic,
@@ -274,6 +278,8 @@ function artifactFailureText(fileName, error) {
       return t('结果文件「{name}」已生成，但微信机器人当前没有文件消息发送权限，请检查机器人文件消息能力。', { name });
     case 'artifact-too-large':
       return t('结果文件「{name}」超过当前微信会话可发送的文件大小，未发送。', { name });
+    case 'artifact-upload-timeout':
+      return t('结果文件「{name}」上传微信时长时间没有进展，已超时，文件尚未发送。请检查网络后重试，或压缩、拆分文件后发送。', { name });
     case 'artifact-rate-limited':
       return t('结果文件「{name}」暂时被微信限流，未能发送，请稍后重试。', { name });
     case 'artifact-provider-rejected':
@@ -662,9 +668,10 @@ export class WeixinHarnessBridge {
     ].find(Number.isSafeInteger);
     if (quotedAt === undefined) return { unavailableReason: 'not-delivered' };
     const sender = nonEmptyString(reference?.toUserId);
-    const sessionId = sender ? this.#state.sessionFor(conversationKey(sender)) : null;
+    const key = sender ? conversationKey(sender) : null;
+    const sessionId = key ? this.#state.sessionFor(key) : null;
     const session = typeof sessionId === 'string' && sessionId
-      ? this.#harness.workspaceSession?.(sessionId)
+      ? this.#harness.workspaceSession?.(sessionId, key)
       : null;
     if (typeof session?.readHistory !== 'function') {
       return { unavailableReason: 'not-delivered' };
@@ -802,6 +809,11 @@ export class WeixinHarnessBridge {
       control: { owner: this, key },
       deferredDelivery: this.#deferred,
       abortPreAsk: () => this.#abortPreAskPhase(key),
+      enhancement: captureContextEnhancementSource(
+        this.#contextEnhancement,
+        'direct',
+        () => ({ channel: 'weixin', senderId: sender, chatId: sender }),
+      ),
     });
     if (result?.stopped) {
       await Promise.allSettled([
@@ -997,6 +1009,8 @@ export class WeixinHarnessBridge {
           key,
           text,
           content,
+          titleText: batchSubmission?.title,
+          sourceGuidance: snapshot?.config?.guidance,
           contextEnhanced,
           createOptions: { signal: this.#signal },
           existsOptions: { signal: this.#signal },

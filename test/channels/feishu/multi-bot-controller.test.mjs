@@ -186,6 +186,7 @@ test('QR registration separates events from card callbacks', async () => {
   assert.deepEqual(run.options.addons.events.items.tenant, ['im.message.receive_v1']);
   assert.deepEqual(run.options.addons.callbacks.items, ['card.action.trigger']);
   assert.ok(run.options.addons.scopes.tenant.includes('im:resource'));
+  assert.ok(run.options.addons.scopes.tenant.includes('im:message.group_at_msg.include_bot:readonly'));
   assert.equal(run.options.addons.scopes.tenant.includes('im:resource:upload'), false);
   assert.ok(run.options.addons.scopes.tenant.includes('application:app_slash_command:read'));
   assert.ok(run.options.addons.scopes.tenant.includes('application:app_slash_command:write'));
@@ -269,6 +270,32 @@ test('stepPush persists and reaches the live runtime without reconnecting', asyn
   await assert.rejects(
     fx.controller.updateStepPush(existing.id, 'yes'),
     /Invalid Feishu step push/,
+  );
+  await fx.controller.close();
+});
+
+test('stepPushMode persists, normalizes, and reaches the live runtime without reconnecting', async () => {
+  const existing = bot('bot_step_push_mode', 'step_push_mode');
+  const fx = fixture({
+    bots: [existing],
+    secrets: { [existing.secretRef]: 'stable-secret' },
+  });
+  await fx.controller.initialize();
+
+  // Missing stored modes preserve the existing post presentation.
+  assert.equal(fx.controller.status().bots[0].stepPushMode, 'post');
+  const runtime = fx.runtimes.get(existing.id)[0];
+  const modes = [];
+  runtime.setStepPushMode = (value) => modes.push(value);
+  const updated = await fx.controller.updateStepPushMode(existing.id, 'streaming_card');
+
+  assert.equal(updated.bots[0].stepPushMode, 'streaming_card');
+  assert.equal(fx.configStore.getBot(existing.id).stepPushMode, 'streaming_card');
+  assert.deepEqual(modes, ['streaming_card']);
+  assert.equal(fx.runtimes.get(existing.id).length, 1);
+  await assert.rejects(
+    fx.controller.updateStepPushMode(existing.id, 'bubble'),
+    /Invalid Feishu step push mode/,
   );
   await fx.controller.close();
 });
@@ -402,6 +429,7 @@ test('callback repair is deduplicated per bot, updates only its secret, and prov
       tenant: [
         'im:message:readonly',
         'im:resource',
+        'im:message.group_at_msg.include_bot:readonly',
         'application:app_slash_command:read',
         'application:app_slash_command:write',
       ],
@@ -807,6 +835,25 @@ test('manual Feishu credentials are verified, stored host-side, and use app visi
   await fx.controller.close();
 });
 
+test('manual Lark binding verifies, persists, and starts the runtime with the Lark domain', async (t) => {
+  const verified = [];
+  const fx = fixture({
+    createBotIds: ['bot_lark'],
+    verifyApp: async (options) => {
+      verified.push(options);
+      return { name: 'Lark bot', openId: 'ou_lark_bot', activated: 1 };
+    },
+  });
+  t.after(() => fx.controller.close());
+  const credentials = { appId: 'cli_lark', appSecret: 'lark-private-secret', domain: 'lark' };
+  const result = await fx.controller.bindCredentials(credentials);
+  assert.deepEqual(verified, [credentials]);
+  assert.equal(fx.configStore.getBot('bot_lark').domain, 'lark');
+  assert.equal(fx.runtimes.get('bot_lark')[0].config.domain, 'lark');
+  assert.equal(result.bots[0].bot.domain, 'lark');
+  assert.doesNotMatch(JSON.stringify(result), /lark-private-secret|appSecret/);
+});
+
 test('initialization isolates failures and starts every bot with available credentials', async () => {
   const missing = bot('bot_missing', 'missing');
   const healthy = bot('bot_healthy', 'healthy');
@@ -1168,3 +1215,29 @@ test('a cancelled replacement whose start rejects still restores the old runtime
   assert.equal(fx.values.get(existing.secretRef), 'stable-secret');
   assert.equal(fx.controller.status().bots[0].connected, true);
 });
+
+for (const entry of ['manual', 'scan']) {
+  test('new process-card defaults and saved rebinding settings: ' + entry, async () => {
+    const fx = fixture({ createBotIds: ['bot_new_mode'] });
+    await fx.controller.initialize();
+    const connect = () => entry === 'manual'
+      ? fx.controller.bindCredentials({ appId: 'cli_new_mode', appSecret: 'test-secret' })
+      : completeScan(fx, { client_id: 'cli_new_mode', client_secret: 'test-secret', user_info: { open_id: 'ou_owner', tenant_brand: 'feishu' } });
+    await connect();
+    let saved = fx.configStore.getBot('bot_new_mode');
+    assert.equal(saved.stepPush, true);
+    assert.equal(saved.stepPushMode, 'streaming_card');
+    for (const settings of [
+      { stepPush: false, stepPushMode: 'post' },
+      { stepPush: true, stepPushMode: 'post' },
+      { stepPush: false, stepPushMode: 'streaming_card' },
+    ]) {
+      await fx.configStore.saveBot({ ...saved, ...settings });
+      await connect();
+      saved = fx.configStore.getBot(saved.id);
+      assert.equal(saved.stepPush, settings.stepPush);
+      assert.equal(saved.stepPushMode, settings.stepPushMode);
+    }
+    await fx.controller.close();
+  });
+}

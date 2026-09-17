@@ -1,5 +1,14 @@
 // English translations (shared-c area). Keys are exact Chinese literals passed to t().
 export default {
+  '微信': 'Weixin',
+  '飞书': 'Feishu',
+  '钉钉': 'DingTalk',
+  '企业微信': 'Enterprise WeChat',
+  '{channel}正在初始化，请稍后重新读取。': '{channel} is initializing. Please reload shortly.',
+  '{channel}配置格式错误。请检查其数据目录中的 config.json 和 workspaces.json，修复后重启 DSH。详细原因请查看启动日志。': 'The {channel} configuration is invalid. Check config.json and workspaces.json in its data directory, then restart DSH. See the startup log for details.',
+  '{channel}配置格式错误。请检查其数据目录中的 config.json，修复后重启 DSH。详细原因请查看启动日志。': 'The {channel} configuration is invalid. Check config.json in its data directory, then restart DSH. See the startup log for details.',
+  '无法读取或写入{channel}配置。请检查其数据目录的访问权限，修复后重启 DSH。详细原因请查看启动日志。': 'The {channel} configuration could not be read or written. Check access to its data directory, then restart DSH. See the startup log for details.',
+  '{channel}初始化失败。请查看 DSH 启动日志中 failed to activate {id} 后的错误，修复后重启 DSH。': '{channel} initialization failed. Check the error after "failed to activate {id}" in the DSH startup log, fix it, then restart DSH.',
   // history-command.mjs / command help
   '/history [数量]  查看最近历史消息（默认 3 条，最多 5 条）':
     '/history [count]  Preview recent messages (default 3, maximum 5)',
@@ -74,6 +83,8 @@ export default {
     'Reply with option numbers or text; separate multiple choices with commas, or add anything else.',
   '请回复一个选项序号或文字，也可直接输入其他答案。':
     'Reply with an option number or its text, or type your own answer directly.',
+  '请点击下方按钮选择，也可直接回复文字。':
+    'Tap a button below to choose, or reply with text directly.',
   '请直接回复你的答案。': 'Please reply with your answer directly.',
   '群聊中请 @机器人 后发送答案。':
     'In group chats, please @ the bot before sending your answer.',

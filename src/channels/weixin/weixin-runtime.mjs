@@ -1,4 +1,5 @@
-import { DEFAULT_WEIXIN_MAX_MESSAGE_CHARS, WeixinApiError } from './weixin-api.mjs';
+import { createWeixinDiagnostics } from './connection-error.mjs';
+import { DEFAULT_WEIXIN_MAX_MESSAGE_CHARS, WeixinApiError, rejectedProviderResponse } from './weixin-api.mjs';
 import {
   createWeixinBridgeStatus, WeixinHarnessBridge, weixinSendError, weixinSendFailureOptions,
 } from './weixin-bridge.mjs';
@@ -104,6 +105,7 @@ export function createWeixinRuntimeStatus() {
     harnessReachable: false,
     lastCheckedAt: null,
     lastError: null,
+    connectionError: null,
     ...createWeixinBridgeStatus(),
   };
 }
@@ -117,6 +119,8 @@ export class WeixinRuntime {
   #contextEnhancement;
   #accessPolicy;
   #logger;
+  #diagnostics;
+  #startContext = {};
   #replyTimeoutMs;
   #streaming = true;
   #messageBreak = false;
@@ -139,6 +143,7 @@ export class WeixinRuntime {
     contextEnhancement,
     accessPolicy,
     logger = console,
+    diagnostics,
     replyTimeoutMs = 600_000,
     streaming = true, messageBreak = false, onNewMessage = 'interrupt', humanize = null,
     maxMessageChars = DEFAULT_WEIXIN_MAX_MESSAGE_CHARS,
@@ -155,6 +160,7 @@ export class WeixinRuntime {
     this.#contextEnhancement = contextEnhancement;
     this.#accessPolicy = accessPolicy;
     this.#logger = logger;
+    this.#diagnostics = diagnostics ?? createWeixinDiagnostics({ logger });
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#streaming = streaming !== false;
     this.#messageBreak = messageBreak === true;
@@ -168,9 +174,10 @@ export class WeixinRuntime {
     return structuredClone(this.#status);
   }
 
-  async start() {
+  async start(context = {}) {
     if (this.#status.ready && this.#monitor) return this.status;
     if (this.#starting) return this.#starting;
+    this.#startContext = context;
     this.#starting = this.#start().finally(() => {
       this.#starting = null;
     });
@@ -182,6 +189,7 @@ export class WeixinRuntime {
     this.#status.startedAt = new Date().toISOString();
     this.#status.weixinConnectionState = 'connecting';
     this.#status.lastError = null;
+    this.#status.connectionError = null;
     try {
       try {
         await this.#harness.ensureRunning();
@@ -217,8 +225,11 @@ export class WeixinRuntime {
         if (signal.aborted) return;
         this.#status.ready = false;
         this.#status.weixinConnectionState = 'failed';
-        this.#status.lastError = error?.message ?? String(error);
-        this.#logger.error?.(`[dsh-weixin] account ${this.#config.botId} monitor stopped:`, error);
+        const failure = this.#diagnostics.report(error, {
+          operation: 'connection.monitor', stage: 'connection.poll', botId: this.#config.botId, automatic: true,
+        });
+        this.#status.connectionError = failure.publicError;
+        this.#status.lastError = failure.publicError.message;
       });
       return this.status;
     } catch (error) {
@@ -227,7 +238,6 @@ export class WeixinRuntime {
       this.#bridge = null;
       this.#status.ready = false;
       this.#status.weixinConnectionState = 'failed';
-      this.#status.lastError = error?.message ?? String(error);
       throw error;
     }
   }
@@ -242,10 +252,9 @@ export class WeixinRuntime {
       } catch (error) {
         const wait = this.#startRetryDelaysMs[attempt];
         if (wait === undefined || !retryableStartError(error)) throw error;
-        this.#logger.warn?.(
-          `[dsh-weixin] account ${this.#config.botId} start request failed; retrying in ${wait}ms:`,
-          error,
-        );
+        this.#diagnostics.report(error, {
+          ...this.#startContext, stage: 'connection.start', botId: this.#config.botId, automatic: true, warning: true,
+        });
         await delay(wait);
       }
     }
@@ -262,13 +271,12 @@ export class WeixinRuntime {
           signal,
         });
         if (signal.aborted) return;
-        const rejected = (response?.ret !== undefined && response.ret !== 0)
-          || (response?.errcode !== undefined && response.errcode !== 0);
-        if (rejected) {
-          const code = response.errcode ?? response.ret;
+        const providerCode = rejectedProviderResponse(response, ['errcode', 'ret']);
+        if (providerCode) {
           throw new WeixinApiError(
-            code === -14 ? 'stale-token' : 'updates-rejected',
-            code === -14 ? t('微信登录凭据已失效，请移除账号后重新扫码。') : t('微信消息同步请求被拒绝。'),
+            providerCode === '-14' ? 'stale-token' : 'updates-rejected',
+            providerCode === '-14' ? t('微信登录凭据已失效，请移除账号后重新扫码。') : t('微信消息同步请求被拒绝。'),
+            { providerCode },
           );
         }
         consecutiveFailures = 0;
@@ -276,6 +284,7 @@ export class WeixinRuntime {
         this.#status.weixinConnectionState = 'connected';
         this.#status.lastCheckedAt = Date.now();
         this.#status.lastError = null;
+        this.#status.connectionError = null;
 
         for (const message of orderWeixinMessages(response?.msgs)) {
           void this.#bridge.accept(message).catch((error) => {
@@ -292,19 +301,19 @@ export class WeixinRuntime {
       } catch (error) {
         if (signal.aborted) return;
         consecutiveFailures += 1;
-        this.#status.lastError = error?.message ?? String(error);
-        this.#logger.warn?.(
-          `[dsh-weixin] account ${this.#config.botId} poll failed (${consecutiveFailures}/3):`,
-          error,
-        );
-        if (error instanceof WeixinApiError && error.code === 'stale-token') throw error;
-        if (consecutiveFailures >= 3) throw error;
+        const failure = this.#diagnostics.report(error, {
+          operation: 'connection.monitor', stage: 'connection.poll', botId: this.#config.botId, automatic: true, warning: true,
+        });
+        this.#status.lastError = failure.publicError.message;
+        if (error instanceof WeixinApiError && error.code === 'stale-token') throw failure;
+        if (consecutiveFailures >= 3) throw failure;
         await delay(Math.min(2_000 * (2 ** (consecutiveFailures - 1)), 10_000), signal);
       }
     }
   }
 
   async stop() {
+    const warnings = [];
     const monitor = this.#monitor;
     const bridge = this.#bridge;
     const wasStarted = Boolean(this.#abortController || monitor || this.#status.ready);
@@ -323,12 +332,14 @@ export class WeixinRuntime {
           signal: AbortSignal.timeout(10_000),
         });
       } catch (error) {
-        this.#logger.warn?.(`[dsh-weixin] account ${this.#config.botId} stop notification failed:`, error);
+        warnings.push(this.#diagnostics.report(error, {
+          operation: 'connection.close', stage: 'connection.stop', code: 'connection-stop-failed', botId: this.#config.botId, warning: true,
+        }).publicError);
       }
     }
     this.#status.ready = false;
     this.#status.weixinConnectionState = 'idle';
-    return this.status;
+    return { ...this.status, ...(warnings.length ? { warnings } : {}) };
   }
 
   async sendConnectionTest(text) {

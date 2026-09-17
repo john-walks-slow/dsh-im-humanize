@@ -22,7 +22,11 @@ import {
   runPresetCommand,
 } from '../shared/preset-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
-import { captureContextEnhancement, enhanceContextContent } from '../shared/context-enhancement.mjs';
+import {
+  captureContextEnhancement,
+  captureContextEnhancementSource,
+  enhanceContextContent,
+} from '../shared/context-enhancement.mjs';
 import {
   BatchInputManager,
   batchInputBusyMessage,
@@ -607,7 +611,14 @@ export class QqHarnessBridge {
       if (result.handled) {
         if (result.kind === 'submit') {
           return this.#enqueueMessage(
-            { ...message, content: result.prompt, attachments: [] },
+            {
+              ...message,
+              content: result.prompt,
+              // The submission is exactly the collected text: the command
+              // message's own attachments and quoted message are not part of it.
+              attachments: [],
+              refMsgIdx: undefined,
+            },
             messageId,
             key,
             { batchSubmission: result },
@@ -798,7 +809,10 @@ export class QqHarnessBridge {
   }
 
   #menuContext(key) {
-    return { workspace: this.#harness.currentWorkspace?.(), sessionId: this.#state.sessionFor(key) };
+    const workspace = this.#harness.currentWorkspace?.();
+    const sessionWorkspace = typeof this.#harness.currentConversationWorkspace === 'function'
+      ? this.#harness.currentConversationWorkspace(key) : workspace;
+    return { workspace, sessionWorkspace, sessionId: this.#state.sessionFor(key) };
   }
 
   async #showMenu(message, key, name, pageView = null) {
@@ -812,7 +826,8 @@ export class QqHarnessBridge {
     this.#signal?.throwIfAborted();
     this.#harness.assertWorkspaceScope?.();
     const current = this.#menuContext(key);
-    if (current.workspace !== context.workspace || current.sessionId !== context.sessionId) {
+    if (current.workspace !== context.workspace || current.sessionWorkspace !== context.sessionWorkspace
+      || current.sessionId !== context.sessionId) {
       return { message: t('会话或工作区已变化，请重新发送 /m。') };
     }
     if (!this.#menus.publish(key, actor, entry, view)) return { messages: [] };
@@ -844,12 +859,24 @@ export class QqHarnessBridge {
       return { message: t('当前任务仍在运行，请先停止任务或等待任务完成后再执行此操作。') };
     }
     const options = { signal: this.#signal, isDirect: message.kind === 'c2c', pendingInteraction,
-      control: { owner: this, key }, deferredDelivery: this.#deferred };
+      control: { owner: this, key }, deferredDelivery: this.#deferred,
+      enhancement: captureContextEnhancementSource(
+        this.#contextEnhancement,
+        message.kind === 'c2c' ? 'direct' : 'group',
+        () => ({
+          channel: 'qq',
+          senderId: nonEmptyString(message.senderId),
+          senderName: message.kind === 'group' ? message.senderName : undefined,
+          chatId: message.kind === 'group' ? message.groupOpenid : message.senderId,
+        }),
+      ) };
     // Existing runners own all Host mutations and control authorization.
     const execute = async () => {
       this.#signal?.throwIfAborted();
       const current = this.#menuContext(key);
-      if (current.workspace !== choice.context.workspace || current.sessionId !== choice.context.sessionId) {
+      if (current.workspace !== choice.context.workspace
+        || current.sessionWorkspace !== choice.context.sessionWorkspace
+        || current.sessionId !== choice.context.sessionId) {
         return { message: t('会话或工作区已变化，请重新发送 /m。') };
       }
       // A prompt may have started while this action waited for a prior menu command.
@@ -860,7 +887,9 @@ export class QqHarnessBridge {
       if (command === '/new') return withSessionBindingLock(this.#state, key, async () => {
         if (isBusy()) return { message: t('当前任务仍在运行，请先停止任务或等待任务完成后再执行此操作。') };
         const locked = this.#menuContext(key);
-        if (locked.workspace !== choice.context.workspace || locked.sessionId !== choice.context.sessionId) {
+        if (locked.workspace !== choice.context.workspace
+          || locked.sessionWorkspace !== choice.context.sessionWorkspace
+          || locked.sessionId !== choice.context.sessionId) {
           return { message: t('会话或工作区已变化，请重新发送 /m。') };
         }
         await this.#state.clearSession(key);
@@ -906,6 +935,16 @@ export class QqHarnessBridge {
       control: { owner: this, key },
       deferredDelivery: this.#deferred,
       abortPreAsk: () => this.#abortPreAskPhase(key),
+      enhancement: captureContextEnhancementSource(
+        this.#contextEnhancement,
+        message.kind === 'c2c' ? 'direct' : 'group',
+        () => ({
+          channel: 'qq',
+          senderId: nonEmptyString(message.senderId),
+          senderName: message.kind === 'group' ? message.senderName : undefined,
+          chatId: message.kind === 'group' ? message.groupOpenid : message.senderId,
+        }),
+      ),
     });
     if (result?.stopped) {
       await Promise.allSettled([
@@ -1233,6 +1272,8 @@ export class QqHarnessBridge {
           key,
           text,
           content,
+          titleText: batchSubmission?.title,
+          sourceGuidance: snapshot?.config?.guidance,
           contextEnhanced,
           createOptions: { signal: this.#signal },
           existsOptions: { signal: this.#signal },

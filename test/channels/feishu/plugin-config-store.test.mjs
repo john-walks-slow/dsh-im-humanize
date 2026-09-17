@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { PluginConfigStore } from '../../../src/channels/feishu/plugin-config-store.mjs';
+import { assertRestrictiveMode } from '../../support/filesystem.mjs';
 
 test('PluginConfigStore persists non-secret onboarding facts', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-feishu-config-'));
@@ -21,7 +22,7 @@ test('PluginConfigStore persists non-secret onboarding facts', async () => {
 
   const raw = await readFile(path, 'utf8');
   assert.doesNotMatch(raw, /must-not-be-written/);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await assertRestrictiveMode(path, 0o600);
   assert.equal((await new PluginConfigStore(path).load()).get().appId, 'cli_test');
   assert.equal(store.get().groupResponseMode, 'mention');
   assert.equal(store.get().groupMessagePermissionGranted, false);
@@ -75,6 +76,25 @@ test('PluginConfigStore defaults stepPush off and only persists a literal true',
 
   await store.save({ ...store.get(), stepPush: true });
   assert.equal((await new PluginConfigStore(path).load()).get().stepPush, true);
+
+  await store.clear();
+});
+
+test('PluginConfigStore defaults stepPushMode to post and normalizes unknown values', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-feishu-config-step-push-mode-'));
+  const path = join(dir, 'config.json');
+  const store = await new PluginConfigStore(path).load();
+
+  await store.save({
+    appId: 'cli_step_push_mode',
+    ownerOpenId: 'ou_owner',
+    domain: 'feishu',
+    stepPushMode: 'bubble', // unknown values preserve the legacy post presentation
+  });
+  assert.equal(store.get().stepPushMode, 'post');
+
+  await store.save({ ...store.get(), stepPushMode: 'streaming_card' });
+  assert.equal((await new PluginConfigStore(path).load()).get().stepPushMode, 'streaming_card');
 
   await store.clear();
 });
@@ -151,4 +171,28 @@ test('PluginConfigStore rejects an invalid or duplicate v2 document without drop
     ],
   }));
   await assert.rejects(new PluginConfigStore(duplicatePath).load(), /duplicate bot identities/);
+});
+
+test('PluginConfigStore preserves old step-push settings when loading missing modes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-feishu-legacy-modes-'));
+  const path = join(dir, 'config.json');
+  const cases = [
+    { stepPush: true }, { stepPush: false },
+    { stepPush: true, stepPushMode: 'post' },
+    { stepPush: true, stepPushMode: 'streaming_card' },
+  ];
+  await writeFile(path, JSON.stringify({ version: 2, bots: cases.map((settings, index) => ({
+    id: 'bot_legacy_' + index, appId: 'cli_legacy_' + index,
+    secretRef: 'DSH_LEGACY_' + index, ownerOpenIds: ['ou_owner'], ...settings,
+  })) }));
+  const store = await new PluginConfigStore(path).load();
+  for (const [index, settings] of cases.entries()) {
+    const saved = store.getBot('bot_legacy_' + index);
+    assert.equal(saved.stepPush, settings.stepPush);
+    assert.equal(saved.stepPushMode, settings.stepPushMode ?? 'post');
+    await store.saveBot(saved);
+  }
+  const reloaded = await new PluginConfigStore(path).load();
+  assert.deepEqual(reloaded.list(), store.list());
+  await store.clear();
 });

@@ -75,7 +75,7 @@ export async function createProductionController(ctx, config = {}, internals = {
   const stateFor = async (botId) => {
     let state = stateStores.get(botId);
     if (!state) {
-      state = await new StateStore(statePath(botId)).load();
+      state = await new StateStore(statePath(botId), { logger }).load();
       stateStores.set(botId, state);
     }
     return state;

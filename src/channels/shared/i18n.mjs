@@ -10,15 +10,58 @@ import { EN } from './i18n-en.mjs';
 
 let language = 'zh';
 
+const listeners = new Set();
+
 // Accepts 'en', 'en-US', 'english' (any case) as English; anything else
-// (including undefined and unrecognized values) selects Chinese.
-export function setImHostLanguage(lang) {
+// (including undefined and unrecognized values) selects Chinese. Pure: use it
+// to judge a candidate tag without switching the active language.
+export function normalizeImHostLanguage(lang) {
   const normalized = typeof lang === 'string' ? lang.trim().toLowerCase() : '';
-  language = normalized === 'english' || /^en(?:[-_].*)?$/u.test(normalized) ? 'en' : 'zh';
+  return normalized === 'english' || /^en(?:[-_].*)?$/u.test(normalized) ? 'en' : 'zh';
+}
+
+/**
+ * Select the language of every host-side message. Subscribers registered
+ * through onImHostLanguageChange are notified only when the resolved language
+ * actually changes, so re-applying the same selection in a different spelling
+ * (or an unrecognized tag that keeps falling back to Chinese) is free.
+ */
+export function setImHostLanguage(lang) {
+  const next = normalizeImHostLanguage(lang);
+  if (next === language) return language;
+  const previous = language;
+  language = next;
+  // Snapshot first: a subscriber may unsubscribe (or subscribe) while running.
+  for (const listener of [...listeners]) {
+    if (!listeners.has(listener)) continue;
+    try {
+      listener(next, previous);
+    } catch {
+      // Each subscriber owns its own diagnostics; one that fails must not
+      // strand the rest, nor abandon a language switch that already happened.
+    }
+  }
+  return language;
 }
 
 export function getImHostLanguage() {
   return language;
+}
+
+/**
+ * Observe committed changes to the host message language. Platform-side
+ * surfaces that were localized once at connect time (the Telegram command
+ * menu, for example) re-synchronize from here instead of waiting for a
+ * reconnect. Subscribers must not throw; the disposer is idempotent.
+ */
+export function onImHostLanguageChange(listener) {
+  if (typeof listener !== 'function') {
+    throw new TypeError('onImHostLanguageChange requires a listener function');
+  }
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 // Translate a user-facing Chinese literal. In zh mode (the default) this is

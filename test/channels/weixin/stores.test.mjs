@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -13,6 +13,7 @@ import {
   WEIXIN_RECENT_OUTBOUND_TTL_MS,
   WeixinStateStore,
 } from '../../../src/channels/weixin/state-store.mjs';
+import { assertRestrictiveMode } from '../../support/filesystem.mjs';
 
 test('config store persists non-secret account facts atomically with restrictive permissions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-weixin-config-'));
@@ -30,7 +31,7 @@ test('config store persists non-secret account facts atomically with restrictive
   const raw = await readFile(path, 'utf8');
   assert.match(raw, /"accountId": "account@im\.bot"/);
   assert.doesNotMatch(raw, /bot_token|secret-token/);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await assertRestrictiveMode(path, 0o600);
   assert.deepEqual((await new WeixinConfigStore(path).load()).list(), store.list());
 });
 
@@ -62,7 +63,7 @@ test('state store retains sessions, deduplication, and the getUpdates cursor', a
   assert.equal(restored.sessionFor('p2p:user'), 'session-1');
   assert.equal(restored.hasSeen('message-1'), true);
   assert.equal(restored.getUpdatesBuf(), 'cursor-2');
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await assertRestrictiveMode(path, 0o600);
 });
 
 test('context tokens survive restart and workspace changes, remain private, and are cleared on login change', async () => {
@@ -78,7 +79,7 @@ test('context tokens survive restart and workspace changes, remain private, and 
   assert.equal(state.contextTokenFor('unknown'), undefined);
   assert.doesNotMatch(JSON.stringify(state.snapshot()), /alice-context|bob-context/);
   assert.doesNotMatch(await readFile(path, 'utf8'), /bot-login/);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await assertRestrictiveMode(path, 0o600);
 
   const restored = await new WeixinStateStore(path).load();
   await restored.bindContextTokens('bot-login');

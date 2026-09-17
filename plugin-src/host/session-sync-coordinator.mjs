@@ -3,6 +3,7 @@ import {
   consumeDshImInputOrigin,
   textFromHarnessContent,
 } from '../../src/channels/shared/harness-client.mjs';
+import { deliverSessionSyncMirror } from '../../src/channels/shared/session-sync-registry.mjs';
 
 const DSH_USER_PREFIX = '[来自 DSH]\n';
 const DSH_ASSISTANT_PREFIX = '[DSH 助手]\n';
@@ -138,6 +139,10 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
       if (event.surfaceOp !== 'append') return;
       if (state.origin === 'unknown') state.origin = origin;
       if (state.origin !== 'dsh' || origin !== 'dsh') return;
+      // The user echo stays as plain text even when the mirror owns the
+      // turn: the card also quotes the question, but keeping the echo here
+      // guarantees recipients are established so a failed mirror can still
+      // fall back to the final-answer text delivery.
       const text = textFromHarnessContent(event.data?.content);
       if (!text) return;
 
@@ -177,25 +182,40 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
     if (event.type !== 'turn/end' || event.data?.turn !== state.turn) return;
     turns.delete(sessionId);
     if (!completedTurn(event.data?.reason) || !state.assistant.text) return;
-    if (state.origin === 'dsh') {
-      if (!state.recipients?.size) return;
-      await deliver(
-        sessionId,
-        state.recipients.values(),
-        `${DSH_ASSISTANT_PREFIX}${state.assistant.text}`,
-        'assistant delivery',
-      );
+    if (state.origin === 'wake') {
+      // Fork: proactive wake delivery mirrors the final answer into the
+      // conversations the wake targeted.
+      let conversations;
+      try {
+        conversations = await deliveryService.listSessionConversations(sessionId);
+      } catch (error) {
+        logFailure('wake lookup', null, error);
+        return;
+      }
+      await deliverWake(conversations, state.assistant.text);
       return;
     }
-    if (state.origin !== 'wake') return;
-    let conversations;
-    try {
-      conversations = await deliveryService.listSessionConversations(sessionId);
-    } catch (error) {
-      logFailure('wake lookup', null, error);
-      return;
-    }
-    await deliverWake(conversations, state.assistant.text);
+    if (state.origin !== 'dsh' || !state.recipients?.size) return;
+    // A pending card is not proof of delivery. Only suppress this target's
+    // text after its renderer confirms the complete final answer is visible.
+    // Targets without a renderer retain the original text delivery path.
+    const recipients = [...state.recipients.values()];
+    const rendered = await Promise.all(recipients.map(async (target) => {
+      try {
+        return await deliverSessionSyncMirror(target, sessionId, state.turn, state.assistant.text);
+      } catch (error) {
+        logFailure('card delivery', target, error);
+        return false;
+      }
+    }));
+    const plain = recipients.filter((_target, index) => !rendered[index]);
+    if (plain.length === 0) return;
+    await deliver(
+      sessionId,
+      plain,
+      `${DSH_ASSISTANT_PREFIX}${state.assistant.text}`,
+      'assistant delivery',
+    );
   };
 
   const enqueue = (sessionId, event, origin = 'other') => {

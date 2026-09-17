@@ -1,3 +1,4 @@
+import { BotName } from '../../bot-alias.js';
 import * as React from 'react';
 
 import { CredentialActionIcon, CredentialBindingPanel } from '../../credential-binding.js';
@@ -83,7 +84,7 @@ export function createTokenChannelSettings(definition) {
     typingCapability = 'full',
   } = definition;
 
-  function AccountCard({ account, busy, testNotice, removing, onReconnect, onWorkspaceSave, onModelSave, onAgentPresetSave, onContextEnhancementSave, onHumanizeSave, onAccountSettingsSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
+  function AccountCard({ account, busy, testNotice, removing, onReconnect, onWorkspaceSave, onAliasSave, onModelSave, onAgentPresetSave, onContextEnhancementSave, onHumanizeSave, onAccountSettingsSave, onRequestRemove, onConfirmRemove, onCancelRemove }) {
     const state = busy === 'reconnect' ? 'connecting' : account.state;
     const tone = account.connected ? 'success' : state === 'error' ? 'error' : 'warning';
     const stateLabel = account.connected ? '运行正常' : state === 'connecting' ? '正在连接' : '连接未就绪';
@@ -98,7 +99,7 @@ export function createTokenChannelSettings(definition) {
               h('div', { className: `ddt-avatar dim-botAvatar ${avatarClass}`, 'aria-hidden': 'true' },
                 h(LogoGlyph, { size: 29 })),
               h('div', { className: 'dim-botName' },
-                h('h3', null, account.bot.name), h('p', null, identity))),
+                h(BotName, { bot: account.bot, disabled: Boolean(busy), onSave: onAliasSave }), h('p', null, identity))),
             h('div', {
               className: 'dim-botCardTools',
               // The header is the collapse toggle; keep inner controls clickable.
@@ -191,7 +192,7 @@ export function createTokenChannelSettings(definition) {
     const [model, setModel] = React.useState({
       phase: 'loading', bots: [], totals: { configured: 0, connected: 0 }, error: null,
       agentPresetCatalog: EMPTY_AGENT_PRESET_CATALOG,
-      modelCatalog: EMPTY_MODEL_CATALOG,
+      modelCatalog: EMPTY_MODEL_CATALOG, permissions: null,
     });
     const [credentialOpen, setCredentialOpen] = React.useState(false);
     const [credentialError, setCredentialError] = React.useState(null);
@@ -230,6 +231,7 @@ export function createTokenChannelSettings(definition) {
           phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
           agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
           modelCatalog: snapshot.modelCatalog ?? EMPTY_MODEL_CATALOG,
+          permissions: snapshot.permissions ?? null,
         });
       } catch (error) {
         if (error?.name !== 'AbortError' && mounted.current && !signal?.aborted
@@ -277,6 +279,7 @@ export function createTokenChannelSettings(definition) {
           phase: 'ready', bots: snapshot.bots, totals: snapshot.totals, error: null,
           agentPresetCatalog: snapshot.agentPresetCatalog ?? EMPTY_AGENT_PRESET_CATALOG,
           modelCatalog: snapshot.modelCatalog ?? EMPTY_MODEL_CATALOG,
+          permissions: snapshot.permissions ?? null,
         });
         }
         setCredentialOpen(false);
@@ -351,6 +354,12 @@ export function createTokenChannelSettings(definition) {
                 'workspace',
                 endpoints.setWorkspace,
                 { botId: account.botId, workspace },
+              ),
+              onAliasSave: (alias) => botAction(
+                account,
+                'alias',
+                endpoints.setAlias,
+                { botId: account.botId, alias },
               ),
               onModelSave: (selectedModel) => botAction(
                 account,
@@ -433,6 +442,8 @@ export function createTokenChannelSettings(definition) {
         : h(React.Fragment, null,
             credentialOpen ? (CredentialPanel
               ? h(CredentialPanel, {
+                  channel,
+                  permissions: model.permissions,
                   busy,
                   error: credentialError,
                   onSubmit: bindCredentials,

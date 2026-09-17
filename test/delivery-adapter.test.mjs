@@ -11,6 +11,7 @@ import { QqStateStore } from '../src/channels/qq/state-store.mjs';
 import { SlackStateStore } from '../src/channels/slack/state-store.mjs';
 import { TelegramStateStore } from '../src/channels/telegram/state-store.mjs';
 import { WecomStateStore } from '../src/channels/wecom/state-store.mjs';
+import { WecomAppStateStore } from '../src/channels/wecom-app/state-store.mjs';
 import { WeixinStateStore } from '../src/channels/weixin/state-store.mjs';
 import { WhatsappStateStore } from '../src/channels/whatsapp/state-store.mjs';
 import {
@@ -26,6 +27,7 @@ const TARGETS = {
     targetId: 'daily', kind: 'group', route: { openConversationId: 'cid_group' },
   },
   wecom: { targetId: 'daily', kind: 'user', route: { chatId: 'wecom-user' } },
+  'wecom-app': { targetId: 'daily', kind: 'user', route: { chatId: 'wecomapp-user' } },
   qq: { targetId: 'daily', kind: 'group', route: { groupOpenId: 'qq-group' } },
   slack: {
     targetId: 'daily', kind: 'thread', route: { channelId: 'C123', threadTs: '123.456' },
@@ -44,6 +46,7 @@ const STATE_STORES = {
   feishu: FeishuStateStore,
   dingtalk: DingtalkStateStore,
   wecom: WecomStateStore,
+  'wecom-app': WecomAppStateStore,
   qq: QqStateStore,
   slack: SlackStateStore,
   telegram: TelegramStateStore,
@@ -80,6 +83,10 @@ const SESSION_SUGGESTIONS = {
       { kind: 'user', route: { chatId: 'member-one' } },
       { kind: 'group', route: { chatId: 'wr_group' } },
     ],
+  },
+  'wecom-app': {
+    sessions: { 'p2p:wecomapp-user': 'session-user' },
+    suggestions: [{ kind: 'user', route: { chatId: 'wecomapp-user' } }],
   },
   qq: {
     sessions: { 'c2c:user-openid': 'session-user', 'group:group-openid': 'session-group' },
@@ -139,6 +146,7 @@ const PRIVATE_TARGETS = {
   feishu: { targetId: 'private', kind: 'user', route: { openId: 'ou_user' } },
   dingtalk: { targetId: 'private', kind: 'user', route: { userId: 'staff-one' } },
   wecom: { targetId: 'private', kind: 'user', route: { chatId: 'member-one' } },
+  'wecom-app': { targetId: 'private', kind: 'user', route: { chatId: 'wecomapp-user' } },
   qq: { targetId: 'private', kind: 'user', route: { userOpenId: 'user-openid' } },
   slack: { targetId: 'private', kind: 'conversation', route: { channelId: 'D123456' } },
   telegram: { targetId: 'private', kind: 'chat', route: { chatId: '88' } },
@@ -150,7 +158,7 @@ const PRIVATE_TARGETS = {
   },
 };
 
-test('all nine delivery adapters validate and forward one stable target', async () => {
+test('all ten delivery adapters validate and forward one stable target', async () => {
   for (const [channel, target] of Object.entries(TARGETS)) {
     const calls = [];
     const workspaces = {
@@ -188,7 +196,7 @@ test('all nine delivery adapters validate and forward one stable target', async 
   }
 });
 
-test('all nine adapters enable, resolve, and revalidate one private Session target', async () => {
+test('all ten adapters enable, resolve, and revalidate one private Session target', async () => {
   for (const [channel, target] of Object.entries(PRIVATE_TARGETS)) {
     const botId = `bot-${channel}`;
     const sessions = { ...SESSION_SUGGESTIONS[channel].sessions };
@@ -315,7 +323,7 @@ test('suggestion parser strictly filters malformed keys, de-duplicates routes, a
   assert.deepEqual(deliverySuggestionsFromSessions('unknown', sessions), []);
 });
 
-test('all nine adapters list suggestions from reloaded bot state while no runtime is connected', async (t) => {
+test('all ten adapters list suggestions from reloaded bot state while no runtime is connected', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-delivery-suggestions-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   for (const [channel, StateStore] of Object.entries(STATE_STORES)) {

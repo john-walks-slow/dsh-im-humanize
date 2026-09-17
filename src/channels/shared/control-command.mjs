@@ -1,3 +1,4 @@
+import { enhanceContextContent } from './context-enhancement.mjs';
 import { t } from './i18n.mjs';
 import manifest from '../../../package.json' with { type: 'json' };
 
@@ -24,7 +25,7 @@ function boundSession(harness, state, key) {
   if (typeof harness?.workspaceSession !== 'function') {
     throw new TypeError('Harness does not support workspace sessions');
   }
-  const session = harness.workspaceSession(sessionId);
+  const session = harness.workspaceSession(sessionId, key);
   if (!session || typeof session !== 'object') {
     throw new TypeError('Harness returned an invalid workspace session');
   }
@@ -46,6 +47,7 @@ export async function runControlCommand(text, harness, state, key, {
   // aborted. stopActiveTurn alone cannot cancel a turn that has not
   // reached the harness yet, so /stop falls back to this hook.
   abortPreAsk = null,
+  enhancement,
 } = {}) {
   if (!isControlCommand(text)) return null;
   const command = text.trim();
@@ -107,8 +109,13 @@ export async function runControlCommand(text, harness, state, key, {
   if (typeof session.steerActiveTurn !== 'function') {
     throw new TypeError('Harness session does not support steering active turns');
   }
+  // A mid-turn correction carries the same provenance as the message that
+  // opened the turn, so a group member who steers is identified too.
+  const steering = enhancement
+    ? enhanceContextContent(instruction, enhancement.snapshot, enhancement.source)
+    : instruction;
   const steered = await session.steerActiveTurn(
-    instruction,
+    steering,
     control,
     requestOptions(signal),
   );

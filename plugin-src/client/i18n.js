@@ -1,9 +1,42 @@
+import weixinDiagnostics from '../../src/channels/weixin/connection-error.en.mjs';
 import * as React from 'react';
 
 export const IM_LOCALE_NAMESPACE = 'dsh-im';
 
 const EN = Object.freeze({
+  ...weixinDiagnostics,
   '$locale': 'en',
+  '修改别名': 'Edit alias',
+  '关闭修改别名': 'Close alias editor',
+  '原名称': 'Original name',
+  '别名': 'Alias',
+  '恢复原名称': 'Restore original name',
+  '例如：客服助手': 'e.g. Customer support',
+  '仅更改显示名称，留空则显示原名称。': 'Only changes the display name. Leave blank to use the original name.',
+  '别名保存失败，请重试。': 'Could not save the alias. Try again.',
+  '别名不能包含换行或控制字符，且最多 80 个字符。': 'Use at most 80 characters without line breaks or control characters.',
+  '请输入有效的别名（最多 80 个字符）。': 'Enter a valid alias (up to 80 characters).',
+  ' macOS Messages 连接': ' macOS Messages connection',
+  '接入 iMessage': 'Connect iMessage',
+  '先在 macOS 系统设置中授予 Messages 权限。': 'Grant Messages permissions in macOS System Settings first.',
+  '配置 macOS Messages 权限': 'Configure macOS Messages permissions',
+  '配置本机权限': 'Configure local permissions',
+  '启用 macOS 原生 iMessage': 'Enable native macOS iMessage',
+  '支持同账号自聊：在 iPhone 或 Mac 上给自己已登录的 iMessage 邮箱或号码发指令。AI 回复以 🤖 DSH 开头，不会再次触发机器人。': 'Self-chat is supported: send instructions from your iPhone or Mac to your signed-in iMessage email or phone number. AI replies start with 🤖 DSH and do not trigger the bot again.',
+  '检查权限并启用': 'Check permissions and enable',
+  'DeepSeek Harness 通过 macOS Messages.app 收发文本消息。首次使用需要授予以下权限：': 'DeepSeek Harness sends and receives messages through macOS Messages.app. The following permissions are required the first time:',
+  '✓ 完全磁盘访问权限已授予': '✓ Full Disk Access granted',
+  '1. 授予完全磁盘访问权限': '1. Grant Full Disk Access',
+  '在“系统设置 → 隐私与安全性 → 完全磁盘访问权限”中，打开运行 DeepSeek Harness 的终端或应用。': 'In System Settings → Privacy & Security → Full Disk Access, enable the terminal or app running DeepSeek Harness.',
+  '打开完全磁盘访问权限设置': 'Open Full Disk Access settings',
+  '✓ Messages 自动化权限已授予': '✓ Messages automation granted',
+  '2. 允许自动化控制 Messages': '2. Allow automation control of Messages',
+  '在“系统设置 → 隐私与安全性 → 自动化”中，允许运行 DeepSeek Harness 的应用控制 Messages。': 'In System Settings → Privacy & Security → Automation, allow the app running DeepSeek Harness to control Messages.',
+  '打开自动化设置': 'Open Automation settings',
+  '正在检查…': 'Checking…',
+  '接入 macOS 原生 iMessage': 'Connect native macOS iMessage',
+  '无需安装第三方服务；请按指引授予 macOS Messages 访问权限。': 'No third-party service is required; follow the guide to grant macOS Messages access.',
+  'macOS Messages 权限': 'macOS Messages permissions',
   'IM机器人': 'IM bots',
   'IM机器人设置': 'IM bot settings',
   '更多机器人设置': 'More bot settings',
@@ -221,10 +254,22 @@ const EN = Object.freeze({
   '开启（自动开启独立飞书话题）': 'On (auto-open a dedicated Feishu topic)',
   '开启后，群聊中向机器人提问会自动开启独立飞书话题，回复落在话题内；每个话题是 dsh 会话列表里一条独立会话，上下文互不串。私聊不受影响。': 'When enabled, questions to the bot in a group auto-open a dedicated Feishu topic and replies stay inside it. Each topic is an independent conversation in dsh with its own context. Private chats are unaffected.',
   '分步直推': 'Step push',
+  '查看分步直推说明': 'View step push help',
   '开启后逐步推送工具调用与过程说明': 'Push tool calls and process notes step by step',
-  '关闭（保持流式卡模式）': 'Off (keep the streaming card)',
-  '开启（逐步推送工具调用与过程说明）': 'On (push tool calls and process notes step by step)',
+  '任务过程展示': 'Task progress display',
+  '设置任务执行过程的呈现方式：不显示、实时卡片或逐步消息': 'Choose how the execution is presented: hidden, one live card, or step-by-step messages',
+  '不显示过程（只发送最终答案）': 'Hide the process (send the final answer only)',
+  '实时过程卡（全程一张卡片动态更新）': 'Live process card (one card updated throughout)',
+  '逐步直播（每一步单独发一条消息）': 'Step-by-step feed (one message per step)',
+  '适合日常问答：执行过程中不显示工具调用等中间步骤，只回复最终结果': 'For everyday Q&A: tool calls and other interim steps stay hidden, only the final result is replied',
+  '推荐长任务使用：过程与最终答案都在同一张卡片里实时更新，不刷屏': 'Recommended for long tasks: the process and the final answer update live in one card without flooding the chat',
+  '每一步都单独发一条消息（含工具调用和过程说明）；注意长任务会连续发送较多消息': 'Every step is sent as its own message (including tool calls and notes); long tasks may send many messages in a row',
   '分步直推设置保存失败，请重试。': 'Could not save the step push setting. Try again.',
+  'zcode过程卡模式': 'ZCode process-card mode',
+  '过程说明、工具摘要与最终答案都在同一张卡片中原地刷新':
+    'Process notes, the tool summary, and the final answer refresh in place inside one card',
+  '思考与工具摘要折叠展示，最终答案在同一张卡片中原地刷新':
+    'Thinking and the tool summary stay folded; the final answer refreshes in place inside one card',
   '钉钉设置': 'DingTalk settings',
   '企业微信设置': 'WeCom settings',
   '扫码接入机器人': 'Scan QR code',
@@ -359,6 +404,14 @@ const EN = Object.freeze({
   'Agent Preset 无效。': 'The Agent Preset is invalid.',
   'Agent Preset 不存在或不可用。': 'The Agent Preset does not exist or is unavailable.',
   '模型': 'Model',
+  '模型与思考强度': 'Model and reasoning effort',
+  '思考强度': 'Reasoning effort',
+  '跟随模型默认': 'Model default',
+  '先选择模型，再设置思考强度。': 'Select a model to configure its reasoning effort.',
+  '该模型未提供可调节的思考强度。': 'This model does not provide adjustable reasoning effort.',
+  '已保存的思考强度已不可用，请选择其他强度或恢复默认。': 'The saved reasoning effort is unavailable. Choose another effort or restore the default.',
+  '使用模型或服务提供方的默认思考强度。': 'Use the default reasoning effort from the model or provider.',
+  '当前模型不支持所选思考强度，请重新选择。': 'This model does not support the selected reasoning effort. Choose another effort.',
   '查看模型设置说明': 'View model setting help',
   '跟随默认模型': 'Follow the default model',
   '模型修改失败，请重试。': 'Could not update the model. Try again.',
@@ -459,7 +512,7 @@ const EN = Object.freeze({
   '权限配置已提交，正在启用全部消息模式并重连此机器人；此阶段无法取消，其他机器人不会中断。': 'The permission update was submitted. Enabling all-message mode and reconnecting this bot. This stage cannot be cancelled; other bots will not be interrupted.',
   '正在为现有飞书应用申请群消息权限二维码，请稍候。': 'Requesting a group-message permission QR code for the existing Feishu app…',
   '群消息权限没有开通完成': 'Group-message permission was not granted',
-  '扫码会更新现有飞书应用，增量补充当前缺少的卡片按钮回调、读取用户消息内图片或文件所需的 im:message:readonly（飞书显示为“获取单聊、群组消息”）、上传机器人图片或文件所需的 im:resource，以及原生命令面板所需的 application:app_slash_command:read / write；不会创建新应用。确认页只显示当前缺少项，完成后此机器人会短暂重连，其他机器人不受影响。': 'Scanning updates the existing Feishu app with the missing card-button callback, im:message:readonly for reading images or files in user messages (shown by Feishu as “Read direct and group messages”), im:resource for uploading images or files sent by the bot, and application:app_slash_command:read / write for the native command panel. It does not create a new app. The confirmation page shows only missing items; this bot reconnects briefly afterward, while other bots are unaffected.',
+  '扫码会更新现有飞书应用，增量补充当前缺少的卡片按钮回调、读取用户消息内图片或文件所需的 im:message:readonly（飞书显示为“获取单聊、群组消息”）、上传机器人图片或文件所需的 im:resource、接收群内其他机器人 @ 当前机器人所需的 im:message.group_at_msg.include_bot:readonly，以及原生命令面板所需的 application:app_slash_command:read / write；不会创建新应用。确认页只显示当前缺少项，完成后此机器人会短暂重连，其他机器人不受影响。': 'Scanning updates the existing Feishu app with the missing card-button callback, im:message:readonly for reading images or files in user messages (shown by Feishu as “Read direct and group messages”), im:resource for uploading images or files sent by the bot, im:message.group_at_msg.include_bot:readonly for receiving group messages from other bots that mention this bot, and application:app_slash_command:read / write for the native command panel. It does not create a new app. The confirmation page shows only missing items; this bot reconnects briefly afterward, while other bots are unaffected.',
   '核对现有应用名称，并确认只新增当前缺少的上述配置': 'Review the existing app name and confirm that only the missing items described above are added',
   '保持本页打开，等待权限与回调补全完成': 'Keep this page open until permissions and the callback are complete',
   '取消补全': 'Cancel setup',
@@ -645,6 +698,12 @@ const EN = Object.freeze({
   'Slack 工作区': 'Slack workspace',
   'Bot Token 与 App Token': 'Bot Token and App Token',
   '填写 Bot Token': 'Enter Bot Token',
+  '应用平台': 'App platform',
+  'Lark（国际版）': 'Lark (international)',
+  '手动接入Lark机器人': 'Connect Lark bot manually',
+  '填写 Lark 开放平台 App ID': 'Enter the Lark Developer App ID',
+  '填写 Lark 开放平台 App Secret': 'Enter the Lark Developer App Secret',
+  'Lark 机器人凭据已绑定。': 'Lark bot credentials connected.',
   '手动接入飞书机器人': 'Connect Feishu bot manually',
   '手动接入钉钉机器人': 'Connect DingTalk bot manually',
   '手动接入企业微信机器人': 'Connect WeCom bot manually',
@@ -943,6 +1002,21 @@ const EN = Object.freeze({
   '灭相（毫秒）': 'Off phase (ms)',
   '灭相最短（毫秒）': 'Off phase minimum (ms)',
   '灭相最长（毫秒）': 'Off phase maximum (ms)',
+  '自定义': 'Custom',
+  '开': 'On',
+  '关': 'Off',
+  '开启': 'Enabled',
+  '拟人化': 'Humanization',
+  '断续节奏': 'Typing burst',
+  '自定义断续节奏': 'Custom typing burst',
+  '自定义发送延迟': 'Custom send delay',
+  '自定义项保存后固定为本页值；未自定义项继续跟随全局设置变化。': 'Custom entries are fixed to the values on this page after saving; entries left uncustomized keep following the global settings.',
+  '亮相最短': 'On phase minimum',
+  '亮相最长': 'On phase maximum',
+  '亮相最短不能超过最长。': 'The on phase minimum cannot exceed the maximum.',
+  '灭相最短': 'Off phase minimum',
+  '灭相最长': 'Off phase maximum',
+  '灭相最短不能超过最长。': 'The off phase minimum cannot exceed the maximum.',
   '断续模式下“正在输入”亮起与熄灭的可见时长范围；平台显示残余由插件自动补足，无需在此考虑。': 'The visible on/off durations of the typing indicator in bursty mode; platform display residuals are compensated automatically.',
   '覆盖保存后固定为本页值，之后修改全局设置不影响此机器人（覆盖为整体替换）。': 'After saving, the override is fixed to the values on this page; later global changes no longer affect this bot (overrides replace whole).',
   '${label}不能超过 ${max} 分钟。': '${label} cannot exceed ${max} minutes.',
@@ -960,6 +1034,14 @@ const EN = Object.freeze({
   '${label}必须是不小于 0 的数字。': '${label} must be a number no less than 0.',
   '${label}不能超过 ${max} 秒。': '${label} cannot exceed ${max} seconds.',
   '已覆盖 ${min}–${max} 秒': 'Overridden ${min}–${max} s',
+  '已覆盖 ${n} 项': 'Overridden ${n} items',
+  '${label}不能超过 ${max} 毫秒。': '${label} cannot exceed ${max} ms.',
+  '跟随全局 (${booleanLabel(defaults[key])})': 'Follow global (${booleanLabel(defaults[key])})',
+  "跟随全局 (${enumLabel('onNewMessage', defaults.onNewMessage)})": "Follow global (${enumLabel('onNewMessage', defaults.onNewMessage)})",
+  "跟随全局 (${enumLabel('typingIndicator', defaults.typingIndicator)})": "Follow global (${enumLabel('typingIndicator', defaults.typingIndicator)})",
+  '跟随全局（${defaults.typingBurst.onMinMs}–${defaults.typingBurst.onMaxMs}': 'Follow global (${defaults.typingBurst.onMinMs}–${defaults.typingBurst.onMaxMs}',
+  ' / ${defaults.typingBurst.offMinMs}–${defaults.typingBurst.offMaxMs} 毫秒）': ' / ${defaults.typingBurst.offMinMs}–${defaults.typingBurst.offMaxMs} ms)',
+  '跟随全局（${defaults.sendDelay?.enabled === true ? \'已启用\' : \'未启用\'}）': 'Follow global (enabled/disabled)',
   '发送延迟': 'Send delay',
   '发送延迟模式': 'Send delay mode',
   '跟随全局': 'Follow global',
@@ -1021,6 +1103,60 @@ const EN = Object.freeze({
   '注入纠偏 (steer)': 'Inject as steering (steer)',
   '保存失败，请稍后重试。': 'Could not save. Try again later.',
   '正在加载…': 'Loading…',
+  '正在读取企业微信应用状态…': 'Loading WeCom app status…',
+  '添加企业微信应用': 'Add WeCom app',
+  '收起表单': 'Collapse form',
+  '添加企业微信自建应用': 'Add a WeCom self-built app',
+  '正在填写': 'Filling in details',
+  '尚未绑定企业微信应用': 'No WeCom app connected yet',
+  '在企业微信中创建自建应用，即可在微信里使用': 'Create a self-built app in WeCom to use it inside WeChat',
+  '在应用管理后台创建自建应用，开启「接收消息」并填入下面的参数。成员的微信关注该企业的微信插件后，就能在微信中与本应用双向对话。': 'Create the self-built app in the WeCom admin console, enable receive-messages, and fill in the parameters below. Once members follow the enterprise WeChat plugin, they can chat with this app directly inside WeChat.',
+  '填写应用参数': 'Fill in app parameters',
+  '企业 ID（CorpID）': 'Corp ID',
+  '例如 ww1234567890abcdef': 'for example ww1234567890abcdef',
+  '应用 AgentId': 'AgentId',
+  '例如 1000002': 'for example 1000002',
+  '应用 Secret': 'App Secret',
+  '应用详情页的 Secret': 'The Secret from the app details page',
+  '回调 Token': 'Callback Token',
+  '接收消息 → API 接收中的 Token': 'The Token from Receive messages → API receive',
+  '43 位字母或数字': '43 alphanumeric characters',
+  '代理地址（可选）': 'API proxy (optional)',
+  '留空直连 qyapi.weixin.qq.com': 'leave empty to reach qyapi.weixin.qq.com directly',
+  '公网回调基址（可选）': 'Public callback base URL (optional)',
+  '例如 https://im.example.com': 'for example https://im.example.com',
+  '流式回复：开': 'Streaming replies: on',
+  '流式回复：关': 'Streaming replies: off',
+  '企业微信客户端实时出字；微信端不支持时自动改为整段发送': 'Streams replies in the WeCom client; falls back to segmented text messages when the WeChat side does not support it',
+  '绑定企业微信自建应用': 'Bind a WeCom self-built app',
+  '回调 URL（填入企业微信后台「接收消息 → 设置API接收」）': 'Callback URL (paste into the WeCom console under Receive messages → API receive)',
+  '未配置公网回调基址：请在本页「设置」中填写回调基址，或手动拼接 回调基址 + 路径': 'No public callback base URL configured: fill it in under Settings on this page, or manually combine the base URL and the path',
+  '重置密钥': 'Reset secret',
+  '重置中…': 'Resetting…',
+  '重置密钥后回调 URL 会变化，需要同步更新企业微信后台。若公网反代未就绪，可临时使用 http://服务器IP:端口 形式的回调地址。': 'Resetting the secret changes the callback URL; update the WeCom console accordingly. If the public reverse proxy is not ready yet, a http://server-ip:port callback address works temporarily.',
+  '保存设置': 'Save settings',
+  '这会删除本机保存的应用凭据、回调配置及会话映射。企业微信后台的应用不会被删除。': 'This removes the locally stored app credentials, callback configuration, and session mappings. The app in the WeCom console is not deleted.',
+  '保留应用': 'Keep app',
+  '已绑定的企业微信应用': 'Connected WeCom apps',
+  'HTTP 回调通道': 'HTTP callback channel',
+  '企业微信应用': 'WeCom app',
+  '企业 ID 已保存': 'Corp ID saved securely',
+  '企业微信应用回调通道就绪': 'WeCom app callback channel is ready',
+  '企业微信应用连接尚未就绪': 'WeCom app connection is not ready',
+  '企业微信应用仍未就绪，插件会继续自动重试。': 'The WeCom app is still not ready; the plugin keeps retrying automatically.',
+  '连接检查完成。': 'Connection check finished.',
+  '连接检查完成，测试消息已发送。': 'Connection check finished; the test message was sent.',
+  '连接检查完成。应用尚未收到可用于测试的私聊消息。': 'Connection check finished. The app has not received a private chat usable for testing yet.',
+  '企业微信应用已绑定。请把回调 URL 填入企业微信后台并保存。': 'The WeCom app is bound. Paste the callback URL into the WeCom console and save.',
+  '回调密钥已重置，请把新的回调 URL 更新到企业微信后台。': 'The callback secret was reset; update the new callback URL in the WeCom console.',
+  '回调密钥重置失败，请稍后重试。': 'The callback secret reset failed; try again later.',
+  '无法读取企业微信应用状态': 'Could not load WeCom app status',
+  '企业微信应用设置': 'WeCom app settings',
+  '企业微信应用设置页缺少 RPC 连接': 'The WeCom app settings page is missing the RPC connection',
+  '企业微信应用操作失败': 'The WeCom app operation failed',
+  '企业微信应用操作失败，请稍后重试': 'The WeCom app operation failed; try again later',
+  '企业微信应用服务返回了无法识别的响应': 'The WeCom app service returned an unrecognized response',
+  '企业微信应用服务没有返回有效的机器人列表': 'The WeCom app service did not return a valid bot list',
 });
 
 export const en = EN;
@@ -1051,6 +1187,8 @@ function translateDynamic(text) {
   if (sendDelay) return `${localizeText(sendDelay[1])} must be a number no less than 0.`;
   sendDelay = /^(.+?)不能超过 (\d+) 秒。$/.exec(text);
   if (sendDelay) return `${localizeText(sendDelay[1])} cannot exceed ${sendDelay[2]} seconds.`;
+  sendDelay = /^(.+?)不能超过 (\d+) 毫秒。$/.exec(text);
+  if (sendDelay) return `${localizeText(sendDelay[1])} cannot exceed ${sendDelay[2]} ms.`;
   sendDelay = /^(.+?)不能超过 (\d+(?:\.\d+)?) 分钟。$/.exec(text);
   if (sendDelay) return `${localizeText(sendDelay[1])} cannot exceed ${sendDelay[2]} minutes.`;
   sendDelay = /^(.+?)不能超过 (\d+(?:\.\d+)?)。$/.exec(text);
@@ -1059,6 +1197,23 @@ function translateDynamic(text) {
   if (sendDelay) return `${localizeText(sendDelay[1])} must be a number no less than ${sendDelay[2]}.`;
   sendDelay = /^已覆盖 (.+?)–(.+?) 秒$/.exec(text);
   if (sendDelay) return `Overridden ${sendDelay[1]}–${sendDelay[2]} s`;
+  // Per-bot humanize editor (bot-send-delay.js) interpolated statuses.
+  let perBot = /^已覆盖 (\d+) 项$/.exec(text);
+  if (perBot) return `Overridden ${perBot[1]} items`;
+  perBot = /^跟随全局 \((.+)\)$/.exec(text);
+  if (perBot) return `Follow global (${localizeText(perBot[1])})`;
+  perBot = /^跟随全局（(已启用|未启用)）$/.exec(text);
+  if (perBot) return `Follow global (${perBot[1] === '已启用' ? 'enabled' : 'disabled'})`;
+  perBot = /^跟随全局（(\d+)–(\d+) \/ (\d+)–(\d+) 毫秒）$/.exec(text);
+  if (perBot) return `Follow global (${perBot[1]}–${perBot[2]} / ${perBot[3]}–${perBot[4]} ms)`;
+  const configMessage = /^微信配置格式错误：(config\.json|workspaces\.json)。请查看诊断详情，修复后重启 DSH。$/.exec(text);
+  if (configMessage) return EN['微信配置格式错误：{file}。请查看诊断详情，修复后重启 DSH。'].replace('{file}', configMessage[1]);
+  const configHint = /^(.*?)请检查微信渠道数据目录中的 (config\.json|workspaces\.json)，修复后重启 DSH；“重新读取”不会重新加载配置。\s*(字段位置中的序号从 0 开始，按文件中的条目顺序计数，不包含真实账号标识。)?$/.exec(text);
+  if (configHint) return [
+    localizeText(configHint[1].trim()),
+    EN['请检查微信渠道数据目录中的 {file}，修复后重启 DSH；“重新读取”不会重新加载配置。'].replace('{file}', configHint[2]),
+    configHint[3] ? localizeText(configHint[3]) : '',
+  ].filter(Boolean).join(' ');
   const guidanceLimit = /^增强提示词不得超过 (\d+) 个字符。$/.exec(text);
   if (guidanceLimit) return `Guidance must not exceed ${guidanceLimit[1]} characters.`;
   let match = /^(\d+) \/ (\d+) 在线$/.exec(text);
@@ -1134,7 +1289,8 @@ function translateDynamic(text) {
 
   const phrases = [
     ['企业微信', 'WeCom'], ['DeepSeek Harness', 'DeepSeek Harness'],
-    ['WhatsApp', 'WhatsApp'], ['Telegram', 'Telegram'], ['Discord', 'Discord'],
+    ['WhatsApp', 'WhatsApp'], ['iMessage', 'iMessage'], ['macOS Messages', 'macOS Messages'],
+    ['Telegram', 'Telegram'], ['Discord', 'Discord'],
     ['Slack', 'Slack'], ['飞书', 'Feishu'], ['钉钉', 'DingTalk'], ['微信', 'WeChat'],
     ['机器人', 'bot'], ['账号', 'account'], ['应用', 'app'], ['凭据', 'credentials'],
     ['服务返回了无法识别的响应', 'service returned an unrecognized response'],

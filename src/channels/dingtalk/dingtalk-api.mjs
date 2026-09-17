@@ -337,10 +337,13 @@ function cardMarkdown(text, target) {
 }
 
 function cardData(text, flowStatus, target) {
+  const markdown = cardMarkdown(text, target);
+  // The shared template uses msgContent for processing, finished, and
+  // failed cards. Switching its order to staticMsgContent hides the reply.
   return {
     cardParamMap: {
       flowStatus,
-      msgContent: cardMarkdown(text, target),
+      msgContent: markdown,
       staticMsgContent: '',
       sys_full_json_obj: JSON.stringify({ order: ['msgContent'] }),
       config: JSON.stringify({ autoLayout: true }),
@@ -922,13 +925,17 @@ export function createDingtalkApi({
 
       let delivered = false;
       try {
-        await cardRequest('v1.0/card/instances', {
+        // Deliver the thinking copy in the same request that first shows the
+        // card. Creating an empty instance and filling it after deliver (the
+        // previous three-request sequence) leaves a blank bubble visible in
+        // DingTalk for the time between deliver and the follow-up PUT, and
+        // leaves a permanently blank card if that PUT ever fails.
+        await cardRequest('v1.0/card/instances/createAndDeliver', {
           body: {
+            ...cardDeliverBody(cardInstanceId, normalizedTarget, appKey),
             cardTemplateId: DINGTALK_AI_CARD_TEMPLATE_ID,
             outTrackId: cardInstanceId,
-            cardData: {
-              cardParamMap: { config: JSON.stringify({ autoLayout: true }) },
-            },
+            cardData: cardData(content, '2', normalizedTarget),
             callbackType: 'STREAM',
             cardAtUserIds: normalizedTarget.atUserIds
               ? Object.keys(normalizedTarget.atUserIds)
@@ -938,37 +945,31 @@ export function createDingtalkApi({
           },
           headers,
           signal,
-          action: 'AI Card 创建',
-        });
-        await cardRequest('v1.0/card/instances/deliver', {
-          body: cardDeliverBody(cardInstanceId, normalizedTarget, appKey),
-          headers,
-          signal,
-          action: 'AI Card 投放',
+          action: 'AI Card 创建并投放',
         });
         delivered = true;
-        await cardRequest('v1.0/card/instances', {
-          method: 'PUT',
-          body: { outTrackId: cardInstanceId, cardData: cardData(content, '2', normalizedTarget) },
-          headers,
-          signal,
-          action: 'AI Card 启动',
-        });
-        await cardRequest('v1.0/card/streaming', {
-          method: 'PUT',
-          body: {
-            outTrackId: cardInstanceId,
-            guid: randomUUID(),
-            key: 'msgContent',
-            content: cardMarkdown(content, normalizedTarget).replace(/\n+$/, ''),
-            isFull: true,
-            isFinalize: false,
-            isError: false,
-          },
-          headers,
-          signal,
-          action: 'AI Card 启动',
-        });
+        try {
+          await cardRequest('v1.0/card/streaming', {
+            method: 'PUT',
+            body: {
+              outTrackId: cardInstanceId,
+              guid: randomUUID(),
+              key: 'msgContent',
+              content: cardMarkdown(content, normalizedTarget).replace(/\n+$/, ''),
+              isFull: true,
+              isFinalize: false,
+              isError: false,
+            },
+            headers,
+            signal,
+            action: 'AI Card 启动',
+          });
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          // The card is already visible with the thinking copy from
+          // createAndDeliver above. Keep the instance so finishAiCard can
+          // still replace it in place instead of sending a second message.
+        }
       } catch (error) {
         if (delivered) {
           const cleanupSignal = AbortSignal.timeout(5_000);
@@ -1018,6 +1019,8 @@ export function createDingtalkApi({
       const token = await accessToken({ clientId, clientSecret, signal });
       const headers = { 'x-acs-dingtalk-access-token': token };
       const normalizedContent = cardMarkdown(content, target);
+      // Close the streaming widget before persisting the template's
+      // finished state and full answer in msgContent.
       await cardRequest('v1.0/card/streaming', {
         method: 'PUT',
         body: {
@@ -1033,8 +1036,7 @@ export function createDingtalkApi({
         signal,
         action: 'AI Card 完成',
       });
-      let completed = true;
-      const completionRequest = {
+      await cardRequest('v1.0/card/instances', {
         method: 'PUT',
         body: {
           outTrackId: instanceId,
@@ -1043,18 +1045,9 @@ export function createDingtalkApi({
         },
         headers,
         signal,
-        action: 'AI Card 收口',
-      };
-      try {
-        await cardRequest('v1.0/card/instances', completionRequest);
-      } catch {
-        try {
-          await cardRequest('v1.0/card/instances', completionRequest);
-        } catch {
-          completed = false;
-        }
-      }
-      return { delivered: true, completed };
+        action: 'AI Card 完成状态',
+      });
+      return { delivered: true, completed: true };
     },
 
     failAiCard: failCard,

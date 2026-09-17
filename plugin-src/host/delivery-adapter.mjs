@@ -10,11 +10,13 @@ const CHANNELS = new Set([
   'feishu',
   'dingtalk',
   'wecom',
+  'wecom-app',
   'qq',
   'slack',
   'telegram',
   'discord',
   'whatsapp',
+  'imessage',
 ]);
 
 export function supportsDeliveryChannel(channel) {
@@ -83,6 +85,9 @@ function normalizeRoute(channel, kind, route) {
     case 'wecom':
       oneOf(kind, ['user', 'group']);
       return routeWithStrings(route, ['chatId']);
+    case 'wecom-app':
+      oneOf(kind, ['user']);
+      return routeWithStrings(route, ['chatId']);
     case 'qq':
       oneOf(kind, ['user', 'group']);
       return routeWithStrings(route, kind === 'user' ? ['userOpenId'] : ['groupOpenId']);
@@ -119,6 +124,9 @@ function normalizeRoute(channel, kind, route) {
       }
       return normalized;
     }
+    case 'imessage':
+      oneOf(kind, ['user']);
+      return routeWithStrings(route, ['chatGuid']);
     default:
       throw new TypeError(`Unsupported delivery channel: ${channel}`);
   }

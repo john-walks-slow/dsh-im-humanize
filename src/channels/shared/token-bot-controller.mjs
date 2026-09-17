@@ -324,6 +324,32 @@ export class TokenBotController {
     };
   }
 
+  /**
+   * Re-synchronize the platform-side command menu of every connected bot.
+   *
+   * Called when the host message language changes: a menu the platform stored
+   * at connect time would otherwise keep the previous language until the bot
+   * reconnected. Runtimes of channels without a platform-side menu expose no
+   * refresh hook and are skipped, and one bot's failure never hides the rest.
+   * @returns the number of bots that accepted a refreshed menu.
+   */
+  async refreshCommandMenus() {
+    if (this.#closed) return 0;
+    const refreshed = await Promise.all([...this.#runtimes].map(async ([botId, runtime]) => {
+      if (typeof runtime?.refreshCommandMenu !== 'function') return false;
+      try {
+        return await runtime.refreshCommandMenu() === true;
+      } catch (error) {
+        this.#logger.warn?.(
+          `[dsh-im:${this.#descriptor.key}] bot ${botId} command menu refresh failed:`,
+          error,
+        );
+        return false;
+      }
+    }));
+    return refreshed.filter(Boolean).length;
+  }
+
   async close() {
     if (this.#closed) return;
     this.#closed = true;

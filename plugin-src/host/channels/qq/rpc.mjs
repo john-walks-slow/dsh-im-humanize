@@ -1,3 +1,5 @@
+import { SET_ALIAS_ENDPOINT, validAliasPayload } from '../shared/bot-alias-rpc.mjs';
+import { registerManagementRpc } from '../../../management-rpc.mjs';
 import QRCode from 'qrcode';
 import {
   connectionTestTargetUnavailable,
@@ -8,6 +10,7 @@ import { SET_HUMANIZE_ENDPOINT, validHumanizeSectionPayload } from '../shared/hu
 import { SET_ACCESS_POLICY_ENDPOINT, validAccessPolicyPayload } from '../shared/access-policy-rpc.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, SET_WORKSPACE_ENDPOINT, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
+import { publicQqStateError } from '../../../../src/channels/qq/state-error.mjs';
 import { SET_AGENT_PRESET_ENDPOINT, validAgentPresetPayload } from '../shared/agent-preset-rpc.mjs';
 import { SET_MODEL_ENDPOINT, validModelPayload } from '../shared/model-setting-rpc.mjs';
 
@@ -26,6 +29,7 @@ export const QQ_ENDPOINTS = Object.freeze({
   setContextEnhancement: SET_CONTEXT_ENHANCEMENT_ENDPOINT,
   setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
+  setAlias: SET_ALIAS_ENDPOINT,
 });
 export const QQ_RPC_ENDPOINTS = Object.freeze(Object.values(QQ_ENDPOINTS));
 
@@ -98,6 +102,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === QQ_ENDPOINTS.setAccessPolicy) {
     return validAccessPolicyPayload(payload)
       ? null : '请提交有效的访问设置。';
+  }
+  if (endpoint === QQ_ENDPOINTS.setAlias) {
+    return validAliasPayload(payload)
+      ? null : '请输入有效的别名（最多 80 个字符）。';
   }
   return 'Unknown QQ endpoint.';
 }
@@ -205,6 +213,11 @@ export function createQqRpcHandler(controller, { encodeQr = qrDataUrl } = {}) {
         value = await controller.updateContextEnhancement(
           payload.botId, payload.config, (status) => publicStatus(status, cachedEncode),
         );
+      } else if (endpoint === QQ_ENDPOINTS.setAlias) {
+        if (typeof controller.updateAlias !== 'function') throw new Error('Alias update is unavailable');
+        value = await controller.updateAlias(
+          payload.botId, payload.alias, (status) => publicStatus(status, cachedEncode),
+        );
       } else if (endpoint === QQ_ENDPOINTS.setHumanize) {
         if (typeof controller.updateHumanize !== 'function') throw new Error('Humanization update is unavailable');
         value = await controller.updateHumanize(
@@ -231,17 +244,14 @@ export function createQqRpcHandler(controller, { encodeQr = qrDataUrl } = {}) {
       const workspaceError = publicWorkspaceError(error);
       return signal?.aborted
         ? { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } }
-        : { ok: false, error: workspaceError
+        : { ok: false, error: publicQqStateError(error) ?? workspaceError
           ?? { code: 'qq-operation-failed', message: 'QQ 操作失败，请稍后重试。' } };
     }
   };
 }
 
 export function installQqRpc(ctx, controller, options, authority) {
-  if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
-    throw new TypeError('DSH Host Connection RPC is required');
-  }
-  return ctx.connection.rpc.handle(
+  return registerManagementRpc(ctx,
     QQ_RPC_CHANNEL,
     createQqRpcHandler(controller, options),
     { authority: resolveRpcAuthority(authority) },
