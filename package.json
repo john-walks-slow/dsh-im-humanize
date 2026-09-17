@@ -1,7 +1,7 @@
 {
-  "name": "@xmanrui/dsh-im",
-  "version": "4.21.2",
-  "description": "把十一种 IM 渠道和公网 AI Office 接入本机 DeepSeek Harness。 Connect eleven IM channels and a public AI Office to a local DeepSeek Harness.",
+  "name": "@johnnren/dsh-im-humanize",
+  "version": "4.21.2-humanize.1",
+  "description": "Humanized fork of @xmanrui/dsh-im (base 4.21.2) for DeepSeek Harness: humanized message delivery (send delay + typing two-phase), message_break + streaming coexistence, status reactions, reply quotes, per-bot overrides, and a no_reply reclaim tool. @xmanrui/dsh-im 的拟人化分支：人化发送（延迟+输入中两阶段）、message_break 与 streaming 共存、状态表情、回复引用、per-bot 全量覆盖。",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -23,7 +23,7 @@
     "imessage",
     "ai-office"
   ],
-  "author": "xmanrui (https://github.com/xmanrui)",
+  "author": "johnnren (humanized fork; upstream © xmanrui & contributors)",
   "contributors": [
     {
       "name": "C3H3-AI",

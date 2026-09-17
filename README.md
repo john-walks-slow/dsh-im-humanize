@@ -49,6 +49,9 @@ Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest
 
 ## 本 Fork 的改动（拟人化）
 
+> 本包发布为 [`@johnnren/dsh-im-humanize`](https://www.npmjs.com/package/@johnnren/dsh-im-humanize)（基于上游 4.21.2）：
+> `dsh plugin --profile web add @johnnren/dsh-im-humanize`
+
 本仓库是从 `xmanrui/dsh-im` fork 出来的"拟人化"分支，在保留上游全部功能的基础上，新增面向角色扮演沉浸体验的设置。全局项在「设置 → IM机器人 → 通用设置」的**拟人化设置**面板中配置；**全部拟人化设置**还支持在每个渠道的机器人卡片里按机器人逐项覆盖。
 
 ### 速览：与上游的全部差异
