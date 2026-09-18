@@ -1591,6 +1591,19 @@ export class DingtalkHarnessBridge {
         this.#batchInputs.complete(key, batchSubmission.token);
         batchSettled = true;
       }
+      // A no_reply turn concludes without a reply: silence is intended, not
+      // an empty model response. Close the open card quietly and send nothing.
+      if (!String(answer ?? '').trim() && artifacts.length === 0) {
+        if (cardStarted) {
+          try {
+            await cardStream.finish('');
+          } catch (streamError) {
+            this.#logger.warn?.('[dsh-dingtalk] unable to close the card for a silent turn:', streamError);
+          }
+        }
+        this.#finishStatusReaction(statusReaction, 'clear');
+        return;
+      }
       const baseAnswerText = typeof answer === 'string' && answer.trim()
         ? answer
         : artifacts.length > 0 ? t('结果文件已生成。') : answer;

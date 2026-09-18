@@ -1338,6 +1338,12 @@ export class QqHarnessBridge {
         ]);
       }
       this.#signal?.throwIfAborted();
+      // A no_reply turn concludes without a reply: silence is intended, not
+      // an empty model response. Settle quietly without sending anything.
+      if (!String(answer ?? '').trim() && artifacts.length === 0) {
+        stream?.cancel?.();
+        return;
+      }
       const baseAnswerText = answerTextForDelivery(answer, artifacts);
       const answerText = messageBreakHandler?.hasBreaks()
         ? messageBreakHandler.remainingText(baseAnswerText)

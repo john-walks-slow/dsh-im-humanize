@@ -1115,6 +1115,14 @@ export class TextHarnessBridge {
       if (batchSubmission) {
         this.#batches.complete(conversationKey, batchSubmission.token);
       }
+      // A no_reply turn concludes without a reply: silence is the intended
+      // outcome, not an empty model response. Settle quietly — clear the
+      // status reaction, drop any open draft, send nothing.
+      if (!cleanText(answer) && artifacts.length === 0) {
+        message.statusReaction?.clear();
+        stream?.cancel?.();
+        return;
+      }
       const fileOnlyCompletion = !cleanText(answer) && artifacts.length > 0;
       // When message_break was used, the segments before each break were
       // already sent as separate messages. The final message is only the

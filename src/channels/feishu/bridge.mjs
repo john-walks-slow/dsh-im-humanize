@@ -5455,6 +5455,11 @@ export class FeishuHarnessBridge {
           },
         });
         markAskComplete();
+        // A no_reply turn concludes without a reply: silence is intended,
+        // not an empty model response. Settle quietly without sending anything.
+        if (!String(answer ?? '').trim() && artifacts.length === 0) {
+          return { receipt: null, artifactSendErrors: 0, textDeliveryErrors: 0 };
+        }
         // When message_break sent segments, the final message is only the
         // remaining text after the last break point.
         const deliveryText = messageBreakHandler?.hasBreaks()
@@ -5553,6 +5558,17 @@ export class FeishuHarnessBridge {
             markAskComplete();
             completedAnswer = completed.answer;
             completedArtifacts = completed.artifacts ?? [];
+            // A no_reply turn concludes without a reply: silence is intended,
+            // not an empty model response. Recall the streaming cards so the
+            // turn leaves no trace in the chat.
+            if (!String(completedAnswer ?? '').trim() && completedArtifacts.length === 0) {
+              try {
+                await controller.abort?.();
+              } catch (silentCloseError) {
+                this.#logger.warn?.('[dsh-feishu] unable to recall the cards for a silent turn:', silentCloseError);
+              }
+              return;
+            }
             await controller.setContent(answerTextForDelivery(completedAnswer, completedArtifacts));
           },
         }, {
@@ -5623,6 +5639,11 @@ export class FeishuHarnessBridge {
           askOptions: this.#interactionAskOptions(event, key, message.files),
         });
         markAskComplete();
+        // A no_reply turn concludes without a reply: silence is intended,
+        // not an empty model response. Settle quietly without sending anything.
+        if (!String(answer ?? '').trim() && artifacts.length === 0) {
+          return { receipt: null, artifactSendErrors: 0, textDeliveryErrors: 0 };
+        }
         let textReceipt;
         let textSendError = null;
         try {

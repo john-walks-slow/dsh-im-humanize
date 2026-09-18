@@ -124,6 +124,22 @@ test('VerifiedFeishuChannel streams content and verifies terminal settings', asy
   assert.equal(calls.recalls.length, 0);
 });
 
+test('VerifiedFeishuChannel aborts a silent turn by recalling every stream card', async () => {
+  const { client, calls } = fakeClient();
+  const channel = new VerifiedFeishuChannel({ client, initialText: '正在思考…' });
+
+  const result = await channel.stream('oc_chat', {
+    markdown: async (controller) => {
+      await controller.setContent('草稿文本');
+      await controller.abort();
+    },
+  }, { replyTo: 'om_user' });
+
+  assert.deepEqual(calls.recalls.map((call) => call.path.message_id), ['om-stream']);
+  assert.equal(calls.settings.length, 0, 'an aborted turn must not finalize any card');
+  assert.equal(result.messageId, 'om-stream');
+});
+
 test('VerifiedFeishuChannel previews long snapshots and delivers the entire final answer in cards', async () => {
   const { client, calls } = fakeClient();
   const channel = new VerifiedFeishuChannel({ client });

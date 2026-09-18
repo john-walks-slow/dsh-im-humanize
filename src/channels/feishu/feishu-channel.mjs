@@ -208,6 +208,8 @@ export class VerifiedFeishuChannel {
     let activeCard = null;
     let rotating = false;
     let awaitingPresentation = false;
+    // 静默轮（no_reply）：整轮回收所有流式卡片，终稿分段写入一并跳过。
+    let aborted = false;
     // issue #163：过程写卡与换卡定格共用一条写队列串行化——在途写必然先于
     // 定格完成，消除「写飞越定格」竞态；前序失败不阻塞后续写入。
     let writeQueue = Promise.resolve();
@@ -285,6 +287,11 @@ export class VerifiedFeishuChannel {
             console.warn('[dsh-feishu] unable to finalize the superseded stream card:', error.message);
           }
         }),
+        abort: () => enqueue(async () => {
+          // 静默收尾：撤回本轮全部流式卡片（含占位卡），终稿不再写入。
+          aborted = true;
+          for (const card of cards) await this.#recall(card.messageId);
+        }),
         setContent: (content, { transient = false } = {}) => enqueue(async () => {
           const next = String(content ?? '') || '…';
           // Retain the latest snapshot even if it is a replay or a held write.
@@ -305,6 +312,7 @@ export class VerifiedFeishuChannel {
 
       await input.markdown(controller);
       await enqueue(async () => {
+        if (aborted) return; // 静默轮：卡片已撤回，不写终稿。
         // 终稿强制解除挂起：异常路径下呈现通知缺失时仍可收尾。
         awaitingPresentation = false;
         // Recompute from the final snapshot, including an empty delta, rather

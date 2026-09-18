@@ -1051,6 +1051,11 @@ export class WeixinHarnessBridge {
           this.#approvals.closeRoute(key),
         ]);
       }
+      // A no_reply turn concludes without a reply: silence is intended, not
+      // an empty model response. Settle quietly without sending anything.
+      if (!String(answer ?? '').trim() && artifacts.length === 0) {
+        return;
+      }
       const baseAnswerText = typeof answer === 'string' && answer.trim()
         ? answer
         : artifacts.length > 0 ? t('结果文件已生成。') : answer;

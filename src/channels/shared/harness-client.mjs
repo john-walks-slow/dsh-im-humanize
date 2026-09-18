@@ -16,6 +16,7 @@ import {
 import { imSourceGuidance } from './im-source-guidance.mjs';
 import { outboundArtifactRegistry } from './semantic/artifact.mjs';
 import { MESSAGE_BREAK_TOOL } from './message-break.mjs';
+import { NO_REPLY_TOOL } from './no-reply.mjs';
 import { t } from './i18n.mjs';
 import { watchHarnessMux } from './harness-mux.mjs';
 
@@ -501,6 +502,7 @@ export class HarnessReplyTracker {
   #textAtLastBreak = '';
   #finished = false;
   #reason = null;
+  #noReply = false;
   #toolNames = new Map();
   #lastToolName = null;
 
@@ -524,6 +526,11 @@ export class HarnessReplyTracker {
 
   get reason() {
     return this.#reason;
+  }
+
+  /** True when the model concluded the turn with an explicit no_reply call. */
+  get noReply() {
+    return this.#noReply;
   }
 
   get tracking() {
@@ -636,6 +643,13 @@ export class HarnessReplyTracker {
           continue;
         }
 
+        // no_reply mechanically concludes the turn in silence: record the
+        // intent and skip progress surfacing — there is no visible result.
+        if (name === NO_REPLY_TOOL) {
+          this.#noReply = true;
+          continue;
+        }
+
         let argsText = null;
         if (event.data?.arguments !== undefined && event.data?.arguments !== null) {
           if (typeof event.data.arguments === 'string') {
@@ -657,7 +671,8 @@ export class HarnessReplyTracker {
           ?? this.#lastToolName;
         // Suppress tool/result for message_break — it's a no-op separator,
         // not a real tool whose result needs to be shown as progress.
-        if (toolName === MESSAGE_BREAK_TOOL) continue;
+        // no_reply likewise concludes silently.
+        if (toolName === MESSAGE_BREAK_TOOL || toolName === NO_REPLY_TOOL) continue;
         const error = toolResultErrorText(event.data?.error);
         pushUpdate({
           type: 'status',
@@ -1643,11 +1658,24 @@ export class HarnessClient {
             const artifactCount = ownership?.stopRequested
               ? 0
               : await deliverArtifacts();
+            if (tracker.answer && ownership?.stopRequested) {
+              return tracker.answer;
+            }
+            // An accepted /stop keeps its interrupted feedback even when the
+            // model also concluded with no_reply: the user asked for the stop.
+            if (ownership?.stopRequested) throw turnStoppedError();
+            if (tracker.noReply) {
+              // The model explicitly concluded the turn without a reply:
+              // silence is the intended outcome, never an empty model
+              // response. Narrated text before no_reply stays silent too,
+              // matching the wake-reclaim convention. Artifacts were already
+              // delivered above.
+              return '';
+            }
             if (tracker.answer) {
               return tracker.answer;
             }
             if (artifactCount > 0) return '';
-            if (ownership?.stopRequested) throw turnStoppedError();
             throw harnessTurnError(tracker.reason);
           }
 

@@ -376,6 +376,59 @@ test('Session sync stays silent for wake turns that called the reclaim tool', as
   assert.deepEqual(lookups, []);
 });
 
+test('Session sync stays silent for wake turns that called the no_reply tool', async () => {
+  const sends = [];
+  const lookups = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations(sessionId) {
+      lookups.push(sessionId);
+      return [{ channel: 'telegram', botId: 'bot-b', target: BOUND }];
+    },
+    async send(...args) { sends.push(args); },
+  };
+  const coordinator = createSessionSyncCoordinator({ deliveryService });
+
+  // Narrated self-talk, then the explicit no_reply conclusion: the whole
+  // turn is silent, matching the reclaim soft convention.
+  void coordinator.enqueue('session-noreply', turnStart());
+  void coordinator.enqueue('session-noreply', wakeMessage(), 'wake');
+  void coordinator.enqueue('session-noreply', assistantMessage(0, '这轮没有需要打扰用户的内容。'));
+  void coordinator.enqueue('session-noreply', toolCall('no_reply'));
+  void coordinator.enqueue('session-noreply', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(sends, []);
+  assert.deepEqual(lookups, []);
+});
+
+test('Session sync keeps the dsh mirror silent when the turn called no_reply', async () => {
+  const sends = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return [TARGET_A]; },
+    async sendSessionSyncText(botId, targetId, sessionId, text) {
+      sends.push({ botId, targetId, sessionId, text });
+    },
+    async listSessionConversations() { return []; },
+    async send() {},
+  };
+  const coordinator = createSessionSyncCoordinator({ deliveryService });
+
+  // The user echo still mirrors, but the assistant answer does not: no_reply
+  // explicitly declares "no IM reply should be sent".
+  void coordinator.enqueue('session-one', turnStart());
+  void coordinator.enqueue('session-one', userMessage('帮我看下闹钟'), 'dsh');
+  void coordinator.enqueue('session-one', assistantMessage(0, '都改好了'));
+  void coordinator.enqueue('session-one', toolCall('no_reply'));
+  void coordinator.enqueue('session-one', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(sends, [
+    { botId: 'bot-a', targetId: 'alice', sessionId: 'session-one', text: '[来自 DSH]\n帮我看下闹钟' },
+  ]);
+});
+
 test('Session sync still delivers wake turns that called other tools', async () => {
   const sends = [];
   const deliveryService = {

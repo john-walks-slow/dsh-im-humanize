@@ -4,6 +4,7 @@ import {
   textFromHarnessContent,
 } from '../../src/channels/shared/harness-client.mjs';
 import { deliverSessionSyncMirror } from '../../src/channels/shared/session-sync-registry.mjs';
+import { NO_REPLY_TOOL } from '../../src/channels/shared/no-reply.mjs';
 
 const DSH_USER_PREFIX = '[来自 DSH]\n';
 const DSH_ASSISTANT_PREFIX = '[DSH 助手]\n';
@@ -43,10 +44,12 @@ function validRecipient(target) {
 }
 
 // dsh-proactive's wake-reclaim tool (current name plus the pre-rename
-// spelling for hosts still running the old build). A wake turn that calls it
-// intends silence: any text the model wrote before reclaiming is
-// self-narration, not a message, so the wake delivery skips that turn.
-// Soft name convention only — no hard dependency on dsh-proactive.
+// spelling for hosts still running the old build). In wake turns a reclaim
+// call intends silence: any text the model wrote before reclaiming is
+// self-narration, not a message, so the wake delivery skips that turn. In
+// dsh-origin turns the tool is not offered and the call misfires, so the
+// answer still delivers. Soft name convention only — no hard dependency on
+// dsh-proactive.
 const RECLAIM_TOOL_NAMES = new Set(['proactive_reclaim', 'proactive_silence']);
 
 export function createSessionSyncCoordinator({ deliveryService, logger = console }) {
@@ -123,6 +126,7 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
         origin: 'unknown',
         recipients: null,
         reclaimed: false,
+        silent: false,
         assistant: new AssistantTextAccumulator(),
       });
       return;
@@ -145,7 +149,8 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
 
     if (event.type === 'tool/call' || event.type === 'tool/code-dispatch-start') {
       if (event.data?.turn !== undefined && event.data.turn !== state.turn) return;
-      if (RECLAIM_TOOL_NAMES.has(event.data?.name)) state.reclaimed = true;
+      if (event.data?.name === NO_REPLY_TOOL) state.silent = true;
+      else if (RECLAIM_TOOL_NAMES.has(event.data?.name)) state.reclaimed = true;
       return;
     }
 
@@ -195,10 +200,13 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
 
     if (event.type !== 'turn/end' || event.data?.turn !== state.turn) return;
     turns.delete(sessionId);
-    if (!completedTurn(event.data?.reason) || !state.assistant.text) return;
+    // no_reply explicitly concludes the turn without an IM reply (any
+    // origin): narrated text stays silent.
+    if (!completedTurn(event.data?.reason) || state.silent) return;
+    if (!state.assistant.text) return;
     if (state.origin === 'wake') {
-      // Reclaim wins over any narrated text: the turn is reclaimed as silent,
-      // so not even the wake lookup runs.
+      // Reclaim wins over any narrated text: the wake turn is reclaimed as
+      // silent, so not even the wake lookup runs.
       if (state.reclaimed) return;
       // Fork: proactive wake delivery mirrors the final answer into the
       // conversations the wake targeted.

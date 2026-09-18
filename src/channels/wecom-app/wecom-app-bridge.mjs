@@ -654,6 +654,14 @@ export class WecomAppBridge {
         }
         throw error;
       }
+      // A no_reply turn concludes without a reply: silence is intended, not
+      // an empty model response. Close the stream quietly and send nothing.
+      if (!String(answer ?? '').trim() && artifacts.length === 0) {
+        if (streamActive && !sink.finished()) {
+          this.#streamRegistry.finishStream(sink.streamId);
+        }
+        return;
+      }
       const displayAnswer = answerTextForDelivery(answer, artifacts);
       if (streamActive && !sink.finished()) {
         if (displayAnswer && displayAnswer !== streamedText) {

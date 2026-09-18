@@ -1609,6 +1609,18 @@ export class WecomHarnessBridge {
       }
 
       this.#signal?.throwIfAborted();
+      // A no_reply turn concludes without a reply: silence is intended, not
+      // an empty model response. Close an eagerly opened stream frame and
+      // send nothing.
+      if (!String(answer ?? '').trim() && artifacts.length === 0) {
+        if (streamStarted && streamId) {
+          await this.#client.replyStream(frame, streamId, '', true).catch((streamError) => {
+            this.#logger.warn?.('[dsh-im:wecom] unable to close the stream for a silent turn:', streamError);
+          });
+        }
+        if (!promptRecorded) await this.#state.markSeen(messageId);
+        return;
+      }
       const baseAnswer = answerTextForDelivery(answer, artifacts);
       const displayAnswer = messageBreakHandler?.hasBreaks()
         ? messageBreakHandler.remainingText(baseAnswer)

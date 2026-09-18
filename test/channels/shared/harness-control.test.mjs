@@ -251,6 +251,7 @@ function controlledTurn({ sessionId, initialEnd = false, controlExecutor } = {})
   let answer = initialEnd ? 'already complete' : '';
   let endReason = initialEnd ? 'completed' : null;
   let historyFailure = null;
+  const extraEvents = [];
   const client = new HarnessClient({
     baseUrl: 'http://127.0.0.1:3982',
     workspace: '/tmp/workspace',
@@ -267,9 +268,10 @@ function controlledTurn({ sessionId, initialEnd = false, controlExecutor } = {})
         data: { turn: 7, source: { rpcId: promptRpcId } },
       } },
     ];
+    let seq = 3;
     if (answer) {
       events.push({ event: {
-        seq: 3,
+        seq: seq++,
         type: 'assistant/message',
         data: {
           turn: 7,
@@ -277,9 +279,12 @@ function controlledTurn({ sessionId, initialEnd = false, controlExecutor } = {})
         },
       } });
     }
+    for (const extra of extraEvents) {
+      events.push({ event: { seq: seq++, type: extra.type, data: { turn: 7, ...extra.data } } });
+    }
     if (ended) {
       events.push({ event: {
-        seq: 4,
+        seq: seq++,
         type: 'turn/end',
         data: { turn: 7, reason: endReason },
       } });
@@ -308,6 +313,7 @@ function controlledTurn({ sessionId, initialEnd = false, controlExecutor } = {})
     admitted: admitted.promise,
     promptRpcId: () => promptRpcId,
     setText(text) { answer = text; },
+    pushEvent(type, data = {}) { extraEvents.push({ type, data }); },
     failHistory(error = new Error('history unavailable')) { historyFailure = error; },
     finish({ text = '', reason = 'cancelled' } = {}) {
       answer = text;
@@ -339,6 +345,48 @@ test('HarnessClient preserves structured turn failures for channel classificatio
       return true;
     });
   }
+});
+
+test('HarnessClient treats a completed no_reply turn as silent success', async () => {
+  const turn = controlledTurn();
+  const asking = turn.client.ask(turn.id, 'work', { timeoutMs: 2_000 });
+  await turn.admitted;
+  turn.pushEvent('tool/call', { step: 0, name: 'no_reply', callId: 'call-1' });
+  turn.pushEvent('tool/result', { step: 0, callId: 'call-1' });
+  turn.finish({ reason: 'completed' });
+  assert.equal(await asking, '');
+});
+
+test('HarnessClient suppresses narrated text when the turn ends with no_reply', async () => {
+  const turn = controlledTurn();
+  const asking = turn.client.ask(turn.id, 'work', { timeoutMs: 2_000 });
+  await turn.admitted;
+  turn.pushEvent('tool/call', { step: 0, name: 'no_reply', callId: 'call-1' });
+  turn.finish({ text: '自言自语的中间过程', reason: 'completed' });
+  assert.equal(await asking, '');
+});
+
+test('HarnessClient keeps stopped-turn feedback when the model also called no_reply', async () => {
+  const turn = controlledTurn();
+  const control = { owner: {}, key: 'direct:noreply-stop' };
+  const asking = turn.client.ask(turn.id, 'work', { control, timeoutMs: 2_000 });
+  void asking.catch(() => undefined);
+  await turn.admitted;
+  turn.pushEvent('tool/call', { step: 0, name: 'no_reply', callId: 'call-1' });
+  assert.equal(await turn.client.stopActiveTurn(turn.id, control), true);
+  turn.finish({ reason: 'completed' });
+  await assert.rejects(asking, (error) => error?.code === 'turn-stopped');
+});
+
+test('HarnessClient still returns preserved partial text for a stopped no_reply turn', async () => {
+  const turn = controlledTurn();
+  const control = { owner: {}, key: 'direct:noreply-stop-text' };
+  const asking = turn.client.ask(turn.id, 'work', { control, timeoutMs: 2_000 });
+  await turn.admitted;
+  turn.pushEvent('tool/call', { step: 0, name: 'no_reply', callId: 'call-1' });
+  assert.equal(await turn.client.stopActiveTurn(turn.id, control), true);
+  turn.finish({ text: '停下来的部分结果', reason: 'completed' });
+  assert.equal(await asking, '停下来的部分结果');
 });
 
 test('HarnessClient does not treat partial text from a failed turn as success', async () => {

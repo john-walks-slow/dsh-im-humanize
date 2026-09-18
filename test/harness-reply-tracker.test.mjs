@@ -142,3 +142,34 @@ test('HarnessReplyTracker still ignores duplicate sequences and unrelated turns'
 
   assert.equal(tracker.answer, '有效');
 });
+
+test('HarnessReplyTracker records an explicit no_reply and suppresses its progress', () => {
+  const tracker = new HarnessReplyTracker({ promptRpcId: PROMPT_RPC_ID });
+
+  const updates = tracker.consumeAll([
+    ...turnPrefix(),
+    { type: 'tool/call', seq: 3, data: { turn: 1, step: 0, name: 'no_reply', callId: 'call-1' } },
+    { type: 'tool/result', seq: 4, data: { turn: 1, step: 0, callId: 'call-1' } },
+    { type: 'turn/end', seq: 5, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]);
+
+  assert.deepEqual(updates, []);
+  assert.equal(tracker.noReply, true);
+  assert.equal(tracker.answer, '');
+  assert.equal(tracker.finished, true);
+});
+
+test('HarnessReplyTracker keeps other tool progress visible alongside no_reply', () => {
+  const tracker = new HarnessReplyTracker({ promptRpcId: PROMPT_RPC_ID });
+
+  const updates = tracker.consumeAll([
+    ...turnPrefix(),
+    { type: 'tool/call', seq: 3, data: { turn: 1, step: 0, name: 'search', callId: 'call-0' } },
+    { type: 'tool/call', seq: 4, data: { turn: 1, step: 0, name: 'no_reply', callId: 'call-1' } },
+    { type: 'tool/result', seq: 5, data: { turn: 1, step: 0, callId: 'call-1' } },
+    { type: 'turn/end', seq: 6, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]);
+
+  assert.deepEqual(updates, [{ type: 'tool', name: 'search', callId: 'call-0' }]);
+  assert.equal(tracker.noReply, true);
+});
