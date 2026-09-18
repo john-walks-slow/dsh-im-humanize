@@ -7,7 +7,7 @@ import { build } from 'esbuild';
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(sourceDirectory, '../..');
 const outputPath = resolve(packageRoot, 'lib/client.js');
-const loaderId = process.env.DSH_IM_CLIENT_ID ?? '@xmanrui/dsh-im';
+const loaderId = process.env.DSH_IM_CLIENT_ID ?? (await import('../../package.json', { with: { type: 'json' } })).default.name;
 
 const result = await build({
   entryPoints: [resolve(sourceDirectory, 'index.js')],
