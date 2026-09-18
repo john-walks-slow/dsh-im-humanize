@@ -42,6 +42,13 @@ function validRecipient(target) {
     && typeof target.targetId === 'string' && target.targetId;
 }
 
+// dsh-proactive's wake-reclaim tool (current name plus the pre-rename
+// spelling for hosts still running the old build). A wake turn that calls it
+// intends silence: any text the model wrote before reclaiming is
+// self-narration, not a message, so the wake delivery skips that turn.
+// Soft name convention only — no hard dependency on dsh-proactive.
+const RECLAIM_TOOL_NAMES = new Set(['proactive_reclaim', 'proactive_silence']);
+
 export function createSessionSyncCoordinator({ deliveryService, logger = console }) {
   if (typeof deliveryService?.listSessionSyncTargets !== 'function'
     || typeof deliveryService?.sendSessionSyncText !== 'function'
@@ -115,6 +122,7 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
         step: null,
         origin: 'unknown',
         recipients: null,
+        reclaimed: false,
         assistant: new AssistantTextAccumulator(),
       });
       return;
@@ -132,6 +140,12 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
     if (event.type === 'step/end') {
       if (event.data?.turn !== undefined && event.data.turn !== state.turn) return;
       if (event.data?.step === undefined || event.data.step === state.step) state.step = null;
+      return;
+    }
+
+    if (event.type === 'tool/call' || event.type === 'tool/code-dispatch-start') {
+      if (event.data?.turn !== undefined && event.data.turn !== state.turn) return;
+      if (RECLAIM_TOOL_NAMES.has(event.data?.name)) state.reclaimed = true;
       return;
     }
 
@@ -183,6 +197,9 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
     turns.delete(sessionId);
     if (!completedTurn(event.data?.reason) || !state.assistant.text) return;
     if (state.origin === 'wake') {
+      // Reclaim wins over any narrated text: the turn is reclaimed as silent,
+      // so not even the wake lookup runs.
+      if (state.reclaimed) return;
       // Fork: proactive wake delivery mirrors the final answer into the
       // conversations the wake targeted.
       let conversations;

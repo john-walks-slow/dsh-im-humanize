@@ -335,3 +335,97 @@ test('Session sync stays silent when the wake conversation lookup fails', async 
   assert.equal(warnings.length, 1);
   assert.match(warnings[0][0], /ignored Session sync wake lookup failure/);
 });
+
+function toolCall(name, turn = 1, step = 0) {
+  return {
+    type: 'tool/call',
+    data: { turn, step, callId: `${name}-call-1`, name, arguments: '{}' },
+  };
+}
+
+test('Session sync stays silent for wake turns that called the reclaim tool', async () => {
+  const sends = [];
+  const lookups = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations(sessionId) {
+      lookups.push(sessionId);
+      return [{ channel: 'telegram', botId: 'bot-b', target: BOUND }];
+    },
+    async send(...args) { sends.push(args); },
+  };
+  const coordinator = createSessionSyncCoordinator({ deliveryService });
+
+  // Replayed from the real leaked yu wake: narrated text, then the reclaim
+  // call (old pre-rename spelling on hosts that still run it), turn completes.
+  void coordinator.enqueue('session-old-name', turnStart());
+  void coordinator.enqueue('session-old-name', wakeMessage(), 'wake');
+  void coordinator.enqueue('session-old-name', assistantMessage(0, '应该正在上课中，静默结束。'));
+  void coordinator.enqueue('session-old-name', toolCall('proactive_silence'));
+  void coordinator.enqueue('session-old-name', turnEnd());
+  // Same sequence with the current tool name.
+  void coordinator.enqueue('session-new-name', turnStart());
+  void coordinator.enqueue('session-new-name', wakeMessage(), 'wake');
+  void coordinator.enqueue('session-new-name', assistantMessage(0, '这轮没什么好说的'));
+  void coordinator.enqueue('session-new-name', toolCall('proactive_reclaim'));
+  void coordinator.enqueue('session-new-name', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(sends, []);
+  assert.deepEqual(lookups, []);
+});
+
+test('Session sync still delivers wake turns that called other tools', async () => {
+  const sends = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations() {
+      return [{ channel: 'telegram', botId: 'bot-b', target: BOUND }];
+    },
+    async send(botId, target, text) { sends.push({ botId, target, text }); },
+  };
+  const coordinator = createSessionSyncCoordinator({ deliveryService });
+
+  void coordinator.enqueue('session-one', turnStart());
+  void coordinator.enqueue('session-one', wakeMessage(), 'wake');
+  void coordinator.enqueue('session-one', toolCall('life_react'));
+  void coordinator.enqueue('session-one', assistantMessage(0, '前辈～刚摸到一只胖猫！'));
+  void coordinator.enqueue('session-one', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(sends, [{ botId: 'bot-b', target: BOUND, text: '前辈～刚摸到一只胖猫！' }]);
+});
+
+test('Session sync still delivers dsh-origin replies that misfire the reclaim tool', async () => {
+  const sends = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return [TARGET_A]; },
+    async sendSessionSyncText(botId, targetId, sessionId, text) {
+      sends.push({ botId, targetId, sessionId, text });
+    },
+    async listSessionConversations() { return []; },
+    async send() {},
+  };
+  const coordinator = createSessionSyncCoordinator({ deliveryService });
+
+  // A user-triggered turn: the reclaim call fails with invalid_action there,
+  // so the answer to the user must still be delivered.
+  void coordinator.enqueue('session-one', turnStart());
+  void coordinator.enqueue('session-one', userMessage('帮我看下闹钟'), 'dsh');
+  void coordinator.enqueue('session-one', assistantMessage(0, '都改好了'));
+  void coordinator.enqueue('session-one', toolCall('proactive_reclaim'));
+  void coordinator.enqueue('session-one', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(sends, [
+    { botId: 'bot-a', targetId: 'alice', sessionId: 'session-one', text: '[来自 DSH]\n帮我看下闹钟' },
+    {
+      botId: 'bot-a',
+      targetId: 'alice',
+      sessionId: 'session-one',
+      text: '[DSH 助手]\n都改好了',
+    },
+  ]);
+});
