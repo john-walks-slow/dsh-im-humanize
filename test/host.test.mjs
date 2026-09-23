@@ -420,9 +420,10 @@ test('humanizeDefaults resolves channel priority and reflects live store updates
   let humanizeHandler = null;
   const ctx = {
     connection: {
-      rpc: {
-        handle: (channel, handler) => {
-          if (channel === '/dsh-im-humanize') humanizeHandler = handler;
+      fetch: {
+        register: (route) => {
+          if (route.path === '/api/dsh-im/dsh-im-humanize') humanizeHandler = route.fetch;
+          return () => {};
         },
       },
     },
@@ -466,7 +467,21 @@ test('humanizeDefaults resolves channel priority and reflects live store updates
   // A panel write through the humanize RPC updates the store live: the
   // next turn's accessor read sees it without a plugin restart.
   assert.ok(humanizeHandler, 'humanize RPC handler registered');
-  const result = await humanizeHandler('humanize.set', {
+  async function humanizeCall(method, payload) {
+    const response = await humanizeHandler(new Request('http://dsh.internal/api/dsh-im/dsh-im-humanize', {
+      method: 'POST',
+      headers: { host: '127.0.0.1', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: 'req-' + method,
+        method: 'dsh-im/dsh-im-humanize',
+        payload: { method, payload },
+      }),
+    }));
+    const json = await response.json();
+    return json.result;
+  }
+  const result = await humanizeCall('humanize.set', {
     typingIndicator: 'burst',
     statusReaction: false,
   });
@@ -477,7 +492,7 @@ test('humanizeDefaults resolves channel priority and reflects live store updates
   assert.equal(slackDefaults('slack').streaming, false, 'untouched keys keep their values');
 
   // Malformed writes are rejected with field information.
-  const rejected = await humanizeHandler('humanize.set', { sendDelay: { readDelay: { minMs: -1 } } });
+  const rejected = await humanizeCall('humanize.set', { sendDelay: { readDelay: { minMs: -1 } } });
   assert.equal(rejected.ok, false);
   assert.equal(rejected.error.code, 'invalid-send-delay');
   assert.equal(rejected.error.field, 'sendDelay.readDelay.minMs');

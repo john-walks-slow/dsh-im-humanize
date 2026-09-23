@@ -1,5 +1,6 @@
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { registerManagementRpc } from '../management-rpc.mjs';
 import {
   HUMANIZE_RPC_CHANNEL,
   HUMANIZE_ENDPOINTS,
@@ -58,11 +59,13 @@ export function installHumanizeRpc(ctx, { config = {}, logger = null, authority 
   // Register RPC channel on the Host connection (matches the channel RPC
   // modules: authority follows config.rpcAuthority, 'loopback' by default,
   // 'trusted-host' when the deployment serves a trusted remote hostname).
-  // If the connection RPC surface is unavailable (e.g. headless fixtures,
+  // If the connection fetch surface is unavailable (e.g. headless fixtures,
   // reduced host contexts), degrade gracefully: skip registration, keep the
   // file-backed store working for config merge at activation time.
-  if (ctx?.connection?.rpc && typeof ctx.connection.rpc.handle === 'function') {
-    ctx.connection.rpc.handle(
+  let dispose = () => {};
+  if (typeof ctx?.connection?.fetch?.register === 'function') {
+    dispose = registerManagementRpc(
+      ctx,
       HUMANIZE_RPC_CHANNEL,
       (endpoint, payload, signal) => {
         if (!validHumanizePayload(endpoint, payload)) {
@@ -76,9 +79,9 @@ export function installHumanizeRpc(ctx, { config = {}, logger = null, authority 
       { authority: resolveRpcAuthority(authority ?? config.rpcAuthority) },
     );
   } else {
-    log.warn?.('[dsh-im] Host Connection RPC unavailable; humanization panel disabled');
+    log.warn?.('[dsh-im] Host Connection Fetch unavailable; humanization panel disabled');
   }
 
   // Expose the store so the host can read settings at activation time
-  return { store, settingsPath };
+  return { store, settingsPath, dispose };
 }

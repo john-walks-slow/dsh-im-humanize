@@ -477,7 +477,7 @@ export function apply(ctx) {
   const globalSettingsRpcCall = (endpoint, payload, signal) =>
     callManagementRpc(ctx.connection, GLOBAL_SETTINGS_RPC_CHANNEL, endpoint, payload, signal);
   const humanizeRpcCall = (endpoint, payload, signal) =>
-    ctx.connection.rpc.call(HUMANIZE_RPC_CHANNEL, endpoint, payload, signal);
+    callManagementRpc(ctx.connection, HUMANIZE_RPC_CHANNEL, endpoint, payload, signal);
   const workspaceDirectoryPicker = Object.freeze({
     listDirectory: (path, signal) =>
       callWorkspaceDirectoryApi(ctx, 'listDirectory', path, signal),
