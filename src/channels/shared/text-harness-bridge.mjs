@@ -875,7 +875,13 @@ export class TextHarnessBridge {
       // and tool/status progress edits. Declared here (before the pre-ask
       // try block) so the onUpdate closure below can read it.
       const suppressProgress = humanize.progressStatus === false;
-      const skipPlaceholderStream = suppressProgress && humanize.messageBreak;
+      // When messageBreak is on, the stream is always opened lazily (no
+      // "processing…" placeholder) and text updates are not forwarded to it
+      // (segments go out as separate messages; the stream only carries the
+      // final remainder via finish()). This keeps streaming and progressStatus
+      // independently controllable: turning off progressStatus no longer
+      // suppresses the stream entirely.
+      const lazyStream = suppressProgress || humanize.messageBreak;
 
       // ---- Phase ①: read delay（"过了一段时间才读到消息"）----
       // Silent: no typing indicator, no read receipts, no harness activity.
@@ -923,16 +929,14 @@ export class TextHarnessBridge {
         // Stream opening stays inside the pre-ask region so a supersede
         // abort still wins against it.
         //
-        // progressStatus=false suppresses the interim "processing…" placeholder
-        // and tool/status progress edits. When messageBreak is also on, the
-        // placeholder stream is skipped entirely (segments are sent directly by
-        // the message_break handler; the final remainder goes through the
-        // sendDelivery/sendText fallback) — this also avoids the top bubble
-        // duplicating the segmented text. Without messageBreak, a lazy stream
-        // is opened so streaming text still builds up word by word, but the
-        // first message is created with real text rather than a placeholder.
-        if (humanize.streaming && !skipPlaceholderStream) {
-          const streamOptions = suppressProgress ? { lazy: true } : undefined;
+        // Open the delivery stream when streaming is enabled. lazyStream=true
+        // (progressStatus=false or messageBreak=true) skips the "processing…"
+        // placeholder: the first real content creates the bubble instead.
+        // When messageBreak is on, text updates are not forwarded to the stream
+        // (see onUpdate below); the stream only delivers the final remainder via
+        // finish(), so no segmented text appears twice.
+        if (humanize.streaming) {
+          const streamOptions = lazyStream ? { lazy: true } : undefined;
           if (typeof this.#bot.openDeliveryStream === 'function') {
             try {
               stream = await this.#bot.openDeliveryStream(target, streamOptions);
@@ -1060,6 +1064,10 @@ export class TextHarnessBridge {
               update = handled;
             }
             if (!stream) return;
+            // messageBreak=true: the stream only carries the final remainder
+            // (delivered via finish()). Text updates go out as separate segment
+            // messages — forwarding them to the stream would duplicate content.
+            if (humanize.messageBreak && update.type === 'text') return;
             // progressStatus=false: drop interim tool/status progress text
             // ("正在使用{name}…", "正在整理结果…"). Only real text and
             // assistant-message canonical frames reach the stream.
