@@ -217,7 +217,7 @@ test('progressStatus=false drops tool/status updates but keeps text', async () =
     'real text updates reach the stream');
 }));
 
-test('progressStatus=false + messageBreak=true skips the placeholder stream entirely', async () => withKeepAlive(async () => {
+test('progressStatus=false + messageBreak=true opens lazy stream instead of suppressing streaming entirely', async () => withKeepAlive(async () => {
   const bot = recordedStreamBot();
   let capturedOnUpdate = null;
   const bridge = createBridge({
@@ -232,8 +232,8 @@ test('progressStatus=false + messageBreak=true skips the placeholder stream enti
     },
   });
   await bridge.accept(message('p2', '问题'));
-  assert.ok(!bot.events.some((e) => e.startsWith('open:')),
-    'no placeholder stream opened when progressStatus is off and messageBreak is on');
+  assert.ok(bot.events.some((e) => e === 'open:{"lazy":true}'),
+    'lazy stream opened so streaming still works without interim placeholder');
   assert.ok(typeof capturedOnUpdate === 'function', 'onUpdate still wired for message_break');
 }));
 
