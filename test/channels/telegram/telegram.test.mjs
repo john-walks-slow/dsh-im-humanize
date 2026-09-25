@@ -2471,3 +2471,115 @@ test('Telegram runtime answers a question from an inline-keyboard press', async 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('TelegramApi retries on transient network errors (fetch failed / UND_ERR_SOCKET)', async () => {
+  let attempts = 0;
+  const api = new TelegramApi({
+    token: TOKEN,
+    retryDelayMs: 10,
+    fetchImpl: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        const err = new TypeError('fetch failed');
+        err.cause = new Error('other side closed');
+        err.cause.code = 'UND_ERR_SOCKET';
+        throw err;
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 100 } }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  const result = await api.sendMessage({ chatId: 123, text: 'hello' });
+  assert.equal(result.message_id, 100);
+  assert.equal(attempts, 2);
+});
+
+test('TelegramApi retries on 429 rate limit with retry_after', async () => {
+  let attempts = 0;
+  const api = new TelegramApi({
+    token: TOKEN,
+    retryDelayMs: 10,
+    fetchImpl: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Response(JSON.stringify({
+          ok: false,
+          error_code: 429,
+          description: 'Too Many Requests: retry after 1',
+          parameters: { retry_after: 0.05 },
+        }), {
+          status: 429,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 101 } }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  const result = await api.sendMessage({ chatId: 123, text: 'hello rate limit' });
+  assert.equal(result.message_id, 101);
+  assert.equal(attempts, 2);
+});
+
+test('TelegramApi does not retry 4xx errors other than 429', async () => {
+  let attempts = 0;
+  const api = new TelegramApi({
+    token: TOKEN,
+    retryDelayMs: 10,
+    fetchImpl: async () => {
+      attempts += 1;
+      return new Response(JSON.stringify({
+        ok: false,
+        error_code: 400,
+        description: 'Bad Request: chat not found',
+      }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  await assert.rejects(() => api.sendMessage({ chatId: 123, text: 'hello bad request' }), (err) => {
+    assert.equal(err.code, 'telegram-400');
+    return true;
+  });
+  assert.equal(attempts, 1);
+});
+
+test('Telegram DeliveryStream does not dispatch placeholder during lazy streaming keepalive', async () => {
+  let lastDraft = null;
+  const api = {
+    sendRichMessageDraft: async ({ richMessage }) => {
+      lastDraft = richMessage.markdown;
+      return true;
+    },
+    sendRichMessage: async () => ({ message_id: 200 }),
+    sendMessage: async () => ({ message_id: 201 }),
+    sendChatAction: async () => true,
+  };
+  const client = new TelegramBotClient({
+    api,
+    botId: 'tg_stream_test',
+    username: 'TestBot',
+  });
+
+  const stream = await client.openDeliveryStream({ chatId: 123, chatType: 'private' }, { lazy: true });
+  assert.equal(lastDraft, null, 'lazy stream does not dispatch draft immediately');
+  assert.equal(stream.keepalive, true, 'private chat draft stream has keepalive enabled');
+
+  await stream.refresh();
+  assert.equal(lastDraft, null, 'refresh() stays silent before first real update in lazy mode');
+
+  await stream.update('真正的结果更新');
+  assert.match(lastDraft, /真正的结果更新/, 'update() dispatches the real content');
+
+  await stream.refresh();
+  assert.match(lastDraft, /真正的结果更新/, 'refresh() preserves real content after it is available');
+
+  await stream.finish('最终消息');
+});
+
