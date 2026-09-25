@@ -20,7 +20,7 @@ export const NO_REPLY_TOOL = 'no_reply';
 export function createNoReplyToolDefinition() {
   return Object.freeze({
     name: NO_REPLY_TOOL,
-    description: 'Conclude the current turn in complete silence: end the turn with no_reply as your final action and no chat text, so nothing is visible to the user (your work tools may come first — no_reply is just the silent close). Use it when no IM reply should be sent — e.g. answering a dsh-im message you choose not to reply to, or in a proactive wake on an IM-connected session where you did work but no user-facing message is needed (your work stays in context). If the host also offers a reclaim tool for the "nothing to do this turn" case, prefer that one for reclaiming; no_reply keeps your work in context.',
+    description: 'This tool is only meaningful in dsh-im sessions (where the context contains a <dsh_im> tag); calling it outside a dsh-im session has no effect. Conclude the current turn in complete silence: end the turn with no_reply as your final action and no chat text, so nothing is visible to the user (your work tools may come first — no_reply is just the silent close). Use it when no IM reply should be sent — e.g. answering a dsh-im message you choose not to reply to, or in a proactive wake on an IM-connected session where you did work but no user-facing message is needed (your work stays in context). If the host also offers a reclaim tool for the "nothing to do this turn" case, prefer that one for reclaiming; no_reply keeps your work in context.',
     parameters: {
       type: 'object',
       additionalProperties: false,

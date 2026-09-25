@@ -19,7 +19,7 @@ export function createImSendToolDefinition({ send, resolveBoundTargets }) {
   if (typeof send !== 'function') throw new TypeError('A delivery send function is required');
   return Object.freeze({
     name: IM_SEND_TOOL,
-    description: 'Deliver one text message to the user through a specific saved IM delivery target (botId + targetId, from 复制调用参数). Agent-initiated turns — proactive wakes, background tasks, subagent notices — already auto-deliver your visible reply to the private chat bound to this session, so do NOT call send_im there: just write the reply. Use send_im only to reach a saved target that automatic delivery does not cover. If both botId and targetId are omitted, the message falls back to the bound private chat (normally redundant with automatic delivery).',
+    description: 'This tool is only meaningful in dsh-im sessions (where the context contains a <dsh_im> tag); calling it outside a dsh-im session has no effect. Deliver one text message to the user through a specific saved IM delivery target (botId + targetId, from 复制调用参数). Agent-initiated turns — proactive wakes, background tasks, subagent notices — already auto-deliver your visible reply to the private chat bound to this session, so do NOT call send_im there: just write the reply. Use send_im only to reach a saved target that automatic delivery does not cover. If both botId and targetId are omitted, the message falls back to the bound private chat (normally redundant with automatic delivery).',
     parameters: {
       type: 'object',
       additionalProperties: false,
