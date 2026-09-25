@@ -1223,6 +1223,83 @@ test('Telegram normalizes private messages and requires an explicit group addres
   assert.deepEqual(topicTwo.reactionTarget, { chatId: -1001, messageId: 7 });
 });
 
+test('Telegram ignores forum topic creation and system service messages', () => {
+  // 1. forum_topic_created in private chat (threads mode)
+  const privateTopicCreated = normalizeTelegramUpdate({
+    update_id: 1001,
+    message: {
+      message_id: 20,
+      message_thread_id: 20,
+      chat: { id: 88, type: 'private' },
+      from: { id: 42, is_bot: false },
+      date: 1727140000,
+      forum_topic_created: {
+        name: 'New Topic',
+        icon_color: 7322096,
+      },
+    },
+  }, { botId: '123456789', username: 'HarnessBot' });
+  assert.equal(privateTopicCreated, null);
+
+  // 2. forum_topic_created in supergroup forum
+  const groupTopicCreated = normalizeTelegramUpdate({
+    update_id: 1002,
+    message: {
+      message_id: 21,
+      message_thread_id: 21,
+      chat: { id: -1001, type: 'supergroup' },
+      from: { id: 42, is_bot: false },
+      date: 1727140000,
+      forum_topic_created: {
+        name: 'General Discussion',
+        icon_color: 16777215,
+      },
+    },
+  }, { botId: '123456789', username: 'HarnessBot' });
+  assert.equal(groupTopicCreated, null);
+
+  // 3. other service messages (e.g. pinned_message, forum_topic_closed, write_access_allowed)
+  for (const [field, payload] of [
+    ['pinned_message', { message_id: 10 }],
+    ['forum_topic_closed', {}],
+    ['forum_topic_edited', { name: 'Renamed' }],
+    ['write_access_allowed', {}],
+    ['new_chat_members', [{ id: 99, is_bot: false }]],
+  ]) {
+    const serviceMsg = normalizeTelegramUpdate({
+      update_id: 1003,
+      message: {
+        message_id: 22,
+        chat: { id: 88, type: 'private' },
+        from: { id: 42, is_bot: false },
+        [field]: payload,
+      },
+    }, { botId: '123456789', username: 'HarnessBot' });
+    assert.equal(serviceMsg, null, `expected service message with ${field} to be ignored`);
+  }
+
+  // 4. normal message inside a topic whose reply_to_message points to the topic creation service message
+  const normalMessageWithTopicReply = normalizeTelegramUpdate({
+    update_id: 1004,
+    message: {
+      message_id: 23,
+      message_thread_id: 20,
+      chat: { id: 88, type: 'private' },
+      from: { id: 42, is_bot: false },
+      text: 'hello from topic',
+      reply_to_message: {
+        message_id: 20,
+        chat: { id: 88, type: 'private' },
+        from: { id: 42, is_bot: false },
+        forum_topic_created: { name: 'New Topic', icon_color: 7322096 },
+      },
+    },
+  }, { botId: '123456789', username: 'HarnessBot' });
+  assert.notEqual(normalMessageWithTopicReply, null);
+  assert.equal(normalMessageWithTopicReply.content, 'hello from topic');
+  assert.equal(normalMessageWithTopicReply.replyTo, undefined);
+});
+
 for (const field of ['text', 'caption']) {
   test(`Telegram preserves Unicode offsets and username boundaries in ${field}`, () => {
     for (const [input, expected] of [

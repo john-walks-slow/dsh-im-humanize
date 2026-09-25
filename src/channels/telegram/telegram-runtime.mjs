@@ -148,6 +148,42 @@ function telegramFileSource(message, loadFile) {
   };
 }
 
+const TELEGRAM_SERVICE_MESSAGE_FIELDS = [
+  'forum_topic_created',
+  'forum_topic_edited',
+  'forum_topic_closed',
+  'forum_topic_reopened',
+  'general_forum_topic_hidden',
+  'general_forum_topic_unhidden',
+  'pinned_message',
+  'new_chat_members',
+  'left_chat_member',
+  'new_chat_title',
+  'new_chat_photo',
+  'delete_chat_photo',
+  'group_chat_created',
+  'supergroup_chat_created',
+  'channel_chat_created',
+  'message_auto_delete_timer_changed',
+  'migrate_to_chat_id',
+  'migrate_from_chat_id',
+  'video_chat_scheduled',
+  'video_chat_started',
+  'video_chat_ended',
+  'video_chat_participants_invited',
+  'write_access_allowed',
+  'boost_added',
+  'chat_background_set',
+  'user_shared',
+  'chat_shared',
+  'users_shared',
+];
+
+export function isTelegramServiceMessage(message) {
+  if (!message || typeof message !== 'object') return false;
+  return TELEGRAM_SERVICE_MESSAGE_FIELDS.some((field) => field in message);
+}
+
 function telegramReplyAttachment(kind, file) {
   if (!file || typeof file !== 'object') return null;
   const name = typeof file.file_name === 'string' && file.file_name
@@ -189,6 +225,7 @@ function telegramReplyAttachments(message) {
 function telegramReplyReference(message, { quote, loadReplyContent } = {}) {
   if ((!message || typeof message !== 'object')
     && (!quote || typeof quote !== 'object')) return undefined;
+  if (isTelegramServiceMessage(message) && (!quote || typeof quote !== 'object')) return undefined;
   const authorId = message?.from?.id === undefined ? undefined : String(message.from.id);
   const authorName = [message?.from?.first_name, message?.from?.last_name]
     .filter((value) => typeof value === 'string' && value.trim())
@@ -293,6 +330,7 @@ export function normalizeTelegramUpdate(update, {
   if (!Number.isSafeInteger(update?.update_id) || chatId === undefined || senderId === undefined
     || !Number.isSafeInteger(messageId)) return null;
   if (!['private', 'group', 'supergroup'].includes(message.chat?.type)) return null;
+  if (isTelegramServiceMessage(message)) return null;
   const direct = message.chat.type === 'private';
   const addressed = direct
     || String(message.reply_to_message?.from?.id ?? '') === String(botId)
