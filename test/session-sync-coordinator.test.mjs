@@ -186,7 +186,22 @@ function wakeMessage(plugin = 'dsh-proactive') {
     type: 'user/message',
     surfaceOp: 'append',
     data: {
-      source: { kind: 'plugin', plugin, form: 'notice' },
+      // v4 producer-owned source kind: proactive frames its wakes as a bare
+      // producer name (not the retired v3 { kind: 'plugin', plugin } wrapper).
+      source: { kind: plugin, form: 'notice' },
+      content: [{ type: 'text', text: '[dsh-proactive wake alarm-1 heartbeat] now …' }],
+    },
+  };
+}
+
+function legacyWakeMessage(plugin = 'dsh-proactive') {
+  return {
+    type: 'user/message',
+    surfaceOp: 'append',
+    data: {
+      // A released v3 session migrated to v4 carries the `plugin:`-prefixed
+      // form; the coordinator must still treat it as a wake.
+      source: { kind: `plugin:${plugin}`, form: 'notice' },
       content: [{ type: 'text', text: '[dsh-proactive wake alarm-1 heartbeat] now …' }],
     },
   };

@@ -199,7 +199,7 @@ test('each user message keeps its own context, whatever the batch order', () => 
     newId: identityFactory(),
   });
   // Context follows the message it described, never the position it landed in.
-  assert.deepEqual(rewritten.map((message) => (message.source.kind === 'plugin'
+  assert.deepEqual(rewritten.map((message) => (message.source.kind === INJECTED_CONTEXT_PLUGIN
     ? `context:${message.source.summary}`
     : `user:${message.id}:${message.content[0].text}`)), [
     'user:u1:一号', 'context:feishu · 张三',
@@ -213,8 +213,7 @@ test('each user message keeps its own context, whatever the batch order', () => 
     ['feishu-u1', 'feishu-u2', 'feishu-u3'],
   );
   assert.deepEqual(rewritten.slice(1, 2).map((message) => message.source), [{
-    kind: 'plugin',
-    plugin: INJECTED_CONTEXT_PLUGIN,
+    kind: INJECTED_CONTEXT_PLUGIN,
     form: 'notice',
     summary: 'feishu · 张三',
   }]);
@@ -233,7 +232,7 @@ test('only the messages that carry a prefix are touched', () => {
   };
   // A prompt identity without the prefix (every non-IM caller) is left alone.
   const gui = { ...plain, id: 'g0', source: { kind: 'user' } };
-  const plugin = { ...plain, id: 'p0', source: { kind: 'plugin', plugin: 'other' } };
+  const plugin = { ...plain, id: 'p0', source: { kind: 'time-context', form: 'notice', summary: 'now' } };
   assert.equal(rewriteInjectedContextMessages([gui, plugin, plain]), null);
   const rewritten = rewriteInjectedContextMessages([plain, prefixed], { newId: identityFactory() });
   // An untouched message keeps its identity; the rewritten one keeps its id.
@@ -286,7 +285,7 @@ test('the Host installer pairs context on the step it admits', async () => {
   const decision = { kind: 'enter', messages: [message] };
   const result = await preStep.listener({}, async () => decision);
   assert.notEqual(result, decision);
-  assert.deepEqual(result.messages.map((entry) => (entry.source.kind === 'plugin' ? 'context' : 'user')),
+  assert.deepEqual(result.messages.map((entry) => (entry.source.kind === INJECTED_CONTEXT_PLUGIN ? 'context' : 'user')),
     ['user', 'context']);
   assert.equal(result.messages[0].id, 'u1');
   assert.equal(result.messages[0].content[0].text, '一号');
@@ -348,7 +347,7 @@ test('a prefixed reply splits into reply, user text, then source', () => {
     labels: { reply: '引用' },
   });
   // The quoted material precedes the question; the source block follows it.
-  assert.deepEqual(rewritten.map((entry) => (entry.source.kind === 'plugin'
+  assert.deepEqual(rewritten.map((entry) => (entry.source.kind === INJECTED_CONTEXT_PLUGIN
     ? `context:${entry.source.form}:${entry.source.summary ?? ''}`
     : `user:${entry.id}:${entry.content[0].text}`)), [
     'context:notice:引用 · 张三',
@@ -392,7 +391,7 @@ test('guidance the Host already materializes is not repeated in the message', ()
     source: { channel: 'feishu' },
   });
   const forms = (result) => result.map((entry) => (
-    entry.source.kind === 'plugin' ? entry.source.form : 'user'
+    entry.source.kind === INJECTED_CONTEXT_PLUGIN ? entry.source.form : 'user'
   ));
   assert.deepEqual(
     forms(rewriteInjectedContextMessages([message], {
@@ -476,7 +475,7 @@ test('the Host installer materializes guidance as session prompt context', async
   const decision = { kind: 'enter', messages: [message] };
   const result = await preStep.listener({ agent: { session: { id: 's1' } } }, async () => decision);
   assert.deepEqual(result.messages.map((entry) => (
-    entry.source.kind === 'plugin' ? entry.source.form : 'user'
+    entry.source.kind === INJECTED_CONTEXT_PLUGIN ? entry.source.form : 'user'
   )), ['user', 'notice']);
 });
 
@@ -509,7 +508,7 @@ test('every source-field selection round-trips, including the fields with no rea
   };
   const fieldsOf = (mask) => SOURCE_BLOCK_FIELDS.filter((_field, index) => mask & (1 << index));
   const formsOf = (result) => result.map((entry) => (
-    entry.source.kind === 'plugin' ? entry.source.form : 'user'
+    entry.source.kind === INJECTED_CONTEXT_PLUGIN ? entry.source.form : 'user'
   ));
 
   let subsets = 0;
@@ -541,7 +540,7 @@ test('a nameless source row uses the Host label and foreign JSON is not claimed'
     newId: identityFactory(), labels: { source: '来源' },
   });
   assert.deepEqual(labelled[1].source, {
-    kind: 'plugin', plugin: INJECTED_CONTEXT_PLUGIN, form: 'notice', summary: '来源',
+    kind: INJECTED_CONTEXT_PLUGIN, form: 'notice', summary: '来源',
   });
   // Without a label the row keeps the plugin's own default.
   const fallback = rewriteInjectedContextMessages([message], { newId: identityFactory() });

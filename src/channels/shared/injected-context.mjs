@@ -253,6 +253,12 @@ export function splitLeadingInjectedContext(text, options = {}) {
 
 /**
  * Build the plugin-sourced context message for one parsed block.
+ *
+ * The source kind is producer-owned (`dsh-im`, not the retired v3 `plugin`
+ * kind): harness format v4 rejects a `kind: 'plugin'` wrapper, and these
+ * messages are observable wherever a plugin-authored source is read -- the
+ * prompt split invokes them beside the user text, and downstream reads may
+ * surface their source.
  * @param block - one parsed block.
  * @param newId - identity factory for the new message.
  * @param plugin - source plugin name recorded on it.
@@ -260,8 +266,8 @@ export function splitLeadingInjectedContext(text, options = {}) {
  */
 function contextMessage(block, newId, plugin) {
   const source = block.form === 'notice' && typeof block.summary === 'string'
-    ? { kind: 'plugin', plugin, form: 'notice', summary: block.summary }
-    : { kind: 'plugin', plugin, form: block.form };
+    ? { kind: plugin, form: 'notice', summary: block.summary }
+    : { kind: plugin, form: block.form };
   return {
     id: newId(),
     role: 'user',

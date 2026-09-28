@@ -29,8 +29,16 @@ function sessionIdOf(session) {
 // stays silent at delivery time.
 function userInputOrigin(scope, event) {
   const source = event?.data?.source;
-  if (source?.kind === 'plugin' || source?.kind === 'subagent-settled') return 'wake';
-  if (source?.kind !== 'user' || typeof source.rpcId !== 'string' || !source.rpcId) {
+  const kind = source?.kind;
+  // Harness format v4 retires the `plugin` kind in favor of producer-owned
+  // kinds (bare producer names such as `dsh-proactive`, or `plugin:<name>` when
+  // a released v3 log is migrated). Every non-`user` attribution on a
+  // user/message append is a self-initiated producer turn (wake framing,
+  // subagent settlement, goal/instructions injection), so its visible reply
+  // auto-delivers to the bound private chat. Only genuine user input carries
+  // an rpcId and is demoted to im/dsh below.
+  if (kind !== 'user') return 'wake';
+  if (typeof source.rpcId !== 'string' || !source.rpcId) {
     return 'other';
   }
   return consumeDshImInputOrigin(scope, source.rpcId) ? 'im' : 'dsh';
