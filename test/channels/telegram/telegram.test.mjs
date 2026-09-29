@@ -719,9 +719,19 @@ test('Telegram document delivery marks post-dispatch failures uncertain but pres
   const timeoutApi = new TelegramApi({
     token: TOKEN,
     fileUploadTimeoutMs: 10,
+    retryDelayMs: 0,
+    maxRetries: 0,
     fetchImpl: async (_url, { signal }) => new Promise((resolve, reject) => {
-      if (signal.aborted) reject(signal.reason);
-      else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      const timer = setTimeout(() => {}, 200);
+      if (signal.aborted) {
+        clearTimeout(timer);
+        reject(signal.reason);
+      } else {
+        signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        }, { once: true });
+      }
     }),
   });
   await assert.rejects(() => timeoutApi.sendDocument({

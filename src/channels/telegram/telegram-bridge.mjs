@@ -7,7 +7,8 @@ export const TELEGRAM_DESCRIPTOR = Object.freeze({
   connectionLabel: ' Bot API 长轮询',
   typing: Object.freeze({ refreshMs: 4000, darkResidualMs: 5000 }),
   minSegmentGapMs: 1000,
-    reactions: Object.freeze({ processing: '👀', success: '👍', error: '👎' }),
+  keepaliveIntervalMs: 5000,
+  reactions: Object.freeze({ processing: '👀', success: '👍', error: '👎' }),
 });
 
 /** One keyboard row per option; beyond this the list stops being scannable. */
@@ -75,6 +76,7 @@ export class TelegramHarnessBridge extends TextHarnessBridge {
     super({
       descriptor: TELEGRAM_DESCRIPTOR,
       interactionCard: TELEGRAM_INTERACTION_CARD,
+      keepaliveIntervalMs: TELEGRAM_DESCRIPTOR.keepaliveIntervalMs ?? 5_000,
       ...options,
     });
   }

@@ -21,6 +21,49 @@ function abortReason(signal) {
     : new DOMException('The operation was aborted', 'AbortError');
 }
 
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortReason(signal));
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(abortReason(signal));
+    }, { once: true });
+  });
+}
+
+const RETRIABLE_NETWORK_CODES = new Set([
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ECONNREFUSED',
+  'EPIPE',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+
+function isRetriableNetworkError(error) {
+  if (!error) return false;
+  const code = error.code ?? error.cause?.code;
+  if (typeof code === 'string' && RETRIABLE_NETWORK_CODES.has(code)) return true;
+  const name = error.name ?? error.cause?.name;
+  if (name === 'TimeoutError' || name === 'SocketError') return true;
+  const msg = `${error.message ?? ''} ${error.cause?.message ?? ''}`.toLowerCase();
+  return msg.includes('fetch failed')
+    || msg.includes('socket reset')
+    || msg.includes('socket hang up')
+    || msg.includes('econnreset')
+    || msg.includes('etimedout')
+    || msg.includes('network error')
+    || msg.includes('other side closed');
+}
+
 function positiveTimeout(value, name) {
   if (!Number.isInteger(value) || value < 1) throw new TypeError(`${name} must be a positive integer`);
   return value;
@@ -153,12 +196,17 @@ export class TelegramApi {
   #baseUrl;
   #fileUploadTimeoutMs;
 
+  #maxRetries;
+  #retryDelayMs;
+
   constructor({
     token,
     fetchImpl = fetch,
     FormDataImpl = globalThis.FormData,
     baseUrl = DEFAULT_BASE_URL,
     fileUploadTimeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS,
+    maxRetries = 2,
+    retryDelayMs = 1000,
   }) {
     if (!validTelegramToken(token)) throw new TypeError('Telegram Bot Token is invalid');
     if (typeof fetchImpl !== 'function') throw new TypeError('TelegramApi requires fetch');
@@ -168,6 +216,8 @@ export class TelegramApi {
     this.#FormDataImpl = FormDataImpl;
     this.#baseUrl = new URL(baseUrl);
     this.#fileUploadTimeoutMs = positiveTimeout(fileUploadTimeoutMs, 'fileUploadTimeoutMs');
+    this.#maxRetries = Number.isInteger(maxRetries) && maxRetries >= 0 ? maxRetries : 2;
+    this.#retryDelayMs = Number.isInteger(retryDelayMs) && retryDelayMs >= 0 ? retryDelayMs : 1000;
   }
 
   async getMe(options = {}) {
@@ -188,6 +238,7 @@ export class TelegramApi {
     return this.#call('getUpdates', payload, {
       signal,
       timeoutMs: Math.max(10_000, (timeout + 10) * 1_000),
+      maxRetries: 0,
     });
   }
 
@@ -441,53 +492,82 @@ export class TelegramApi {
     return this.#call('setChatMenuButton', { menu_button: menuButton }, { signal });
   }
 
-  async #call(method, payload, { signal, timeoutMs = 15_000, multipart = false } = {}) {
+  async #call(method, payload, {
+    signal,
+    timeoutMs = 15_000,
+    multipart = false,
+    maxRetries = this.#maxRetries,
+    retryDelayMs = this.#retryDelayMs,
+  } = {}) {
     if (signal?.aborted) throw abortReason(signal);
     const url = new URL(this.#baseUrl);
     url.pathname = `${url.pathname.replace(/\/$/, '')}/bot${this.#token}/${method}`;
-    let response;
-    try {
-      response = await this.#fetch(url, {
-        method: 'POST',
-        ...(multipart ? {} : { headers: { 'content-type': 'application/json' } }),
-        body: multipart ? payload : JSON.stringify(payload),
-        signal: requestSignal(signal, timeoutMs),
-        redirect: 'error',
-      });
-    } catch (error) {
-      const transport = new Error(`Telegram ${method} transport failed`, { cause: error });
-      transport.code = error?.name === 'TimeoutError'
-        ? 'telegram-timeout'
-        : error?.name === 'AbortError'
-          ? 'telegram-aborted-after-dispatch'
-          : 'telegram-transport-error';
-      transport.deliveryOutcome = 'unknown';
-      throw transport;
-    }
-    let body;
-    try {
-      body = await response.json();
-    } catch {
-      const error = new Error(`Telegram ${method} returned invalid JSON`);
-      error.status = response?.status;
-      error.code = 'telegram-response-invalid';
-      error.deliveryOutcome = 'unknown';
-      throw error;
-    }
-    if (!response.ok || body?.ok !== true) {
-      const description = cleanString(body?.description);
-      const error = new Error(description ?? `Telegram ${method} failed`);
-      error.code = Number.isInteger(body?.error_code) ? `telegram-${body.error_code}` : 'telegram-api-error';
-      error.status = response.status;
-      if (Number.isInteger(body?.error_code)) error.providerCode = body.error_code;
-      const retryAfter = Number(body?.parameters?.retry_after);
-      if (Number.isFinite(retryAfter) && retryAfter >= 0) {
-        error.retry_after = retryAfter;
-        error.retryAfter = retryAfter;
+    let attempt = 0;
+    while (true) {
+      if (signal?.aborted) throw abortReason(signal);
+      let response;
+      try {
+        response = await this.#fetch(url, {
+          method: 'POST',
+          ...(multipart ? {} : { headers: { 'content-type': 'application/json' } }),
+          body: multipart ? payload : JSON.stringify(payload),
+          signal: requestSignal(signal, timeoutMs),
+          redirect: 'error',
+        });
+      } catch (error) {
+        if (signal?.aborted) throw abortReason(signal);
+        if (attempt < maxRetries && isRetriableNetworkError(error)) {
+          attempt += 1;
+          const backoffMs = Math.min(retryDelayMs * (2 ** (attempt - 1)), 5000);
+          if (backoffMs > 0) {
+            await delay(backoffMs, signal);
+          }
+          continue;
+        }
+        const transport = new Error(`Telegram ${method} transport failed`, { cause: error });
+        transport.code = error?.name === 'TimeoutError'
+          ? 'telegram-timeout'
+          : error?.name === 'AbortError'
+            ? 'telegram-aborted-after-dispatch'
+            : 'telegram-transport-error';
+        transport.deliveryOutcome = 'unknown';
+        throw transport;
       }
-      throw error;
+      let body;
+      try {
+        body = await response.json();
+      } catch {
+        const error = new Error(`Telegram ${method} returned invalid JSON`);
+        error.status = response?.status;
+        error.code = 'telegram-response-invalid';
+        error.deliveryOutcome = 'unknown';
+        throw error;
+      }
+      if (!response.ok || body?.ok !== true) {
+        const retryAfter = Number(body?.parameters?.retry_after);
+        if ((response.status === 429 || body?.error_code === 429) && attempt < maxRetries) {
+          attempt += 1;
+          const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+            ? Math.min(retryAfter * 1000, 10_000)
+            : retryDelayMs;
+          if (waitMs > 0) {
+            await delay(waitMs, signal);
+          }
+          continue;
+        }
+        const description = cleanString(body?.description);
+        const error = new Error(description ?? `Telegram ${method} failed`);
+        error.code = Number.isInteger(body?.error_code) ? `telegram-${body.error_code}` : 'telegram-api-error';
+        error.status = response.status;
+        if (Number.isInteger(body?.error_code)) error.providerCode = body.error_code;
+        if (Number.isFinite(retryAfter) && retryAfter >= 0) {
+          error.retry_after = retryAfter;
+          error.retryAfter = retryAfter;
+        }
+        throw error;
+      }
+      return body.result;
     }
-    return body.result;
   }
 }
 

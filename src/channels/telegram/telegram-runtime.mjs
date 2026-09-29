@@ -650,11 +650,30 @@ export class TelegramBotClient {
     });
   }
 
+  sendVoice(target, file) {
+    return this.#api.sendVoice({
+      chatId: target.chatId,
+      file,
+      replyToMessageId: target.replyToMessageId,
+      messageThreadId: target.messageThreadId,
+      signal: this.#signal,
+    });
+  }
+
+  sendAnimation(target, file) {
+    return this.#api.sendAnimation({
+      chatId: target.chatId,
+      file,
+      replyToMessageId: target.replyToMessageId,
+      messageThreadId: target.messageThreadId,
+      signal: this.#signal,
+    });
+  }
+
   sendImage(target, file) {
-    // Telegram `sendPhoto` renders a GIF as a static first frame. Only the
-    // native animation message (`sendAnimation`) plays GIFs inline, so route
-    // `image/gif` artifacts there; other image types stay on `sendPhoto`.
-    if (file?.mediaType === 'image/gif') {
+    // If the caller explicitly designated 'image', preserve sendPhoto even for GIFs.
+    // Otherwise, route GIF animations through sendAnimation so the client plays them inline.
+    if (file?.as !== 'image' && file?.mediaType === 'image/gif') {
       return this.#api.sendAnimation({
         chatId: target.chatId,
         file,

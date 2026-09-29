@@ -118,7 +118,9 @@ if (forbiddenDshLockPaths.length > 0) {
   );
 }
 
-if (!/\bid\s*:\s*["']@xmanrui\/dsh-im["']/u.test(client)) {
+// The fork renamed the loader id to @johnnren/dsh-im-humanize; the upstream
+// xmanrui/dsh-im id stays valid for builds cut before the rename.
+if (!/\bid\s*:\s*["'](?:@xmanrui\/dsh-im|@johnnren\/dsh-im-humanize)["']/u.test(client)) {
   throw new Error('client bundle does not register the dsh-im loader id');
 }
 const sourceSectionMarkers = [
@@ -214,7 +216,13 @@ if (/@xmanrui\/dsh-(?:feishu|weixin|dingtalk)/.test(
 )) {
   throw new Error('source or package metadata still depends on an external channel plugin');
 }
-if (!patch.includes("name: '@xmanrui/dsh-im'") || /dsh-(?:feishu|weixin|dingtalk)/.test(patch)) {
+// The fork's bundle patch activates @johnnren/dsh-im-humanize; the upstream
+// xmanrui/dsh-im name stays valid for patches cut before the rename.
+if (!patch.includes("name: '@xmanrui/dsh-im'")
+  && !patch.includes("name: '@johnnren/dsh-im-humanize'")) {
+  throw new Error('bundle patch must activate only dsh-im');
+}
+if (/dsh-(?:feishu|weixin|dingtalk)/.test(patch)) {
   throw new Error('bundle patch must activate only dsh-im');
 }
 for (const name of ['@xmanrui/dsh-feishu', '@xmanrui/dsh-weixin', '@xmanrui/dsh-dingtalk']) {

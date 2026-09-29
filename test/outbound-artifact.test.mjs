@@ -488,3 +488,48 @@ test('file return rejects a bare session without snapshot or observed turn activ
       && error.message === 'A live Harness Session is required to return a file.',
   );
 });
+
+test('file return accepts valid as and prefer presentation modes and materializes them', async (t) => {
+  const fx = await fixture(t);
+  await writeFile(join(fx.workspace, 'test.ogg'), 'audio-data');
+  const tool = createOutboundArtifactTool({ registry: fx.registry });
+
+  // 1. Default without as -> 'auto'
+  await execute(tool, { path: 'test.ogg' }, execution(fx.agent, 'call-default'));
+  const [defaultArtifact] = fx.registry.take('session-artifact', 7);
+  assert.equal(defaultArtifact.as, 'auto');
+  const defaultFile = await materializeOutboundArtifact(defaultArtifact);
+  assert.equal(defaultFile.as, 'auto');
+  assert.equal(defaultFile.mediaType, 'audio/ogg');
+  releaseOutboundArtifact(defaultArtifact);
+
+  // 2. Explicit as: 'voice'
+  await execute(tool, { path: 'test.ogg', as: 'voice' }, execution(fx.agent, 'call-voice'));
+  const [voiceArtifact] = fx.registry.take('session-artifact', 7);
+  assert.equal(voiceArtifact.as, 'voice');
+  const voiceFile = await materializeOutboundArtifact(voiceArtifact);
+  assert.equal(voiceFile.as, 'voice');
+  releaseOutboundArtifact(voiceArtifact);
+
+  // 3. Explicit as: 'file'
+  await execute(tool, { path: 'test.ogg', as: 'file' }, execution(fx.agent, 'call-file'));
+  const [fileArtifact] = fx.registry.take('session-artifact', 7);
+  assert.equal(fileArtifact.as, 'file');
+  const fileObj = await materializeOutboundArtifact(fileArtifact);
+  assert.equal(fileObj.as, 'file');
+  releaseOutboundArtifact(fileArtifact);
+
+  // 4. Compatible prefer: 'animation'
+  await execute(tool, { path: 'test.ogg', prefer: 'animation' }, execution(fx.agent, 'call-prefer'));
+  const [animArtifact] = fx.registry.take('session-artifact', 7);
+  assert.equal(animArtifact.as, 'animation');
+  const animFile = await materializeOutboundArtifact(animArtifact);
+  assert.equal(animFile.as, 'animation');
+  releaseOutboundArtifact(animArtifact);
+
+  // 5. Invalid mode throws TypeError
+  await assert.rejects(
+    tool.definition.execute({ path: 'test.ogg', as: 'unsupported' }, execution(fx.agent, 'call-invalid')),
+    (error) => error instanceof TypeError && error.message.includes("Presentation mode 'as' must be one of"),
+  );
+});

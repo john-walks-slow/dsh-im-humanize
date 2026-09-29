@@ -2,7 +2,7 @@
 
 ## 目标
 
-xmanrui/dsh-im（npm 上游 `@xmanrui/dsh-im`，当前基线 4.21.2）的本地 humanize fork，包名 `@johnnren/dsh-im-humanize`。**不发 npm**，本地部署：web profile 中 `"@xmanrui/dsh-im": "link:/root/projects/dsh-im-humanize"`，dsh 直接加载本仓库构建产物（lib/）。核心定制：静默双工具（no_reply + 配合 dsh-proactive 的 reclaim 软约定）、session-sync 双向投递、多 channel IM 接入。
+xmanrui/dsh-im（npm 上游 `@xmanrui/dsh-im`，当前基线 4.21.2）的 humanize fork，包名 `@johnnren/dsh-im-humanize`，**发布 npm**（pre-release 风格版本 `4.21.2-humanize.N`，用 npm-publish 技能的 webauthn 指纹流程）；本地部署走 link：web profile 中 `"@xmanrui/dsh-im": "link:/root/projects/dsh-im-humanize"`，dsh 直接加载本仓库构建产物（lib/）。核心定制：静默双工具（no_reply + 配合 dsh-proactive 的 reclaim 软约定）、session-sync 双向投递、多 channel IM 接入。
 
 ## 地图
 
@@ -23,4 +23,5 @@ xmanrui/dsh-im（npm 上游 `@xmanrui/dsh-im`，当前基线 4.21.2）的本地 
 
 - `session-sync-coordinator` 直测时 origin 必须显式传参（`'dsh'`/`'wake'`）；生产路径 origin 由 `userInputOrigin` 从 `user/message` 的 `source.kind` 推导（plugin/subagent-settled → wake）。
 - dsh-proactive 的 reclaim 工具名是**软约定**（`proactive_reclaim`，兼容旧名 `proactive_silence`）：humanize 只按 tool/call 事件里的名字识别，零硬依赖；wake 轮次含 reclaim 调用则整轮不投递文本。
-- 上游同步：merge upstream 时注意 `package.json` 包名（fork 不回发 npm）与本地 humanize 定制冲突。
+- 上游同步：merge upstream 时注意 `package.json` 包名（fork 名 `@johnnren/dsh-im-humanize`，不与上游互发）与本地 humanize 定制冲突。
+- npm 发布后核验：registry **读侧可能延迟数分钟**才看到新版本（packument/CDN 滞后，`npm view` 查不到≠发布失败）。`PUBLISHED_OK` 后若读不到，用「重跑发布脚本」实锤——已落库会报 403 `cannot publish over the previously published versions`，即可确认成功，勿重复发布或改版本号。

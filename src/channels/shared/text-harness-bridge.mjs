@@ -725,6 +725,12 @@ export class TextHarnessBridge {
       deliveryId: replyTo,
       channelKey: this.#descriptor.key,
       signal: this.#signal,
+      sendVoice: typeof this.#bot.sendVoice === 'function'
+        ? (file) => beforeArtifact(file).then(() => this.#bot.sendVoice(target, file))
+        : undefined,
+      sendAnimation: typeof this.#bot.sendAnimation === 'function'
+        ? (file) => beforeArtifact(file).then(() => this.#bot.sendAnimation(target, file))
+        : undefined,
       sendImage: typeof this.#bot.sendImage === 'function'
         ? (file) => beforeArtifact(file).then(() => this.#bot.sendImage(target, file))
         : undefined,
@@ -1214,9 +1220,17 @@ export class TextHarnessBridge {
       const delivery = await this.#deliverArtifacts(target, messageId, artifacts, textReceipt, {
         onArtifact: (item) => {
           if (!typingSession) return Promise.resolve();
-          const action = typeof item?.mediaType === 'string' && item.mediaType.startsWith('image/')
-            ? 'upload_photo'
-            : 'upload_document';
+          const isVoice = item?.as === 'voice'
+            || item?.mediaType === 'audio/ogg'
+            || item?.mediaType === 'audio/opus'
+            || item?.fileName?.toLowerCase().endsWith('.ogg')
+            || item?.fileName?.toLowerCase().endsWith('.opus');
+          const isImage = typeof item?.mediaType === 'string' && item.mediaType.startsWith('image/');
+          const action = isVoice
+            ? 'record_voice'
+            : isImage
+              ? 'upload_photo'
+              : 'upload_document';
           return typingSession.restartOn(action);
         },
       });

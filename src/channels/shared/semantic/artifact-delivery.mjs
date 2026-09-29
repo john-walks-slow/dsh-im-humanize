@@ -33,12 +33,166 @@ function providerIds(value) {
   return providerMessageIdsFor(value);
 }
 
+function isVoiceCandidate(file) {
+  const mediaType = typeof file?.mediaType === 'string' ? file.mediaType.toLowerCase() : '';
+  const fileName = typeof file?.fileName === 'string' ? file.fileName.toLowerCase() : '';
+  return mediaType === 'audio/ogg'
+    || mediaType === 'audio/opus'
+    || fileName.endsWith('.ogg')
+    || fileName.endsWith('.opus');
+}
+
+function isGifCandidate(file) {
+  const mediaType = typeof file?.mediaType === 'string' ? file.mediaType.toLowerCase() : '';
+  const fileName = typeof file?.fileName === 'string' ? file.fileName.toLowerCase() : '';
+  return mediaType === 'image/gif' || fileName.endsWith('.gif');
+}
+
+function isImageCandidate(file) {
+  const mediaType = typeof file?.mediaType === 'string' ? file.mediaType.toLowerCase() : '';
+  return mediaType.startsWith('image/');
+}
+
 async function sendMaterializedArtifact(file, {
   sendFile,
   sendImage,
+  sendAnimation,
+  sendVoice,
   signal,
 }) {
-  if (file.mediaType?.startsWith('image/') && typeof sendImage === 'function') {
+  const mode = file?.as ?? 'auto';
+
+  // 1. Explicit 'file' mode: skips any rich presentation
+  if (mode === 'file') {
+    signal?.throwIfAborted();
+    if (typeof sendFile !== 'function') throw unavailableError();
+    return {
+      presentation: 'file',
+      result: await sendFile(file),
+    };
+  }
+
+  // 2. Explicit 'voice' mode: prefers voice, falls back to file
+  if (mode === 'voice') {
+    if (typeof sendVoice === 'function') {
+      try {
+        return {
+          presentation: 'voice',
+          result: await sendVoice(file),
+        };
+      } catch (error) {
+        if (isAbort(error, signal) || error?.code === 'artifact-delivery-uncertain') {
+          throw error;
+        }
+      }
+    }
+    signal?.throwIfAborted();
+    if (typeof sendFile !== 'function') throw unavailableError();
+    return {
+      presentation: 'file',
+      result: await sendFile(file),
+    };
+  }
+
+  // 3. Explicit 'animation' mode: prefers animation, then image, then file
+  if (mode === 'animation') {
+    if (typeof sendAnimation === 'function') {
+      try {
+        return {
+          presentation: 'animation',
+          result: await sendAnimation(file),
+        };
+      } catch (error) {
+        if (isAbort(error, signal) || error?.code === 'artifact-delivery-uncertain') {
+          throw error;
+        }
+      }
+    }
+    if (typeof sendImage === 'function') {
+      try {
+        return {
+          presentation: 'image',
+          result: await sendImage(file),
+        };
+      } catch (error) {
+        if (isAbort(error, signal) || error?.code === 'artifact-delivery-uncertain') {
+          throw error;
+        }
+      }
+    }
+    signal?.throwIfAborted();
+    if (typeof sendFile !== 'function') throw unavailableError();
+    return {
+      presentation: 'file',
+      result: await sendFile(file),
+    };
+  }
+
+  // 4. Explicit 'image' mode: prefers image, falls back to file
+  if (mode === 'image') {
+    if (typeof sendImage === 'function') {
+      try {
+        return {
+          presentation: 'image',
+          result: await sendImage(file),
+        };
+      } catch (error) {
+        if (isAbort(error, signal) || error?.code === 'artifact-delivery-uncertain') {
+          throw error;
+        }
+      }
+    }
+    signal?.throwIfAborted();
+    if (typeof sendFile !== 'function') throw unavailableError();
+    return {
+      presentation: 'file',
+      result: await sendFile(file),
+    };
+  }
+
+  // 5. 'auto' mode: smart inference
+  // 5.1 Voice candidates (ogg/opus)
+  if (isVoiceCandidate(file) && typeof sendVoice === 'function') {
+    try {
+      return {
+        presentation: 'voice',
+        result: await sendVoice(file),
+      };
+    } catch (error) {
+      if (isAbort(error, signal) || error?.code === 'artifact-delivery-uncertain') {
+        throw error;
+      }
+    }
+  }
+
+  // 5.2 GIF candidates
+  if (isGifCandidate(file)) {
+    if (typeof sendAnimation === 'function') {
+      try {
+        return {
+          presentation: 'animation',
+          result: await sendAnimation(file),
+        };
+      } catch (error) {
+        if (isAbort(error, signal) || error?.code === 'artifact-delivery-uncertain') {
+          throw error;
+        }
+      }
+    }
+    if (typeof sendImage === 'function') {
+      try {
+        return {
+          presentation: 'image',
+          result: await sendImage(file),
+        };
+      } catch (error) {
+        if (isAbort(error, signal) || error?.code === 'artifact-delivery-uncertain') {
+          throw error;
+        }
+      }
+    }
+  } else if (isImageCandidate(file) && typeof sendImage === 'function') {
+    // 5.3 Other images
     try {
       return {
         presentation: 'image',
@@ -50,6 +204,8 @@ async function sendMaterializedArtifact(file, {
       }
     }
   }
+
+  // 5.4 Fallback to generic file
   signal?.throwIfAborted();
   if (typeof sendFile !== 'function') throw unavailableError();
   return {
@@ -72,6 +228,8 @@ export async function deliverOutboundArtifacts({
   signal,
   sendFile,
   sendImage,
+  sendAnimation,
+  sendVoice,
   sendFailureNotice,
   onFailure,
   logger,
@@ -94,6 +252,8 @@ export async function deliverOutboundArtifacts({
         const sent = await sendMaterializedArtifact(file, {
           sendFile,
           sendImage,
+          sendAnimation,
+          sendVoice,
           signal,
         });
         signal?.throwIfAborted();
