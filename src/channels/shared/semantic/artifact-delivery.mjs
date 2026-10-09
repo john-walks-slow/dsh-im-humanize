@@ -33,13 +33,22 @@ function providerIds(value) {
   return providerMessageIdsFor(value);
 }
 
-function isVoiceCandidate(file) {
+const VOICE_CANDIDATE_EXTENSIONS = ['.ogg', '.opus', '.mp3', '.m4a', '.wav'];
+
+/**
+ * True when the artifact carries audio, i.e. the channel may render it as a
+ * native voice bubble. Only channels exposing `sendVoice` act on this.
+ */
+export function isVoiceCandidate(file) {
   const mediaType = typeof file?.mediaType === 'string' ? file.mediaType.toLowerCase() : '';
+  if (mediaType.startsWith('audio/')) return true;
   const fileName = typeof file?.fileName === 'string' ? file.fileName.toLowerCase() : '';
-  return mediaType === 'audio/ogg'
-    || mediaType === 'audio/opus'
-    || fileName.endsWith('.ogg')
-    || fileName.endsWith('.opus');
+  return VOICE_CANDIDATE_EXTENSIONS.some((extension) => fileName.endsWith(extension));
+}
+
+/** True when the artifact is expected to be delivered as a voice message. */
+export function isVoicePresentation(file) {
+  return file?.as === 'voice' || isVoiceCandidate(file);
 }
 
 function isGifCandidate(file) {
@@ -151,7 +160,7 @@ async function sendMaterializedArtifact(file, {
   }
 
   // 5. 'auto' mode: smart inference
-  // 5.1 Voice candidates (ogg/opus)
+  // 5.1 Audio artifacts (the channel normalizes them into a voice message)
   if (isVoiceCandidate(file) && typeof sendVoice === 'function') {
     try {
       return {

@@ -53,7 +53,7 @@ import {
   harnessQuestionText,
   validHarnessQuestion,
 } from './harness-question.mjs';
-import { deliverOutboundArtifacts } from './semantic/artifact-delivery.mjs';
+import { deliverOutboundArtifacts, isVoicePresentation } from './semantic/artifact-delivery.mjs';
 import {
   hasReplyReference,
   promptContentForInboundMessage,
@@ -1337,11 +1337,7 @@ export class TextHarnessBridge {
       const delivery = await this.#deliverArtifacts(target, messageId, artifacts, textReceipt, {
         onArtifact: (item) => {
           if (!typingSession) return Promise.resolve();
-          const isVoice = item?.as === 'voice'
-            || item?.mediaType === 'audio/ogg'
-            || item?.mediaType === 'audio/opus'
-            || item?.fileName?.toLowerCase().endsWith('.ogg')
-            || item?.fileName?.toLowerCase().endsWith('.opus');
+          const isVoice = isVoicePresentation(item);
           const isImage = typeof item?.mediaType === 'string' && item.mediaType.startsWith('image/');
           const action = isVoice
             ? 'record_voice'

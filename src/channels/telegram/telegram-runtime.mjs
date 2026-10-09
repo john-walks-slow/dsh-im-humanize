@@ -17,6 +17,7 @@ import {
 import {
   TELEGRAM_ACCESS_MODES,
 } from './config-store.mjs';
+import { prepareTelegramVoiceFile } from './voice-format.mjs';
 
 function commandMenuEntries(catalog, translate) {
   return commandsForChannel('telegram', catalog)
@@ -650,10 +651,11 @@ export class TelegramBotClient {
     });
   }
 
-  sendVoice(target, file) {
+  async sendVoice(target, file) {
+    const voice = await prepareTelegramVoiceFile(file, { signal: this.#signal });
     return this.#api.sendVoice({
       chatId: target.chatId,
-      file,
+      file: voice,
       replyToMessageId: target.replyToMessageId,
       messageThreadId: target.messageThreadId,
       signal: this.#signal,

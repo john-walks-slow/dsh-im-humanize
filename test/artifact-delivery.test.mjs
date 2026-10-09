@@ -405,3 +405,31 @@ test('explicit presentation mode controls delivery routing', async (t) => {
   assert.deepEqual(calls4, ['voice:audio.ogg']);
   assert.equal(del4.receipt.presentation, 'test-voice');
 });
+
+test('auto mode treats every audio artifact as a voice candidate', async (t) => {
+  for (const name of ['clip.mp3', 'clip.m4a', 'clip.wav']) {
+    const artifact = await committedArtifact(t, name, Buffer.from([7]));
+    const calls = [];
+    const delivery = await deliverOutboundArtifacts({
+      artifacts: [artifact],
+      channelKey: 'test',
+      sendVoice: async (f) => { calls.push(`voice:${f.fileName}`); return { id: 'v' }; },
+      sendFile: async (f) => { calls.push(`file:${f.fileName}`); return { id: 'f' }; },
+    });
+    assert.deepEqual(calls, [`voice:${name}`], name);
+    assert.equal(delivery.receipt.presentation, 'test-voice');
+  }
+});
+
+test('auto mode keeps audio as a plain file when the channel has no voice support', async (t) => {
+  const artifact = await committedArtifact(t, 'clip.mp3', Buffer.from([8]));
+  const calls = [];
+  const delivery = await deliverOutboundArtifacts({
+    artifacts: [artifact],
+    channelKey: 'test',
+    sendFile: async (f) => { calls.push(`file:${f.fileName}`); return { id: 'f' }; },
+  });
+
+  assert.deepEqual(calls, ['file:clip.mp3']);
+  assert.equal(delivery.receipt.presentation, 'test-file');
+});

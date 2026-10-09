@@ -399,6 +399,20 @@ export class TelegramApi {
     });
   }
 
+  /**
+   * Send a voice message (the round, inline-playable bubble). The Bot API accepts
+   * OGG/OPUS, MP3 and M4A here; callers normalize other audio formats first.
+   */
+  async sendVoice({ chatId, file, replyToMessageId, messageThreadId, signal }) {
+    return this.#sendArtifact('sendVoice', 'voice', 'voice', {
+      chatId,
+      file,
+      replyToMessageId,
+      messageThreadId,
+      signal,
+    });
+  }
+
   async #sendArtifact(method, fieldName, mediaLabel, {
     chatId,
     file,
@@ -460,8 +474,15 @@ export class TelegramApi {
   }
 
   async sendChatAction({ chatId, messageThreadId, action = 'typing', signal }) {
-    const validAction = ['typing', 'upload_photo', 'upload_document', 'record_video', 'choose_sticker']
-      .includes(action) ? action : 'typing';
+    const validAction = [
+      'typing',
+      'upload_photo',
+      'upload_document',
+      'record_video',
+      'record_voice',
+      'upload_voice',
+      'choose_sticker',
+    ].includes(action) ? action : 'typing';
     return this.#call('sendChatAction', {
       chat_id: chatId,
       action: validAction,

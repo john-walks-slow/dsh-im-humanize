@@ -555,6 +555,89 @@ test('Telegram API uploads a GIF animation through the native animation method',
   assert.equal(Buffer.from(await animation.arrayBuffer()).toString(), 'telegram-gif');
 });
 
+test('Telegram API uploads an audio result as a native voice message in the same topic and reply chain', async () => {
+  let request;
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return jsonResponse({ ok: true, result: { message_id: 905 } });
+    },
+  });
+  const result = await api.sendVoice({
+    chatId: -100123,
+    replyToMessageId: 44,
+    messageThreadId: 55,
+    file: {
+      fileName: 'voice.ogg',
+      mediaType: 'audio/ogg',
+      bytes: Buffer.from('telegram-voice'),
+    },
+  });
+
+  assert.equal(result.message_id, 905);
+  assert.match(request.url.pathname, /sendVoice$/);
+  assert.equal(request.options.method, 'POST');
+  assert.ok(request.options.body instanceof FormData);
+  assert.equal(request.options.body.get('chat_id'), '-100123');
+  assert.equal(request.options.body.get('message_thread_id'), '55');
+  assert.deepEqual(JSON.parse(request.options.body.get('reply_parameters')), {
+    message_id: 44,
+    allow_sending_without_reply: true,
+  });
+  const voice = request.options.body.get('voice');
+  assert.equal(voice.name, 'voice.ogg');
+  assert.equal(voice.type, 'audio/ogg');
+  assert.equal(Buffer.from(await voice.arrayBuffer()).toString(), 'telegram-voice');
+});
+
+test('Telegram API keeps voice chat actions instead of downgrading them to typing', async () => {
+  const actions = [];
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      actions.push(JSON.parse(options.body).action);
+      return jsonResponse({ ok: true, result: true });
+    },
+  });
+
+  await api.sendChatAction({ chatId: -100123, action: 'record_voice' });
+  await api.sendChatAction({ chatId: -100123, action: 'upload_voice' });
+  await api.sendChatAction({ chatId: -100123, action: 'dance' });
+
+  assert.deepEqual(actions, ['record_voice', 'upload_voice', 'typing']);
+});
+
+test('Telegram bot client delegates voice delivery to sendVoice with the existing reply context', async () => {
+  let request;
+  const controller = new AbortController();
+  const client = new TelegramBotClient({
+    api: {
+      sendVoice: async (value) => {
+        request = value;
+        return { message_id: 906 };
+      },
+    },
+    signal: controller.signal,
+  });
+  const file = {
+    fileName: 'voice.opus',
+    mediaType: 'audio/opus',
+    bytes: Buffer.from('telegram-voice'),
+  };
+
+  assert.deepEqual(await client.sendVoice({
+    chatId: -100456,
+    replyToMessageId: 66,
+    messageThreadId: 77,
+  }, file), { message_id: 906 });
+  assert.equal(request.chatId, -100456);
+  assert.equal(request.file, file);
+  assert.equal(request.replyToMessageId, 66);
+  assert.equal(request.messageThreadId, 77);
+  assert.equal(request.signal, controller.signal);
+});
+
 test('Telegram bot client routes images through sendPhoto with the existing reply context', async () => {
   let request;
   const controller = new AbortController();
