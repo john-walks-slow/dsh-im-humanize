@@ -123,6 +123,27 @@ test('message-break: handler remainingText returns full answer when sent exceeds
   assert.equal(handler.remainingText('short'), 'short');
 });
 
+test('message-break: segmentsCover only fires when nothing is left to send', async () => {
+  const handler = createMessageBreakHandler({ sendSegment: async () => {} });
+  assert.equal(handler.segmentsCover('anything'), false, 'no break yet');
+  await handler.handleUpdate({ type: 'message_break', text: '第一段' });
+  assert.equal(handler.segmentsCover('第一段'), true, 'the answer ended at the break point');
+  assert.equal(handler.segmentsCover('第一段\n'), true, 'trailing whitespace is not content');
+  assert.equal(handler.segmentsCover('第一段第二段'), false, 'a tail is still pending');
+  assert.equal(handler.segmentsCover('改写后的回答'), false, 'canonical rewrite');
+  assert.equal(handler.segmentsCover(''), false, 'empty answer');
+});
+
+test('message-break: segmentsCover never suppresses a tail split by raw whitespace', async () => {
+  const handler = createMessageBreakHandler({ sendSegment: async () => {} });
+  // The raw segment text no longer prefixes the answer (it carries whitespace
+  // the canonical answer dropped), so the whole answer must still be sent —
+  // losing the second segment would be worse than repeating the first.
+  await handler.handleUpdate({ type: 'message_break', text: '第一段\n\n' });
+  assert.equal(handler.segmentsCover('第一段第二段'), false);
+  assert.equal(handler.remainingText('第一段第二段'), '第一段第二段');
+});
+
 test('message-break: handler does not send empty segments', async () => {
   const sent = [];
   const handler = createMessageBreakHandler({

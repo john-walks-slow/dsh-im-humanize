@@ -806,6 +806,15 @@ export class TextHarnessBridge {
     let contextEnhanced = false;
     let streamFinished = false;
     let firstStreamReplySent = false;
+    // Whether the carrier currently holding the reply has received answer text
+    // (reset on every message_break rotation).
+    let carrierStreamedText = false;
+    // Set when a segment could not be confirmed as delivered: the tail must
+    // then never be suppressed, even when it looks already covered.
+    let segmentDeliveryFailed = false;
+    // Receipts of the segments already finalized by their own carrier during a
+    // message_break rotation; merged into this turn's final receipt.
+    const segmentReceipts = [];
     let preAsk = null;
     // A keepalive heartbeat keeps short-lived carriers (e.g. Telegram's
     // private-chat Rich Draft) visible during long silent stretches such as a
@@ -815,6 +824,32 @@ export class TextHarnessBridge {
     const stopKeepalive = () => {
       if (keepaliveTimer !== null) clearInterval(keepaliveTimer);
       keepaliveTimer = null;
+    };
+    // Re-send the current carrier's last frame so a short-lived carrier stays
+    // visible across long silent stretches. Idempotent: a message_break
+    // rotation re-arms it for the new carrier without stacking timers, and it
+    // also covers a first open that failed while a later one succeeded.
+    const startKeepalive = (carrier) => {
+      if (!carrier || carrier.keepalive !== true || typeof carrier.refresh !== 'function') return;
+      if (keepaliveTimer !== null) return;
+      let refreshing = false;
+      keepaliveTimer = setInterval(async () => {
+        // Skip ticks while the previous heartbeat is pending so redundant
+        // refreshes cannot queue ahead of the final answer on a slow network.
+        if (refreshing) return;
+        refreshing = true;
+        try {
+          await Promise.allSettled([
+            this.#bot.sendTyping?.(target),
+            stream?.refresh?.(),
+          ]);
+        } catch {
+          // Keepalive is best-effort, including synchronous adapter failures.
+        } finally {
+          refreshing = false;
+        }
+      }, this.#keepaliveIntervalMs);
+      keepaliveTimer.unref?.();
     };
     try {
       this.#signal?.throwIfAborted();
@@ -881,13 +916,93 @@ export class TextHarnessBridge {
       // and tool/status progress edits. Declared here (before the pre-ask
       // try block) so the onUpdate closure below can read it.
       const suppressProgress = humanize.progressStatus === false;
-      // When messageBreak is on, the stream is always opened lazily (no
-      // "processing…" placeholder) and text updates are not forwarded to it
-      // (segments go out as separate messages; the stream only carries the
-      // final remainder via finish()). This keeps streaming and progressStatus
-      // independently controllable: turning off progressStatus no longer
-      // suppresses the stream entirely.
+      // With messageBreak on, every carrier is opened lazily (no "processing…"
+      // placeholder). When streaming is on as well, each message_break segment
+      // streams in its own carrier and is finalized there (see sendSegment
+      // below); turning off progressStatus therefore still streams the text.
       const lazyStream = suppressProgress || humanize.messageBreak;
+      // Open a delivery carrier for the current segment. Called once before the
+      // ask and again after every message_break rotation. A channel without a
+      // stream carrier (or a failed open) leaves delivery to the final message.
+      const openReplyStream = async () => {
+        semanticStream = false;
+        carrierStreamedText = false;
+        if (!humanize.streaming) return null;
+        const streamOptions = lazyStream ? { lazy: true } : undefined;
+        if (typeof this.#bot.openDeliveryStream === 'function') {
+          try {
+            const opened = await this.#bot.openDeliveryStream(target, streamOptions);
+            semanticStream = true;
+            return opened;
+          } catch (error) {
+            this.#logger.warn?.(
+              `[dsh-im:${this.#descriptor.key}] unable to start a semantic reply stream; using final delivery:`,
+              error,
+            );
+            return null;
+          }
+        }
+        if (typeof this.#bot.openStream === 'function') {
+          try {
+            return await this.#bot.openStream(target, streamOptions);
+          } catch (error) {
+            this.#logger.warn?.(
+              `[dsh-im:${this.#descriptor.key}] unable to start a streamed reply; using text:`,
+              error,
+            );
+            return null;
+          }
+        }
+        return null;
+      };
+      const sendSegmentAsText = async (segmentText) => {
+        try {
+          await this.#bot.sendText(target, segmentText);
+          return true;
+        } catch (error) {
+          this.#logger.warn?.(
+            `[dsh-im:${this.#descriptor.key}] message_break segment text fallback failed:`,
+            error,
+          );
+          return false;
+        }
+      };
+      // Finalize the current segment in its own carrier: the carrier turns what
+      // it holds into a real message. Returns whether the segment is confirmed
+      // delivered (by the carrier, or by the plain-text fallback).
+      const finishSegment = async (segmentText) => {
+        const active = stream;
+        if (!active) return false;
+        // Detach first: the keepalive heartbeat must not touch a closed carrier.
+        stream = null;
+        let result = null;
+        try {
+          result = semanticStream
+            ? await active.finish(createTextDeliveryBlock(segmentText, 'markdown'))
+            : await active.finish(segmentText);
+        } catch (error) {
+          active.cancel?.();
+          const failure = channelDeliveryFailure(error);
+          const resent = failure.code !== 'channel-delivery-uncertain';
+          this.#logger.warn?.(
+            `[dsh-im:${this.#descriptor.key}] unable to finalize a message_break segment (${failure.code})${resent ? '; re-sending it as text' : '; not re-sending an unconfirmed delivery'}:`,
+            error,
+          );
+          // A thrown delivery error is uncertain by default: the segment may
+          // already have landed, so only a definite rejection is re-sent.
+          return resent ? sendSegmentAsText(segmentText) : false;
+        }
+        // A definite failure carries no user-visible message; 'unknown' may
+        // have landed, so it is never duplicated.
+        if (result?.deliveryOutcome === 'failed') {
+          this.#logger.warn?.(
+            `[dsh-im:${this.#descriptor.key}] a message_break segment was rejected (${result?.reason ?? 'unknown'}); sending it as text:`,
+          );
+          return sendSegmentAsText(segmentText);
+        }
+        segmentReceipts.push({ result, stream: active });
+        return true;
+      };
 
       // ---- Phase ①: read delay（"过了一段时间才读到消息"）----
       // Silent: no typing indicator, no read receipts, no harness activity.
@@ -933,37 +1048,10 @@ export class TextHarnessBridge {
           await typingSession.start();
         }
         // Stream opening stays inside the pre-ask region so a supersede
-        // abort still wins against it.
-        //
-        // Open the delivery stream when streaming is enabled. lazyStream=true
-        // (progressStatus=false or messageBreak=true) skips the "processing…"
-        // placeholder: the first real content creates the bubble instead.
-        // When messageBreak is on, text updates are not forwarded to the stream
-        // (see onUpdate below); the stream only delivers the final remainder via
-        // finish(), so no segmented text appears twice.
-        if (humanize.streaming) {
-          const streamOptions = lazyStream ? { lazy: true } : undefined;
-          if (typeof this.#bot.openDeliveryStream === 'function') {
-            try {
-              stream = await this.#bot.openDeliveryStream(target, streamOptions);
-              semanticStream = true;
-            } catch (error) {
-              this.#logger.warn?.(
-                `[dsh-im:${this.#descriptor.key}] unable to start a semantic reply stream; using final delivery:`,
-                error,
-              );
-            }
-          } else if (typeof this.#bot.openStream === 'function') {
-            try {
-              stream = await this.#bot.openStream(target, streamOptions);
-            } catch (error) {
-              this.#logger.warn?.(
-                `[dsh-im:${this.#descriptor.key}] unable to start a streamed reply; using text:`,
-                error,
-              );
-            }
-          }
-        }
+        // abort still wins against it. lazyStream=true (progressStatus=false or
+        // messageBreak=true) skips the "processing…" placeholder: the first
+        // real content creates the bubble instead.
+        stream = await openReplyStream();
         if (preAsk.signal.aborted) {
           const superseded = new Error('superseded by a newer message');
           superseded.code = 'superseded';
@@ -978,15 +1066,37 @@ export class TextHarnessBridge {
           this.#preAskControllers.delete(conversationKey);
         }
       }
-      // Create a message_break handler for this turn. sendSegment sends each
-      // segment as a separate IM message. Only active when messageBreak=true.
-      // Phase-② segment gap: "typing the next message" — every segment after
-      // the first waits a humanized pause; the typing session keeps glowing
-      // through the gap and restarts its on-phase after each send.
+      // Create a message_break handler for this turn. Only active when
+      // messageBreak=true. Without a carrier, sendSegment sends each segment as
+      // a separate IM message. Phase-② segment gap: "typing the next message" —
+      // every segment after the first waits a humanized pause; the typing
+      // session keeps glowing through the gap and restarts its on-phase after
+      // each send.
       let segmentsSent = 0;
       const messageBreakHandler = humanize.messageBreak
         ? createMessageBreakHandler({
           sendSegment: async (segmentText) => {
+            // Streaming on: the segment is finalized in the carrier that
+            // streamed it, and a fresh carrier takes over the next segment.
+            if (stream) {
+              if (!await finishSegment(segmentText)) segmentDeliveryFailed = true;
+              // Count the delivered message so a later segment that falls back
+              // to the text path still gets its humanized pause.
+              segmentsSent += 1;
+              stream = await openReplyStream();
+              startKeepalive(stream);
+              // The fresh carrier holds nothing yet: bring the composing
+              // indicator back for the next segment's compute gap (start() is a
+              // no-op while it still runs), unless a question/approval card is
+              // waiting — that card owns the screen.
+              if (typingSession
+                && !this.#pendingInteractions.has(conversationKey)
+                && !this.#approvals.hasPending(conversationKey)) {
+                firstStreamReplySent = false;
+                await typingSession.start();
+              }
+              return;
+            }
             if (segmentsSent > 0) {
               // restartOn → sleep → send (plan §6.3): the indicator covers
               // the gap and the upcoming send, and there is no trailing
@@ -1024,26 +1134,7 @@ export class TextHarnessBridge {
       // Start the keepalive only after the inbound payload is ready, so a
       // pre-prompt failure (image parsing, context building) cannot leave the
       // timer running; the outermost finally below clears it on every path.
-      if (stream && stream.keepalive === true && typeof stream.refresh === 'function') {
-        let refreshing = false;
-        keepaliveTimer = setInterval(async () => {
-          // Skip ticks while the previous heartbeat is pending so redundant
-          // refreshes cannot queue ahead of the final answer on a slow network.
-          if (refreshing) return;
-          refreshing = true;
-          try {
-            await Promise.allSettled([
-              this.#bot.sendTyping?.(target),
-              stream.refresh(),
-            ]);
-          } catch {
-            // Keepalive is best-effort, including synchronous adapter failures.
-          } finally {
-            refreshing = false;
-          }
-        }, this.#keepaliveIntervalMs);
-        keepaliveTimer.unref?.();
-      }
+      startKeepalive(stream);
       const { answer, artifacts = [] } = await askInWorkspaceSession({
         deferredDelivery: () => ({ coordinator: this.#deferred, target: this.#descriptor.key === 'whatsapp' ? { jid: target.jid, selfChat: target.selfChat } : target }),
         harness: this.#harness,
@@ -1061,19 +1152,16 @@ export class TextHarnessBridge {
           signal: this.#signal,
           control: { owner: this, key: conversationKey },
           onUpdate: (stream || messageBreakHandler) ? async (update) => {
-            // message_break handler intercepts break updates and sends the
-            // segment text as a separate IM message. Returns null when
-            // consumed (the update is not passed to the stream handler).
+            // message_break handler intercepts break updates: with a live
+            // carrier it finalizes the segment there and opens the next one;
+            // without one it sends the segment as a separate IM message.
+            // Returns null when consumed (the update must not reach the stream).
             if (messageBreakHandler) {
               const handled = await messageBreakHandler.handleUpdate(update);
               if (handled === null) return;
               update = handled;
             }
             if (!stream) return;
-            // messageBreak=true: the stream only carries the final remainder
-            // (delivered via finish()). Text updates go out as separate segment
-            // messages — forwarding them to the stream would duplicate content.
-            if (humanize.messageBreak && update.type === 'text') return;
             // progressStatus=false: drop interim tool/status progress text
             // ("正在使用{name}…", "正在整理结果…"). Only real text and
             // assistant-message canonical frames reach the stream.
@@ -1085,6 +1173,7 @@ export class TextHarnessBridge {
               : update.type === 'tool' ? t('正在使用{name}…', { name: update.name }) : update.text;
             if (progress) {
               const format = update.type === 'text' ? 'markdown' : 'plain';
+              if (update.type === 'text') carrierStreamedText = true;
               await stream.update(semanticStream
                 ? createTextDeliveryBlock(progress, format)
                 : progress);
@@ -1138,48 +1227,73 @@ export class TextHarnessBridge {
         return;
       }
       const fileOnlyCompletion = !cleanText(answer) && artifacts.length > 0;
+      // Every segment already finalized by its own carrier contributes its
+      // provider message ids to this turn's receipt.
+      const segmentMessageIds = segmentReceipts.flatMap(({ result, stream: used }) => [
+        ...providerMessageIdsFor(used),
+        ...providerMessageIdsFor(result),
+      ]);
       // When message_break was used, the segments before each break were
-      // already sent as separate messages. The final message is only the
-      // remaining text after the last break point.
+      // already delivered. The final message is only the remaining text after
+      // the last break point — streamed by the carrier opened at that break.
       const baseAnswer = fileOnlyCompletion
         ? t(FILE_ONLY_COMPLETION_TEXT)
         : answer;
       const visibleAnswer = messageBreakHandler?.hasBreaks()
         ? messageBreakHandler.remainingText(baseAnswer)
         : baseAnswer;
+      // A reply that ends exactly at a break point has no tail left: there
+      // remainingText falls back to the full answer, which the segments already
+      // delivered, so sending it again would duplicate the last segment.
+      // `segmentsCover` proves the tail is empty, `!carrierStreamedText` keeps a
+      // carrier that did stream something from being dropped, and a segment
+      // that was not confirmed as delivered always gets the tail as a fallback.
+      const tailAlreadyDelivered = messageBreakHandler?.segmentsCover(baseAnswer) === true
+        && !carrierStreamedText
+        && !segmentDeliveryFailed;
       const answerFormat = fileOnlyCompletion ? 'plain' : 'markdown';
       let textDeliveryError = null;
       let textReceipt = null;
       if (stream) {
-        try {
-          const result = await stream.finish(semanticStream
-            ? createTextDeliveryBlock(visibleAnswer, answerFormat)
-            : visibleAnswer);
-          streamFinished = true;
-          textReceipt = createDeliveryReceipt({
-            deliveryId: messageId,
-            presentation: result?.presentation
-              ?? stream.presentation
-              ?? `${this.#descriptor.key}-stream`,
-            providerMessageIds: [
-              ...providerMessageIdsFor(stream),
-              ...providerMessageIdsFor(result),
-            ],
-            deliveryOutcome: result?.deliveryOutcome,
-            reason: result?.reason,
-          });
-        } catch (error) {
+        if (tailAlreadyDelivered || !cleanText(visibleAnswer)) {
+          // Nothing is left for this carrier: it must not turn into an empty
+          // message or repeat what the finalized segments already delivered.
           stream.cancel?.();
-          this.#logger.warn?.(
-            `[dsh-im:${this.#descriptor.key}] streamed reply finalization failed; using text:`,
-            error,
-          );
+          stream = null;
+        } else {
+          const active = stream;
+          try {
+            const result = await active.finish(semanticStream
+              ? createTextDeliveryBlock(visibleAnswer, answerFormat)
+              : visibleAnswer);
+            streamFinished = true;
+            textReceipt = createDeliveryReceipt({
+              deliveryId: messageId,
+              presentation: result?.presentation
+                ?? active.presentation
+                ?? `${this.#descriptor.key}-stream`,
+              providerMessageIds: [
+                ...segmentMessageIds,
+                ...providerMessageIdsFor(active),
+                ...providerMessageIdsFor(result),
+              ],
+              deliveryOutcome: result?.deliveryOutcome,
+              reason: result?.reason,
+            });
+          } catch (error) {
+            active.cancel?.();
+            this.#logger.warn?.(
+              `[dsh-im:${this.#descriptor.key}] streamed reply finalization failed; using text:`,
+              error,
+            );
+          }
         }
       }
       if (!streamFinished) {
         // When message_break sent all text as segments, the remaining answer
         // may be empty — skip sending an empty final message.
-        if (messageBreakHandler?.hasBreaks() && !cleanText(visibleAnswer)) {
+        if (tailAlreadyDelivered
+          || (messageBreakHandler?.hasBreaks() && !cleanText(visibleAnswer))) {
           // No final text to send; artifacts (if any) are delivered separately.
         } else {
           try {
@@ -1192,7 +1306,10 @@ export class TextHarnessBridge {
             textReceipt = createDeliveryReceipt({
               deliveryId: messageId,
               presentation: result?.presentation ?? `${this.#descriptor.key}-text`,
-              providerMessageIds: providerMessageIdsFor(result),
+              providerMessageIds: [
+                ...segmentMessageIds,
+                ...providerMessageIdsFor(result),
+              ],
               deliveryOutcome: result?.deliveryOutcome,
               reason: result?.reason,
             });

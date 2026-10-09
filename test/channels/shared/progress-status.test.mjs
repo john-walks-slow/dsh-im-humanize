@@ -217,7 +217,7 @@ test('progressStatus=false drops tool/status updates but keeps text', async () =
     'real text updates reach the stream');
 }));
 
-test('progressStatus=false + messageBreak=true opens lazy stream instead of suppressing streaming entirely', async () => withKeepAlive(async () => {
+test('progressStatus=false + messageBreak=true keeps streaming through a lazy carrier', async () => withKeepAlive(async () => {
   const bot = recordedStreamBot();
   let capturedOnUpdate = null;
   const bridge = createBridge({
@@ -227,6 +227,7 @@ test('progressStatus=false + messageBreak=true opens lazy stream instead of supp
       createSession: async () => 'session',
       ask: async (_sessionId, _text, options) => {
         capturedOnUpdate = options.onUpdate;
+        await options.onUpdate({ type: 'text', text: '分段回答' });
         return '分段回答';
       },
     },
@@ -235,6 +236,8 @@ test('progressStatus=false + messageBreak=true opens lazy stream instead of supp
   assert.ok(bot.events.some((e) => e === 'open:{"lazy":true}'),
     'lazy stream opened so streaming still works without interim placeholder');
   assert.ok(typeof capturedOnUpdate === 'function', 'onUpdate still wired for message_break');
+  assert.ok(bot.events.includes('update:分段回答'),
+    'answer text streams into the carrier instead of being dropped by messageBreak');
 }));
 
 test('progressStatus default (true) still streams tool progress text', async () => withKeepAlive(async () => {

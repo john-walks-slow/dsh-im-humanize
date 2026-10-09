@@ -1089,7 +1089,7 @@ const EN = Object.freeze({
   '流式回复': 'Streaming replies',
   '开启后 AI 回复逐字显示。关闭后一次性发送完整回复，更有沉浸感。': 'When enabled, AI replies appear word by word. When disabled, the full reply is sent at once for better immersion.',
   '分步消息 (message_break)': 'Message breaks (message_break)',
-  'AI 调用 message_break 工具在回复中插入断点，每个分段作为独立消息发送。可与流式回复同时开启。': 'The AI calls the message_break tool to insert breakpoints, sending each segment as a separate message. Can be enabled alongside streaming.',
+  'AI 调用 message_break 工具在回复中插入断点，每个分段作为独立消息发送。与「流式回复」同时开启时，每段各自逐字流式，断点处定稿为一条消息。': 'The AI calls the message_break tool to insert breakpoints, sending each segment as a separate message. With streaming also on, each segment streams word by word and is finalized into its own message at the break.',
   '状态表情回应': 'Status emoji reactions',
   '处理任务时用表情标记状态（处理中/成功/失败）。关闭后不再发送表情，回复照常送达。支持 Telegram、Discord、WhatsApp、Slack、飞书、钉钉。': 'Mark task status with emoji reactions (processing/success/failure). When disabled, no reactions are sent and replies deliver as usual. Applies to Telegram, Discord, WhatsApp, Slack, Feishu, and DingTalk.',
   '回复引用': 'Reply quotes',

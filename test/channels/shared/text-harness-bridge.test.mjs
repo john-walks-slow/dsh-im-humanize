@@ -2927,7 +2927,7 @@ test('Telegram question clears the draft after pending writes and keeps replies 
     await processing;
   });
   await eventually(() => options !== undefined);
-  t.mock.timers.tick(4_000);
+  t.mock.timers.tick(5_000);
   await eventually(() => drafts.length === 2);
   const presentation = options.onInteraction(questionInteraction({
     questions: [{ id: 'color', question: 'Choose a color', options: [{ label: 'Blue' }, { label: 'Green' }] }],
@@ -2996,7 +2996,7 @@ test('slow Telegram heartbeat does not queue redundant drafts ahead of the final
     await accepted;
   });
   await eventually(() => asked);
-  t.mock.timers.tick(4_000);
+  t.mock.timers.tick(5_000);
   await eventually(() => drafts.length === 2);
   t.mock.timers.tick(40_000);
   await new Promise(setImmediate);

@@ -6,9 +6,10 @@
  * The tool itself does nothing (execute returns { ok: true }); the actual
  * message splitting happens in the bridge's onUpdate callback.
  *
- * When messageBreak is enabled, streaming is automatically disabled (mutually
- * exclusive) because the stream finish/reopen dance adds complexity without
- * benefit for the "human-like" chat experience.
+ * When messageBreak is enabled, each segment is delivered on its own:
+ * streaming channels finalize the segment in the carrier that streamed it and
+ * open a fresh carrier for the next one; channels without a carrier send each
+ * segment as a separate message.
  */
 
 export const MESSAGE_BREAK_TOOL = 'message_break';
@@ -132,6 +133,20 @@ export function createMessageBreakHandler({ sendSegment, logger = console }) {
       // Prefix mismatch (canonical rewrite or breaker tripped) —
       // return the full answer as a safe fallback.
       return fullAnswer;
+    },
+
+    /**
+     * Whether the delivered segments already cover the whole final answer, so
+     * nothing is left to send. Uses the same raw prefix rule as remainingText()
+     * (which falls back to the whole answer when the prefix no longer matches),
+     * then requires the remainder to be blank — suppression therefore only ever
+     * fires when the tail is provably empty, never when text is still missing.
+     */
+    segmentsCover(fullAnswer) {
+      if (breakCount === 0 || !sentText) return false;
+      if (typeof fullAnswer !== 'string' || !fullAnswer) return false;
+      if (!fullAnswer.startsWith(sentText)) return false;
+      return fullAnswer.substring(sentText.length).trim() === '';
     },
 
     hasBreaks() {

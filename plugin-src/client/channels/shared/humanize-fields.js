@@ -56,7 +56,7 @@ export const HUMANIZE_SETTING_META = Object.freeze({
   }),
   messageBreak: Object.freeze({
     label: '分步消息 (message_break)',
-    hint: 'AI 调用 message_break 工具在回复中插入断点，每个分段作为独立消息发送。可与流式回复同时开启。',
+    hint: 'AI 调用 message_break 工具在回复中插入断点，每个分段作为独立消息发送。与「流式回复」同时开启时，每段各自逐字流式，断点处定稿为一条消息。',
   }),
   statusReaction: Object.freeze({
     label: '状态表情回应',
