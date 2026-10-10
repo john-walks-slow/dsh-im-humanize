@@ -116,6 +116,14 @@
 
 **关于大规模 `cancelledByParent`**：错误文案固定为 `Promise resolution is still pending but the event loop has already resolved`，根因是 `AbortSignal.timeout()` 的定时器在 Node 里是 unref 的——当挂起 Promise 只能靠它落定时，事件循环先排空，node:test 于是把该用例及同文件后续用例全部标成 `cancelledByParent`。合并前 fork 的 `qq/bridge`（50）、`wecom/bridge`（52）已经是同一现象，属既有环境/测试写法问题，非本次合并引入。
 
+## i18n 并集核对（P2 源码阶段的收尾验证）
+
+字典以中文原文为 key，所以「并集」的正确判据不是 key 数量相等，而是**代码里用到的 key 都能查到译文**。两侧都跑了一遍：
+
+- host 侧（`src/channels/shared/i18n-en/*.mjs` 为译文表）：合并树 `t()` 字面量 917 个、译文 key 1265 个、无译文 22 个；fork main 对应为 785 / 1070 / 23。缺的 22 个几乎全在 `src/channels/weixin/connection-error.mjs` 的诊断文案（另有 `_{text}_`、`QQ机器人`、`{label}（{id}）` 等模板件），**合并后比 main 还少一个**（上游补了一条译文），无回归、无新增缺口。
+- client 侧（`plugin-src/client/i18n.js`）：合并树 1302 个 key、`localizeText()` 直接字面量 0 个缺口；fork main 为 1143 个 key、1 个缺口（`诊断信息`，既有问题）。
+- 反向核对（main 有、合并树没有的 key）：client 侧仅 6 个，全部是上游 4.38 **改过措辞**的旧串（`群聊以话题方式回复` → `被 @ 时以话题方式回复`；`…不显示、实时卡片或逐步消息` → `…不显示、原生直播、实时卡片或逐步消息`；另 4 个飞书话题/来源字段旧文案）。已逐个 grep 确认**在合并后的代码里没有任何引用**，属正常废弃，不是丢 key。
+
 ## P2-g 待办（测试适配，逐条已定位）
 
 > **前提**：当前 worktree 的 `test/` 树**整棵都还是上游 v4.38.0 的**（`grep -rln humanize test/` 在合并树里为空，而 fork main 有 17 个含 humanize 的测试文件）。也就是说本批观察到的「上游测试期望 vs fork 实现」的差异，绝大多数会在 P2-g 把 `test/` 按同一套 re-baseline 流程跑一遍后消失或改写。P2-g 第一步：`/tmp/p2-apply.sh test`（再单独处理 `test/browser/`）。
