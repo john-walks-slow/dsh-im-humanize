@@ -28,6 +28,7 @@ test('client exposes the fixed DingTalk RPC channel and endpoint names', () => {
     setAgentPreset: 'bot.preset.set',
     setContextEnhancement: 'bot.context-enhancement.set',
     setBusyMessageMode: 'bot.message-mode.set',
+    setHumanize: 'bot.humanize.set',
     setAccessPolicy: 'bot.access-policy.set',
     setAlias: 'bot.alias.set',
   });

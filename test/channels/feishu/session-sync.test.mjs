@@ -61,6 +61,10 @@ async function fixture(t, { state, targets = [target], create, patch, history = 
   const coordinator = sync ? createSessionSyncCoordinator({ deliveryService: {
     listSessionSyncTargets: async () => targets,
     sendSessionSyncText: async (...args) => texts.push(args),
+    // Required by the coordinator's complete-service contract; the paths
+    // under test here do not exercise these.
+    send: async () => ({ ok: true }),
+    listSessionConversations: async () => [],
   }, logger: { warn: (...args) => warnings.push(args) } }) : null;
   const close = () => { controller.abort(); coordinator?.close(); };
   t.after(close);

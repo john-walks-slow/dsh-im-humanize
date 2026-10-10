@@ -50,6 +50,8 @@ test('Session sync mirrors direct DSH text and one ordered multi-step assistant 
     async sendSessionSyncText(botId, targetId, sessionId, text) {
       sends.push({ botId, targetId, sessionId, text });
     },
+    async listSessionConversations() { return []; },
+    async send() {},
   };
   const coordinator = createSessionSyncCoordinator({ deliveryService });
 
@@ -85,6 +87,8 @@ test('Session sync suppresses IM, unknown, non-append, and unsuccessful Turn out
   const deliveryService = {
     async listSessionSyncTargets() { return [TARGET_A]; },
     async sendSessionSyncText(...args) { sends.push(args); },
+    async listSessionConversations() { return []; },
+    async send() {},
   };
   const coordinator = createSessionSyncCoordinator({ deliveryService });
 
@@ -121,6 +125,8 @@ test('Session sync isolates target failures and only returns the assistant to su
       sends.push({ botId, targetId, sessionId, text });
       if (targetId === 'bob') throw new Error('provider secret detail');
     },
+    async listSessionConversations() { return []; },
+    async send() {},
   };
   const coordinator = createSessionSyncCoordinator({
     deliveryService,
@@ -157,6 +163,8 @@ test('installed Session sync classifies an unregistered Host user rpcId as direc
   const installed = installSessionSyncCoordinator(ctx, {
     async listSessionSyncTargets() { return [TARGET_A]; },
     async sendSessionSyncText(...args) { sends.push(args); },
+    async listSessionConversations() { return []; },
+    async send() {},
   });
 
   listener({ id: 'session-one' }, turnStart());
@@ -183,6 +191,10 @@ test('installed Session sync sends one scheduled answer without echoing its inte
   }, {
     async listSessionSyncTargets() { return [TARGET_WEIXIN, TARGET_WEIXIN, {}]; },
     async sendSessionSyncText(...args) { sends.push(args); },
+    // The fork's coordinator also binds ordinary conversations, so it demands
+    // the two Session-conversation methods even when this test never uses them.
+    async listSessionConversations() { return []; },
+    async send() {},
   });
   const session = { id: 'scheduled-session' };
   listener(session, turnStart());
@@ -212,6 +224,8 @@ test('scheduled sync keeps target selection, completion, and IM ownership checks
         return sessionId === 'unbound' ? [] : [TARGET_WEIXIN];
       },
       async sendSessionSyncText(...args) { sends.push(args); },
+      async listSessionConversations() { return []; },
+      async send() {},
     },
     logger: { warn: (...args) => warnings.push(args) },
   });
@@ -232,4 +246,320 @@ test('scheduled sync keeps target selection, completion, and IM ownership checks
   assert.deepEqual(sends, []);
   assert.deepEqual(warnings, []);
   coordinator.close();
+});
+function wakeMessage(plugin = 'dsh-proactive') {
+  return {
+    type: 'user/message',
+    surfaceOp: 'append',
+    data: {
+      // v4 producer-owned source kind: proactive frames its wakes as a bare
+      // producer name (not the retired v3 { kind: 'plugin', plugin } wrapper).
+      source: { kind: plugin, form: 'notice' },
+      content: [{ type: 'text', text: '[dsh-proactive wake alarm-1 heartbeat] now …' }],
+    },
+  };
+}
+
+function legacyWakeMessage(plugin = 'dsh-proactive') {
+  return {
+    type: 'user/message',
+    surfaceOp: 'append',
+    data: {
+      // A released v3 session migrated to v4 carries the `plugin:`-prefixed
+      // form; the coordinator must still treat it as a wake.
+      source: { kind: `plugin:${plugin}`, form: 'notice' },
+      content: [{ type: 'text', text: '[dsh-proactive wake alarm-1 heartbeat] now …' }],
+    },
+  };
+}
+
+function subagentSettled() {
+  return {
+    type: 'user/message',
+    surfaceOp: 'append',
+    data: {
+      source: { kind: 'subagent-settled', form: 'notice', summary: 'done', senderSessionId: 's' },
+      content: [{ type: 'text', text: '[subagent settled] done' }],
+    },
+  };
+}
+
+const BOUND = Object.freeze({ kind: 'chat', route: { chatId: '6110538394' } });
+
+test('Session sync auto-delivers a proactive wake reply to the bound private chat', async () => {
+  const sends = [];
+  const lookups = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations(sessionId) {
+      lookups.push(sessionId);
+      return [{ channel: 'telegram', botId: 'bot-b', target: BOUND }];
+    },
+    async send(botId, target, text) {
+      sends.push({ botId, target, text });
+    },
+  };
+  const coordinator = createSessionSyncCoordinator({ deliveryService });
+
+  void coordinator.enqueue('session-one', turnStart());
+  void coordinator.enqueue('session-one', wakeMessage(), 'wake');
+  void coordinator.enqueue('session-one', assistantMessage(0, '该喝水了'));
+  void coordinator.enqueue('session-one', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(lookups, ['session-one']);
+  assert.deepEqual(sends, [{ botId: 'bot-b', target: BOUND, text: '该喝水了' }]);
+});
+
+test('Session sync auto-delivers a subagent-settled reply to the bound private chat', async () => {
+  const sends = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations() {
+      return [{ channel: 'telegram', botId: 'bot-b', target: BOUND }];
+    },
+    async send(botId, target, text) { sends.push({ botId, target, text }); },
+  };
+  const coordinator = createSessionSyncCoordinator({ deliveryService });
+
+  void coordinator.enqueue('session-one', turnStart());
+  void coordinator.enqueue('session-one', subagentSettled(), 'wake');
+  void coordinator.enqueue('session-one', assistantMessage(0, '任务完成'));
+  void coordinator.enqueue('session-one', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(sends, [{ botId: 'bot-b', target: BOUND, text: '任务完成' }]);
+});
+
+test('Session sync stays silent for no-reply wakes and failed wakes', async () => {
+  const sends = [];
+  let listener;
+  const ctx = {
+    root: {},
+    on(name, callback) { listener = callback; return () => {}; },
+    effect(effect) { void effect(); },
+  };
+  const installed = installSessionSyncCoordinator(ctx, {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations() {
+      return [{ channel: 'telegram', botId: 'bot-b', target: BOUND }];
+    },
+    async send(...args) { sends.push(args); },
+  });
+
+  // Silent wake: no visible assistant text.
+  listener({ id: 'session-silent' }, turnStart());
+  listener({ id: 'session-silent' }, wakeMessage());
+  listener({ id: 'session-silent' }, turnEnd());
+  // Failed wake: turn did not complete.
+  listener({ id: 'session-failed' }, turnStart());
+  listener({ id: 'session-failed' }, wakeMessage());
+  listener({ id: 'session-failed' }, assistantMessage(0, '不得投递'));
+  listener({ id: 'session-failed' }, turnEnd({ kind: 'error' }));
+  await installed.whenIdle();
+
+  assert.deepEqual(sends, []);
+  installed.close();
+});
+
+test('Session sync auto-delivers for any plugin source', async () => {
+  const sends = [];
+  let listener;
+  const ctx = {
+    root: {},
+    on(name, callback) { listener = callback; return () => {}; },
+    effect(effect) { void effect(); },
+  };
+  const installed = installSessionSyncCoordinator(ctx, {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations() {
+      return [{ channel: 'telegram', botId: 'bot-b', target: BOUND }];
+    },
+    async send(botId, target, text) { sends.push({ botId, target, text }); },
+  });
+
+  listener({ id: 'session-one' }, turnStart());
+  listener({ id: 'session-one' }, wakeMessage('dsh-other-plugin'));
+  listener({ id: 'session-one' }, assistantMessage(0, '任意 plugin 也投'));
+  listener({ id: 'session-one' }, turnEnd());
+  await installed.whenIdle();
+
+  assert.deepEqual(sends, [{ botId: 'bot-b', target: BOUND, text: '任意 plugin 也投' }]);
+  installed.close();
+});
+
+test('Session sync stays silent when the wake conversation lookup fails', async () => {
+  const sends = [];
+  const warnings = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations() { throw new Error('state unavailable'); },
+    async send(...args) { sends.push(args); },
+  };
+  const coordinator = createSessionSyncCoordinator({
+    deliveryService,
+    logger: { warn: (...args) => warnings.push(args) },
+  });
+
+  void coordinator.enqueue('session-one', turnStart());
+  void coordinator.enqueue('session-one', wakeMessage(), 'wake');
+  void coordinator.enqueue('session-one', assistantMessage(0, '该喝水了'));
+  void coordinator.enqueue('session-one', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(sends, []);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0][0], /ignored Session sync wake lookup failure/);
+});
+
+function toolCall(name, turn = 1, step = 0) {
+  return {
+    type: 'tool/call',
+    data: { turn, step, callId: `${name}-call-1`, name, arguments: '{}' },
+  };
+}
+
+test('Session sync stays silent for wake turns that called the reclaim tool', async () => {
+  const sends = [];
+  const lookups = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations(sessionId) {
+      lookups.push(sessionId);
+      return [{ channel: 'telegram', botId: 'bot-b', target: BOUND }];
+    },
+    async send(...args) { sends.push(args); },
+  };
+  const coordinator = createSessionSyncCoordinator({ deliveryService });
+
+  // Replayed from the real leaked yu wake: narrated text, then the reclaim
+  // call (old pre-rename spelling on hosts that still run it), turn completes.
+  void coordinator.enqueue('session-old-name', turnStart());
+  void coordinator.enqueue('session-old-name', wakeMessage(), 'wake');
+  void coordinator.enqueue('session-old-name', assistantMessage(0, '应该正在上课中，静默结束。'));
+  void coordinator.enqueue('session-old-name', toolCall('proactive_silence'));
+  void coordinator.enqueue('session-old-name', turnEnd());
+  // Same sequence with the current tool name.
+  void coordinator.enqueue('session-new-name', turnStart());
+  void coordinator.enqueue('session-new-name', wakeMessage(), 'wake');
+  void coordinator.enqueue('session-new-name', assistantMessage(0, '这轮没什么好说的'));
+  void coordinator.enqueue('session-new-name', toolCall('proactive_reclaim'));
+  void coordinator.enqueue('session-new-name', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(sends, []);
+  assert.deepEqual(lookups, []);
+});
+
+test('Session sync stays silent for wake turns that called the no_reply tool', async () => {
+  const sends = [];
+  const lookups = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations(sessionId) {
+      lookups.push(sessionId);
+      return [{ channel: 'telegram', botId: 'bot-b', target: BOUND }];
+    },
+    async send(...args) { sends.push(args); },
+  };
+  const coordinator = createSessionSyncCoordinator({ deliveryService });
+
+  // Narrated self-talk, then the explicit no_reply conclusion: the whole
+  // turn is silent, matching the reclaim soft convention.
+  void coordinator.enqueue('session-noreply', turnStart());
+  void coordinator.enqueue('session-noreply', wakeMessage(), 'wake');
+  void coordinator.enqueue('session-noreply', assistantMessage(0, '这轮没有需要打扰用户的内容。'));
+  void coordinator.enqueue('session-noreply', toolCall('no_reply'));
+  void coordinator.enqueue('session-noreply', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(sends, []);
+  assert.deepEqual(lookups, []);
+});
+
+test('Session sync keeps the dsh mirror silent when the turn called no_reply', async () => {
+  const sends = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return [TARGET_A]; },
+    async sendSessionSyncText(botId, targetId, sessionId, text) {
+      sends.push({ botId, targetId, sessionId, text });
+    },
+    async listSessionConversations() { return []; },
+    async send() {},
+  };
+  const coordinator = createSessionSyncCoordinator({ deliveryService });
+
+  // The user echo still mirrors, but the assistant answer does not: no_reply
+  // explicitly declares "no IM reply should be sent".
+  void coordinator.enqueue('session-one', turnStart());
+  void coordinator.enqueue('session-one', userMessage('帮我看下闹钟'), 'dsh');
+  void coordinator.enqueue('session-one', assistantMessage(0, '都改好了'));
+  void coordinator.enqueue('session-one', toolCall('no_reply'));
+  void coordinator.enqueue('session-one', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(sends, [
+    { botId: 'bot-a', targetId: 'alice', sessionId: 'session-one', text: '[来自 DSH]\n帮我看下闹钟' },
+  ]);
+});
+
+test('Session sync still delivers wake turns that called other tools', async () => {
+  const sends = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return []; },
+    async sendSessionSyncText() {},
+    async listSessionConversations() {
+      return [{ channel: 'telegram', botId: 'bot-b', target: BOUND }];
+    },
+    async send(botId, target, text) { sends.push({ botId, target, text }); },
+  };
+  const coordinator = createSessionSyncCoordinator({ deliveryService });
+
+  void coordinator.enqueue('session-one', turnStart());
+  void coordinator.enqueue('session-one', wakeMessage(), 'wake');
+  void coordinator.enqueue('session-one', toolCall('life_react'));
+  void coordinator.enqueue('session-one', assistantMessage(0, '前辈～刚摸到一只胖猫！'));
+  void coordinator.enqueue('session-one', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(sends, [{ botId: 'bot-b', target: BOUND, text: '前辈～刚摸到一只胖猫！' }]);
+});
+
+test('Session sync still delivers dsh-origin replies that misfire the reclaim tool', async () => {
+  const sends = [];
+  const deliveryService = {
+    async listSessionSyncTargets() { return [TARGET_A]; },
+    async sendSessionSyncText(botId, targetId, sessionId, text) {
+      sends.push({ botId, targetId, sessionId, text });
+    },
+    async listSessionConversations() { return []; },
+    async send() {},
+  };
+  const coordinator = createSessionSyncCoordinator({ deliveryService });
+
+  // A user-triggered turn: the reclaim call fails with invalid_action there,
+  // so the answer to the user must still be delivered.
+  void coordinator.enqueue('session-one', turnStart());
+  void coordinator.enqueue('session-one', userMessage('帮我看下闹钟'), 'dsh');
+  void coordinator.enqueue('session-one', assistantMessage(0, '都改好了'));
+  void coordinator.enqueue('session-one', toolCall('proactive_reclaim'));
+  void coordinator.enqueue('session-one', turnEnd());
+  await coordinator.whenIdle();
+
+  assert.deepEqual(sends, [
+    { botId: 'bot-a', targetId: 'alice', sessionId: 'session-one', text: '[来自 DSH]\n帮我看下闹钟' },
+    {
+      botId: 'bot-a',
+      targetId: 'alice',
+      sessionId: 'session-one',
+      text: '[DSH 助手]\n都改好了',
+    },
+  ]);
 });

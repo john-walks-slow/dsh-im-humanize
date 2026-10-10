@@ -1469,6 +1469,41 @@ test('bridge replaces the native thinking reaction with done after a successful 
   assert.equal(bridge.status.reactionErrors, 0);
 });
 
+test('statusReaction=false skips the native thinking reaction while the reply still delivers', async () => {
+  const fixture = stateFixture();
+  const events = [];
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      addReaction: async (request) => {
+        events.push(['add', request.reactionName, request.messageId]);
+      },
+      recallReaction: async (request) => {
+        events.push(['recall', request.reactionName, request.messageId]);
+      },
+      sendText: async ({ text }) => events.push(['reply', text]),
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => false,
+      createSession: async () => 'session-reaction-off',
+      ask: async () => '静默回答',
+    },
+    state: fixture.state,
+    humanize: { getSettings: () => ({ statusReaction: false }) },
+  });
+
+  await bridge.accept(message('reaction-off', '请回答', {
+    robotCode: 'robot-from-callback',
+  }));
+
+  assert.deepEqual(events, [['reply', '静默回答']],
+    'the reply delivers and no reaction call happens');
+  assert.equal(bridge.status.messagesReplied, 1);
+  assert.equal(bridge.status.reactionsAdded, 0);
+  assert.equal(bridge.status.reactionsRemoved, 0);
+});
+
 test('bridge reacts only to safe, addressed, non-duplicate messages', async () => {
   const fixture = stateFixture();
   const reactions = [];
@@ -1795,6 +1830,52 @@ test('bridge streams one AI Card and mentions only the group sender without an e
       assert.equal(bridge.status.messagesReplied, 1);
     });
   }
+});
+
+test('DingTalk finalizes a superseded AI Card on its last content without a stop notice', async () => {
+  const fixture = stateFixture();
+  const calls = { create: [], update: [], finish: [], text: [] };
+  const bridge = new DingtalkHarnessBridge({
+    api: {
+      sendText: async (request) => calls.text.push(request),
+      createAiCard: async (request) => {
+        calls.create.push(request);
+        return { cardInstanceId: 'card-superseded' };
+      },
+      updateAiCard: async (request) => calls.update.push(request),
+      finishAiCard: async (request) => {
+        calls.finish.push(request);
+        return { delivered: true, completed: false };
+      },
+    },
+    clientId: 'ding-client',
+    clientSecret: 'host-secret',
+    harness: {
+      sessionExists: async () => false,
+      createSession: async () => 'session-superseded-card',
+      ask: async (_sessionId, _text, options) => {
+        options.onUpdate({ type: 'text', text: '被打断前的部分内容' });
+        const error = new Error('turn stopped');
+        error.code = 'turn-stopped';
+        error.stopReason = 'superseded';
+        throw error;
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() {} },
+  });
+
+  await bridge.accept(message('card-superseded', '请回答一个长问题'));
+
+  assert.equal(calls.create.length, 1);
+  assert.equal(calls.finish.length, 1, 'the card is finalized exactly once');
+  assert.equal(calls.finish[0].text, '被打断前的部分内容');
+  assert.doesNotMatch(calls.finish[0].text, /已停止/);
+  assert.deepEqual(
+    calls.text.filter((request) => /已停止/.test(request.text ?? '')),
+    [],
+    'a newer message must not announce the interruption',
+  );
 });
 
 test('bridge falls back to final text with group sender mentions when AI Card creation fails', async (t) => {

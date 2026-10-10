@@ -160,6 +160,7 @@ function createBridge({
   signal,
   logger,
   reactions,
+  humanize,
 } = {}) {
   return new TextHarnessBridge({
     descriptor: { key: 'test', label: 'Test', reactions },
@@ -168,6 +169,7 @@ function createBridge({
     state,
     signal,
     logger: logger ?? { warn() {}, error() {} },
+    humanize,
   });
 }
 
@@ -1463,6 +1465,39 @@ test('a stopped shared-channel turn closes an opened stream instead of leaving a
   assert.deepEqual(sent, []);
 });
 
+test('a superseded shared-channel turn closes its stream without any notice', async () => {
+  const fixture = stateFixture({ 'direct:chat-a': 'session-superseded' });
+  const finished = [];
+  let cancelled = 0;
+  const sent = [];
+  const stopped = new Error('stopped');
+  stopped.code = 'turn-stopped';
+  stopped.stopReason = 'superseded';
+  const bridge = createBridge({
+    state: fixture.state,
+    bot: {
+      sendText: async (_target, text) => sent.push(text),
+      openStream: async () => ({
+        update() {},
+        async finish(text) { finished.push(text); },
+        cancel() { cancelled += 1; },
+      }),
+    },
+    harness: {
+      workspaceSession: () => ({
+        sessionExists: async () => true,
+        ask: async () => { throw stopped; },
+      }),
+    },
+  });
+
+  await bridge.accept(message('superseded-stream', '执行长任务'));
+
+  assert.deepEqual(finished, [], 'a newer message must not announce the interruption');
+  assert.equal(cancelled, 1);
+  assert.deepEqual(sent, []);
+});
+
 test('a failed shared-channel turn finalizes an editable stream when fail is unavailable', async () => {
   const fixture = stateFixture({ 'direct:chat-a': 'session-failed-stream' });
   const finished = [];
@@ -1780,6 +1815,12 @@ test('shared text streaming finalizes once before delivering result files', asyn
   const order = [];
   const bridge = createBridge({
     state: fixture.state,
+    // Pinned to 'off': with the default burst session this assertion would
+    // depend on the fragile coupling of "the first fire is synchronous and
+    // the refresh timers never tick within the test window". The burst
+    // ordering itself is covered by the typing-session unit tests and the
+    // bridge burst-order test below.
+    humanize: { getSettings: () => ({ typingIndicator: 'off' }) },
     bot: {
       sendText: async (_target, text) => order.push(`text:${text}`),
       sendTyping: async () => order.push('typing'),
@@ -1807,7 +1848,6 @@ test('shared text streaming finalizes once before delivering result files', asyn
   const receipt = await bridge.accept(message('artifact-stream', '流式生成文件'));
 
   assert.deepEqual(order, [
-    'typing',
     'open',
     'update:处理中',
     'finish:流式回答完成',

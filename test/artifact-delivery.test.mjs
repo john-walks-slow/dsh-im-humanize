@@ -15,7 +15,7 @@ import { createDeliveryReceipt } from '../src/channels/shared/semantic/delivery.
 
 let fixtureId = 0;
 
-async function committedArtifact(t, fileName, content) {
+async function committedArtifact(t, fileName, content, options = {}) {
   fixtureId += 1;
   const suffix = String(fixtureId);
   const workspace = await mkdtemp(join(tmpdir(), `dsh-im-delivery-${suffix}-`));
@@ -45,7 +45,7 @@ async function committedArtifact(t, fileName, content) {
     token: Symbol(`call-${suffix}`),
     agent,
   };
-  await tool.definition.execute({ path: fileName }, execution);
+  await tool.definition.execute({ path: fileName, ...options }, execution);
   tool.onResult(execution, { isError: false });
   return registry.take(sessionId, 1)[0];
 }
@@ -357,4 +357,83 @@ test('a definitively failed base delivery is not treated as user-visible', async
   });
 
   assert.equal(delivery.userVisible, false);
+});
+
+test('explicit presentation mode controls delivery routing', async (t) => {
+  // 1. Explicit 'file' on image file forces sendFile
+  const imgWithFile = await committedArtifact(t, 'photo.png', Buffer.from([1]), { as: 'file' });
+  const calls1 = [];
+  const del1 = await deliverOutboundArtifacts({
+    artifacts: [imgWithFile],
+    channelKey: 'test',
+    sendImage: async () => calls1.push('image'),
+    sendFile: async (f) => { calls1.push(`file:${f.fileName}`); return { id: 'f1' }; },
+  });
+  assert.deepEqual(calls1, ['file:photo.png']);
+  assert.equal(del1.receipt.presentation, 'test-file');
+
+  // 2. Explicit 'voice' prefers sendVoice and falls back to sendFile
+  const voiceArtifact = await committedArtifact(t, 'voice.mp3', Buffer.from([2]), { as: 'voice' });
+  const calls2 = [];
+  const del2 = await deliverOutboundArtifacts({
+    artifacts: [voiceArtifact],
+    channelKey: 'test',
+    sendVoice: async (f) => { calls2.push(`voice:${f.fileName}`); return { id: 'v1' }; },
+    sendFile: async () => calls2.push('file'),
+  });
+  assert.deepEqual(calls2, ['voice:voice.mp3']);
+  assert.equal(del2.receipt.presentation, 'test-voice');
+
+  // 3. Explicit 'animation' prefers sendAnimation
+  const animArtifact = await committedArtifact(t, 'cat.gif', Buffer.from([3]), { as: 'animation' });
+  const calls3 = [];
+  const del3 = await deliverOutboundArtifacts({
+    artifacts: [animArtifact],
+    channelKey: 'test',
+    sendAnimation: async (f) => { calls3.push(`anim:${f.fileName}`); return { id: 'a1' }; },
+    sendImage: async () => calls3.push('image'),
+    sendFile: async () => calls3.push('file'),
+  });
+  assert.deepEqual(calls3, ['anim:cat.gif']);
+  assert.equal(del3.receipt.presentation, 'test-animation');
+
+  // 4. Auto mode routes .ogg / .opus to sendVoice if available
+  const autoOgg = await committedArtifact(t, 'audio.ogg', Buffer.from([4]));
+  const calls4 = [];
+  const del4 = await deliverOutboundArtifacts({
+    artifacts: [autoOgg],
+    channelKey: 'test',
+    sendVoice: async (f) => { calls4.push(`voice:${f.fileName}`); return { id: 'v2' }; },
+    sendFile: async () => calls4.push('file'),
+  });
+  assert.deepEqual(calls4, ['voice:audio.ogg']);
+  assert.equal(del4.receipt.presentation, 'test-voice');
+});
+
+test('auto mode treats every audio artifact as a voice candidate', async (t) => {
+  for (const name of ['clip.mp3', 'clip.m4a', 'clip.wav']) {
+    const artifact = await committedArtifact(t, name, Buffer.from([7]));
+    const calls = [];
+    const delivery = await deliverOutboundArtifacts({
+      artifacts: [artifact],
+      channelKey: 'test',
+      sendVoice: async (f) => { calls.push(`voice:${f.fileName}`); return { id: 'v' }; },
+      sendFile: async (f) => { calls.push(`file:${f.fileName}`); return { id: 'f' }; },
+    });
+    assert.deepEqual(calls, [`voice:${name}`], name);
+    assert.equal(delivery.receipt.presentation, 'test-voice');
+  }
+});
+
+test('auto mode keeps audio as a plain file when the channel has no voice support', async (t) => {
+  const artifact = await committedArtifact(t, 'clip.mp3', Buffer.from([8]));
+  const calls = [];
+  const delivery = await deliverOutboundArtifacts({
+    artifacts: [artifact],
+    channelKey: 'test',
+    sendFile: async (f) => { calls.push(`file:${f.fileName}`); return { id: 'f' }; },
+  });
+
+  assert.deepEqual(calls, ['file:clip.mp3']);
+  assert.equal(delivery.receipt.presentation, 'test-file');
 });

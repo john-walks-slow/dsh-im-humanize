@@ -559,6 +559,10 @@ for (const phase of ['user echo', 'final fallback']) {
           if (botId === 'other') { delivered.push(text); return; }
           return runtime.sendProactiveText({ kind: 'user', route: { openId: 'ou_owner' } }, text);
         },
+        // The fork's coordinator also binds ordinary conversations, so it
+        // demands these two methods even when this test never uses them.
+        listSessionConversations: async () => [],
+        send: async () => {},
       },
       logger: { warn() {} },
     });

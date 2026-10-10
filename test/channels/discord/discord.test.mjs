@@ -101,6 +101,48 @@ test('Discord API authenticates with a Bot header and validates the current bot'
   });
 });
 
+test('Discord replyQuote=false drops the outbound reply reference', async () => {
+  const message = {
+    id: '111111111111111181',
+    channel_id: '222222222222222282',
+    author: { id: '333333333333333383', bot: false },
+    content: 'hello',
+  };
+  const quoted = normalizeDiscordMessage(message, '1234567890123456789');
+  assert.equal(quoted.replyTarget.replyToMessageId, '111111111111111181');
+
+  const unquoted = normalizeDiscordMessage(message, '1234567890123456789', {
+    replyQuote: false,
+  });
+  assert.equal(Object.hasOwn(unquoted.replyTarget, 'replyToMessageId'), false,
+    'the reference is absent, not merely falsy');
+  assert.equal(unquoted.replyTarget.channelId, '222222222222222282');
+  assert.deepEqual(unquoted.reactionTarget, {
+    channelId: '222222222222222282',
+    messageId: '111111111111111181',
+  }, 'reaction targeting is unaffected');
+
+  // End to end over the API layer: no message_reference on the wire.
+  const calls = [];
+  const api = new DiscordApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return jsonResponse({ id: '987654321012345678', content: 'hello' });
+    },
+  });
+  await api.createMessage({
+    channelId: unquoted.replyTarget.channelId,
+    content: '回答',
+    ...(unquoted.replyTarget.replyToMessageId
+      ? { replyToMessageId: unquoted.replyTarget.replyToMessageId }
+      : {}),
+  });
+  const body = JSON.parse(calls[0].options.body);
+  assert.equal(Object.hasOwn(body, 'message_reference'), false);
+  assert.equal(body.content, '回答');
+});
+
 test('Discord API retries one rate-limited message request', async () => {
   let attempts = 0;
   const api = new DiscordApi({

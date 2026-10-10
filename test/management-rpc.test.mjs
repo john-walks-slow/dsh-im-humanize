@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { callManagementRpc, registerManagementRpc } from '../plugin-src/management-rpc.mjs';
 import { installInboundTtlRpc } from '../plugin-src/host/inbound-ttl-rpc.mjs';
+import { installHumanizeRpc } from '../plugin-src/host/humanize-rpc.mjs';
 
 function fixture(handler, options) {
   let route;
@@ -134,18 +135,50 @@ test('unexpected handler exceptions do not expose secrets', async () => {
   assert.doesNotMatch(await response.text(), /private-secret/);
 });
 
-test('inbound TTL remains loopback-only with default and explicit trusted-host policies', async () => {
-  for (const config of [{}, { rpcAuthority: 'trusted-host' }]) {
-    let route;
-    installInboundTtlRpc({ connection: { fetch: { register(value) { route = value; return () => {}; } } } }, {
-      config,
-      runtime: {
-        store: { getTtlHours() { return 24; }, async setTtlHours() {} },
-        service: { async sweepNow() {} },
-      },
-    });
-    assert.equal((await route.fetch(request({ headers: {
-      host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
-    } }))).status, 403);
-  }
+test('inbound TTL honors rpcAuthority setting', async () => {
+  let routeTrusted;
+  installInboundTtlRpc({ connection: { fetch: { register(value) { routeTrusted = value; return () => {}; } } } }, {
+    config: { rpcAuthority: 'trusted-host' },
+    runtime: {
+      store: { getTtlHours() { return 24; }, async setTtlHours() {} },
+      service: { async sweepNow() {} },
+    },
+  });
+  assert.equal((await routeTrusted.fetch(request({ headers: {
+    host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
+  } }))).status, 200);
+
+  let routeLoopback;
+  installInboundTtlRpc({ connection: { fetch: { register(value) { routeLoopback = value; return () => {}; } } } }, {
+    config: { rpcAuthority: 'loopback' },
+    runtime: {
+      store: { getTtlHours() { return 24; }, async setTtlHours() {} },
+      service: { async sweepNow() {} },
+    },
+  });
+  assert.equal((await routeLoopback.fetch(request({ headers: {
+    host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
+  } }))).status, 403);
+});
+
+test('humanize RPC registers via management RPC and honors rpcAuthority setting', async () => {
+  let route;
+  installHumanizeRpc({ connection: { fetch: { register(value) { route = value; return () => {}; } } } }, {
+    config: { rpcAuthority: 'trusted-host' },
+  });
+  assert.equal(route.path, '/api/dsh-im/dsh-im-humanize');
+  const response = await route.fetch(new Request('http://dsh.internal/api/dsh-im/dsh-im-humanize', {
+    method: 'POST',
+    headers: { host: 'trusted.example', origin: 'https://trusted.example', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      type: 'client-request',
+      rpcId: 'req-1',
+      method: 'dsh-im/dsh-im-humanize',
+      payload: { method: 'humanize.get', payload: {} },
+    }),
+  }));
+  assert.equal(response.status, 200);
+  const json = await response.json();
+  assert.equal(json.result.ok, true);
+  assert.equal(typeof json.result.value, 'object');
 });

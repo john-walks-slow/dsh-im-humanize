@@ -90,3 +90,46 @@ test('shutdown releases accepted messages without submitting or enqueueing pendi
   assert.equal(f.calls.filter(([op]) => op === 'queue').length, 0);
   assert.equal(f.acceptedMessageIds.size, 0);
 });
+
+test('interrupt preempts the in-flight turn instead of queueing behind it', async () => {
+  const f = fixture();
+  const stops = [];
+  const aborts = [];
+  const reserved = deferred();
+  f.mode('interrupt');
+  const task = f.dispatch('one', {
+    text: '打断',
+    control: { owner: 'bridge', key: 'chat' },
+    abortPreAsk: () => aborts.push('pre-ask'),
+    state: { sessionFor: () => 'session', hasSeen: () => false, markSeen: async () => {} },
+    harness: {
+      currentBusyMessageMode: () => 'interrupt',
+      workspaceSession: () => ({
+        stopActiveTurn: async (control, { reason }) => { stops.push([control, reason]); return true; },
+      }),
+    },
+    enqueue: () => reserved.promise,
+  });
+  await tick();
+  // The new message still takes the FIFO slot: the superseded turn keeps its
+  // own completion, the new one is a fresh turn rather than a replacement.
+  assert.deepEqual(aborts, ['pre-ask']);
+  assert.deepEqual(stops, [[{ owner: 'bridge', key: 'chat' }, 'superseded']]);
+  assert.equal(f.calls.filter(([op]) => op === 'steer').length, 0, 'interrupt never steers');
+  reserved.resolve();
+  await task;
+});
+
+test('interrupt leaves a turn that is waiting for interaction alone', async () => {
+  const f = fixture();
+  const stops = [];
+  f.mode('interrupt');
+  f.pending();
+  const task = f.dispatch('one', { text: '打断' });
+  await tick();
+  assert.deepEqual(stops, []);
+  assert.deepEqual(f.calls.filter(([op]) => op === 'queue'), [['queue', false]],
+    'a pending question must be answered, not thrown away');
+  f.turn.resolve();
+  await task;
+});

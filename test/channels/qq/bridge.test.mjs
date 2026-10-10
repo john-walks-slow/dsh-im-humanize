@@ -1301,6 +1301,35 @@ test('QQ announces a stopped turn and closes its unused private stream', async (
   assert.equal(fixture.seen.has('qq-stopped-stream'), true);
 });
 
+test('QQ stays silent when a newer message superseded the stopped turn', async () => {
+  const fixture = stateFixture([['c2c:owner-openid', 'session-superseded']]);
+  const sent = [];
+  let loggedErrors = 0;
+  const bridge = new QqHarnessBridge({
+    bot: {
+      sendText: async (_target, text) => sent.push(text),
+    },
+    ownerUserOpenid: 'owner-openid',
+    harness: {
+      sessionExists: async () => true,
+      ask: async () => {
+        const error = new Error('turn stopped');
+        error.code = 'turn-stopped';
+        error.stopReason = 'superseded';
+        throw error;
+      },
+    },
+    state: fixture.state,
+    logger: { warn() {}, error() { loggedErrors += 1; } },
+  });
+
+  await bridge.accept(message({ messageId: 'qq-superseded-stream' }));
+
+  assert.deepEqual(sent, [], 'a newer message must not announce the interruption');
+  assert.equal(loggedErrors, 0);
+  assert.equal(fixture.seen.has('qq-superseded-stream'), true);
+});
+
 test('QQ keeps a stopped turn terminal when its notice cannot be sent', async () => {
   const fixture = stateFixture([['c2c:owner-openid', 'session-stopped-fallback']]);
   let warnings = 0;

@@ -610,6 +610,15 @@ test('Enterprise WeChat final frames discard progress while preserving the answe
       error: Object.assign(new Error('turn stopped'), { code: 'turn-stopped' }),
       expected: '已停止。',
     },
+    {
+      name: 'superseded by a newer message closes the stream empty',
+      updates: [{ type: 'status', text: '正在整理结果…' }],
+      error: Object.assign(new Error('turn stopped'), {
+        code: 'turn-stopped',
+        stopReason: 'superseded',
+      }),
+      expected: '',
+    },
   ];
   for (const scenario of cases) {
     await t.test(scenario.name, async () => {

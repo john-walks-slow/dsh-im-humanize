@@ -216,7 +216,8 @@ test('the composed host serves other real channels while Feishu is loading and a
   try {
     // Allow Cordis to enter its activation callback; Feishu stays gated.
     await new Promise(setImmediate);
-    assert.equal(f.routes.size, channels.length);
+    // The 13 channels plus this fork's own '/dsh-im-humanize' settings channel.
+    assert.equal(f.routes.size, channels.length + 1);
     await allLoaded.promise;
     assert.equal((await f.call('feishu')).error.code, 'feishu-initializing');
     // Let the other channels finish their local workspace reconciliation.

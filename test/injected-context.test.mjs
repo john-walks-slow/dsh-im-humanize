@@ -262,7 +262,7 @@ test('only the messages that carry a prefix are touched', () => {
   };
   // A prompt identity without the prefix (every non-IM caller) is left alone.
   const gui = { ...plain, id: 'g0', source: { kind: 'user' } };
-  const plugin = { ...plain, id: 'p0', source: { kind: 'plugin', plugin: 'other' } };
+  const plugin = { ...plain, id: 'p0', source: { kind: 'time-context', form: 'notice', summary: 'now' } };
   assert.equal(rewriteInjectedContextMessages([gui, plugin, plain]), null);
   const rewritten = rewriteInjectedContextMessages([plain, prefixed], { newId: identityFactory() });
   // An untouched message keeps its identity; the rewritten one keeps its id.

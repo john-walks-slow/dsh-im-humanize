@@ -3,7 +3,7 @@
 - 日期：2026-10-10
 - worktree：`/root/projects/dsh-im-humanize/.worktrees/merge-upstream-4.38`，分支 `merge-upstream-4.38`
 - 目标版本：`v4.38.0`（= `9353109`；`upstream/main` 当前为 `bbafc99`，比 4.38.0 多一个 i18n 后缀修复）
-- 状态：**P1 盘点完成**（见 [inventory](261010-merge-upstream-4.38.inventory.md)），待用户确认后进入 P2
+- 状态：**P2 源码解冲突（批 a–f2）+ P3 测试适配 + P4 构建已完成**，逐批记录见 [log](261010-merge-upstream-4.38.log.md)；整棵 `test/` 已按同一条 re-baseline 规则重放并逐条适配（249 文件 / 4187 用例 / 3989 通过 / 5 个既有失败），`npm run build` 与 `verify-package` 通过。待用户书面确认后执行 P7（合并回 main、发布 `4.38.0-humanize.1`），P6 的实机验收（Telegram 流式/分段/语音/附件、Feishu 卡片、Web GUI 不调用 `dsh_im_return_file`）待重启 dsh 后由用户确认。
 - 策略：已确认采用 B（re-baseline），并要求在重放过程中同步评估可精简的历史包袱
 
 ## 目标

@@ -52,6 +52,10 @@ function bridgeFor(f, ask) {
       sessionFor: () => 'session-stream',
     },
     logger: f.logger,
+    // Pinned to 'off': these tests assert the legacy single-indicator
+    // ordering; the burst session's refresh/dark timers under mocked clocks
+    // are covered by the typing-session unit tests (plan §339).
+    humanize: { getSettings: () => ({ typingIndicator: 'off' }) },
   });
 }
 

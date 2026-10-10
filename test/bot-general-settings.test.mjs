@@ -27,14 +27,16 @@ test('general settings auto-saves changes, rolls back failures, and blocks edits
     return new Promise((resolve) => { finishSave = () => resolve(result('one', payload.busyMessageMode)); });
   });
   const select = () => view.root.findByType('select');
-  assert.equal(select().props.value, 'queue');
-  assert.deepEqual(select().findAllByType('option').map((node) => node.props.value), ['queue', 'steer']);
+  // An unset mode reaches the panel already resolved: interrupt is the default.
+  assert.equal(select().props.value, 'interrupt');
+  assert.deepEqual(select().findAllByType('option').map((node) => node.props.value),
+    ['interrupt', 'queue', 'steer']);
   assert.equal(view.root.findAllByType('button').length, 0);
-  await act(async () => select().props.onChange({ target: { value: 'queue' } }));
+  await act(async () => select().props.onChange({ target: { value: 'interrupt' } }));
   assert.deepEqual(calls, [{ endpoint: 'connection.status', payload: {} }]);
   await act(async () => select().props.onChange({ target: { value: 'steer' } }));
   assert.match(text(view.root.findByProps({ role: 'alert' })), /disk full/);
-  assert.equal(select().props.value, 'queue');
+  assert.equal(select().props.value, 'interrupt');
   assert.equal(select().props.disabled, false);
   fail = false;
   await act(async () => select().props.onChange({ target: { value: 'steer' } }));

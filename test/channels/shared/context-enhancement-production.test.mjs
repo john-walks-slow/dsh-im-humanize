@@ -72,10 +72,12 @@ for (const channel of ['wecom', 'weixin', 'feishu', 'dingtalk', 'qq', 'slack', '
     assert.equal(stateLoads, 2);
     assert.equal(Object.hasOwn(harnessOptions, 'contextEnhancement'), false);
     assert.equal(Object.hasOwn(harnessOptions, 'source'), false);
-    assert.equal(runtimes[0].harness.currentBusyMessageMode(), 'queue');
+    // Unset bots follow the global humanization default, which is interrupt.
+    assert.equal(runtimes[0].harness.currentBusyMessageMode(), 'interrupt');
     await production.controller.updateBusyMessageMode(botIds[0], 'steer');
     assert.equal(runtimes[0].harness.currentBusyMessageMode(), 'steer');
-    assert.equal(runtimes[1].harness.currentBusyMessageMode(), 'queue');
+    assert.equal(runtimes[1].harness.currentBusyMessageMode(), 'interrupt');
+    // An explicit queue outranks the interrupt default and is stored per bot.
     await production.controller.updateBusyMessageMode(botIds[0], 'queue');
     assert.equal(runtimes[0].harness.currentBusyMessageMode(), 'queue');
     const provider = runtimes[0].contextEnhancement;

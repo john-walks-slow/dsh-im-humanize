@@ -584,6 +584,11 @@ export class BotWorkspaceStore {
   effectiveBusyMessageModeFor(botId) {
     const stored = this.busyMessageModeFor(botId);
     if (stored !== undefined) return stored;
+    return this.#defaultBusyMessageMode();
+  }
+
+  /** The live global humanization default, normalized, for bots without a choice. */
+  #defaultBusyMessageMode() {
     let configured;
     try {
       configured = this.#busyMessageModeDefaults?.();
@@ -987,8 +992,11 @@ export class BotWorkspaceStore {
         throw error;
       }
       const next = { ...this.#busyMessageModes };
-      if (mode === 'steer') next[id] = mode;
-      else delete next[id];
+      // Store only what the global humanization default cannot supply: a bot
+      // pinned to the value it already follows would freeze on a later change
+      // of that default for no visible reason.
+      if (mode === this.#defaultBusyMessageMode()) delete next[id];
+      else next[id] = mode;
       // Publish only after the same atomic write used by the other bot settings.
       await this.#persist(this.#contextEnhancement, this.#deliveryTargets,
         this.#version, this.#accessPolicies, this.#aliases, this.#conversationWorkspaces, next);

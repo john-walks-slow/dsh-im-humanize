@@ -293,7 +293,7 @@ test('expanded card more settings opens a bot-scoped page and returns in place',
   assert.equal(settingsTab.props['aria-controls'], settingsPanel.props.id);
   assert.equal(settingsPanel.props['aria-labelledby'], settingsTab.props.id);
   assert.ok(settingsPanel.findByProps({ className: 'dim-botGeneralSettings' }));
-  assert.equal(settingsPanel.findByType('select').props.value, 'queue');
+  assert.equal(settingsPanel.findByType('select').props.value, 'interrupt');
   assert.equal(settingsPanel.findByType('select').props.disabled, false);
   await act(async () => {
     button(page, '投递设置').props.onClick();

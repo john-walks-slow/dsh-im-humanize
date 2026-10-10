@@ -24,20 +24,15 @@ class FakeBot extends EventEmitter {
   async sendText(target, text) { this.sent.push({ target, text }); }
 }
 
-test('QQ runtime preserves mention decisions through sanitization, typing and commands', async (t) => {
+test('QQ runtime preserves mention decisions through sanitization and commands', async (t) => {
   const bot = new FakeBot();
   bot.appId = '123';
-  const typing = [];
   const seen = new Set();
   const runtime = new QqRuntime({
     config: { botId: 'qq_bot', appId: '123', ownerUserOpenid: '*' }, appSecret: 'secret',
     harness: { ensureRunning: async () => true },
     state: { hasSeen: (id) => seen.has(id), markSeen: async (id) => seen.add(id) },
     createBot: () => bot,
-    typingMiddleware: ({ predicate }) => async (ctx, next) => {
-      typing.push(predicate(ctx));
-      await next();
-    },
   });
   t.after(() => runtime.stop());
   await runtime.start();
@@ -71,14 +66,12 @@ test('QQ runtime preserves mention decisions through sanitization, typing and co
     const count = bot.sent.length;
     const normalized = await dispatch(content, fields);
     assert.equal(normalized.content, '/status');
-    assert.equal(typing.at(-1), true);
     assert.equal(bot.sent.length, count + 1);
     assert.match(bot.sent.at(-1).text, /连接正常/);
   }
   const count = bot.sent.length;
   for (const content of ['/status', '<@other> /status', '<@1234> /status']) {
     await dispatch(content);
-    assert.equal(typing.at(-1), false);
     assert.equal(bot.sent.length, count);
   }
   // Recreating a runtime must not inherit IDs learned from a previous connection.
@@ -86,11 +79,10 @@ test('QQ runtime preserves mention decisions through sanitization, typing and co
   bot.middlewares = [];
   await runtime.start();
   await dispatch('<@ABCDEF0123456789ABCDEF0123456789> /status');
-  assert.equal(typing.at(-1), false);
   assert.equal(bot.sent.length, count);
 });
 
-test('QQ runtime waits for gateway ready, installs typing, and stops its client', async () => {
+test('QQ runtime waits for gateway ready, installs only contentSanitizer, and stops its client', async () => {
   const bot = new FakeBot();
   let botOptions;
   const sdkLogs = [];
@@ -107,7 +99,6 @@ test('QQ runtime waits for gateway ready, installs typing, and stops its client'
       debug: (...args) => sdkLogs.push(['debug', ...args]),
       info: (...args) => sdkLogs.push(['info', ...args]),
     },
-    typingMiddleware: (options) => ({ name: 'typing-middleware', options }),
     connectTimeoutMs: 100,
   });
   const status = await runtime.start();
@@ -115,10 +106,11 @@ test('QQ runtime waits for gateway ready, installs typing, and stops its client'
   assert.equal(status.qqConnectionState, 'connected');
   assert.equal(typeof bot.middlewares[0], 'function'); // mention normalization
   assert.equal(typeof bot.middlewares[1], 'function'); // contentSanitizer (face-tag parsing)
-  assert.equal(bot.middlewares[2].name, 'typing-middleware');
-  assert.equal(bot.middlewares[2].options.keepAlive, true);
-  assert.equal(bot.middlewares[2].options.predicate({ message: { senderId: 'owner' } }), true);
-  assert.equal(bot.middlewares[2].options.predicate({ message: { senderId: 'other' } }), false);
+  // The SDK typingIndicator middleware is gone: its 50s keepalive was dead
+  // in this integration, and the two-phase model starts the indicator only
+  // after the read delay. Typing is the bridge's self-managed session now
+  // (qq-bridge.mjs); only the two content middlewares are installed.
+  assert.equal(bot.middlewares.length, 2);
   assert.equal(botOptions.markdownSupport, false);
   botOptions.logger.debug('raw gateway payload');
   botOptions.logger.info('gateway ready');

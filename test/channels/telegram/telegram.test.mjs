@@ -406,6 +406,50 @@ test('Telegram plain delivery keeps the 4000 boundary, reply, topic, and content
   assert.deepEqual(receipt.providerMessageIds, ['601', '602']);
 });
 
+test('Telegram replyQuote=false drops the outbound quote header but keeps topic routing', async () => {
+  const update = {
+    update_id: 14,
+    message: {
+      message_id: 8,
+      message_thread_id: 300,
+      chat: { id: -1001, type: 'supergroup' },
+      from: { id: 43, is_bot: false },
+      text: '@HarnessBot no quote',
+      entities: [{ type: 'mention', offset: 0, length: 11 }],
+    },
+  };
+  const options = { botId: '123456789', username: 'HarnessBot' };
+
+  const quoted = normalizeTelegramUpdate(update, options);
+  assert.equal(quoted.replyTarget.replyToMessageId, 8);
+
+  const unquoted = normalizeTelegramUpdate(update, { ...options, replyQuote: false });
+  assert.equal(Object.hasOwn(unquoted.replyTarget, 'replyToMessageId'), false,
+    'the quote header is absent, not merely falsy');
+  assert.equal(unquoted.replyTarget.chatId, -1001);
+  assert.equal(unquoted.replyTarget.chatType, 'supergroup');
+  assert.equal(unquoted.replyTarget.messageThreadId, 300, 'topic routing survives');
+  assert.deepEqual(unquoted.reactionTarget, { chatId: -1001, messageId: 8 },
+    'reaction targeting is unaffected');
+  assert.equal(unquoted.conversationId, '-1001:300');
+
+  // The stripped target flows through the bot client: no reply_parameters
+  // on the wire while the topic id is preserved.
+  const calls = [];
+  const client = new TelegramBotClient({
+    api: {
+      sendMessage: async (payload) => {
+        calls.push(payload);
+        return { message_id: 700 };
+      },
+    },
+  });
+  await client.sendText(unquoted.replyTarget, '回答');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].replyToMessageId, undefined);
+  assert.equal(calls[0].messageThreadId, 300);
+});
+
 test('Telegram API uploads a result file as a native document in the same topic and reply chain', async () => {
   let request;
   const api = new TelegramApi({
@@ -480,6 +524,124 @@ test('Telegram API uploads a result image as a native photo in the same topic an
   assert.equal(Buffer.from(await photo.arrayBuffer()).toString(), 'telegram-image');
 });
 
+test('Telegram API uploads a GIF animation through the native animation method', async () => {
+  let request;
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return jsonResponse({ ok: true, result: { message_id: 904 } });
+    },
+  });
+  const result = await api.sendAnimation({
+    chatId: -100123,
+    replyToMessageId: 44,
+    messageThreadId: 55,
+    file: {
+      fileName: 'blob.gif',
+      mediaType: 'image/gif',
+      bytes: Buffer.from('telegram-gif'),
+    },
+  });
+
+  assert.equal(result.message_id, 904);
+  assert.match(request.url.pathname, /sendAnimation$/);
+  assert.ok(request.options.body instanceof FormData);
+  assert.equal(request.options.body.get('chat_id'), '-100123');
+  assert.equal(request.options.body.get('message_thread_id'), '55');
+  assert.deepEqual(JSON.parse(request.options.body.get('reply_parameters')), {
+    message_id: 44,
+    allow_sending_without_reply: true,
+  });
+  const animation = request.options.body.get('animation');
+  assert.equal(animation.name, 'blob.gif');
+  assert.equal(animation.type, 'image/gif');
+  assert.equal(Buffer.from(await animation.arrayBuffer()).toString(), 'telegram-gif');
+});
+
+test('Telegram API uploads an audio result as a native voice message in the same topic and reply chain', async () => {
+  let request;
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return jsonResponse({ ok: true, result: { message_id: 905 } });
+    },
+  });
+  const result = await api.sendVoice({
+    chatId: -100123,
+    replyToMessageId: 44,
+    messageThreadId: 55,
+    file: {
+      fileName: 'voice.ogg',
+      mediaType: 'audio/ogg',
+      bytes: Buffer.from('telegram-voice'),
+    },
+  });
+
+  assert.equal(result.message_id, 905);
+  assert.match(request.url.pathname, /sendVoice$/);
+  assert.equal(request.options.method, 'POST');
+  assert.ok(request.options.body instanceof FormData);
+  assert.equal(request.options.body.get('chat_id'), '-100123');
+  assert.equal(request.options.body.get('message_thread_id'), '55');
+  assert.deepEqual(JSON.parse(request.options.body.get('reply_parameters')), {
+    message_id: 44,
+    allow_sending_without_reply: true,
+  });
+  const voice = request.options.body.get('voice');
+  assert.equal(voice.name, 'voice.ogg');
+  assert.equal(voice.type, 'audio/ogg');
+  assert.equal(Buffer.from(await voice.arrayBuffer()).toString(), 'telegram-voice');
+});
+
+test('Telegram API keeps voice chat actions instead of downgrading them to typing', async () => {
+  const actions = [];
+  const api = new TelegramApi({
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      actions.push(JSON.parse(options.body).action);
+      return jsonResponse({ ok: true, result: true });
+    },
+  });
+
+  await api.sendChatAction({ chatId: -100123, action: 'record_voice' });
+  await api.sendChatAction({ chatId: -100123, action: 'upload_voice' });
+  await api.sendChatAction({ chatId: -100123, action: 'dance' });
+
+  assert.deepEqual(actions, ['record_voice', 'upload_voice', 'typing']);
+});
+
+test('Telegram bot client delegates voice delivery to sendVoice with the existing reply context', async () => {
+  let request;
+  const controller = new AbortController();
+  const client = new TelegramBotClient({
+    api: {
+      sendVoice: async (value) => {
+        request = value;
+        return { message_id: 906 };
+      },
+    },
+    signal: controller.signal,
+  });
+  const file = {
+    fileName: 'voice.opus',
+    mediaType: 'audio/opus',
+    bytes: Buffer.from('telegram-voice'),
+  };
+
+  assert.deepEqual(await client.sendVoice({
+    chatId: -100456,
+    replyToMessageId: 66,
+    messageThreadId: 77,
+  }, file), { message_id: 906 });
+  assert.equal(request.chatId, -100456);
+  assert.equal(request.file, file);
+  assert.equal(request.replyToMessageId, 66);
+  assert.equal(request.messageThreadId, 77);
+  assert.equal(request.signal, controller.signal);
+});
+
 test('Telegram bot client routes images through sendPhoto with the existing reply context', async () => {
   let request;
   const controller = new AbortController();
@@ -508,6 +670,51 @@ test('Telegram bot client routes images through sendPhoto with the existing repl
   assert.equal(request.replyToMessageId, 66);
   assert.equal(request.messageThreadId, 77);
   assert.equal(request.signal, controller.signal);
+});
+
+test('Telegram bot client routes GIF artifacts through sendAnimation and other images through sendPhoto', async () => {
+  const controller = new AbortController();
+  const calls = [];
+  const client = new TelegramBotClient({
+    api: {
+      sendPhoto: async (value) => {
+        calls.push(['sendPhoto', value]);
+        return { message_id: 910 };
+      },
+      sendAnimation: async (value) => {
+        calls.push(['sendAnimation', value]);
+        return { message_id: 911 };
+      },
+    },
+    signal: controller.signal,
+  });
+  const target = { chatId: -100456, replyToMessageId: 66, messageThreadId: 77 };
+
+  const gif = {
+    fileName: 'blob.gif',
+    mediaType: 'image/gif',
+    bytes: Buffer.from('gif'),
+  };
+  const png = {
+    fileName: 'result.png',
+    mediaType: 'image/png',
+    bytes: Buffer.from('png'),
+  };
+
+  assert.deepEqual(await client.sendImage(target, gif), { message_id: 911 });
+  assert.deepEqual(await client.sendImage(target, png), { message_id: 910 });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][0], 'sendAnimation');
+  assert.equal(calls[0][1].file, gif);
+  assert.equal(calls[1][0], 'sendPhoto');
+  assert.equal(calls[1][1].file, png);
+  for (const [, value] of calls) {
+    assert.equal(value.chatId, -100456);
+    assert.equal(value.replyToMessageId, 66);
+    assert.equal(value.messageThreadId, 77);
+    assert.equal(value.signal, controller.signal);
+  }
 });
 
 test('Telegram photo delivery reuses stable artifact error mapping', async () => {
@@ -599,9 +806,19 @@ test('Telegram document delivery marks post-dispatch failures uncertain but pres
   const timeoutApi = new TelegramApi({
     token: TOKEN,
     fileUploadTimeoutMs: 10,
+    retryDelayMs: 0,
+    maxRetries: 0,
     fetchImpl: async (_url, { signal }) => new Promise((resolve, reject) => {
-      if (signal.aborted) reject(signal.reason);
-      else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      const timer = setTimeout(() => {}, 200);
+      if (signal.aborted) {
+        clearTimeout(timer);
+        reject(signal.reason);
+      } else {
+        signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        }, { once: true });
+      }
     }),
   });
   await assert.rejects(() => timeoutApi.sendDocument({
@@ -1101,6 +1318,83 @@ test('Telegram normalizes private messages and requires an explicit group addres
   assert.equal(topicTwo.replyTarget.messageThreadId, 200);
   assert.deepEqual(topicOne.reactionTarget, { chatId: -1001, messageId: 6 });
   assert.deepEqual(topicTwo.reactionTarget, { chatId: -1001, messageId: 7 });
+});
+
+test('Telegram ignores forum topic creation and system service messages', () => {
+  // 1. forum_topic_created in private chat (threads mode)
+  const privateTopicCreated = normalizeTelegramUpdate({
+    update_id: 1001,
+    message: {
+      message_id: 20,
+      message_thread_id: 20,
+      chat: { id: 88, type: 'private' },
+      from: { id: 42, is_bot: false },
+      date: 1727140000,
+      forum_topic_created: {
+        name: 'New Topic',
+        icon_color: 7322096,
+      },
+    },
+  }, { botId: '123456789', username: 'HarnessBot' });
+  assert.equal(privateTopicCreated, null);
+
+  // 2. forum_topic_created in supergroup forum
+  const groupTopicCreated = normalizeTelegramUpdate({
+    update_id: 1002,
+    message: {
+      message_id: 21,
+      message_thread_id: 21,
+      chat: { id: -1001, type: 'supergroup' },
+      from: { id: 42, is_bot: false },
+      date: 1727140000,
+      forum_topic_created: {
+        name: 'General Discussion',
+        icon_color: 16777215,
+      },
+    },
+  }, { botId: '123456789', username: 'HarnessBot' });
+  assert.equal(groupTopicCreated, null);
+
+  // 3. other service messages (e.g. pinned_message, forum_topic_closed, write_access_allowed)
+  for (const [field, payload] of [
+    ['pinned_message', { message_id: 10 }],
+    ['forum_topic_closed', {}],
+    ['forum_topic_edited', { name: 'Renamed' }],
+    ['write_access_allowed', {}],
+    ['new_chat_members', [{ id: 99, is_bot: false }]],
+  ]) {
+    const serviceMsg = normalizeTelegramUpdate({
+      update_id: 1003,
+      message: {
+        message_id: 22,
+        chat: { id: 88, type: 'private' },
+        from: { id: 42, is_bot: false },
+        [field]: payload,
+      },
+    }, { botId: '123456789', username: 'HarnessBot' });
+    assert.equal(serviceMsg, null, `expected service message with ${field} to be ignored`);
+  }
+
+  // 4. normal message inside a topic whose reply_to_message points to the topic creation service message
+  const normalMessageWithTopicReply = normalizeTelegramUpdate({
+    update_id: 1004,
+    message: {
+      message_id: 23,
+      message_thread_id: 20,
+      chat: { id: 88, type: 'private' },
+      from: { id: 42, is_bot: false },
+      text: 'hello from topic',
+      reply_to_message: {
+        message_id: 20,
+        chat: { id: 88, type: 'private' },
+        from: { id: 42, is_bot: false },
+        forum_topic_created: { name: 'New Topic', icon_color: 7322096 },
+      },
+    },
+  }, { botId: '123456789', username: 'HarnessBot' });
+  assert.notEqual(normalMessageWithTopicReply, null);
+  assert.equal(normalMessageWithTopicReply.content, 'hello from topic');
+  assert.equal(normalMessageWithTopicReply.replyTo, undefined);
 });
 
 for (const field of ['text', 'caption']) {
@@ -2350,7 +2644,9 @@ test('Telegram private placeholder streams keep controls responsive and ordinary
       });
       const bridge = new TelegramHarnessBridge({
         bot: client, state, thinkingTraces: false,
-        harness: { workspaceSession: () => session },
+        // The follow-up case below asserts the queue path, so pin the mode:
+        // the shipped default is interrupt, which supersedes instead.
+        harness: { workspaceSession: () => session, currentBusyMessageMode: () => 'queue' },
         logger: { warn() {}, error() {} },
       });
       const incoming = (id, text) => normalizeTelegramUpdate({
@@ -2427,3 +2723,115 @@ test('Telegram private placeholder creation failure still delivers the final ans
   assert.deepEqual(calls, ['placeholder', 'final']);
   assert.equal(receipt.deliveryOutcome, 'sent');
 });
+test('TelegramApi retries on transient network errors (fetch failed / UND_ERR_SOCKET)', async () => {
+  let attempts = 0;
+  const api = new TelegramApi({
+    token: TOKEN,
+    retryDelayMs: 10,
+    fetchImpl: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        const err = new TypeError('fetch failed');
+        err.cause = new Error('other side closed');
+        err.cause.code = 'UND_ERR_SOCKET';
+        throw err;
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 100 } }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  const result = await api.sendMessage({ chatId: 123, text: 'hello' });
+  assert.equal(result.message_id, 100);
+  assert.equal(attempts, 2);
+});
+
+test('TelegramApi retries on 429 rate limit with retry_after', async () => {
+  let attempts = 0;
+  const api = new TelegramApi({
+    token: TOKEN,
+    retryDelayMs: 10,
+    fetchImpl: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Response(JSON.stringify({
+          ok: false,
+          error_code: 429,
+          description: 'Too Many Requests: retry after 1',
+          parameters: { retry_after: 0.05 },
+        }), {
+          status: 429,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 101 } }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  const result = await api.sendMessage({ chatId: 123, text: 'hello rate limit' });
+  assert.equal(result.message_id, 101);
+  assert.equal(attempts, 2);
+});
+
+test('TelegramApi does not retry 4xx errors other than 429', async () => {
+  let attempts = 0;
+  const api = new TelegramApi({
+    token: TOKEN,
+    retryDelayMs: 10,
+    fetchImpl: async () => {
+      attempts += 1;
+      return new Response(JSON.stringify({
+        ok: false,
+        error_code: 400,
+        description: 'Bad Request: chat not found',
+      }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  await assert.rejects(() => api.sendMessage({ chatId: 123, text: 'hello bad request' }), (err) => {
+    assert.equal(err.code, 'telegram-400');
+    return true;
+  });
+  assert.equal(attempts, 1);
+});
+
+test('Telegram DeliveryStream creates no message during lazy streaming keepalive', async () => {
+  const sends = [];
+  const edits = [];
+  const api = {
+    sendRichMessage: async (payload) => { sends.push(payload); return { message_id: 200 }; },
+    sendMessage: async (payload) => { sends.push(payload); return { message_id: 201 }; },
+    editMessageText: async (payload) => { edits.push(payload); return true; },
+    sendChatAction: async () => true,
+  };
+  const client = new TelegramBotClient({
+    api,
+    botId: 'tg_stream_test',
+    username: 'TestBot',
+  });
+
+  // Private chats use a real placeholder message (upstream #276), so a lazy
+  // stream creates nothing up front and needs no keepalive heartbeat.
+  const stream = await client.openDeliveryStream({ chatId: 123, chatType: 'private' }, { lazy: true });
+  assert.equal(sends.length, 0, 'lazy stream sends no placeholder immediately');
+  assert.equal(stream.keepalive, false, 'editing a real message needs no keepalive');
+
+  await stream.refresh();
+  assert.equal(sends.length, 0, 'refresh() stays silent before the first real update in lazy mode');
+
+  await stream.update('真正的结果更新');
+  assert.equal(sends.length, 1, 'update() creates the message with the real content');
+  assert.match(sends[0].text, /真正的结果更新/);
+
+  await stream.refresh();
+  assert.equal(sends.length, 1, 'refresh() never creates a second message');
+
+  await stream.finish('最终消息');
+});
+

@@ -14,7 +14,7 @@
 | P2-e | 客户端层 `plugin-src/client/**` + `scripts/verify-package.mjs`（含 R3 简化） | ✅ 完成 |
 | P2-f1 | R2：人化设置字段声明式化（一张表派生全部默认值/宽松读/严格校验 + 两个面板） | ✅ 完成 |
 | P2-f2 | 收敛 `onNewMessage` → `busyMessageMode`：per-bot 复用 `busyMessageModes`、`interrupt` 补成 dispatcher 第三态、删除 `new-message-policy.mjs` | ✅ 完成 |
-| P2-g | 测试适配 + `npm run build` + 分层验证 | 待办 |
+| P2-g | 测试适配 + `npm run build` + 分层验证 | ✅ 完成 |
 
 ## 批次记录
 
@@ -220,3 +220,52 @@ client 侧：
 1. **`interrupt` 模式**：上游 `busyMessageModes` 只有 `queue` / `steer` 两态，fork 的 `onNewMessage` 默认值是 `interrupt`（新消息取消在途回合 + 静默退场）。删除 `new-message-policy.mjs` 后，若仍要 `interrupt`，需要以「在上游 `BusyMessageDispatcher` 上补第三态」的小补丁方式实现，而不是恢复整个平行模块。P2-f 前需明确取舍。
 2. README 里「新消息行为 `onNewMessage` … 上游仅 queue」的表述、以及「修复的缺陷（上游 bug）」里针对 v4.13.0 的历史条目，在 P2-f 落地后需同步更新（避免用户文档与实现不符）。
 3. `progress-status` 相关断言与上游 `status-reaction` / thinking-traces 的关系，留到 P2-g 跑测试后再定保留范围。
+
+### P2-g（测试适配 + 构建 + 分层验证）
+
+**测试树 re-baseline**：`/tmp/p2-apply.sh test/` —— 16 个「仅 fork 改」整份取 main、16 个三路干净落地、**11 个冲突**人工裁决、1 个删除（`test/new-message-policy.test.mjs`，模块已在 P2-f2 移除）。`test/browser/` 只有上游新增的 `bot-settings-tabs.fixture.js`，工作树本就是上游版本，无需处理。
+
+裁决规则与结果（`ours` = 上游 v4.38.0，`theirs` = fork main）：
+
+| 文件 | 冲突 | 裁决 | 依据 |
+| --- | --- | --- | --- |
+| `injected-context.test.mjs` | 8 | 全取上游 | 合并后的实现取上游的 producer-owned 裸名 `kind`（P2-b 裁决），fork 的 `plugin:` 前缀用例作废 |
+| `channels/feishu/harness-client.test.mjs` | 3 | 全取上游 | 上游的 `failHandoff` 参数化版本覆盖 fork 的同名单例；另两处是上游新增的 tracker 用例与 `workspace.list` 桩 |
+| `channels/shared/harness-control.test.mjs` | 2 | fixture 并集 + 两侧用例全保留 | fixture 同时支持上游的 `toolAfterText` 与 fork 的 `pushEvent`；序号按上游语义固定（3/4/5），注入事件顺延 |
+| `channels/qq/runtime.test.mjs` | 2 | 取 fork 断言 + 保留上游用例 | 合并后的 `qq-runtime.mjs` 取 fork（不装 SDK typing 中间件），故中间件断言取 fork；上游新增的 mention/sanitize/命令用例整段保留，仅标题改名 |
+| `channels/shared/text-harness-bridge.test.mjs` | 2 | 全取上游 | fork 侧被三路算法错位对齐的两例是 Rich Draft 相关，随 P2-c 的 Draft 移除作废 |
+| `channels/telegram/telegram.test.mjs` | 1 | 两侧全保留 | 上游的 placeholder 用例与 fork 的 API 重试用例互不相干 |
+| `outbound-artifact.test.mjs` | 1 | 取 fork | 上游在同一锚点插入了自身的用例，fork 的 `as`/`prefer` 用例是新增 |
+| `harness-reply-tracker` / `session-sync-coordinator` / `delivery-service` | 各 1 | 两侧全保留（补一份尾部 `});`） | 两侧都是文件末尾追加，三路把共用的收尾行对齐成了同一行 |
+| `channels/dingtalk/client-api.test.mjs` | 1 | 并集 | `setBusyMessageMode` 与 `setHumanize` 同表并存（P2-e 的端点并集） |
+
+**两侧内容审计**（对比三个版本的测试标题集合，专找被三路静默吞掉的用例）：fork 侧 16 个「缺失」标题逐条核对后**全部是上游改名/替换**，无内容丢失——`groupTopicReply` → 上游 `mentionTopicReply`（同一套托管话题实现，fork 的 7 例作废）、feishu/session-sync 的 overflow 用例被上游重写、qq/bridge 两例被上游参数化、delivery-adapter 与 feishu/harness-client 各一例被上游更宽的版本取代、rich-message 的 9 例与 text-harness-bridge 的 2 例随 Draft 移除作废。上游侧只缺 1 例，即 P2-c 有意保留的 fork 分歧（inbound-ttl 的 authority 可配置）——fork 版 `management-rpc.test.mjs` 已按 fork 语义改写，重放后直接通过。
+
+**逐条落地**（对应「P2-g 待办」1–10）：
+
+1. `qq/runtime.test.mjs`：删掉 `typingMiddleware` 选项与 3 处 typing 断言（运行时不再安装该中间件，全仓也无调用点）；`middlewares.length` 由 fork 的 1 改为 **2**（合并后的运行时同时安装 mention 归一化与 contentSanitizer）。
+2. `whatsapp/streaming.test.mjs`：该文件仅 fork 改，re-baseline 后即 fork 版，无需再调。
+3. session-sync 交付服务桩补到 4 个方法：`test/session-sync-coordinator.test.mjs`（上游版 2 处）与 `test/channels/feishu/feishu-runtime.test.mjs`（上游版 1 处）各补 `listSessionConversations`/`send`；`test/channels/feishu/session-sync.test.mjs` 用的是 fork 版，本就完整。
+4. `rich-message.test.mjs` 的 429 子用例：断言由固定 `calls.length === 3` 改为「可重试状态多两次尝试」+「末次调用是纯文本兜底」（语义断言不变）。
+5. `dingtalk/client-api.test.mjs` 端点快照取并集（re-baseline 后由 fork 版覆盖）。
+6. 默认 queue → interrupt：`message-mode-settings`（全篇）、`context-enhancement-production`（13 个渠道用例共用的断言块）、`bot-general-settings`（首个用例）、`client-delivery-settings`（1 处）按 fork 语义改写；改写后断言的是「未设置的机器人跟随全局默认 = interrupt，而原始读仍是 undefined」。
+7. `humanize-bridge.test.mjs` 的 artifact 用例补开消费者（`openConsumer` + `observeSessionEvent`），与 part 1 契约一致。
+8. fork 侧改名/移位：`humanize-settings`（默认表 `busyMessageMode`）、`humanize-override`（per-bot 段不再含 `onNewMessage`，按未知键丢弃）、`client-humanize-ui`（去掉 per-bot「新消息行为」下拉）、`humanize-bridge`（queue/steer 两例改由 `harness.currentBusyMessageMode()` 驱动）。
+9. 补测：`busy-message-dispatcher.test.mjs` 增加 interrupt 第三态两例（`abortPreAsk` + `stopActiveTurn({reason:'superseded'})` 抢占；等待交互时不打断），`message-mode-settings.test.mjs` 增加三级回落一例（机器人自选 → 全局默认 → interrupt，含垃圾值回落）。
+10. `client-ui.test.mjs` 的中文串提取先剥注释（`stripComments`），从根上消除「注释里的撇号吞代码」这类假失败。该修正同时**暴露**上游既有缺口：旧扫描器把 `channels/email/index.js` 的 44 条中文串整段吞掉（`feishu/slash-panel-settings.js` 丢 30 条、`humanize-settings.js` 丢 7 条），真跑一遍发现 email 频道有 9 条串一直没有英文投影（纯净 `v4.38.0` 同样 9 条）。已在 `plugin-src/client/i18n.js` 补齐 10 条（上游 9 + fork 的拟人化提示 1），合并树现在 1271 条中文串、0 缺口（`test/client-ui.test.mjs` 49/49）。
+
+**测试暴露的两处源码修正**：
+
+- `BotWorkspaceStore.setBusyMessageMode` 原来只持久化 `steer`（上游默认 queue 时的写法：等于默认值就不落盘）。P2-f2 把默认值改成 interrupt、并给 per-bot 下拉补上第三项之后，「打断」「排队」这两个显式选择会被静默丢弃、回落成全局默认——**第三个选项等于不可用**。改为「与当前全局默认不同就存、相同就不存」，`effectiveBusyMessageModeFor` 与写入共用同一个 `#defaultBusyMessageMode()`。
+- `plugin-src/client/i18n.js` 补 10 条英文投影（见上）。
+
+**文档同步**：README / README.en 两处——① message_break 段落里「Telegram 私聊为 Rich Draft 预览、群聊为占位消息」改为「私聊/群聊/话题统一走可编辑占位消息（上游 #276，私聊不再占用输入框草稿位）」；② 上游遗留的「排队与插话」小节改写为「消息处理方式（打断/排队/插话）」，换成正确的面板名并说明全局默认与优先级。
+
+**验证**：
+
+- `npm run build`（client + host）成功，`lib/client.js`、`lib/index.js` 已重建；`node scripts/verify-package.mjs` → `Verified dsh-im package artifacts.`
+- 逐文件串行跑完整 `test/`（249 个文件，`node --test --test-concurrency=1`）：**4187 tests / 3989 pass / 5 fail / 191 cancelled**。
+- 残余 5 个 fail 全部实锤为既有项，不是合并回归：
+  - `feishu-proxy`「Feishu verification uses the SDK HTTP client through HTTPS_PROXY」、`lark-sdk-handshake-patch`「patched real SDK survives handshake timeout…」：在纯净 `/tmp/v438`（detached v4.38.0 + 独立 node_modules）上**逐字相同地失败**。
+  - `telegram.test.mjs` 的 3 个「received poll batch retains its settings across cursor writes」：在 **fork main 树上同样失败**，报同一条 `both poll batches did not reach Harness`（5s 上限内的轮询批次未跑完）。
+- 191 个 cancelled 是既有噪声：多为「用 `AbortSignal.timeout` 给挂死调用设上限」的用例——该定时器是 unref 的，事件循环一旦空闲，进程先退出，用例就被记成 `cancelledByParent`（典型 `Promise resolution is still pending but the event loop has already resolved`）。受影响文件的 tests/pass/cancelled 三元组在纯净 `v4.38` 上逐个一致（`discord` 30、`qq/bridge` 52、`wecom/bridge` 52、`slack` 17、`plugin-host` 12、`matrix-api` 6、`feishu-runtime` 6、`weixin/harness-client` 9、`status-reaction` 2、`device-auth` 1、`dingtalk-runtime` 3）。

@@ -1226,6 +1226,52 @@ test('the bilingual dictionary has no duplicate object keys', async () => {
   assert.deepEqual(warnings.filter((warning) => warning.id === 'duplicate-object-key'), []);
 });
 
+/**
+ * Drop comments before scanning for string literals. Prose carries apostrophes
+ * ("the schema's field"), and a scanner that only knows about quotes reads one
+ * as an opening quote: the rest of the file collapses into a single phantom
+ * literal and every real string after it disappears.
+ */
+function stripComments(source) {
+  const QUOTES = new Set(['"', '\'', '`']);
+  let stripped = '';
+  let index = 0;
+  while (index < source.length) {
+    if (source[index] === '/' && source[index + 1] === '/') {
+      const end = source.indexOf('\n', index);
+      index = end === -1 ? source.length : end;
+      continue;
+    }
+    if (source[index] === '/' && source[index + 1] === '*') {
+      const end = source.indexOf('*/', index + 2);
+      index = end === -1 ? source.length : end + 2;
+      continue;
+    }
+    const quote = source[index];
+    if (!QUOTES.has(quote)) {
+      stripped += quote;
+      index += 1;
+      continue;
+    }
+    stripped += quote;
+    index += 1;
+    while (index < source.length) {
+      const char = source[index];
+      stripped += char;
+      index += 1;
+      if (char === '\\') {
+        if (index < source.length) {
+          stripped += source[index];
+          index += 1;
+        }
+        continue;
+      }
+      if (char === quote) break;
+    }
+  }
+  return stripped;
+}
+
 test('every shipped Chinese client string has an English projection', async () => {
   const paths = (await readdir(CLIENT_SOURCE_DIRECTORY_URL, { recursive: true }))
     .filter((path) => path.endsWith('.js') && path !== 'i18n.js');
@@ -1233,7 +1279,7 @@ test('every shipped Chinese client string has an English projection', async () =
     readFile(new URL(path, CLIENT_SOURCE_DIRECTORY_URL), 'utf8')));
   const strings = new Set();
   for (const source of sources) {
-    for (const match of source.matchAll(/(['"`])((?:\\.|(?!\1)[\s\S])*?)\1/g)) {
+    for (const match of stripComments(source).matchAll(/(['"`])((?:\\.|(?!\1)[\s\S])*?)\1/g)) {
       if (/[\p{Script=Han}]/u.test(match[2])) strings.add(match[2]);
     }
   }

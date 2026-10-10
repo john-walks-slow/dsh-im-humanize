@@ -1127,10 +1127,13 @@ test('Telegram only treats the explicit unchanged-content rejection as success',
       const stream = await new TelegramBotClient({ api }).openDeliveryStream({ chatId: 42, chatType: 'private' });
       const result = await stream.finish({ kind: 'text', text: '# final', format: 'markdown' });
       assert.equal(result.deliveryOutcome, failure.code === 500 ? 'unknown' : 'sent');
-      assert.equal(calls.length, failure.code === 500 ? 2 : 3);
+      // The Rich edit is retried twice on a retriable status (429), so the
+      // plain-text fallback is only reached on the fourth attempt.
+      const richAttempts = failure.code === 429 ? 3 : 1;
+      assert.equal(calls.length, failure.code === 500 ? 2 : 2 + richAttempts);
       if (failure.code !== 500) {
         assert.equal(result.presentation, 'text-fallback');
-        assert.equal(calls[2].body.text, '# final');
+        assert.equal(calls.at(-1).body.text, '# final');
       }
     });
   }
