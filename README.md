@@ -49,6 +49,85 @@
 
 Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest, or entering existing bot credentials, and let the local Harness connect outward to a public AI Office. One plugin and one settings entry manage the built-in IM channels and the AI Office Connector.
 
+## 本 Fork 的改动（拟人化）
+
+> 本包发布为 [`@johnnren/dsh-im-humanize`](https://www.npmjs.com/package/@johnnren/dsh-im-humanize)（基于上游 4.21.2）：
+> `dsh plugin --profile web add @johnnren/dsh-im-humanize`
+
+本仓库是从 `xmanrui/dsh-im` fork 出来的"拟人化"分支，在保留上游全部功能的基础上，新增面向角色扮演沉浸体验的设置。全局项在「设置 → IM机器人 → 通用设置」的**拟人化设置**面板中配置；**全部拟人化设置**还支持在每个渠道的机器人卡片里按机器人逐项覆盖。
+
+### 速览：与上游的全部差异
+
+| 改动 | 默认 | 说明 |
+| --- | --- | --- |
+| 流式回复 `streaming` | 开 | 关闭后一次性发送完整回复，不逐字推送 |
+| 分步消息 `message_break` | 关 | 注册 no-op 工具，模型主动调用拆长回复为多条消息；与流式同开时每段各自流式输出 |
+| 新消息行为 `onNewMessage` | interrupt | interrupt / queue / steer 三档；上游仅 queue |
+| 状态表情回应 `statusReaction` | 开 | 关闭后六渠道停发处理中/成功/失败表情 |
+| 回复引用 `replyQuote` | 开 | 关闭后 Telegram/Discord/WhatsApp 回复不带引用头 |
+| 过程进度提示 `progressStatus` | 开 | 关闭后不发"正在处理…/正在使用工具…/正在整理结果…"占位与中间进度气泡，回复直达；流式文本仍逐字显示 |
+| 发送延迟 `sendDelay` | 关 | 阅读延迟 + 分段间隔两阶段，含活跃响应 |
+| 输入状态指示 `typingIndicator` | burst | off / continuous / burst 三档 |
+| QQ 桥接 messageBreak 修复 | — | 修复上游 `messageBreakHandler` 作用域缺陷 |
+| QQ 输入状态会话重写 | — | 桥内自管理 55s/50s 替代失效的 SDK 中间件 |
+| 延迟窗口双回复修复 | — | 被取代回合静默取消，无双回复 |
+| 主动回合自动投递 | — | proactive 唤醒、定时任务、后台子代理完成通知等「agent 主动发起」回合的可见回复，自动投递到当前 Session 绑定的私聊（原文无前缀，不依赖双向同步开关） |
+| `send_im` 投递工具 `imSendTool` | 开 | 注册模型工具，仅用于显式投递到「非绑定」的指定目标（`botId`+`targetId`）；主动回合的绑定私聊已自动投递，无需调用 |
+
+> 上游同步说明：本分支为长期维护的 fork，会持续合并 `xmanrui/dsh-im` 上游更新；上游修复与功能在合并时保持完全兼容。**分步消息（message_break）、流式开关（streaming）、发送延迟与输入状态指示依赖本 fork 对 Harness 回复追踪（HarnessReplyTracker）与渠道桥接的扩展**，在上游仓库中不可用。
+
+- **流式回复（streaming，默认开启）**：关闭后不再逐字推送模型输出，而是等回合结束后一次性发送完整回复，更接近真人回复节奏。与 message_break 同时开启时按分段流式：每段在各自的流式载体里逐字输出，断点处定稿为一条消息（见下条）。
+- **分步消息（message_break，默认关闭）**：插件会注册一个名为 `message_break` 的 **no-op 工具**（不执行任何操作，仅作为回复中的断点标记）。模型在长回复中主动调用它来"换气"时，插件把断点之前的内容作为一条独立消息交付，随后继续后续分段，整段回答因此变成多条消息，读起来更像真人逐条输入。三个分隔点（思考/工具进度与最终回答之间、长回答的段落之间、前后文切换处）最自然；单回合最多拆分 20 段，纯空白分段会被跳过。与**流式回复**同时开启时是"分段 + 每段流式"：每段在各自的流式载体里逐字输出（Telegram 私聊为 Rich Draft 预览、群聊为占位消息），断点处定稿成一条真实消息，随后为下一段新开一条流；流式关闭时则退化为每段整条发送（带拟人分段间隔）。
+- **新消息行为（onNewMessage，默认 interrupt）**：模型生成过程中用户又发来新消息时的处理方式：
+  - **打断重发（interrupt）**：取消当前回合并立即用新消息重新提问。被打断的旧回合**静默退场**——不再发送"已停止。"之类的提示，新消息直接接管（显式 `/stop` 仍会反馈；旧回合已定稿的分段消息、已产生的部分回答与已存在的流式载体不受影响）；
+  - **排队等待（queue）**：等当前回合结束后再处理新消息（上游默认行为）；
+  - **注入纠偏（steer）**：不中断生成，把新消息文本注入为当前回合的纠偏指令，模型在回答末尾顺势回应。
+
+  当回合正在等待用户交互（提问/审批等待、验证码等）时，一律按排队处理，保证交互流程不被新消息打乱。
+
+- **状态表情回应（statusReaction，默认开启）**：机器人在用户消息上用表情标记任务状态（处理中/成功/失败，例如 Telegram 的 👀 → 👍/👎）。关闭后不再发送任何表情，回复照常送达。支持 Telegram、Discord、WhatsApp、Slack、飞书、钉钉。
+- **回复引用（replyQuote，默认开启）**：机器人回复时引用你的消息（回复顶部的引用样式）。关闭后回复以普通消息发出。仅影响 Telegram、Discord、WhatsApp 的引用样式；话题路由（Telegram 话题、Discord Thread、Slack 线程、飞书话题回复）与会话归组不受影响。
+- **过程进度提示（progressStatus，默认开启）**：处理任务时显示中间状态气泡（如"正在处理…""正在使用工具…""正在整理结果…"）。关闭后不再发送占位气泡与中间进度文案，回复直达；流式文本仍正常逐字显示。**与 message_break 同时开启时**，关闭此项只跳过占位初态（每段仍各自流式，断点定稿为独立消息），不再影响流式本身。支持所有聊天渠道；QQ/微信本就无中间进度，AI Office 任务进度不受影响（属产品核心 UX）。
+
+### 发送延迟（两阶段模型）
+
+发送延迟把"真人感"拆成两个阶段，对应真人在 IM 里的两个真实间隙：
+
+1. **阅读延迟（readDelay，阶段①）**：机器人收到消息后**先静默一段时间**才开始处理，模拟"过了一段时间才读到消息"。静默期没有任何输入状态或已读提示。时长为 `minMs–maxMs` 区间随机值，另有两个可选加项：
+   - **按消息长度阅读项（charsPerSecond）**：用户消息越长，"读"得越久（按字符数除以阅读速度累加）；
+   - **活跃响应（activityBoost）**：刚聊完天时"秒回"，闲置越久延迟越接近完整区间——上一回合结束后 0–`fastWindowMs`（默认 1 分钟）内直接用 `fastReplyMs`（默认约 1 秒）；`minWindowMs`（默认 2 分钟）前线性回升到阅读延迟下限；超过 `fullWindowMs`（默认 5 分钟）回到完整随机区间。首条消息不加速。
+
+   总延迟受 `maxTotalMs` 封顶；**无输入状态接口的渠道（钉钉、企业微信、飞书、Slack 等）阅读延迟封顶 5 秒**。钉钉的分段间隔额外强制 ≥3 秒（webhook 频控）。
+2. **分段间隔（segmentGap，阶段②的一部分）**：分步消息或流式分段的两条消息之间"正在打下一条"的停顿，同样为 `minMs–maxMs` 随机，可按分段长度加项。
+
+**取代（supersede）语义**：阅读延迟期间用户又发来新消息（interrupt 模式）或执行 `/stop` 时，旧回合**静默取消**——不生成、不发送、无"处理失败"提示、无双回复，新消息立即接管。该静默语义覆盖整条时间线：旧回合无论还在阅读延迟里，还是已经进入 Harness 开始生成，interrupt 都不会留下"已停止。"气泡（`/stop` 例外，仍会反馈）。排队（queue）模式下多条消息依次处理，延迟会累积（每条都"被读一遍"）。
+
+发送延迟默认关闭（`enabled=false`），此时除上述取代修复外行为与上游完全一致。设置面板提供**全参数面**：阅读延迟 min/max、阅读速度（字/秒）、单回合封顶、活跃响应（快速回复 + 秒回/恢复下限/完全恢复三个时间窗）、分段间隔与分段打字速度，折叠区内的断续节奏高级参数（亮/灭四档毫秒），以及**探索预设**（轻拟人 / 慢性子 / 沉浸角色扮演 / 即刻应答，一键填充全部字段）。配置文件（`~/.dsh/integrations/dsh-im/humanize.json`）支持同样的全部参数。**每个机器人可在其渠道卡片的「拟人化」折叠面板中逐项覆盖全部设置**（流式回复、分步消息、状态表情回应、回复引用、新消息行为、输入状态指示、断续节奏、发送延迟）：每项可选择「跟随全局」或自定义值，保存只写被自定义的项，未自定义的项继续跟随全局默认变化。
+
+### 输入状态指示（typingIndicator）
+
+进入处理阶段后"正在输入"的显示方式，三档：
+
+- **关闭（off）**：完全不显示输入状态；
+- **持续（continuous）**：处理期间持续显示；
+- **断续（burst，默认）**：像真人一样时断时续——显示几秒、熄灭一两秒、再显示，避免长时间挂机的机器人感。断续节奏（typingBurst 的 on/off 区间）可在配置文件中调整。
+
+渠道能力差异：Telegram / Discord / WhatsApp（composing）支持全部三档；微信在阅读延迟结束后拉取输入票据并保活；QQ 仅私聊支持（群聊无此 API），且改用桥内自管理的输入状态会话（55 秒显示 / 50 秒续期）替代上游依赖的、已失效的 SDK 中间件；钉钉、企业微信、飞书、Slack 无输入状态接口，自动忽略此项。交互等待（提问/审批）期间输入状态暂停显示，回合结束（含 `/stop`、出错）后必定熄灭。
+
+### 修复的缺陷（上游 bug）
+
+以下问题在上游 `xmanrui/dsh-im` v4.13.0 中存在，本 fork 已修复：
+
+- **QQ 桥接 `messageBreakHandler` 作用域缺陷**：上游中任何成功回合只要启用 message_break 就会触发 `ReferenceError` 并误报"任务未完成"（也是 4 个基线测试失败的根因）。本 fork 修复了作用域，message_break 在 QQ 渠道正常工作。
+  Fixes a QQ bridge `messageBreakHandler` scoping bug in upstream: any successful turn with message_break enabled threw a `ReferenceError` and misreported a task failure (also the root cause behind 4 baseline test failures).
+- **延迟窗口内被取代回合的双回复**：阅读延迟计时期间用户又发来新消息（interrupt）或执行 `/stop` 时，旧回合会被**静默取消**——不生成、不发送、无"处理失败"提示、无双回复，新消息立即接管。被取代的批量输入保留待 `/send` 重试。上游的 queue 模式无此问题；本修复覆盖 interrupt 模式。
+  Fixes double replies for turns superseded during the delay window: a new message (interrupt) or `/stop` while the read delay is ticking silently cancels the old turn — no generation, no send, no failure notice, no double reply; superseded batch inputs are retained for `/send` retry. Upstream's queue mode was unaffected; this fix covers interrupt mode.
+
+### 配置迁移
+
+- **`readDelay.idleBoost` → `readDelay.activityBoost`（语义反转）**：早期版本的"闲置加成"（闲置越久延迟 ×N）已被语义反转并替换为"活跃响应"（刚聊完天"秒回"）。已存的 `idleBoost` 键在读取时被忽略并回落新默认值——如果你之前调过闲置加成，请在设置面板重配活跃响应。
+  **`readDelay.idleBoost` → `readDelay.activityBoost` (semantic inversion)**: the early "idle boost" (the longer the idle, the slower the reply) is semantically inverted and replaced by "activity boost" (fast replies right after a quick exchange). A stored `idleBoost` key is ignored on load and falls back to the new defaults; if you had tuned the idle boost, re-configure the activity boost in the settings panel.
+
 ## 界面
 
 ![IM 机器人页面](docs/images/imbot.png)
@@ -95,6 +174,9 @@ Matrix 加密目前仅供非敏感测试：默认 optional 模式尝试启动加
 支持文件回传的内置渠道均可把 Harness 可读取的文件作为渠道原生附件回传。已有文件和当前任务新生成的文件都可以直接发送；该能力对所有已连接机器人默认可用，无需开关或机器人白名单，原有文字、图片、流式回复、命令和会话行为保持不变。iMessage 首版不支持文件或附件回传。
 
 模型调用文件回传工具后，插件把指定文件交给当前渠道的原生接口。图片会优先以原生图片消息呈现；渠道不支持或明确拒绝图片发送时自动回退为文件附件，发送结果不确定时不会补发文件造成重复消息。插件不额外设置文件来源、创建时间、工作区边界、扩展名、内容、数量、大小或有效期规则；文件只需真实存在且可读取。渠道平台仍可能依据自身权限、配额、文件能力或账号等级拒绝发送，插件会按平台返回结果提示。
+
+GIF 动图按各渠道原生能力呈现，存在差异：Telegram 把 `.gif` 走原生动画消息（`sendAnimation`），客户端内联循环播放；微信（iLink）协议只提供图片消息、没有独立的表情/动图消息类型，GIF 经图片消息只显示静态首帧，无法内联动图（这是协议层限制，非插件可修）；其余渠道以各自图片消息对 GIF 的原生表现为准。文件名需带 `.gif` 扩展名才会走图片/动画路径，无扩展名的 GIF 会被当作普通文件发送。
+
 
 | 渠道 | 平台要求 |
 | --- | --- |

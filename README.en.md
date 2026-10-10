@@ -46,6 +46,77 @@
 
 Connect IM bots to DeepSeek Harness by scanning a QR code, using an App Manifest, or entering existing bot credentials, and let the local Harness connect outward to a public AI Office. One plugin and one settings entry manage the built-in IM channels and the AI Office Connector. iMessage uses one native Messages.app identity per macOS user account; see the [iMessage channel notes](docs/imessage.md).
 
+## This fork: humanized messaging
+
+This repository is a fork of `xmanrui/dsh-im` focused on **humanized messaging** for role-play immersion. It keeps every upstream feature and adds settings configured in the **Humanization settings** section under **Settings → IM bots → General settings**; **all humanization settings** can additionally be overridden per bot on each channel's bot card:
+
+### At a glance: all differences from upstream
+
+| Change | Default | Description |
+| --- | --- | --- |
+| Streaming replies `streaming` | on | When off, sends the complete reply at once instead of pushing output word by word |
+| Message breaks `message_break` | off | Registers a no-op tool; the model calls it to split long replies into multiple messages; with streaming on, each segment streams on its own |
+| New message behavior `onNewMessage` | interrupt | interrupt / queue / steer; upstream only has queue |
+| Status emoji reactions `statusReaction` | on | When off, the six channels send no processing/success/failure emoji |
+| Reply quotes `replyQuote` | on | When off, Telegram/Discord/WhatsApp replies carry no quote header |
+| Progress hints `progressStatus` | on | When off, no "Processing…/Using tool…/Gathering results…" placeholder or interim progress bubbles; streaming text still streams word by word |
+| Send delay `sendDelay` | off | Two-phase read delay + segment gap, with activity boost |
+| Typing indicator `typingIndicator` | burst | off / continuous / burst |
+| QQ messageBreak scoping fix | — | Fixes an upstream `messageBreakHandler` scope defect |
+| QQ typing session rewrite | — | Bridge-managed 55s/50s session replaces the dead SDK middleware |
+| Delay-window double-reply fix | — | Superseded turns are silently cancelled, no double reply |
+
+> Upstream sync note: this branch is a long-lived fork and keeps merging updates from `xmanrui/dsh-im` upstream, staying fully compatible when features get merged. **Message breaks, the streaming toggle, the send delay, and the typing indicator depend on this fork's extension of the Harness reply tracker (HarnessReplyTracker) and channel bridges** and are not available in the upstream repository.
+
+- **Streaming replies (streaming, on by default)**: when disabled, model output is no longer pushed progressively; the complete reply is sent at once when the turn finishes, closer to real human reply pacing. With message breaks also on, replies stream per segment: each segment streams word by word in its own carrier and is finalized into a real message at the break (see the next item).
+- **Message breaks (message_break, off by default)**: the plugin registers a **no-op tool** named `message_break` (it executes nothing; it only marks a break point inside the reply). When the model calls it deliberately in a long reply to "take a breath", the plugin sends the text accumulated before the break as a separate message and then continues with the following segments, so one answer becomes several messages that read like someone typing line by line. Natural spots are between the thinking/tool progress and the final answer, between paragraphs of long answers, and at topic transitions; at most 20 segments per turn, and whitespace-only segments are skipped. With **streaming replies** also on this becomes "segmented streaming": each segment streams word by word in its own carrier (Telegram private chats use a Rich Draft preview, groups a placeholder message), is finalized into a real message at the break, and a fresh carrier takes over the next segment; with streaming off it degrades to sending each segment whole (with the humanized segment gap).
+- **New message behavior (onNewMessage, interrupt by default)**: what happens when the user sends a new message while the model is still generating:
+  - **Interrupt & resend (interrupt)**: cancels the current turn and immediately re-asks with the new message;
+  - **Queue & wait (queue)**: processes the new message after the current turn finishes (upstream default);
+  - **Inject as steering (steer)**: does not interrupt the generation; the new message text is injected as a steering instruction for the current turn, and the model weaves it into the tail of its answer.
+
+  When the turn is waiting for user interaction (question/approval pending, verification, etc.), the message is always queued so the interaction flow is never disturbed by new input.
+
+- **Status emoji reactions (statusReaction, on by default)**: the bot marks task status with emoji reactions on the user's message (processing/success/failure — 👀 → 👍/👎 on Telegram, for example). Turn it off to send no reactions at all; replies still deliver. Applies to Telegram, Discord, WhatsApp, Slack, Feishu, and DingTalk.
+- **Reply quotes (replyQuote, on by default)**: the bot quotes the user's message when replying (the quote header at the top of a reply). Turn it off and replies go out as plain messages. Only affects the quote style on Telegram, Discord, and WhatsApp; topic routing (Telegram topics, Discord threads, Slack threads, Feishu reply-in-thread) and conversation grouping are unaffected.
+- **Progress hints (progressStatus, on by default)**: show interim status bubbles while processing (e.g. "Processing…", "Using tool…", "Gathering results…"). Turn it off to send no placeholder or interim progress text — replies arrive directly while streaming text still appears word by word. **When message_break is also on**, turning this off only skips the initial placeholder (each segment still streams and is finalized as its own message); streaming itself is unaffected. Applies to all chat channels; QQ/WeChat already have no interim progress, and AI Office job progress is unaffected (core product UX).
+
+### Send delay (two-phase model)
+
+The send delay splits the human feel into two phases matching the real gaps in human messaging:
+
+1. **Read delay (readDelay, phase 1)**: after a message arrives, the bot **stays silent for a while** before it starts processing — as if it only noticed the message later. No typing indicator and no read receipt appear during this silence. The duration is random within `minMs–maxMs`, plus two optional terms:
+   - **Length reading term (charsPerSecond)**: longer user messages take longer to "read" (character count divided by a reading speed);
+   - **Activity boost (activityBoost)**: right after a quick exchange the bot "replies in seconds", and the delay recedes toward the full range as the conversation goes idle — for `fastWindowMs` (default 1 min) after the previous turn ends, use `fastReplyMs` (default ~1 s) directly; ramp linearly back to the read-delay floor by `minWindowMs` (default 2 min); past `fullWindowMs` (default 5 min) return to the full random range. The first message is never accelerated.
+
+   The total is capped by `maxTotalMs`; **channels without a typing-status API (DingTalk, WeCom, Feishu, Slack, …) cap the read delay at 5 seconds**. DingTalk segment gaps are additionally floored at 3 seconds (webhook rate limit).
+2. **Segment gap (segmentGap, part of phase 2)**: the "typing the next message" pause between message-break or streamed segments, likewise random within `minMs–maxMs` with an optional per-segment length term.
+
+**Supersede semantics**: if a new message arrives (interrupt mode) or `/stop` runs while the read delay is ticking, the old turn is **silently cancelled** — no generation, no send, no "processing failed" notice, no double reply — and the new message takes over immediately. In queue mode messages are processed one by one and their delays accumulate (each one is "read" in turn).
+
+The send delay is off by default (`enabled=false`), in which case behavior matches upstream exactly, apart from the supersede fix above. The settings panel exposes the full parameter face: read-delay min/max, reading speed (chars/sec), per-turn cap, activity boost (fast reply plus the fast/floor/full recovery windows), segment gap and segment typing speed, folded advanced burst-rhythm fields (on/off durations in ms), plus **exploration presets** (Lightly human / Slow-paced / Immersive role-play / Instant reply) that fill every field at once. The config file (`~/.dsh/integrations/dsh-im/humanize.json`) exposes the same parameters. **Each bot can override any humanization setting on its channel card's "Humanization" panel** (streaming, message break, status reaction, reply quote, on-new-message behavior, typing indicator, burst rhythm, send delay): each setting can be set to "follow global" or a custom value; only customized settings are saved, while the rest continue to track the global default.
+
+### Typing indicator (typingIndicator)
+
+How "typing…" is displayed once processing starts, in three modes:
+
+- **Off**: no typing indicator at all;
+- **Continuous**: shown continuously while processing;
+- **Bursty (default)**: flickers on and off like a real person — a few seconds on, a second or two dark, then on again — avoiding the bot-like endless glow. The on/off rhythm (typingBurst ranges) is tunable in the config file.
+
+Channel capabilities: Telegram / Discord / WhatsApp (composing presence) support all three modes; WeChat fetches and keeps alive an input ticket once the read delay ends; QQ supports direct chats only (the group API does not exist) and now uses a bridge-managed typing session (55 s display / 50 s renewal) instead of the dead SDK middleware relied on upstream; DingTalk, WeCom, Feishu, and Slack have no typing API and ignore this setting. The indicator pauses while an interaction (question/approval) is pending and always goes dark when the turn ends (including `/stop` and failures).
+
+### Bug fixes (upstream defects)
+
+The following issues exist in upstream `xmanrui/dsh-im` v4.13.0 and are fixed in this fork:
+
+- **QQ bridge `messageBreakHandler` scoping bug**: in upstream, any successful turn with message_break enabled threw a `ReferenceError` and misreported a task failure (also the root cause behind 4 baseline test failures). This fork fixes the scoping so message_break works correctly on QQ.
+- **Double replies for turns superseded during the delay window**: when a new message (interrupt) or `/stop` arrives while the read delay is ticking, the old turn is **silently cancelled** — no generation, no send, no "processing failed" notice, no double reply — and the new message takes over immediately. Superseded batch inputs are retained for `/send` retry. Upstream's queue mode was unaffected; this fix covers interrupt mode.
+
+### Configuration migration
+
+- **`readDelay.idleBoost` → `readDelay.activityBoost` (semantic inversion)**: the early "idle boost" (the longer the idle, the slower the reply) is semantically inverted and replaced by "activity boost" (fast replies right after a quick exchange). A stored `idleBoost` key is ignored on load and falls back to the new defaults; if you had tuned the idle boost, re-configure the activity boost in the settings panel.
+
 ## Interface
 
 ![IM bot settings page](docs/images/imbot_en.png)
@@ -92,6 +163,9 @@ Channel permissions and quotas still apply. Definite send failures allow up to t
 Built-in channels with file delivery support can return any file readable by Harness as a native channel attachment. Existing files and files created by the current task can both be sent directly. The capability is available to every connected bot by default, with no switch or per-bot allowlist, while existing text, image, streaming, command, and Session behavior remains unchanged. iMessage's MVP does not support files or attachments.
 
 After the model calls the file-return tool, the plugin hands the specified file to the channel's native API. Images prefer native image messages; if a channel does not support or definitively rejects image delivery, the plugin falls back to a file attachment, while an uncertain result never triggers a duplicate fallback. The plugin adds no rules for file origin, creation time, workspace boundary, extension, content, count, size, or lifetime; the file only needs to exist and be readable. A channel may still reject delivery according to its own permissions, quota, file capability, or account tier, and the plugin reports that provider result.
+
+Animated GIFs render according to each channel's native capability and differ: Telegram sends `.gif` via the native animation message (`sendAnimation`), so the client plays it inline on loop; the WeChat (iLink) protocol only offers image messages and has no separate emoji/animation message type, so a GIF sent as an image shows only the static first frame and cannot animate inline (a protocol-level limit, not something the plugin can fix). Other channels follow whatever their native image message does with GIF. The file name must carry a `.gif` extension to take the image/animation path; a GIF without the extension is sent as an ordinary file.
+
 
 | Channel | Platform requirements |
 | --- | --- |
