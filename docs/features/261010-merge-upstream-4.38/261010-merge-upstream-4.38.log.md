@@ -116,6 +116,42 @@
 
 **关于大规模 `cancelledByParent`**：错误文案固定为 `Promise resolution is still pending but the event loop has already resolved`，根因是 `AbortSignal.timeout()` 的定时器在 Node 里是 unref 的——当挂起 Promise 只能靠它落定时，事件循环先排空，node:test 于是把该用例及同文件后续用例全部标成 `cancelledByParent`。合并前 fork 的 `qq/bridge`（50）、`wecom/bridge`（52）已经是同一现象，属既有环境/测试写法问题，非本次合并引入。
 
+### P2-f（R2 声明式字段表 + 收敛 `onNewMessage` 到 `busyMessageMode`）— 勘察结论与设计
+
+#### 勘察：字段知识目前散落在 9 处（这就是 R2 的动机）
+
+host 侧：
+1. `src/channels/shared/humanize-settings.mjs` — `DEFAULT_HUMANIZE_SETTINGS`（9 键）、`normalizeHumanizeSettings`（宽松：逐键 `typeof === 'boolean'` 判断 + 逐个 normalize 调用）、`validateHumanizeUpdate`（严格：逐键 if + 未知键集合）。
+2. `src/channels/shared/humanize-override.mjs` — `normalizeHumanizeOverride`（per-bot 宽松：**又抄了一遍**逐键判断与 `ON_NEW_MESSAGE_VALUES`/`TYPING_INDICATOR_VALUES` 字面量数组）、`validateHumanizeOverrideSection`（per-bot 严格：**第三次**逐键 if + 未知键白名单数组）。
+3. `src/channels/shared/humanize-resolver.mjs` — `resolveHumanizeSettings`：默认值与逐键 `typeof` 兜底**第四次**（注释里自己写着「all normalizers are idempotent」）。
+4. `src/channels/shared/message-mode.mjs` — `busyMessageMode` 的 enum/校验（上游侧，独立一套）。
+
+client 侧：
+5. `plugin-src/client/channels/shared/humanize-fields.js` — `HUMANIZE_SETTING_META`（label/hint/options）、`SHIPPED_HUMANIZE_DEFAULTS`（**第五次**列默认值，注释自陈「kept local to avoid pulling Node APIs into the browser bundle」）。
+6. `plugin-src/client/humanize-settings.js` — `BOOLEAN_SETTING_KEYS` 数组 + 手写渲染。
+7. `plugin-src/client/channels/shared/bot-send-delay.js` — `BOOLEAN_KEYS`/`ENUM_KEYS`/`ALL_KEYS` 三个数组 + 手写渲染。
+
+结构性字段（`sendDelay`、`typingBurst`）的 normalize/validate 已经各自收敛在 `send-delay.mjs`/`typing-session.mjs` 里，是「按字段表调用」的天然接缝。
+
+#### 设计（选定方案）
+
+1. **新增 `src/channels/shared/humanize-schema.mjs`（browser-safe，无 Node API）**：一张 `HUMANIZE_FIELDS` 表，每项声明 `{ key, kind: 'boolean'|'enum'|'shape', default, values?, label, hint, perBot, render: 'toggle'|'select'|'group' }`；`kind:'shape'` 项带 `{ normalize, validate }`（指向 `send-delay.mjs` / `typing-session.mjs` 的既有函数）。表内**只引用值，不引用函数式默认**，避免冻结问题。
+2. 由该表派生（同一模块内）：`DEFAULT_HUMANIZE_SETTINGS`、`HUMANIZE_KEYS`、`normalizeHumanizeSettings`（宽松全量）、`normalizeHumanizeOverride`（宽松 per-bot，保留「只留出现且合法的键、空则 null」语义）、`validateHumanizeSettings`（严格，支持 `{ scope: 'global'|'bot', fieldPrefix, sendDelayBase }`）。`humanize-settings.mjs` 只保留文件 store + RPC handler，`humanize-override.mjs` 只保留 `SET_HUMANIZE_ENDPOINT` 与 `inheritSendDelayBase`，两个面板改为遍历表。presentation 字段（label/hint）进 schema 是刻意的：host 忽略它们，客户端因此不再需要第二张表。
+3. **`onNewMessage` → `busyMessageMode` 收敛为同一个概念**（用户已批准的方向）：
+   - 取值 `interrupt | queue | steer`，默认 `interrupt`（保住 fork 现行默认；上游默认是 queue）。
+   - **全局默认**：humanize 设置里的字段改名为 `busyMessageMode`，全局面板的「新消息行为」下拉保留（文案与 i18n key `新消息行为` 同步改）。
+   - **per-bot**：直接复用上游既有存储位 `workspaces.json.busyMessageModes[botId]`（`src/channels/shared/bot-workspace-store.mjs`），**删除** per-bot humanize section 里的 `onNewMessage`，避免一个行为两个旋钮。
+   - 生效顺序：per-bot 显式值 → 否则全局 humanize `busyMessageMode` → 否则 `interrupt`。
+   - `busyMessageModeFor(botId)` 现在把「未设置」归一成 `'queue'`（`bot-workspace-store.mjs:557`），这会挡住全局回落，需要改成「未设置返回 undefined」，并让**客户端快照**（`:1382` 的 `busyMessageMode: this.busyMessageModeFor(bot.botId)`）返回**生效值**（客户端已能读到全局 humanize 设置，卡片上显示生效值 + 标明来源）。
+4. **`interrupt` 成为 `BusyMessageDispatcher` 的第三态**（用户已批准的方向），把 7 个 bridge 里手写的那 15 行收敛到一处：dispatcher 已有 `harness`/`state`/`control`/`signal`/`logger`，足以自己算 `state.sessionFor(key)` → `harness.workspaceSession(sessionId)` 并 `stopActiveTurn`；只新增一个 `abortPreAsk` 回调参数（bridge 传 `() => this.#abortPreAskPhase(key)`）。`SUPERSEDED_STOP_REASON` 与 `isSupersededStop` 迁到 `message-mode.mjs`（属 interrupt 语义），然后**删除 `new-message-policy.mjs`**（`trySteer` 已在 P2-d 后无调用者；steer 走上游 `steerMessage`；`resolveNewMessagePolicy` 被 dispatcher 的 mode 分支取代；`fireAndForgetStop` 内联进 dispatcher）。
+5. 客户端 per-bot 的「消息处理方式」下拉（`plugin-src/client/bot-general-settings.js:84-91`，上游的 `排队`/`插话` 两项）扩成三项，补 `打断`，并把说明文案改为按三态切换。该文件是 R2 之后**唯一**的 per-bot 非拟人化 humanize 控件。
+
+#### 风险与取舍记录
+
+- 不迁移旧 per-bot `humanize.onNewMessage`：4.38 是 re-baseline 的首个版本，AGENTS 明确「上线前不考虑兼容性/旧版迁移」；宁可在本机验证时把该键手工清掉。
+- 全局面板的「新消息行为」与新命名的 `busyMessageMode` 是同一概念的两个层级，README 需同步写清优先级。
+- 严格校验的错误 `field` 前缀要分域（全局 `streaming` vs per-bot `humanize.streaming`），否则 `management-rpc`/`humanize-*` 既有断言会漂。
+
 ## i18n 并集核对（P2 源码阶段的收尾验证）
 
 字典以中文原文为 key，所以「并集」的正确判据不是 key 数量相等，而是**代码里用到的 key 都能查到译文**。两侧都跑了一遍：
