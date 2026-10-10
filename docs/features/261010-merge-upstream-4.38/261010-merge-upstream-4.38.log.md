@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | P2-a | 元数据与构建骨架（package.json 身份/dsh 声明、删 pnpm-lock、.gitignore、README×2、CHANGELOG、AGENTS.md、cordis.patch.yml） | ✅ 完成 |
 | P2-b | 共享层 `src/channels/shared/**` | ✅ 完成 |
-| P2-c | host 层 `plugin-src/host/**` | 待办 |
+| P2-c | host 层 `plugin-src/host/**` | ✅ 完成 |
 | P2-d | 渠道层 `src/channels/<渠道>/**` | 待办 |
 | P2-e | 客户端层 `plugin-src/client/**` + `scripts/verify-package.mjs`（含 R3 简化） | 待办 |
 | P2-f | R2：人化设置字段声明式化（并落地删除 `new-message-policy`，改用上游 `busyMessageModes`） | 待办 |
@@ -49,6 +49,30 @@
 `injected-context` + `harness-reply-tracker` + `busy-message-dispatcher` + `artifact-delivery` + `outbound-artifact-consumer` + `outbound-artifact-prompt` + `qq-final-answer` = **88/88 pass**；
 `image-bridge` + `workspace` + `default-workspace` + `session-bind-command` + `agent-preset-session-lifecycle` + `model-session-lifecycle` = **110 pass / 1 skip / 0 fail**。
 `image-input.test.mjs` 在本机跑不了（缺可选依赖 `sharp@0.35.5`），在纯净 `v4.38.0` checkout 上同样失败，**非回归**。
+
+### P2-c（host 层 `plugin-src/host/**`）
+
+21 个文件：3 个整份套用（`humanize-rpc`、`channels/shared/humanize-bot-rpc`、`channels/shared/humanize-provider`）、8 个三路干净落地（含 `index.mjs`）、10 个需人工裁决。
+
+裁决记录：
+
+1. **`channels/*/rpc.mjs`（dingtalk / qq / slack / wecom / weixin / whatsapp / feishu / shared）→ 纯并集**：上游的 `setBusyMessageMode` 与 fork 的 `setHumanize` 端点同处一张映射表，两者并存。`feishu/rpc.mjs` 另有一处 source 投影同样取并集。
+2. **`channels/feishu/production.mjs` → 并集**：上游的 `validateAccessPolicyForBot`（禁止把机器人自己的 Open ID 填进用户白名单）与 fork 的 `humanizeDefaults` 是相邻但无关的两个控制器选项。
+3. **`delivery-adapter.mjs` / `delivery-service.mjs` → 并集**：上游新增 `describeSessionSyncApprovalTarget` + `presentSessionSyncApproval`（把 Host 正在等待的审批同步到一个已绑定的私聊），fork 新增 `listSessionConversations`（按普通会话绑定而非 session-sync 开关找出该 Session 的私聊，供 wake/静默轮次投递）。两条链路互不相干，三路合并仅在相邻行处粘连，按方法边界重新切开。
+4. **`inbound-ttl-rpc.mjs` → 并集**：保留上游新增的 image-input RPC 复用（`/dsh-im-settings` 同时承载 inbound-ttl 与 image-input 端点），同时保留 fork 的 `resolveRpcAuthority(options.authority ?? options.config?.rpcAuthority)`。
+   ⚠️ 这是**有意保留的 fork 分歧**：fork 的 `0291fe21`（fix: settings panels transport failure HTTP 403/405）把这里的 `{ authority: 'loopback' }` 改成可配置，因为 Web 设置面板经局域网/隧道访问时会被 loopback 判定挡掉。上游 4.38 又把它写死回 `loopback`，并新增了断言 loopback-only 的测试。按 fork 需求保留可配置（默认 `trusted-host`，仍受 Harness 的 Host/Origin 信任检查约束）。该测试需在 P2-g 按 fork 语义改写。
+5. **`session-sync-coordinator.mjs` → 并集**：上游新增 `if (source?.kind === 'schedule') return 'dsh'`（upstream #292「把定时任务的回答同步到 IM」），fork 的新规则是「任何非 `user` 的 kind 都归 `wake`」。`schedule` 必须**先**判为 `dsh`——上游的 `dsh` 路径才是建立 recipients 并抑制内部 reminder 文案的那条路径，交给 fork 的 `wake` 路径会破坏该特性。因此 `schedule` 特判置于通用规则之前。
+
+验证（worktree 内 `node --test`；本批起 worktree 拥有独立 `node_modules`，按 P2-a 后的 `package.json` + 上游 `package-lock.json` 安装）：
+`host` + `host-session-coordinator` + `session-sync-coordinator` + `delivery-service` + `delivery-adapter` + `delivery-rpc` + `delivery-http` + `inbound-ttl` + `rpc-authority` + `management-rpc` + `access-policy-host` = **103 pass / 8 fail**；`plugin-src/host/index.mjs` 动态导入通过。
+
+8 个失败**全部是 fork 分歧导致的测试待适配，没有代码缺陷**：
+
+| 失败 | 原因 | 处置 |
+| --- | --- | --- |
+| `session-sync-coordinator` ×6 | 上游测试的 delivery service 桩只有 2 个方法，fork 的构造器契约要求 4 个（`listSessionConversations`、`send`）。已实测：给桩补齐后 6 个用例通过 | P2-g 合并两侧测试文件 |
+| `management-rpc` ×1 | 断言 inbound-ttl 恒为 loopback-only，与 fork 的 `0291fe21` 相悖 | P2-g 按 fork 语义改写 |
+| `host.test` ×1 | fixture 深比较转发给渠道的配置，不认识 fork 的 humanize 键 | P2-g 更新 fixture 期望 |
 
 ## 待决问题（P2-f 时处理）
 

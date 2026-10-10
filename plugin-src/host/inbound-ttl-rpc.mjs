@@ -1,4 +1,5 @@
 import { registerManagementRpc } from '../management-rpc.mjs';
+import { resolveRpcAuthority } from './rpc-authority.mjs';
 import { normalizeInboundTtlHours } from '../../src/channels/shared/inbound-ttl.mjs';
 import { getInboundTtlRuntime } from './inbound-ttl-runtime.mjs';
 import { getImageInputSettingsStore } from '../../src/channels/shared/image-input-settings-store.mjs';
@@ -75,12 +76,13 @@ export function installInboundTtlRpc(ctx, options = {}) {
   const runtime = options.runtime ?? getInboundTtlRuntime(ctx, options.config);
   const logger = typeof ctx?.logger === 'function'
     ? ctx.logger('dsh-im:inbound-ttl') : (ctx?.logger ?? null);
+  const authority = resolveRpcAuthority(options.authority ?? options.config?.rpcAuthority);
   const ttl = createInboundTtlRpcHandler({ ...runtime, logger });
   const image = createImageInputRpcHandler(getImageInputSettingsStore(options.config));
   return registerManagementRpc(ctx,
     INBOUND_TTL_RPC_CHANNEL,
     (endpoint, payload, signal) => Object.values(IMAGE_INPUT_ENDPOINTS).includes(endpoint)
       ? image(endpoint, payload, signal) : ttl(endpoint, payload, signal),
-    { authority: 'loopback' },
+    { authority },
   );
 }

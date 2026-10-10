@@ -37,6 +37,7 @@ import {
   initialAccessPolicyFor,
   newBotAccessPolicyFor,
 } from '../shared/access-policy-production.mjs';
+import { createHumanizeProvider } from '../shared/humanize-provider.mjs';
 
 // The WebSocket agent built here is only used for the Feishu long connection,
 // whose endpoint is open.feishu.cn (Feishu) or open.larksuite.com (Lark).
@@ -267,10 +268,18 @@ export async function createProductionController(ctx, config = {}, internals = {
         harness: workspaceScope.harness,
         state: workspaceScope.state,
         contextEnhancement: { botId: id, getSettings: () => workspaces.contextEnhancementFor(id) },
+        humanize: createHumanizeProvider({
+          defaults: () => config.humanizeDefaults?.('feishu'),
+          workspaces,
+          botId: id,
+        }),
         accessPolicy: accessPolicyProvider(workspaces, id, {
           channel: 'feishu', config: botConfig,
         }),
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
+        streaming: config.streaming !== false,
+        messageBreak: config.messageBreak !== false,
+        onNewMessage: config.onNewMessage ?? 'interrupt',
         slashCommands: config.slashCommands !== false,
         slashPanel: botConfig.slashPanel,
         ...(wsAgent ? { wsAgent } : {}),
@@ -306,6 +315,9 @@ export async function createProductionController(ctx, config = {}, internals = {
         throw error;
       }
     },
+    // Live global humanize defaults: snapshot-level prefill for per-bot
+    // editors and the inherit base for override writes.
+    humanizeDefaults: () => config.humanizeDefaults?.('feishu'),
   });
 
   const supervisor = createSupervisor({

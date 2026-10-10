@@ -17,6 +17,7 @@ import {
 } from './agent-preset-rpc.mjs';
 import { SET_MODEL_ENDPOINT, validModelPayload } from './model-setting-rpc.mjs';
 import { SET_THINKING_TRACES_ENDPOINT, validThinkingTracesPayload } from './thinking-traces-rpc.mjs';
+import { SET_HUMANIZE_ENDPOINT, validHumanizeSectionPayload } from './humanize-bot-rpc.mjs';
 
 export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   status: 'connection.status',
@@ -28,6 +29,7 @@ export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
   setContextEnhancement: SET_CONTEXT_ENHANCEMENT_ENDPOINT,
   setBusyMessageMode: SET_MESSAGE_MODE_ENDPOINT,
+  setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
   setAlias: SET_ALIAS_ENDPOINT,
   setThinkingTraces: SET_THINKING_TRACES_ENDPOINT,
@@ -96,6 +98,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === TOKEN_BOT_ENDPOINTS.setContextEnhancement) {
     return validContextEnhancementPayload(payload)
       ? null : '请提交有效的上下文增强设置。';
+  }
+  if (endpoint === TOKEN_BOT_ENDPOINTS.setHumanize) {
+    return validHumanizeSectionPayload(payload)
+      ? null : '请提交有效的拟人化设置。';
   }
   if (endpoint === TOKEN_BOT_ENDPOINTS.setAccessPolicy) {
     return validAccessPolicyPayload(payload)
@@ -203,6 +209,9 @@ export function createTokenBotRpcHandler(controller, { channel }) {
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.setAlias) {
         if (typeof controller.updateAlias !== 'function') throw new Error('Alias update is unavailable');
         value = await controller.updateAlias(payload.botId, payload.alias);
+      } else if (endpoint === TOKEN_BOT_ENDPOINTS.setHumanize) {
+        if (typeof controller.updateHumanize !== 'function') throw new Error('Humanization update is unavailable');
+        value = await controller.updateHumanize(payload.botId, payload.humanize);
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.setAccessPolicy) {
         if (typeof controller.updateAccessPolicy !== 'function') throw new Error('Access policy update is unavailable');
         value = await controller.updateAccessPolicy(payload.botId, payload.policy);

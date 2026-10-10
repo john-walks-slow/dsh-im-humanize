@@ -4,6 +4,7 @@ import { SET_ALIAS_ENDPOINT, validAliasPayload } from '../shared/bot-alias-rpc.m
 import { registerManagementRpc } from '../../../management-rpc.mjs';
 import QRCode from 'qrcode';
 import { SET_CONTEXT_ENHANCEMENT_ENDPOINT, validContextEnhancementPayload } from '../shared/context-enhancement-rpc.mjs';
+import { SET_HUMANIZE_ENDPOINT, validHumanizeSectionPayload } from '../shared/humanize-bot-rpc.mjs';
 import { SET_ACCESS_POLICY_ENDPOINT, validAccessPolicyPayload } from '../shared/access-policy-rpc.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, SET_WORKSPACE_ENDPOINT, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
@@ -28,6 +29,7 @@ export const WECOM_ENDPOINTS = Object.freeze({
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
   setContextEnhancement: SET_CONTEXT_ENHANCEMENT_ENDPOINT,
   setBusyMessageMode: SET_MESSAGE_MODE_ENDPOINT,
+  setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
   setAlias: SET_ALIAS_ENDPOINT,
 });
@@ -98,6 +100,10 @@ function payloadFailure(endpoint, payload) {
   if (endpoint === WECOM_ENDPOINTS.setContextEnhancement) {
     return validContextEnhancementPayload(payload)
       ? null : '请提交有效的上下文增强设置。';
+  }
+  if (endpoint === WECOM_ENDPOINTS.setHumanize) {
+    return validHumanizeSectionPayload(payload)
+      ? null : '请提交有效的拟人化设置。';
   }
   if (endpoint === WECOM_ENDPOINTS.setAccessPolicy) {
     return validAccessPolicyPayload(payload)
@@ -224,6 +230,11 @@ export function createWecomRpcHandler(controller, { encodeQr = qrDataUrl } = {})
         if (typeof controller.updateAlias !== 'function') throw new Error('Alias update is unavailable');
         value = await controller.updateAlias(
           payload.botId, payload.alias, (status) => publicStatus(status, cachedEncode),
+        );
+      } else if (endpoint === WECOM_ENDPOINTS.setHumanize) {
+        if (typeof controller.updateHumanize !== 'function') throw new Error('Humanization update is unavailable');
+        value = await controller.updateHumanize(
+          payload.botId, payload.humanize, (status) => publicStatus(status, cachedEncode),
         );
       } else if (endpoint === WECOM_ENDPOINTS.setAccessPolicy) {
         if (typeof controller.updateAccessPolicy !== 'function') throw new Error('Access policy update is unavailable');

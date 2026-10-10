@@ -4,6 +4,7 @@ import {
   textFromHarnessContent,
 } from '../../src/channels/shared/harness-client.mjs';
 import { deliverSessionSyncMirror } from '../../src/channels/shared/session-sync-registry.mjs';
+import { NO_REPLY_TOOL } from '../../src/channels/shared/no-reply.mjs';
 
 const DSH_USER_PREFIX = '[来自 DSH]\n';
 const DSH_ASSISTANT_PREFIX = '[DSH 助手]\n';
@@ -21,10 +22,27 @@ function sessionIdOf(session) {
   return typeof value === 'string' && value ? value : null;
 }
 
+// Self-initiated turn sources whose visible reply should auto-deliver to the
+// private chat currently bound to this session (no inbound IM message carries
+// the reply back): any plugin framing and background subagent settlements.
+// These are agent-initiated, not user inbound; silence (no visible text)
+// stays silent at delivery time.
 function userInputOrigin(scope, event) {
   const source = event?.data?.source;
+  // A scheduled prompt is Host-initiated, but it must travel the `dsh` path:
+  // that is the one that mirrors the completed reply to IM and suppresses the
+  // internal reminder framing (upstream #292).
   if (source?.kind === 'schedule') return 'dsh';
-  if (source?.kind !== 'user' || typeof source.rpcId !== 'string' || !source.rpcId) {
+  const kind = source?.kind;
+  // Harness format v4 retires the `plugin` kind in favor of producer-owned
+  // kinds (bare producer names such as `dsh-proactive`, or `plugin:<name>` when
+  // a released v3 log is migrated). Every other non-`user` attribution on a
+  // user/message append is a self-initiated producer turn (wake framing,
+  // subagent settlement, goal/instructions injection), so its visible reply
+  // auto-delivers to the bound private chat. Only genuine user input carries
+  // an rpcId and is demoted to im/dsh below.
+  if (kind !== 'user') return 'wake';
+  if (typeof source.rpcId !== 'string' || !source.rpcId) {
     return 'other';
   }
   return consumeDshImInputOrigin(scope, source.rpcId) ? 'im' : 'dsh';
@@ -37,9 +55,20 @@ function validRecipient(target) {
     && typeof target.targetId === 'string' && target.targetId;
 }
 
+// dsh-proactive's wake-reclaim tool (current name plus the pre-rename
+// spelling for hosts still running the old build). In wake turns a reclaim
+// call intends silence: any text the model wrote before reclaiming is
+// self-narration, not a message, so the wake delivery skips that turn. In
+// dsh-origin turns the tool is not offered and the call misfires, so the
+// answer still delivers. Soft name convention only — no hard dependency on
+// dsh-proactive.
+const RECLAIM_TOOL_NAMES = new Set(['proactive_reclaim', 'proactive_silence']);
+
 export function createSessionSyncCoordinator({ deliveryService, logger = console }) {
   if (typeof deliveryService?.listSessionSyncTargets !== 'function'
-    || typeof deliveryService?.sendSessionSyncText !== 'function') {
+    || typeof deliveryService?.sendSessionSyncText !== 'function'
+    || typeof deliveryService?.listSessionConversations !== 'function'
+    || typeof deliveryService?.send !== 'function') {
     throw new TypeError('Session sync requires a complete delivery service');
   }
 
@@ -78,6 +107,25 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
     return successful;
   };
 
+  // Wake/scheduled/subagent turns have no mirrored user text, so their
+  // recipients resolve at delivery time: every private chat currently bound
+  // to this session. Text is sent verbatim (no mirrored-exchange prefixes).
+  const deliverWake = async (conversations, text) => {
+    const results = await Promise.allSettled(conversations.map(({ botId, target }) => (
+      deliveryService.send(botId, target, text)
+    )));
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        const entry = conversations[index];
+        logFailure('wake delivery', {
+          channel: entry?.channel,
+          botId: entry?.botId,
+          targetId: entry?.target?.kind,
+        }, result.reason);
+      }
+    });
+  };
+
   const processEvent = async (sessionId, event, origin) => {
     if (closed || !event || typeof event !== 'object') return;
 
@@ -89,6 +137,8 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
         step: null,
         origin: 'unknown',
         recipients: null,
+        reclaimed: false,
+        silent: false,
         assistant: new AssistantTextAccumulator(),
       });
       return;
@@ -106,6 +156,13 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
     if (event.type === 'step/end') {
       if (event.data?.turn !== undefined && event.data.turn !== state.turn) return;
       if (event.data?.step === undefined || event.data.step === state.step) state.step = null;
+      return;
+    }
+
+    if (event.type === 'tool/call' || event.type === 'tool/code-dispatch-start') {
+      if (event.data?.turn !== undefined && event.data.turn !== state.turn) return;
+      if (event.data?.name === NO_REPLY_TOOL) state.silent = true;
+      else if (RECLAIM_TOOL_NAMES.has(event.data?.name)) state.reclaimed = true;
       return;
     }
 
@@ -140,7 +197,7 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
     }
 
     if (event.type === 'assistant/message') {
-      if (state.origin !== 'dsh' || event.surfaceOp !== 'append'
+      if ((state.origin !== 'dsh' && state.origin !== 'wake') || event.surfaceOp !== 'append'
         || event.data?.interrupted === true
         || (event.data?.turn !== undefined && event.data.turn !== state.turn)) return;
       const text = textFromHarnessContent(event.data?.message?.content);
@@ -151,8 +208,27 @@ export function createSessionSyncCoordinator({ deliveryService, logger = console
 
     if (event.type !== 'turn/end' || event.data?.turn !== state.turn) return;
     turns.delete(sessionId);
-    if (state.origin !== 'dsh' || !completedTurn(event.data?.reason)
-      || !state.recipients?.size || !state.assistant.text) return;
+    // no_reply explicitly concludes the turn without an IM reply (any
+    // origin): narrated text stays silent.
+    if (!completedTurn(event.data?.reason) || state.silent) return;
+    if (!state.assistant.text) return;
+    if (state.origin === 'wake') {
+      // Reclaim wins over any narrated text: the wake turn is reclaimed as
+      // silent, so not even the wake lookup runs.
+      if (state.reclaimed) return;
+      // Fork: proactive wake delivery mirrors the final answer into the
+      // conversations the wake targeted.
+      let conversations;
+      try {
+        conversations = await deliveryService.listSessionConversations(sessionId);
+      } catch (error) {
+        logFailure('wake lookup', null, error);
+        return;
+      }
+      await deliverWake(conversations, state.assistant.text);
+      return;
+    }
+    if (state.origin !== 'dsh' || !state.recipients?.size) return;
     // A pending card is not proof of delivery. Only suppress this target's
     // text after its renderer confirms the complete final answer is visible.
     // Targets without a renderer retain the original text delivery path.

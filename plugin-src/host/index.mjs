@@ -13,6 +13,9 @@ import { apply as applyIMessage } from './channels/imessage/index.mjs';
 import { apply as applyEmail } from './channels/email/index.mjs';
 import { apply as applyMatrix } from './channels/matrix/index.mjs';
 import { installOutboundArtifactTool } from '../../src/channels/shared/semantic/artifact.mjs';
+import { installMessageBreakTool } from '../../src/channels/shared/message-break.mjs';
+import { installNoReplyTool } from '../../src/channels/shared/no-reply.mjs';
+import { installImSendTool } from '../../src/channels/shared/im-send-tool.mjs';
 import { installHostLanguage } from './host-language.mjs';
 import { installHostLanguageRpc } from './host-language-rpc.mjs';
 import { installDeliveryRpc } from './delivery-rpc.mjs';
@@ -23,6 +26,7 @@ import { installInjectedContext } from './injected-context.mjs';
 import { installSessionSyncCoordinator } from './session-sync-coordinator.mjs';
 import { installSessionTitlePrefix } from './session-title-prefix.mjs';
 import { installUpdateRpc } from './update-rpc.mjs';
+import { installHumanizeRpc } from './humanize-rpc.mjs';
 
 export const name = 'dsh-im-host';
 export const inject = [
@@ -31,12 +35,40 @@ export const inject = [
   'typertGateway',
 ];
 
+// Humanization keys forwarded to every channel config with channel
+// sub-object priority. `humanizeDefaults` (installed by activateChannels)
+// provides the live per-channel resolution for bridges.
+const HUMANIZE_CONFIG_KEYS = [
+  'streaming',
+  'messageBreak',
+  'onNewMessage',
+  'sendDelay',
+  'typingIndicator',
+  'typingBurst',
+  'statusReaction',
+  'replyQuote',
+  'progressStatus',
+];
+
 function channelConfig(config, name, deliveryService) {
   const channel = config[name] ?? {};
   const withAuthority = config.rpcAuthority === undefined
     ? channel
     : { ...channel, rpcAuthority: config.rpcAuthority };
-  return name === 'office' ? withAuthority : { ...withAuthority, deliveryService };
+  const base = name === 'office' ? withAuthority : { ...withAuthority, deliveryService };
+  const forwarded = {};
+  for (const key of HUMANIZE_CONFIG_KEYS) {
+    if (channel[key] !== undefined || config[key] !== undefined) {
+      forwarded[key] = channel[key] ?? config[key];
+    }
+  }
+  return {
+    ...base,
+    ...forwarded,
+    ...(typeof config.humanizeDefaults === 'function'
+      ? { humanizeDefaults: config.humanizeDefaults }
+      : {}),
+  };
 }
 
 export function createImHostPlugin(internals = {}) {
@@ -131,6 +163,59 @@ export function createImHostPlugin(internals = {}) {
     // command menu a platform stores is already in the interface language.
     const hostLanguage = startHostLanguage(ctx, config);
     await hostLanguage?.ready;
+    // Load humanization settings from the file-backed store and merge them
+    // into the config so all channels receive the same values. The
+    // humanizeDefaults accessor lets bridges re-read the store on every
+    // turn, so panel updates apply without a plugin restart.
+    let humanizeStore = null;
+    try {
+      const result = installHumanizeRpc(ctx, {
+        config,
+        logger: ctx?.logger,
+        authority: config.rpcAuthority,
+      });
+      humanizeStore = result.store;
+      // Channels mount their management RPC synchronously during the
+      // activation below; awaiting an async load here would defer route
+      // mounting past the caller's first tick. Read the settings file
+      // synchronously instead so saved panel values reach runtime
+      // constructors, then confirm through the regular async load.
+      humanizeStore.loadSync();
+    } catch (error) {
+      ctx?.logger?.error?.('[dsh-im] humanization settings load failed; using defaults:', error);
+    }
+    // Explicit dsh-config values outrank the store; channel sub-objects
+    // outrank both. Captured before the merge below so the live accessor
+    // never resolves through a stale snapshot.
+    const explicitHumanize = Object.fromEntries(
+      HUMANIZE_CONFIG_KEYS.map((key) => [key, config[key]]),
+    );
+    const humanizeSnapshot = humanizeStore ? humanizeStore.get() : {};
+    const humanizeDefaults = (channelName) => {
+      const live = humanizeStore ? humanizeStore.get() : {};
+      const sub = config[channelName] ?? {};
+      const resolved = {};
+      for (const key of HUMANIZE_CONFIG_KEYS) {
+        resolved[key] = sub[key] ?? explicitHumanize[key] ?? live[key];
+      }
+      return resolved;
+    };
+    config = {
+      ...config,
+      humanizeDefaults,
+    };
+    for (const key of HUMANIZE_CONFIG_KEYS) {
+      if (config[key] === undefined && humanizeSnapshot[key] !== undefined) {
+        config[key] = humanizeSnapshot[key];
+      }
+    }
+
+    const imSend = (botId, targetId, text, options) => (
+      deliveryService.send(botId, targetId, text, options)
+    );
+    const resolveBoundTargets = (sessionId) => (
+      deliveryService.listSessionConversations(sessionId)
+    );
     const startTitlePrefix = (titleCtx) => {
       // The installer owns its cleanup through ctx.effect(). Cordis startup
       // callbacks must not return its controller object as an effect.
@@ -145,11 +230,25 @@ export function createImHostPlugin(internals = {}) {
       startTitlePrefix(ctx);
     }
     if (typeof ctx?.inject === 'function') {
-      ctx.inject(['tools', 'systemPrompt'], (artifactCtx) => {
-        installOutboundArtifactTool(artifactCtx);
+      ctx.inject(['tools', 'systemPrompt'], (toolCtx) => {
+        installOutboundArtifactTool(toolCtx);
+        installNoReplyTool(toolCtx);
+        if (config.messageBreak !== false) {
+          installMessageBreakTool(toolCtx);
+        }
+        if (config.imSendTool !== false) {
+          installImSendTool(toolCtx, { send: imSend, resolveBoundTargets });
+        }
       });
     } else {
       installOutboundArtifactTool(ctx);
+      installNoReplyTool(ctx);
+      if (config.messageBreak !== false) {
+        installMessageBreakTool(ctx);
+      }
+      if (config.imSendTool !== false) {
+        installImSendTool(ctx, { send: imSend, resolveBoundTargets });
+      }
     }
     const logger = typeof ctx?.logger === 'function'
       ? ctx.logger(name)
