@@ -463,13 +463,14 @@ export class WhatsappBotClient {
   #abortController = new AbortController();
   #mediaUploadTimeoutMs;
   #logger;
-  #typingTimers = new Map();
+  #humanize;
   #streams = new Set();
 
   constructor(socket, outboundIds, {
     signal,
     mediaUploadTimeoutMs = WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS,
     logger = console,
+    humanize = null,
   } = {}) {
     this.#socket = socket;
     this.#outboundIds = outboundIds;
@@ -478,6 +479,15 @@ export class WhatsappBotClient {
       : this.#abortController.signal;
     this.#mediaUploadTimeoutMs = mediaUploadTimeoutMs;
     this.#logger = logger;
+    this.#humanize = humanize;
+  }
+
+  // replyQuote=false drops the visual quote header on outbound messages.
+  // Gated here at the send layer on purpose: target.quoted also feeds
+  // read receipts (sendTyping) and the addressed detection in normalize,
+  // so the inbound message shape must stay intact.
+  #replyQuote() {
+    return this.#humanize?.getSettings()?.replyQuote !== false;
   }
 
   async sendText(target, text) {
@@ -504,7 +514,12 @@ export class WhatsappBotClient {
     const pending = this.#socket.sendMessage(
       target.jid,
       { text, ...(edit ? { edit } : {}) },
-      { ...(quote && !edit && target.quoted ? { quoted: target.quoted } : {}), messageId },
+      {
+        ...(quote && !edit && this.#replyQuote() && target.quoted
+          ? { quoted: target.quoted }
+          : {}),
+        messageId,
+      },
     );
     const result = await waitWithSignal(pending, this.#signal);
     this.#outboundIds.remember(result?.key?.id);
@@ -514,11 +529,12 @@ export class WhatsappBotClient {
     };
   }
 
-  async openStream(target) {
+  async openStream(target, { lazy = false } = {}) {
     let messageKey;
     const stream = createEditableMessageStream({
       limit: WHATSAPP_TEXT_LIMIT,
       updateIntervalMs: 1_000,
+      lazy,
       create: async (text) => {
         const message = await this.#sendTextMessage(target, text);
         messageKey = message.key;
@@ -615,7 +631,7 @@ export class WhatsappBotClient {
       ? createHash('sha256').update(messageIdSeed).digest('hex').slice(0, 20).toUpperCase()
       : undefined;
     const options = {
-      ...(target.quoted ? { quoted: target.quoted } : {}),
+      ...(this.#replyQuote() && target.quoted ? { quoted: target.quoted } : {}),
       ...(messageId ? { messageId } : {}),
       mediaUploadTimeoutMs: this.#mediaUploadTimeoutMs,
     };
@@ -644,33 +660,32 @@ export class WhatsappBotClient {
     return result;
   }
 
+  // A single composing update; refreshing belongs to the shared compose-
+  // phase typing session (refreshMs 8000 from the bridge, well inside the
+  // ~10s presence lifetime — the old 20s loop actually outlived it).
   async sendTyping(target) {
     if (!target.selfChat && target.quoted?.key) {
       await this.#socket.readMessages([target.quoted.key]).catch(() => undefined);
     }
     await this.#socket.sendPresenceUpdate('composing', target.jid);
-    await this.#stopTyping(target.jid, false);
-    const timer = setInterval(() => {
-      void this.#socket.sendPresenceUpdate('composing', target.jid).catch(() => {
-        void this.#stopTyping(target.jid);
-      });
-    }, 20_000);
-    timer.unref?.();
-    this.#typingTimers.set(target.jid, timer);
+  }
+
+  // Explicitly clear the composing indicator ('paused'). Public so the
+  // shared typing session can end the indicator at burst dark phases and
+  // at turn end — including turns that never send anything (previously the
+  // composing indicator just kept looping forever in that case).
+  stopTyping(target) {
+    return this.#stopTyping(target.jid);
   }
 
   async close() {
     this.#abortController.abort();
     const stoppingStreams = [...this.#streams].map((stream) => stream.cancel());
-    const jids = [...this.#typingTimers.keys()];
-    await Promise.allSettled([...stoppingStreams, ...jids.map((jid) => this.#stopTyping(jid))]);
+    await Promise.allSettled(stoppingStreams);
   }
 
-  async #stopTyping(jid, sendPaused = true) {
-    const timer = this.#typingTimers.get(jid);
-    if (timer) clearInterval(timer);
-    this.#typingTimers.delete(jid);
-    if (sendPaused) await this.#socket.sendPresenceUpdate('paused', jid).catch(() => undefined);
+  async #stopTyping(jid) {
+    await this.#socket.sendPresenceUpdate('paused', jid).catch(() => undefined);
   }
 }
 
@@ -697,6 +712,10 @@ export class WhatsappRuntime {
   #logger;
   #diagnostics;
   #replyTimeoutMs;
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
+  #humanize = null;
   #connectTimeoutMs;
   #mediaUploadTimeoutMs;
   #createSession;
@@ -716,6 +735,10 @@ export class WhatsappRuntime {
     accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
+    humanize = null,
     connectTimeoutMs = 30_000,
     mediaUploadTimeoutMs = WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS,
     createSession = createWhatsappWebSession,
@@ -731,6 +754,10 @@ export class WhatsappRuntime {
     this.#accessPolicy = accessPolicy;
     this.#logger = logger; this.#diagnostics = createConnectionDiagnostics({ channel: 'whatsapp', logger });
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#streaming = streaming;
+    this.#messageBreak = messageBreak;
+    this.#onNewMessage = onNewMessage;
+    this.#humanize = humanize ?? null;
     this.#connectTimeoutMs = connectTimeoutMs;
     if (!Number.isSafeInteger(mediaUploadTimeoutMs) || mediaUploadTimeoutMs <= 0) {
       throw new TypeError('mediaUploadTimeoutMs must be a positive safe integer');
@@ -819,6 +846,7 @@ export class WhatsappRuntime {
         signal: controller.signal,
         mediaUploadTimeoutMs: this.#mediaUploadTimeoutMs,
         logger: this.#logger,
+        humanize: this.#humanize,
       });
       this.#client = client;
       this.#bridge = new WhatsappHarnessBridge({
@@ -837,6 +865,10 @@ export class WhatsappRuntime {
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
+        streaming: this.#streaming,
+        messageBreak: this.#messageBreak,
+        onNewMessage: this.#onNewMessage,
+        humanize: this.#humanize,
         signal: controller.signal,
       });
       const now = Date.now();

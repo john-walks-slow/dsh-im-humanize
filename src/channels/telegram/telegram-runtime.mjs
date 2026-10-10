@@ -17,6 +17,7 @@ import {
 import {
   TELEGRAM_ACCESS_MODES,
 } from './config-store.mjs';
+import { prepareTelegramVoiceFile } from './voice-format.mjs';
 
 function commandMenuEntries(catalog, translate) {
   return commandsForChannel('telegram', catalog)
@@ -148,6 +149,42 @@ function telegramFileSource(message, loadFile) {
   };
 }
 
+const TELEGRAM_SERVICE_MESSAGE_FIELDS = [
+  'forum_topic_created',
+  'forum_topic_edited',
+  'forum_topic_closed',
+  'forum_topic_reopened',
+  'general_forum_topic_hidden',
+  'general_forum_topic_unhidden',
+  'pinned_message',
+  'new_chat_members',
+  'left_chat_member',
+  'new_chat_title',
+  'new_chat_photo',
+  'delete_chat_photo',
+  'group_chat_created',
+  'supergroup_chat_created',
+  'channel_chat_created',
+  'message_auto_delete_timer_changed',
+  'migrate_to_chat_id',
+  'migrate_from_chat_id',
+  'video_chat_scheduled',
+  'video_chat_started',
+  'video_chat_ended',
+  'video_chat_participants_invited',
+  'write_access_allowed',
+  'boost_added',
+  'chat_background_set',
+  'user_shared',
+  'chat_shared',
+  'users_shared',
+];
+
+export function isTelegramServiceMessage(message) {
+  if (!message || typeof message !== 'object') return false;
+  return TELEGRAM_SERVICE_MESSAGE_FIELDS.some((field) => field in message);
+}
+
 function telegramReplyAttachment(kind, file) {
   if (!file || typeof file !== 'object') return null;
   const name = typeof file.file_name === 'string' && file.file_name
@@ -189,6 +226,7 @@ function telegramReplyAttachments(message) {
 function telegramReplyReference(message, { quote, loadReplyContent } = {}) {
   if ((!message || typeof message !== 'object')
     && (!quote || typeof quote !== 'object')) return undefined;
+  if (isTelegramServiceMessage(message) && (!quote || typeof quote !== 'object')) return undefined;
   const authorId = message?.from?.id === undefined ? undefined : String(message.from.id);
   const authorName = [message?.from?.first_name, message?.from?.last_name]
     .filter((value) => typeof value === 'string' && value.trim())
@@ -280,6 +318,11 @@ export function normalizeTelegramUpdate(update, {
   loadFile = async () => { throw new Error('Telegram file downloader is unavailable'); },
   loadFileStream = loadFile,
   loadReplyContent,
+  // replyQuote=false drops the visual reply header: the bot's replies stop
+  // quoting the user's message while topic routing (messageThreadId)
+  // stays intact. Outbound only — inbound quote parsing (replyTo) is
+  // unaffected.
+  replyQuote = true,
 }) {
   const message = update?.message;
   const chatId = message?.chat?.id;
@@ -288,6 +331,7 @@ export function normalizeTelegramUpdate(update, {
   if (!Number.isSafeInteger(update?.update_id) || chatId === undefined || senderId === undefined
     || !Number.isSafeInteger(messageId)) return null;
   if (!['private', 'group', 'supergroup'].includes(message.chat?.type)) return null;
+  if (isTelegramServiceMessage(message)) return null;
   const direct = message.chat.type === 'private';
   const addressed = direct
     || String(message.reply_to_message?.from?.id ?? '') === String(botId)
@@ -335,7 +379,7 @@ export function normalizeTelegramUpdate(update, {
     replyTarget: {
       chatId,
       chatType: message.chat.type,
-      replyToMessageId: messageId,
+      ...(replyQuote === false ? {} : { replyToMessageId: messageId }),
       messageThreadId,
     },
     connectionTestTarget: { chatId, messageThreadId },
@@ -650,10 +694,13 @@ export class TelegramBotClient {
     });
   }
 
-  sendTyping(target) {
+  // `action` allows the compose-phase typing session to switch the
+  // indicator to upload_photo / upload_document before attachments.
+  sendTyping(target, action) {
     return this.#api.sendChatAction({
       chatId: target.chatId,
       messageThreadId: target.messageThreadId,
+      action: typeof action === 'string' && action ? action : 'typing',
       signal: this.#signal,
     });
   }
@@ -668,7 +715,39 @@ export class TelegramBotClient {
     });
   }
 
+  async sendVoice(target, file) {
+    const voice = await prepareTelegramVoiceFile(file, { signal: this.#signal });
+    return this.#api.sendVoice({
+      chatId: target.chatId,
+      file: voice,
+      replyToMessageId: target.replyToMessageId,
+      messageThreadId: target.messageThreadId,
+      signal: this.#signal,
+    });
+  }
+
+  sendAnimation(target, file) {
+    return this.#api.sendAnimation({
+      chatId: target.chatId,
+      file,
+      replyToMessageId: target.replyToMessageId,
+      messageThreadId: target.messageThreadId,
+      signal: this.#signal,
+    });
+  }
+
   sendImage(target, file) {
+    // If the caller explicitly designated 'image', preserve sendPhoto even for GIFs.
+    // Otherwise, route GIF animations through sendAnimation so the client plays them inline.
+    if (file?.as !== 'image' && file?.mediaType === 'image/gif') {
+      return this.#api.sendAnimation({
+        chatId: target.chatId,
+        file,
+        replyToMessageId: target.replyToMessageId,
+        messageThreadId: target.messageThreadId,
+        signal: this.#signal,
+      });
+    }
     return this.#api.sendPhoto({
       chatId: target.chatId,
       file,
@@ -877,22 +956,50 @@ export class TelegramBotClient {
     return this.#sendRich(target, createTextDeliveryBlock(value));
   }
 
-  async openDeliveryStream(target) {
-    // Real messages keep the Android composer available for /stop and /steer;
-    // private-chat Rich Drafts can block sending for the whole turn (#276).
-    const placeholder = await this.#api.sendMessage({
-      chatId: target.chatId,
-      text: t('正在处理…'),
-      replyToMessageId: target.replyToMessageId,
-      messageThreadId: target.messageThreadId,
-      signal: this.#signal,
-    });
-    const messageId = placeholder?.message_id;
-    if (!Number.isSafeInteger(messageId)) {
-      throw new Error('Telegram did not return a placeholder message id');
-    }
+  async openDeliveryStream(target, { lazy = false } = {}) {
+    // Private chats use the same editable placeholder as groups: a Rich Draft
+    // occupies the Android composer for the whole turn and blocks /stop,
+    // /steer and ordinary follow-ups (upstream #276). Lazy defers the
+    // placeholder send -- the first real content creates the message instead.
+    // `ids` is shared by reference so the stream's finish pushes and the
+    // getter both see the live list.
+    let messageId = null;
+    const ids = [];
+    const ensureMessage = async (text, format = 'plain') => {
+      if (messageId !== null) return messageId;
+      // Markdown blocks create via sendRichMessage so the first lazy bubble
+      // renders rich text immediately — no raw-markdown window before the
+      // first editMessageText lands.
+      const message = format === 'markdown'
+        ? await this.#api.sendRichMessage({
+          chatId: target.chatId,
+          richMessage: { markdown: toTelegramRichMarkdown(text) },
+          replyToMessageId: target.replyToMessageId,
+          messageThreadId: target.messageThreadId,
+          signal: this.#signal,
+        })
+        : await this.#api.sendMessage({
+          chatId: target.chatId,
+          text,
+          replyToMessageId: target.replyToMessageId,
+          messageThreadId: target.messageThreadId,
+          signal: this.#signal,
+        });
+      messageId = message?.message_id;
+      if (!Number.isSafeInteger(messageId)) {
+        throw new Error('Telegram did not return a placeholder message id');
+      }
+      ids.push(String(messageId));
+      return messageId;
+    };
+    if (!lazy) await ensureMessage(t('正在处理…'));
     return new TelegramDeliveryStream({
       update: async (block) => {
+        if (messageId === null) {
+          // First real content creates the message (no placeholder).
+          await ensureMessage(block.text, block.format);
+          return deliveryResult('telegram-regular', [...ids]);
+        }
         if (block.format === 'plain') {
           await this.#api.editMessageText({
             chatId: target.chatId,
@@ -910,19 +1017,21 @@ export class TelegramBotClient {
         });
         return deliveryResult('telegram-rich-draft', [String(messageId)]);
       },
-      finish: (block) => this.#editRich(target, messageId, block),
-      fail: (block) => this.#sendPlain(target, block.text, {
-        placeholderMessageId: messageId,
-      }),
-      providerMessageIds: [String(messageId)],
+      finish: (block) => (messageId === null
+        ? this.#sendRich(target, block)
+        : this.#editRich(target, messageId, block)),
+      fail: (block) => this.#sendPlain(target, block.text,
+        messageId === null ? {} : { placeholderMessageId: messageId }),
+      providerMessageIds: ids,
       presentation: 'telegram-regular',
       logger: this.#logger,
     });
   }
 
-  async openStream(target) {
+  async openStream(target, { lazy = false } = {}) {
     const stream = createEditableMessageStream({
       limit: 4_000,
+      lazy,
       create: async (text) => {
         const message = await this.#api.sendMessage({
           chatId: target.chatId,
@@ -1110,6 +1219,10 @@ export class TelegramRuntime {
   #logger;
   #diagnostics;
   #replyTimeoutMs;
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
+  #humanize = null;
   #createApi;
   #createHttpTransport;
   #commandCatalog;
@@ -1138,6 +1251,10 @@ export class TelegramRuntime {
     accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
+    humanize = null,
     createApi = (options) => new TelegramApi(options),
     createHttpTransport = createTelegramHttpTransport,
     commandCatalog = SHARED_COMMAND_CATALOG,
@@ -1153,6 +1270,10 @@ export class TelegramRuntime {
     this.#accessPolicy = accessPolicy;
     this.#logger = logger; this.#diagnostics = createConnectionDiagnostics({ channel: 'telegram', logger });
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#streaming = streaming;
+    this.#messageBreak = messageBreak;
+    this.#onNewMessage = onNewMessage;
+    this.#humanize = humanize ?? null;
     this.#createApi = createApi;
     this.#createHttpTransport = createHttpTransport;
     this.#commandCatalog = commandCatalog;
@@ -1269,6 +1390,10 @@ export class TelegramRuntime {
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
+        streaming: this.#streaming,
+        messageBreak: this.#messageBreak,
+        onNewMessage: this.#onNewMessage,
+        humanize: this.#humanize,
         signal: controller.signal,
       });
 
@@ -1421,6 +1546,7 @@ export class TelegramRuntime {
           loadFile: (fileId, options) => this.#api.downloadFile({ fileId, ...options }),
           loadFileStream: (fileId, options) => this.#api.downloadFileStream({ fileId, ...options }),
           loadReplyContent: (reference, options) => this.#loadReplyContent(reference, options),
+          replyQuote: this.#humanize?.getSettings()?.replyQuote !== false,
         });
         if (message) {
           void this.#bridge.accept(message, { contextSnapshot }).catch((error) => {

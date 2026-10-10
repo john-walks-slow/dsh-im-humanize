@@ -298,6 +298,9 @@ function discordReplyReference(message, loadReply) {
 export function normalizeDiscordMessage(message, botId, {
   fetchImpl = fetch,
   loadReply,
+  // replyQuote=false drops the visual message_reference header on outbound
+  // replies; thread routing (withConversationRoute) is unaffected.
+  replyQuote = true,
 } = {}) {
   if (!message?.id || !message?.channel_id || !message?.author?.id
     || Number(message.type) === 21) return null;
@@ -329,7 +332,7 @@ export function normalizeDiscordMessage(message, botId, {
     addressed,
     replyTarget: {
       channelId: String(message.channel_id),
-      replyToMessageId: String(message.id),
+      ...(replyQuote === false ? {} : { replyToMessageId: String(message.id) }),
     },
     reactionTarget: {
       channelId: String(message.channel_id),
@@ -345,12 +348,14 @@ export async function resolveDiscordMessageRoute(message, botId, {
   fetchImpl = fetch,
   signal,
   onChannel,
+  replyQuote,
 } = {}) {
   const normalized = normalizeDiscordMessage(message, botId, {
     fetchImpl,
     loadReply: typeof api?.getMessage === 'function'
       ? (options) => api.getMessage(options)
       : undefined,
+    ...(replyQuote === undefined ? {} : { replyQuote }),
   });
   if (!normalized || normalized.senderIsBot) return normalized;
   signal?.throwIfAborted();
@@ -477,12 +482,13 @@ export class DiscordBotClient {
     });
   }
 
-  async openStream(target) {
+  async openStream(target, { lazy = false } = {}) {
     const notice = !this.#deliveredNotices.has(target) && target?.notice
       ? String(target.notice) : null;
     const decorate = (content) => notice ? `${notice}\n\n${content}` : content;
     const stream = createEditableMessageStream({
       limit: notice ? 1_800 : 1_900,
+      lazy,
       create: async (content) => {
         const message = await this.#api.createMessage({
           channelId: target.channelId,
@@ -537,6 +543,10 @@ export class DiscordRuntime {
   #logger;
   #diagnostics;
   #replyTimeoutMs;
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
+  #humanize = null;
   #connectTimeoutMs;
   #createApi;
   #createWebSocket;
@@ -569,6 +579,10 @@ export class DiscordRuntime {
     accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
+    humanize = null,
     connectTimeoutMs = 20_000,
     createApi = (options) => new DiscordApi(options),
     createWebSocket = (url) => new WebSocket(url),
@@ -586,6 +600,10 @@ export class DiscordRuntime {
     this.#accessPolicy = accessPolicy;
     this.#logger = logger; this.#diagnostics = createConnectionDiagnostics({ channel: 'discord', logger });
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#streaming = streaming;
+    this.#messageBreak = messageBreak;
+    this.#onNewMessage = onNewMessage;
+    this.#humanize = humanize ?? null;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#createApi = createApi;
     this.#createWebSocket = createWebSocket;
@@ -680,6 +698,10 @@ export class DiscordRuntime {
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
+        streaming: this.#streaming,
+        messageBreak: this.#messageBreak,
+        onNewMessage: this.#onNewMessage,
+        humanize: this.#humanize,
         signal: controller.signal,
       });
       let timer;
@@ -852,7 +874,9 @@ export class DiscordRuntime {
   async #acceptMessage(message, bridge) {
     const messageId = String(message?.id ?? '');
     if (!messageId || this.#state.hasSeen(messageId)) return;
-    const preflight = normalizeDiscordMessage(message, this.#config.platformId);
+    const preflight = normalizeDiscordMessage(message, this.#config.platformId, {
+      replyQuote: this.#humanize?.getSettings()?.replyQuote !== false,
+    });
     let accessDecision;
     if (preflight?.kind === 'group' && preflight.addressed === true
       && preflight.senderIsBot !== true) {
@@ -882,6 +906,7 @@ export class DiscordRuntime {
         channel: this.#channels.get(String(message.channel_id)),
         signal: this.#abortController?.signal,
         onChannel: (resolved) => this.#rememberChannel(resolved),
+        replyQuote: this.#humanize?.getSettings()?.replyQuote !== false,
       });
       route = { pendingRoute, contextSnapshot, busyMessageMode };
       this.#routing.set(messageId, route);

@@ -122,6 +122,10 @@ export class WeixinRuntime {
   #diagnostics;
   #startContext = {};
   #replyTimeoutMs;
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
+  #humanize = null;
   #maxMessageChars;
   #startRetryDelaysMs;
   #status = createWeixinRuntimeStatus();
@@ -141,6 +145,7 @@ export class WeixinRuntime {
     logger = console,
     diagnostics,
     replyTimeoutMs = 600_000,
+    streaming = true, messageBreak = false, onNewMessage = 'interrupt', humanize = null,
     maxMessageChars = DEFAULT_WEIXIN_MAX_MESSAGE_CHARS,
     startRetryDelaysMs,
   }) {
@@ -157,6 +162,10 @@ export class WeixinRuntime {
     this.#logger = logger;
     this.#diagnostics = diagnostics ?? createWeixinDiagnostics({ logger });
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#streaming = streaming !== false;
+    this.#messageBreak = messageBreak === true;
+    this.#onNewMessage = onNewMessage;
+    this.#humanize = humanize ?? null;
     this.#maxMessageChars = maxMessageChars;
     this.#startRetryDelaysMs = startRetryDelays(startRetryDelaysMs);
   }
@@ -204,6 +213,8 @@ export class WeixinRuntime {
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
+        streaming: this.#streaming, messageBreak: this.#messageBreak, onNewMessage: this.#onNewMessage,
+        humanize: this.#humanize,
         maxMessageChars: this.#maxMessageChars,
         signal,
       });

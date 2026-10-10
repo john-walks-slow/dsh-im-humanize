@@ -128,6 +128,10 @@ export class FeishuRuntime {
   #contextEnhancement;
   #accessPolicy;
   #replyTimeoutMs;
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
+  #humanize = null;
   #connectTimeoutMs;
   #requestTimeoutMs;
   #wsAgent;
@@ -183,6 +187,10 @@ export class FeishuRuntime {
     accessPolicy,
     repair,
     replyTimeoutMs = 600000,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
+    humanize = null,
     connectTimeoutMs = 15000,
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     slashCommands = true,
@@ -232,6 +240,10 @@ export class FeishuRuntime {
     this.#accessPolicy = accessPolicy;
     this.#repair = repair ?? null;
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#streaming = streaming !== false;
+    this.#messageBreak = messageBreak === true;
+    this.#onNewMessage = onNewMessage;
+    this.#humanize = humanize ?? null;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#requestTimeoutMs = requestTimeoutMs;
     this.#slashCommands = consumerMode !== 'external-consumer' && Boolean(slashCommands);
@@ -378,6 +390,10 @@ export class FeishuRuntime {
         groupResponseMode: this.#groupResponseMode,
         mentionTopicReply: this.#mentionTopicReply,
         stepPush: this.#stepPush,
+        streaming: this.#streaming,
+        messageBreak: this.#messageBreak,
+        onNewMessage: this.#onNewMessage,
+        humanize: this.#humanize,
         stepPushMode: this.#stepPushMode,
         stepCardPanels: this.#stepCardPanels,
         voice: this.#voice,

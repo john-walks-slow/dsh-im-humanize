@@ -38,6 +38,12 @@ import {
 import { runWorkspaceCommand, workspacePathSnapshot } from '../shared/workspace-command.mjs';
 import { askInWorkspaceSession } from '../shared/workspace-session.mjs';
 import {
+  applyReadDelay,
+  applySegmentGap,
+  SHORT_DELAY_CAP_MS,
+} from '../shared/send-delay.mjs';
+import { resolveHumanizeSettings } from '../shared/humanize-resolver.mjs';
+import {
   captureContextEnhancement,
   captureContextEnhancementSource,
   enhanceContextContent,
@@ -72,6 +78,14 @@ import {
   evaluateInboundAccess,
 } from '../shared/inbound-access.mjs';
 import { t } from '../shared/i18n.mjs';
+import { createMessageBreakHandler } from '../shared/message-break.mjs';
+import {
+  normalizeOnNewMessage,
+  resolveNewMessagePolicy,
+  fireAndForgetStop,
+  isSupersededStop,
+  SUPERSEDED_STOP_REASON,
+} from '../shared/new-message-policy.mjs';
 
 const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
 
@@ -564,8 +578,18 @@ export class WecomHarnessBridge {
   #status;
   #logger;
   #replyTimeoutMs;
-  #generateReqId;
+  #streaming = true;
+  #messageBreak = false;
+  #onNewMessage = 'interrupt';
+  // Live per-turn settings provider; falls back to ctor snapshot.
+  #humanize = null;
+  // Pre-ask controllers: alive only while a turn is in its silent read
+  // delay / image staging; aborting supersedes that turn.
+  #preAskControllers = new Map();
+  // Wall-clock end of the last completed turn per conversation (idle boost).
+  #turnEnds = new Map();
   #signal;
+  #generateReqId;
   #fileUploadTimeoutMs;
   #queues = new Map();
   #busyMessages = new BusyMessageDispatcher();
@@ -591,6 +615,10 @@ export class WecomHarnessBridge {
     status = createWecomBridgeStatus(),
     logger = console,
     replyTimeoutMs = 600_000,
+    streaming = true,
+    messageBreak = false,
+    onNewMessage = 'interrupt',
+    humanize = null,
     generateStreamId = generateReqId,
     fileUploadTimeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS,
     signal,
@@ -610,6 +638,10 @@ export class WecomHarnessBridge {
     this.#status = status;
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
+    this.#streaming = streaming !== false;
+    this.#messageBreak = messageBreak === true;
+    this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
+    this.#humanize = humanize ?? null;
     this.#generateReqId = generateStreamId;
     this.#fileUploadTimeoutMs = Math.min(fileUploadTimeoutMs, DEFAULT_FILE_UPLOAD_TIMEOUT_MS);
     this.#signal = signal;
@@ -878,7 +910,7 @@ export class WecomHarnessBridge {
       ?? await runCompactCommand(text, this.#harness, this.#state, key, options);
   }
 
-  accept(frame) {
+  async accept(frame) {
     if (this.#signal?.aborted) return Promise.resolve();
     const body = bodyOf(frame);
     const messageId = nonEmptyString(body.msgid);
@@ -1054,8 +1086,36 @@ export class WecomHarnessBridge {
       pending.queue = current;
       return current;
     }
+    // Busy-message routing. A pending interaction or approval always queues --
+    // interrupting would lose the question and steering has nothing to inject
+    // into -- so the configured policy only decides the ordinary case. The
+    // fork's `interrupt` supersedes the in-flight turn here; `queue` and
+    // `steer` run through the shared dispatcher, which owns the queue receipt,
+    // the automatic-steer eligibility gate and the waitForIdle accounting.
+    const policy = resolveNewMessagePolicy({
+      hasQueue: this.#queues.has(key),
+      hasPendingInteraction: this.#pendingInteractions.has(key),
+      hasPendingApproval: this.#approvals.hasPending(key),
+      onNewMessage: this.#humanizeSettings().onNewMessage,
+    });
+    if (policy === 'interrupt') {
+      // Supersede any silent pre-ask phase first: stopActiveTurn cannot
+      // cancel a turn that has not reached the harness yet (unconditional,
+      // not gated by sendDelay.enabled).
+      this.#abortPreAskPhase(key);
+      const current = this.#enqueueMessage(frame, messageId, key);
+      fireAndForgetStop({
+        session: this.#boundSession(key),
+        control: { owner: this, key },
+        signal: this.#signal,
+        reason: SUPERSEDED_STOP_REASON,
+        logger: this.#logger,
+      });
+      return current;
+    }
     return this.#busyMessages.dispatch({
       key, messageId, text: commandText,
+      ...(policy ? { mode: policy } : {}),
       eligible: () => isNativeWecomText(frame) && !hasReplyReference(commandMessage)
         && !parseWecomMenu(commandText) && !this.#cardFrames.has(frame)
         && canAutomaticallySteer(this.#accessPolicy, conversationType, senderId),
@@ -1071,6 +1131,15 @@ export class WecomHarnessBridge {
       enqueue: (options) => this.#enqueueMessage(frame, messageId, key, options),
       send: (reply) => this.#sendImmediate(frame, chatId, reply),
     });
+  }
+
+  /** Get a workspace session bound to the conversation's current session ID. */
+  #boundSession(key) {
+    if (typeof this.#state?.sessionFor !== 'function') return null;
+    const sessionId = this.#state.sessionFor(key);
+    if (typeof sessionId !== 'string' || !sessionId) return null;
+    if (typeof this.#harness?.workspaceSession !== 'function') return null;
+    return this.#harness.workspaceSession(sessionId);
   }
 
   #enqueueMessage(frame, messageId, key, {
@@ -1202,6 +1271,7 @@ export class WecomHarnessBridge {
       busy: this.#queues.has(key) || this.#batchInputs.status(key).phase !== 'idle',
       control: { owner: this, key },
       deferredDelivery: this.#deferred,
+      abortPreAsk: () => this.#abortPreAskPhase(key),
       enhancement: captureContextEnhancementSource(
         this.#contextEnhancement,
         bodyOf(frame).chattype === 'single' ? 'direct' : 'group',
@@ -1297,6 +1367,31 @@ export class WecomHarnessBridge {
     };
   }
 
+  #humanizeSettings() {
+    return resolveHumanizeSettings({
+      humanize: this.#humanize,
+      streaming: this.#streaming,
+      messageBreak: this.#messageBreak,
+      onNewMessage: this.#onNewMessage,
+    });
+  }
+
+  #abortPreAskPhase(key) {
+    const controller = this.#preAskControllers.get(key);
+    if (!controller) return false;
+    const reason = new Error('已由更新的消息接替。');
+    reason.code = 'superseded';
+    controller.abort(reason);
+    return true;
+  }
+
+  #idleMsFor(key) {
+    // null = no completed turn on record (first message): the activity
+    // boost then stays out of the way and the full read-delay range applies.
+    const lastTurnEnd = this.#turnEnds.get(key);
+    return lastTurnEnd === undefined ? null : Date.now() - lastTurnEnd;
+  }
+
   async #process(frame, {
     alreadyRecorded = false,
     preparedMessage,
@@ -1321,10 +1416,13 @@ export class WecomHarnessBridge {
     const key = conversationKey(frame);
     let streamId = null;
     let streamStarted = false;
-    let streamThinkingText = t('正在思考中…');
+    // progressStatus=false: start with an empty thinking line so no
+    // "正在思考中…" bubble appears; the first real text fills it.
+    let streamThinkingText = '';
     let streamAnswerText = '';
     let batchSettled = batchSubmission === null;
     let promptRecorded = false;
+    let preAsk = null;
     try {
       if (!text && !hasImages && !hasFiles && !hasReply) {
         await this.#sendImmediate(frame, chatId, t('目前支持文字、图片、文件和语音转写消息。'));
@@ -1374,22 +1472,53 @@ export class WecomHarnessBridge {
         return;
       }
 
-      streamId = this.#generateReqId('stream');
-      try {
-        await this.#client.replyStream(
-          frame,
-          streamId,
-          streamContent(streamThinkingText),
-          false,
-        );
-        streamStarted = true;
-      } catch (error) {
-        this.#logger.warn?.('[dsh-im:wecom] unable to start a stream; using an active reply:', error);
+      const humanize = this.#humanizeSettings();
+      // progressStatus=false keeps streamThinkingText empty (no thinking
+      // bubble); otherwise seed the thinking line for tool/status frames.
+      if (humanize.progressStatus !== false) {
+        streamThinkingText = t('正在思考中…');
       }
-
-      let content = hasImages || hasReply
-        ? await promptContentForInboundMessage(message, { signal: this.#signal, deferImages: true })
-        : undefined;
+      // Mark the message seen BEFORE the silent read delay: WeCom
+      // redelivers unacknowledged callbacks, so a redelivery arriving during
+      // the delay must never enqueue the same message as a second turn.
+      await this.#state.markSeen(messageId);
+      promptRecorded = true;
+      // ---- Phase ①: read delay（"过了一段时间才读到消息"）----
+      // Silent: no thinking placeholder, no reply. Abortable: a newer
+      // message (interrupt) or /stop supersedes the phase instead of
+      // waiting it out. WeCom has no typing API, so the wait is capped.
+      let content;
+      preAsk = new AbortController();
+      this.#preAskControllers.set(key, preAsk);
+      const preAskSignal = this.#signal
+        ? AbortSignal.any([this.#signal, preAsk.signal])
+        : preAsk.signal;
+      try {
+        await applyReadDelay({
+          settings: humanize,
+          userText: text,
+          idleMs: this.#idleMsFor(key),
+          channelCapMs: SHORT_DELAY_CAP_MS,
+          signal: preAskSignal,
+        });
+        if (preAsk.signal.aborted) {
+          const superseded = new Error('superseded by a newer message');
+          superseded.code = 'superseded';
+          throw superseded;
+        }
+        // Image staging stays inside the pre-ask window: interrupting it
+        // must supersede cleanly instead of producing a double reply.
+        // `deferImages` keeps the image bytes out of the prompt text: they ride
+        // in `askOptions.images` instead, so the streaming carrier can open
+        // before the download finishes.
+        content = hasImages || hasReply
+          ? await promptContentForInboundMessage(message, { signal: preAskSignal, deferImages: true })
+          : undefined;
+      } finally {
+        if (this.#preAskControllers.get(key) === preAsk) {
+          this.#preAskControllers.delete(key);
+        }
+      }
       const snapshot = this.#acceptedMessageIds.get(messageId);
       let contextEnhanced = false;
       if (snapshot) {
@@ -1401,8 +1530,45 @@ export class WecomHarnessBridge {
         }));
         contextEnhanced = content !== originalContent;
       }
-      await this.#state.markSeen(messageId);
-      promptRecorded = true;
+      // ---- Phase ②: compose ----
+      // #streaming is now live: false skips the thinking-placeholder stream
+      // entirely; the final answer is a one-shot passive-first delivery.
+      streamId = this.#generateReqId('stream');
+      // progressStatus=false: defer the stream opening until the first real
+      // text arrives (lazy) — no empty/placeholder streaming bubble is sent
+      // upfront, matching the shared bridges' lazy mode.
+      const lazyStream = humanize.streaming && humanize.progressStatus === false
+        && typeof this.#client.replyStreamNonBlocking === 'function';
+      const openStream = async (initialContent) => {
+        try {
+          await this.#client.replyStream(frame, streamId, initialContent, false);
+          streamStarted = true;
+        } catch (error) {
+          this.#logger.warn?.('[dsh-im:wecom] unable to start a stream; using an active reply:', error);
+        }
+      };
+      if (humanize.streaming && !lazyStream) {
+        await openStream(streamContent(streamThinkingText));
+      }
+      // Create message_break handler for this turn. Segment gaps
+      // ("typing the next message") pause between segments.
+      let segmentsSent = 0;
+      const messageBreakHandler = humanize.messageBreak
+        ? createMessageBreakHandler({
+          sendSegment: async (segmentText) => {
+            if (segmentsSent > 0) {
+              await applySegmentGap({
+                settings: humanize,
+                segmentText,
+                signal: this.#signal,
+              });
+            }
+            segmentsSent += 1;
+            await this.#sendActive(chatId, segmentText);
+          },
+          logger: this.#logger,
+        })
+        : null;
       const { answer, artifacts = [] } = await askInWorkspaceSession({
         deferredDelivery: () => ({ coordinator: this.#deferred, target: { chatId } }),
         harness: this.#harness,
@@ -1419,17 +1585,33 @@ export class WecomHarnessBridge {
           timeoutMs: this.#replyTimeoutMs,
           signal: this.#signal,
           control: { owner: this, key },
-          onUpdate: streamStarted && typeof this.#client.replyStreamNonBlocking === 'function'
+          onUpdate: (humanize.streaming && typeof this.#client.replyStreamNonBlocking === 'function') || messageBreakHandler
             ? async (update) => {
+                if (messageBreakHandler) {
+                  const handled = await messageBreakHandler.handleUpdate(update);
+                  if (handled === null) return;
+                  update = handled;
+                }
+                if (typeof this.#client.replyStreamNonBlocking !== 'function') return;
                 if (update?.type === 'text') {
                   streamAnswerText = update.text;
-                } else {
+                } else if (humanize.progressStatus !== false) {
+                  // progressStatus=false: drop tool/status progress text
+                  // ("正在使用{name}…", "正在整理结果…"); keep thinking line.
                   streamThinkingText = thinkingProgressText(update) || streamThinkingText;
                 }
                 const preview = splitUtf8(
                   streamContent(streamThinkingText, streamAnswerText),
                 )[0];
-                if (preview) await this.#client.replyStreamNonBlocking(frame, streamId, preview, false);
+                if (!preview) return;
+                if (!streamStarted) {
+                  // Lazy: the first non-empty preview opens the stream with
+                  // that content; nothing was sent upfront.
+                  if (!lazyStream) return;
+                  await openStream(preview);
+                  return;
+                }
+                await this.#client.replyStreamNonBlocking(frame, streamId, preview, false);
               }
             : undefined,
           onInteraction: (interaction) => this.#handleInteraction(interaction, {
@@ -1449,7 +1631,22 @@ export class WecomHarnessBridge {
       }
 
       this.#signal?.throwIfAborted();
-      const displayAnswer = answerTextForDelivery(answer, artifacts);
+      // A no_reply turn concludes without a reply: silence is intended, not
+      // an empty model response. Close an eagerly opened stream frame and
+      // send nothing.
+      if (!String(answer ?? '').trim() && artifacts.length === 0) {
+        if (streamStarted && streamId) {
+          await this.#client.replyStream(frame, streamId, '', true).catch((streamError) => {
+            this.#logger.warn?.('[dsh-im:wecom] unable to close the stream for a silent turn:', streamError);
+          });
+        }
+        if (!promptRecorded) await this.#state.markSeen(messageId);
+        return;
+      }
+      const baseAnswer = answerTextForDelivery(answer, artifacts);
+      const displayAnswer = messageBreakHandler?.hasBreaks()
+        ? messageBreakHandler.remainingText(baseAnswer)
+        : baseAnswer;
       const streamChunks = splitUtf8(
         streamContent(streamThinkingText, displayAnswer, { finish: true }),
       );
@@ -1482,7 +1679,12 @@ export class WecomHarnessBridge {
           }
         }
         if (!finalSent) {
-          const providerMessageIds = await this.#sendActive(chatId, displayAnswer);
+          // streaming=false: one-shot passive-first delivery (the stream was
+          // never opened by choice). streaming=true but finalization failed:
+          // the stream frame may still be open, so stay on the active path.
+          const providerMessageIds = humanize.streaming
+            ? await this.#sendActive(chatId, displayAnswer)
+            : (await this.#sendImmediate(frame, chatId, displayAnswer)) ?? [];
           textReceipt = createDeliveryReceipt({
             deliveryId: messageId,
             presentation: 'wecom-text',
@@ -1526,15 +1728,22 @@ export class WecomHarnessBridge {
       }
       if (error?.code === 'turn-stopped') {
         if (streamStarted && streamId) {
-          await this.#client.replyStream(
-            frame,
-            streamId,
-            streamContent(streamThinkingText, t('已停止。'), { finish: true }),
-            true,
-          )
+          // A newer message superseded this turn: close the stream empty so
+          // the interruption stays invisible. Only an explicit /stop
+          // announces itself.
+          const stopped = isSupersededStop(error)
+            ? ''
+            : streamContent(streamThinkingText, t('已停止。'), { finish: true });
+          await this.#client.replyStream(frame, streamId, stopped, true)
             .catch(() => undefined);
         }
         if (!promptRecorded) await this.#state.markSeen(messageId);
+        return;
+      }
+      if (preAsk?.signal.aborted === true) {
+        // Superseded by a newer message (interrupt) or /stop before this
+        // turn reached the harness: silent — no placeholder, no failure
+        // text; the newer turn already owns this conversation.
         return;
       }
       if (this.#signal?.aborted) return;
@@ -1569,6 +1778,7 @@ export class WecomHarnessBridge {
         this.#logger.error?.('[dsh-im:wecom] failed to send the safe error reply');
       }
     } finally {
+      this.#turnEnds.set(key, Date.now());
       await Promise.allSettled([
         this.#cancelPendingInteraction(key),
         this.#approvals.closeRoute(key),
