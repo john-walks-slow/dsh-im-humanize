@@ -6,6 +6,7 @@ import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } fr
 import { normalizeLastMessageError } from '../../last-message-error.js';
 import { normalizeAccessPolicy } from '../../../../src/channels/shared/access-policy.mjs';
 import { normalizeContextEnhancementConfig } from '../../../../src/channels/shared/context-enhancement.mjs';
+import { normalizeHumanizeOverride, SET_HUMANIZE_ENDPOINT } from '../../../../src/channels/shared/humanize-override.mjs';
 
 const ACCOUNT_STATES = new Set(['connected', 'connecting', 'offline', 'error']);
 
@@ -38,6 +39,7 @@ export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
   setContextEnhancement: 'bot.context-enhancement.set',
   setBusyMessageMode: 'bot.message-mode.set',
+  setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: 'bot.access-policy.set',
   setAlias: 'bot.alias.set',
   setThinkingTraces: 'bot.thinking-traces.set',
@@ -71,9 +73,13 @@ export function createTokenChannelApi(channel, connectionSummary, {
       workspace: text(value.workspace, '', 4_096),
       model: normalizeModelSelection(value.model),
       agentPreset: normalizeAgentPresetId(value.agentPreset),
-      busyMessageMode: normalizeBusyMessageMode(value.busyMessageMode),      contextEnhancement: normalizeContextEnhancementConfig(value.contextEnhancement),
+      busyMessageMode: normalizeBusyMessageMode(value.busyMessageMode),
+      contextEnhancement: normalizeContextEnhancementConfig(value.contextEnhancement),
       // Absent from the backend means ON; only an explicit false opts out.
       thinkingTraces: value.thinkingTraces !== false,
+      ...(Object.hasOwn(value, 'humanize')
+        ? { humanize: normalizeHumanizeOverride(value.humanize) }
+        : {}),
       ...(Object.hasOwn(value, 'accessPolicy')
         ? { accessPolicy: normalizeAccessPolicy(value.accessPolicy) }
         : {}),
@@ -112,6 +118,9 @@ export function createTokenChannelApi(channel, connectionSummary, {
       totals: { configured: bots.length, connected: bots.filter((bot) => bot.connected).length },
       agentPresetCatalog: normalizeAgentPresetCatalog(source.agentPresetCatalog),
       modelCatalog: normalizeModelCatalog(source.modelCatalog),
+      ...(isRecord(source.humanizeDefaults)
+        ? { humanizeDefaults: source.humanizeDefaults }
+        : {}),
       ...(isRecord(source.permissions) ? { permissions: source.permissions } : {}),
     };
   };

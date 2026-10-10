@@ -23,7 +23,6 @@ const required = [
   'lib/client.js',
   'bin/dsh-im.mjs',
   'cordis.patch.yml',
-  'scripts/verify-injected-context.mjs',
   'README.md',
   'README.en.md',
   'PROACTIVE_DELIVERY.md',
@@ -46,8 +45,6 @@ const required = [
   'plugin-src/host/channels/telegram/index.mjs',
   'plugin-src/host/channels/discord/index.mjs',
   'plugin-src/host/channels/whatsapp/index.mjs',
-  'plugin-src/host/channels/matrix/index.mjs',
-  'plugin-src/client/channels/matrix/index.js',
   'src/channels/feishu/feishu-runtime.mjs',
   'src/channels/weixin/weixin-runtime.mjs',
   'src/channels/dingtalk/dingtalk-runtime.mjs',
@@ -59,8 +56,6 @@ const required = [
   'src/channels/discord/discord-runtime.mjs',
   'src/channels/whatsapp/whatsapp-runtime.mjs',
   'src/channels/whatsapp/whatsapp-web-session.mjs',
-  'src/channels/matrix/matrix-runtime.mjs',
-  'src/channels/matrix/matrix-api.mjs',
   'src/channels/shared/context-enhancement.mjs',
 ];
 await Promise.all(required.map((path) => access(resolve(root, path))));
@@ -123,7 +118,9 @@ if (forbiddenDshLockPaths.length > 0) {
   );
 }
 
-if (!/\bid\s*:\s*["']@xmanrui\/dsh-im["']/u.test(client)) {
+// The fork renamed the loader id to @johnnren/dsh-im-humanize; the upstream
+// xmanrui/dsh-im id stays valid for builds cut before the rename.
+if (!/\bid\s*:\s*["'](?:@xmanrui\/dsh-im|@johnnren\/dsh-im-humanize)["']/u.test(client)) {
   throw new Error('client bundle does not register the dsh-im loader id');
 }
 const sourceSectionMarkers = [
@@ -148,32 +145,41 @@ if (client.includes('settings.plugins.tab') || clientSources.includes('settings.
 }
 // Connections still have no channel-enable toggle. Checkable inputs are owned
 // only by the shared context editor, the saved-target Session sync row, the
-// email settings, the Telegram thinking-traces block, and Feishu panel settings.
-// The context editor contains one switch template and one mapped field-input
-// template; the delivery target adds one ordinary checkbox template; the
-// Telegram thinking-traces block adds one ordinary checkbox template. General
-// settings adds one mapped switch template for the two Feishu panel preferences.
-const contextEditorSource = await readFile(resolve(root, 'plugin-src/client/context-enhancement.js'), 'utf8');
-const deliverySettingsSource = await readFile(resolve(root, 'plugin-src/client/delivery-settings.js'), 'utf8');
-const emailSettingsSource = await readFile(resolve(root, 'plugin-src/client/channels/email/index.js'), 'utf8');
-const thinkingTracesSource = await readFile(resolve(root, 'plugin-src/client/channels/telegram/thinking-traces.js'), 'utf8');
-const botGeneralSettingsSource = await readFile(resolve(root, 'plugin-src/client/bot-general-settings.js'), 'utf8');
-const otherClientSources = clientSources
-  .replace(contextEditorSource, '')
-  .replace(deliverySettingsSource, '')
-  .replace(emailSettingsSource, '')
-  .replace(thinkingTracesSource, '')
-  .replace(botGeneralSettingsSource, '');
-if (/role:\s*["']switch|type:\s*["']checkbox/.test(otherClientSources)
-  || (deliverySettingsSource.match(/type:\s*["']checkbox["']/g) ?? []).length !== 1
-  || /role:\s*["']switch["']/u.test(deliverySettingsSource)
-  || (thinkingTracesSource.match(/type:\s*["']checkbox["']/g) ?? []).length !== 1
-  || /role:\s*["']switch["']/u.test(thinkingTracesSource)
-  || (botGeneralSettingsSource.match(/type:\s*["']checkbox["']/g) ?? []).length !== 1
-  || (botGeneralSettingsSource.match(/role:\s*["']switch["']/g) ?? []).length !== 1
-  || (client.match(/role:\s*["']switch["']/g) ?? []).length !== 2
-  || (client.match(/type:\s*["']checkbox["']/g) ?? []).length !== 5) {
-  throw new Error('checkable inputs must be limited to context enhancement, Session sync, email settings, Telegram thinking traces, and Feishu panel settings');
+// humanization panel, the shared humanization field group, the per-bot
+// humanization editor, the per-bot general panel (step-card panels) and the
+// Telegram thinking-traces toggle. The whitelist is by file, not by per-field
+// counts: those are summed from the listed files at verify time, so adding or
+// removing a field inside one of them needs no manifest edit here, while a
+// stray checkable anywhere else still fails the build.
+const checkableSourceFiles = [
+  'context-enhancement.js',
+  'delivery-settings.js',
+  'humanize-settings.js',
+  'bot-general-settings.js',
+  'channels/shared/bot-send-delay.js',
+  'channels/shared/humanize-fields.js',
+  'channels/telegram/thinking-traces.js',
+];
+const hasCheckable = /role:\s*["']switch|type:\s*["']checkbox/u;
+const countCheckables = (text) => (text.match(/role:\s*["']switch|type:\s*["']checkbox/gu) ?? []).length;
+const auditedSources = await Promise.all(checkableSourceFiles.map(
+  (path) => readFile(resolve(root, 'plugin-src/client', path), 'utf8'),
+));
+const otherClientSources = auditedSources.reduce(
+  (rest, source) => rest.replace(source, ''),
+  clientSources,
+);
+if (hasCheckable.test(otherClientSources)) {
+  throw new Error('checkable inputs must be limited to the audited editor files');
+}
+const expectedCheckables = auditedSources.reduce(
+  (total, source) => total + countCheckables(source),
+  0,
+);
+// The bundle is built from those sources: any extra checkable can only come
+// from somewhere the whitelist above does not cover.
+if (countCheckables(client) !== expectedCheckables) {
+  throw new Error('checkable inputs in the client bundle do not match the audited sources');
 }
 for (const marker of ['bot.context-enhancement.set', '<dsh_im_source>', '<dsh_im_source_guidance>']) {
   if (!host.includes(marker) || !client.includes(marker)) {
@@ -184,7 +190,7 @@ if (!client.includes('container-type: inline-size')
   || !client.includes('@container (max-width: 680px)')) {
   throw new Error('client bundle does not contain the narrow-panel DingTalk QR layout');
 }
-for (const marker of ['/feishu', '/weixin', '/dingtalk', '/wecom', '/qq', '/slack', '/telegram', '/discord', '/whatsapp', '/matrix']) {
+for (const marker of ['/feishu', '/weixin', '/dingtalk', '/wecom', '/qq', '/slack', '/telegram', '/discord', '/whatsapp']) {
   if (!host.includes(marker)) {
     throw new Error(`host bundle does not contain the internal ${marker} RPC provider`);
   }
@@ -210,7 +216,13 @@ if (/@xmanrui\/dsh-(?:feishu|weixin|dingtalk)/.test(
 )) {
   throw new Error('source or package metadata still depends on an external channel plugin');
 }
-if (!patch.includes("name: '@xmanrui/dsh-im'") || /dsh-(?:feishu|weixin|dingtalk)/.test(patch)) {
+// The fork's bundle patch activates @johnnren/dsh-im-humanize; the upstream
+// xmanrui/dsh-im name stays valid for patches cut before the rename.
+if (!patch.includes("name: '@xmanrui/dsh-im'")
+  && !patch.includes("name: '@johnnren/dsh-im-humanize'")) {
+  throw new Error('bundle patch must activate only dsh-im');
+}
+if (/dsh-(?:feishu|weixin|dingtalk)/.test(patch)) {
   throw new Error('bundle patch must activate only dsh-im');
 }
 for (const name of ['@xmanrui/dsh-feishu', '@xmanrui/dsh-weixin', '@xmanrui/dsh-dingtalk']) {

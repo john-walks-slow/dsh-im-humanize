@@ -8,6 +8,7 @@ import { installDiscordStyles } from './styles.js';
 
 const channel = createTokenChannelSettings({
   channel: 'Discord',
+  typingCapability: 'full',
   endpoints: DISCORD_ENDPOINTS,
   api: discordClientApi,
   LogoGlyph: DiscordLogoGlyph,

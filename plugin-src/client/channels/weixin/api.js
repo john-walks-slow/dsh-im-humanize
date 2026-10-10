@@ -7,6 +7,7 @@ import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } fr
 import { normalizeLastMessageError } from '../../last-message-error.js';
 import { normalizeAccessPolicy } from '../../../../src/channels/shared/access-policy.mjs';
 import { normalizeContextEnhancementConfig } from '../../../../src/channels/shared/context-enhancement.mjs';
+import { normalizeHumanizeOverride, SET_HUMANIZE_ENDPOINT } from '../../../../src/channels/shared/humanize-override.mjs';
 
 export const WEIXIN_RPC_CHANNEL = '/weixin';
 export const WEIXIN_ENDPOINTS = Object.freeze({
@@ -22,6 +23,7 @@ export const WEIXIN_ENDPOINTS = Object.freeze({
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
   setContextEnhancement: 'bot.context-enhancement.set',
   setBusyMessageMode: 'bot.message-mode.set',
+  setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: 'bot.access-policy.set',
   setAlias: 'bot.alias.set',
 });
@@ -156,7 +158,11 @@ function normalizeBot(value) {
     workspace: string(value.workspace).slice(0, 4_096),
     model: normalizeModelSelection(value.model),
     agentPreset: normalizeAgentPresetId(value.agentPreset),
-    busyMessageMode: normalizeBusyMessageMode(value.busyMessageMode),    contextEnhancement: normalizeContextEnhancementConfig(value.contextEnhancement),
+    busyMessageMode: normalizeBusyMessageMode(value.busyMessageMode),
+    contextEnhancement: normalizeContextEnhancementConfig(value.contextEnhancement),
+    ...(Object.hasOwn(value, 'humanize')
+      ? { humanize: normalizeHumanizeOverride(value.humanize) }
+      : {}),
     ...(Object.hasOwn(value, 'accessPolicy')
       ? { accessPolicy: normalizeAccessPolicy(value.accessPolicy) }
       : {}),
@@ -199,6 +205,9 @@ export function normalizeSnapshot(value) {
     testMessage: normalizeTestMessage(value.testMessage),
     warnings: Array.isArray(value.warnings) ? value.warnings.filter(isRecord).slice(0, 8).map(error => normalizeConnectionError(error)) : [],
     agentPresetCatalog: normalizeAgentPresetCatalog(value.agentPresetCatalog),
+    ...(isRecord(value.humanizeDefaults)
+      ? { humanizeDefaults: value.humanizeDefaults }
+      : {}),
     modelCatalog: normalizeModelCatalog(value.modelCatalog),
   };
 }

@@ -75,6 +75,11 @@ import {
   GlobalSettingsPanel,
 } from './global-settings.js';
 import {
+  HUMANIZE_RPC_CHANNEL,
+  HUMANIZE_SETTINGS_TAB_ID,
+  HumanizeSettingsPanel,
+} from './humanize-settings.js';
+import {
   createLoopbackAwareRpcCalls,
   replacePageLocation,
 } from './loopback-recovery.js';
@@ -234,6 +239,7 @@ export function IMSettingsTab({
   updateRpcCall,
   deliveryRpcCall,
   globalSettingsRpcCall,
+  humanizeRpcCall,
   workspaceDirectoryPicker,
   preferredSectionId,
   browserLocation = globalThis.location,
@@ -286,6 +292,7 @@ export function IMSettingsTab({
     updateRpcCall,
     deliveryRpcCall,
     globalSettingsRpcCall,
+    humanizeRpcCall,
     imessageRpcCall,
     emailRpcCall,
     matrixRpcCall,
@@ -299,6 +306,7 @@ export function IMSettingsTab({
     deliveryRpcCall,
     feishuRpcCall,
     globalSettingsRpcCall,
+    humanizeRpcCall,
     imessageRpcCall,
     emailRpcCall,
     matrixRpcCall,
@@ -409,7 +417,10 @@ export function IMSettingsTab({
         : null,
       h(BotSettingsContext.Provider, { value: botSettingsContext },
         globalSettingsSelected
-          ? h(GlobalSettingsPanel, { rpcCall: rpcCalls.globalSettingsRpcCall })
+          ? h('div', { className: 'dim-globalSettingsStack' },
+              h(GlobalSettingsPanel, { rpcCall: rpcCalls.globalSettingsRpcCall }),
+              h(HumanizeSettingsPanel, { rpcCall: rpcCalls.humanizeRpcCall }),
+            )
           : deliverySettings?.channel === active.id
           ? h(DeliveryTargetSettingsPage, {
               channel: active.id,
@@ -526,6 +537,8 @@ export function apply(ctx) {
     callManagementRpc(ctx.connection, DELIVERY_RPC_CHANNEL, endpoint, payload, signal);
   const globalSettingsRpcCall = (endpoint, payload, signal) =>
     callManagementRpc(ctx.connection, GLOBAL_SETTINGS_RPC_CHANNEL, endpoint, payload, signal);
+  const humanizeRpcCall = (endpoint, payload, signal) =>
+    callManagementRpc(ctx.connection, HUMANIZE_RPC_CHANNEL, endpoint, payload, signal);
   const workspaceDirectoryPicker = Object.freeze({
     listDirectory: (path, signal) =>
       callWorkspaceDirectoryApi(ctx, 'listDirectory', path, signal),
@@ -550,6 +563,7 @@ export function apply(ctx) {
     updateRpcCall,
     deliveryRpcCall,
     globalSettingsRpcCall,
+    humanizeRpcCall,
     workspaceDirectoryPicker,
   };
   const subscribeLocale = (listener) => typeof ctx.on === 'function'

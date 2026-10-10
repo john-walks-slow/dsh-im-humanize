@@ -14,6 +14,7 @@ import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } fr
 import { normalizeLastMessageError } from "../../last-message-error.js";
 import { normalizeAccessPolicy } from "../../../../src/channels/shared/access-policy.mjs";
 import { normalizeContextEnhancementConfig } from "../../../../src/channels/shared/context-enhancement.mjs";
+import { normalizeHumanizeOverride, SET_HUMANIZE_ENDPOINT } from "../../../../src/channels/shared/humanize-override.mjs";
 import { normalizeFeishuStepPushMode, normalizeFeishuStepCardPanels } from "../../../../src/channels/feishu/step-push-mode.mjs";
 import { normalizeFeishuVoiceConfig } from "../../../../src/channels/feishu/voice-config.mjs";
 import { normalizeSlashPanelConfig } from "../../../../src/channels/feishu/slash-command-panel.mjs";
@@ -36,6 +37,7 @@ export const FEISHU_ENDPOINTS = Object.freeze({
   setAgentPreset: "bot.preset.set",
   setContextEnhancement: "bot.context-enhancement.set",
   setBusyMessageMode: 'bot.message-mode.set',
+  setHumanize: SET_HUMANIZE_ENDPOINT,
   setAccessPolicy: "bot.access-policy.set",
   setAlias: 'bot.alias.set',
   setGroupResponseMode: "bot.group-response-mode.set",
@@ -226,7 +228,11 @@ export function normalizeBotConnection(value, fallbackBotId) {
     workspace: optionalString(value.workspace)?.slice(0, 4_096) ?? "",
     model: normalizeModelSelection(value.model),
     agentPreset: normalizeAgentPresetId(value.agentPreset),
-    busyMessageMode: normalizeBusyMessageMode(value.busyMessageMode),    contextEnhancement: normalizeContextEnhancementConfig(value.contextEnhancement),
+    busyMessageMode: normalizeBusyMessageMode(value.busyMessageMode),
+    contextEnhancement: normalizeContextEnhancementConfig(value.contextEnhancement),
+    ...(Object.hasOwn(value, 'humanize')
+      ? { humanize: normalizeHumanizeOverride(value.humanize) }
+      : {}),
     ...(Object.hasOwn(value, "accessPolicy")
       ? { accessPolicy: normalizeAccessPolicy(value.accessPolicy) }
       : {}),
@@ -296,6 +302,9 @@ export function normalizeBotsSnapshot(value) {
     error: normalizeError(value.error),
     agentPresetCatalog: normalizeAgentPresetCatalog(value.agentPresetCatalog),
     modelCatalog: normalizeModelCatalog(value.modelCatalog),
+    ...(isRecord(value.humanizeDefaults)
+      ? { humanizeDefaults: value.humanizeDefaults }
+      : {}),
   };
 }
 

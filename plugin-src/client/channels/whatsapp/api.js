@@ -6,6 +6,7 @@ import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } fr
 import { normalizeLastMessageError } from '../../last-message-error.js';
 import { normalizeAccessPolicy } from '../../../../src/channels/shared/access-policy.mjs';
 import { normalizeContextEnhancementConfig } from '../../../../src/channels/shared/context-enhancement.mjs';
+import { normalizeHumanizeOverride, SET_HUMANIZE_ENDPOINT } from '../../../../src/channels/shared/humanize-override.mjs';
 
 export const WHATSAPP_RPC_CHANNEL = '/whatsapp';
 
@@ -23,6 +24,7 @@ export const WHATSAPP_ENDPOINTS = Object.freeze({
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
   setContextEnhancement: 'bot.context-enhancement.set',
   setBusyMessageMode: 'bot.message-mode.set',
+  setHumanize: SET_HUMANIZE_ENDPOINT,
 });
 
 const PROVISION_STATES = new Set(['starting', 'pending', 'connecting', 'connected', 'failed', 'cancelled']);
@@ -101,7 +103,11 @@ function normalizeBot(value) {
     workspace: text(value.workspace, '', 4_096),
     model: normalizeModelSelection(value.model),
     agentPreset: normalizeAgentPresetId(value.agentPreset),
-    busyMessageMode: normalizeBusyMessageMode(value.busyMessageMode),    contextEnhancement: normalizeContextEnhancementConfig(value.contextEnhancement),
+    busyMessageMode: normalizeBusyMessageMode(value.busyMessageMode),
+    contextEnhancement: normalizeContextEnhancementConfig(value.contextEnhancement),
+    ...(Object.hasOwn(value, 'humanize')
+      ? { humanize: normalizeHumanizeOverride(value.humanize) }
+      : {}),
     ...(Object.hasOwn(value, 'accessPolicy')
       ? { accessPolicy: normalizeAccessPolicy(value.accessPolicy) }
       : {}),
@@ -137,6 +143,9 @@ export function normalizeSnapshot(value) {
     provisioning: source.provisioning ? normalizeProvisioning(source.provisioning) : null,
     agentPresetCatalog: normalizeAgentPresetCatalog(source.agentPresetCatalog),
     modelCatalog: normalizeModelCatalog(source.modelCatalog),
+    ...(isRecord(source.humanizeDefaults)
+      ? { humanizeDefaults: source.humanizeDefaults }
+      : {}),
   };
 }
 

@@ -11,7 +11,7 @@
 | P2-b | 共享层 `src/channels/shared/**` | ✅ 完成 |
 | P2-c | host 层 `plugin-src/host/**` | ✅ 完成 |
 | P2-d | 渠道层 `src/channels/<渠道>/**` | ✅ 完成 |
-| P2-e | 客户端层 `plugin-src/client/**` + `scripts/verify-package.mjs`（含 R3 简化） | 待办 |
+| P2-e | 客户端层 `plugin-src/client/**` + `scripts/verify-package.mjs`（含 R3 简化） | ✅ 完成 |
 | P2-f | R2：人化设置字段声明式化（并落地删除 `new-message-policy`，改用上游 `busyMessageModes`） | 待办 |
 | P2-g | 测试适配 + `npm run build` + 分层验证 | 待办 |
 
@@ -118,10 +118,25 @@
 
 ## P2-g 待办（测试适配，逐条已定位）
 
+> **前提**：当前 worktree 的 `test/` 树**整棵都还是上游 v4.38.0 的**（`grep -rln humanize test/` 在合并树里为空，而 fork main 有 17 个含 humanize 的测试文件）。也就是说本批观察到的「上游测试期望 vs fork 实现」的差异，绝大多数会在 P2-g 把 `test/` 按同一套 re-baseline 流程跑一遍后消失或改写。P2-g 第一步：`/tmp/p2-apply.sh test`（再单独处理 `test/browser/`）。
+
 1. `test/channels/qq/runtime.test.mjs` 是上游版：断言 `bot.middlewares[2].name === 'typing-middleware'`、`options.keepAlive`、`predicate(...)`。合并后代码取 fork 的「不装 SDK typingIndicator 中间件、由 bridge 自管 typing session」，且全 `src/` 已无 `typingMiddleware` 引用。→ 用 fork 版测试替换该文件（并把上游新增的非中间件用例并进来）。
 2. `test/channels/whatsapp/streaming.test.mjs` 的 `typing remains active while generating` 断言：上游 4.38 给 `WhatsappBotClient` 补了公开 `stopTyping()`（配 `#stopTyping`/'paused'），而 fork 的 `text-harness-bridge` 里本就有「首个可见回复分片到达即 `typingSession?.stop()`」的意图代码——过去因为渠道没有 `stopTyping` 而退化成 `stopTyping: null`（静默无效），现在真正生效，于是对应位置出现了 'paused'。→ 按新语义调整该断言（保留上游 `stopTyping`）。
 3. `test/channels/feishu/session-sync.test.mjs` 13 个用例的桩只有上游的两个方法，fork 的 `createSessionSyncCoordinator` 要求 4 个（多 `listSessionConversations`、`send`）→ 报 `Session sync requires a complete delivery service`。补桩即可（P2-c 已在 host 侧实测过同因同解）。
 4. 仓库级替身 `rich-message.test.mjs` 的 `429 + "message is not modified"` 子用例断言 `calls.length === 3`（fork 的 429 重试使其为 5，语义断言仍成立）。
+5. `test/channels/dingtalk/client-api.test.mjs` 的端点快照是上游版，合并后多出 fork 的 `setHumanize: 'bot.humanize.set'` → 并集（P2-g 跑 `test/` 重放后应自然由 fork 版覆盖，仍在此记账）。
+
+### P2-e（客户端层 `plugin-src/client/**` + `scripts/verify-package.mjs`，含 R3）
+
+24 个文件：5 个整份套用、10 个三路干净落地、9 个需人工裁决。
+
+1. **各渠道 `channels/*/api.js`（dingtalk/qq/wecom/weixin/whatsapp）与 `channels/shared/token-api.js`** → 同构的两处并集：端点表同时保留 `setBusyMessageMode: 'bot.message-mode.set'` 与 `setHumanize: SET_HUMANIZE_ENDPOINT`；`normalizeBotSnapshot` 同时保留 `busyMessageMode`、`contextEnhancement`、上游的 `thinkingTraces`（token-api）与 fork 的 `...(Object.hasOwn(value,'humanize') ? { humanize: normalizeHumanizeOverride(value.humanize) } : {})`。脚本化落地（`/tmp/p2e-fix.cjs`，第一遍 dry-run 只打印每文件替换计数与残留标记数，确认 1/1/0 后才 `--write`）。
+2. **`channels/feishu/api.js`** → imports 取并集（fork 的 `humanize-override` + 上游新增的 `normalizeFeishuStepCardPanels`/`normalizeFeishuVoiceConfig`/`normalizeSlashPanelConfig`，三个模块的导出都已确认存在）；端点与 normalize 同上。
+3. **`channels/shared/token-channel.js`** → `AccountCard` 形参取并集：fork 的 `onHumanizeSave` + 上游新增的 `rpcCall`、`reload`（调用点与函数体都已同时使用三者）。
+4. **`client/index.js`** → 采用上游重构后的结构（`panelDependencies` 常量 + `IMPanelErrorBoundary` + `setSettingsVisible` 客户端服务），并把 fork 的 `humanizeRpcCall` 补进 `panelDependencies`。上游那份依赖表本身已是 fork 的超集（多 email/matrix），只需补一项。
+5. **R3（`scripts/verify-package.mjs`）**：删除每文件 `{ checkbox, switch }` 计数清单与逐文件比对，只保留两种断言——① 白名单**文件**之外不得出现 `type:'checkbox'` / `role:'switch'`（对「所有客户端源码去掉白名单文件后的并集」做匹配）；② 打包产物里的可勾选控件总数必须等于白名单文件计数之和（计数在验证时**求和得出**，不再手写）。白名单补入上游 4.38 新增的两个合法带开关文件：`bot-general-settings.js`（分步卡片面板）与 `channels/telegram/thinking-traces.js`（思考过程留痕）。另修正 `undici` 的锁定版本：上游 `package.json` 钉的是 `7.29.1`，脚本里还写着 `7.29.0`。
+
+验证：`node plugin-src/client/build.mjs` 与 `plugin-src/host/build.mjs` 均成功（esbuild 对缺失具名导出会直接报错，等于把整棵 client/host 的导入-导出面验了一遍）；`node scripts/verify-package.mjs` 通过（`Verified dsh-im package artifacts.`）；`test/client-delivery-settings` + `bot-general-settings` + `bot-alias(-ui)` **55/55**；discord/slack/telegram/whatsapp `client-ui` + feishu/weixin `client-api` **31/31**；dingtalk/qq/wecom 的 `client-api`+`client-ui`+`client-lifecycle` 34 个用例中 1 个失败，即上面 P2-g ⑤ 的端点快照。生成物 `lib/client.js`、`lib/index.js` 已还原到 HEAD——它们是构建产物，留到 P2-g 全部源码落地后统一重建一次。
 
 ## 待决问题（P2-f 时处理）
 

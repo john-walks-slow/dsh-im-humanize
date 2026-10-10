@@ -8,6 +8,7 @@ import { AccountSettingsToggle, CollapsibleAccountSection } from '../shared/coll
 import { h } from '../../i18n.js';
 import { WorkspaceEditor } from '../../workspace-editor.js';
 import { ContextEnhancementEditor } from '../../context-enhancement.js';
+import { BotHumanizeEditor, TYPING_CAPABILITY } from '../shared/bot-send-delay.js';
 import {
   AgentPresetCatalogContext,
   AgentPresetEditor,
@@ -178,6 +179,7 @@ export function AccountCard({
   onModelSave,
   onAgentPresetSave,
   onContextEnhancementSave,
+  onHumanizeSave,
   onRequestRemove,
   onConfirmRemove,
   onCancelRemove,
@@ -236,6 +238,13 @@ export function AccountCard({
         config: account.contextEnhancement,
         disabled: Boolean(busy),
         onSave: onContextEnhancementSave,
+      }),
+      h(BotHumanizeEditor, {
+        humanize: account.humanize,
+        humanizeDefaults: account.humanizeDefaults ?? null,
+        capability: TYPING_CAPABILITY.none,
+        disabled: Boolean(busy),
+        onSave: onHumanizeSave,
       }),
       h('div', { className: 'ddt-accountFooter dim-cardFooter' },
         h('div', { className: 'dim-cardFooterLayout' },
@@ -573,6 +582,12 @@ export function WecomSettingsTab({ rpcCall }) {
               'context-enhancement',
               WECOM_ENDPOINTS.setContextEnhancement,
               { botId: account.botId, config },
+            ),
+            onHumanizeSave: (humanize) => botAction(
+              account,
+              'humanize',
+              WECOM_ENDPOINTS.setHumanize,
+              { botId: account.botId, humanize },
             ),
             onRequestRemove: () => setRemoveTarget(account.botId),
             onCancelRemove: () => setRemoveTarget(null),
