@@ -20,6 +20,8 @@ import { imageInputLimits } from './image-input-policy.mjs';
 import { inboundImagesAsFiles, imageContentFromStaged, isImageAdmissionRejection, IMAGE_HOST_LIMIT_FALLBACK_PROMPT } from './image-input.mjs';
 import { imSourceGuidance } from './im-source-guidance.mjs';
 import { outboundArtifactRegistry } from './semantic/artifact.mjs';
+import { MESSAGE_BREAK_TOOL } from './message-break.mjs';
+import { NO_REPLY_TOOL } from './no-reply.mjs';
 import { t } from './i18n.mjs';
 import { watchHarnessMux } from './harness-mux.mjs';
 
@@ -237,9 +239,10 @@ function validateModelCatalog(value, method, { session = false } = {}) {
   return value;
 }
 
-function turnStoppedError() {
+function turnStoppedError(reason) {
   const error = new Error('Harness turn was stopped before producing a text reply');
   error.code = 'turn-stopped';
+  error.stopReason = reason;
   return error;
 }
 
@@ -557,8 +560,10 @@ export class HarnessReplyTracker {
   #assistantText = new AssistantTextAccumulator();
   #finalAssistantText = null;
   #latestText = '';
+  #textAtLastBreak = '';
   #finished = false;
   #reason = null;
+  #noReply = false;
   #toolNames = new Map();
   #lastToolName = null;
   #transientSeqs = new Set();
@@ -597,6 +602,11 @@ export class HarnessReplyTracker {
     return this.#reason;
   }
 
+  /** True when the model concluded the turn with an explicit no_reply call. */
+  get noReply() {
+    return this.#noReply;
+  }
+
   get tracking() {
     return this.#targetTurn !== null && !this.#finished;
   }
@@ -608,7 +618,25 @@ export class HarnessReplyTracker {
   #commitText(text, pushUpdate) {
     if (!text || text === this.#latestText) return;
     this.#latestText = text;
-    pushUpdate({ type: 'text', text });
+    // After a message_break, push only the segment text (text since the last
+    // break point) so streaming channels show only the new segment on a fresh
+    // stream. Before any break, #textAtLastBreak is '' and visibleText = text.
+    const visibleText = this.#textAtLastBreak
+      && text.startsWith(this.#textAtLastBreak)
+      ? text.substring(this.#textAtLastBreak.length)
+      : text;
+    if (!visibleText) return;
+    pushUpdate({ type: 'text', text: visibleText });
+  }
+
+  /** Text accumulated since the last message_break (or the full text if none). */
+  #segmentText() {
+    if (!this.#textAtLastBreak) return this.#latestText;
+    if (this.#latestText.startsWith(this.#textAtLastBreak)) {
+      return this.#latestText.substring(this.#textAtLastBreak.length);
+    }
+    // Fallback: canonical rewrite broke the prefix relationship.
+    return this.#latestText;
   }
 
   #bufferReasoning(event) {
@@ -762,6 +790,25 @@ export class HarnessReplyTracker {
           ?? nonEmptyText(event.data?.subCallId);
         if (callId) this.#toolNames.set(callId, name);
         this.#lastToolName = name;
+
+        // message_break is a no-op separator: the AI calls it between segments
+        // of text to indicate "send what I've written so far as a separate
+        // message." Push a special update with the text accumulated since the
+        // last break (or since the start), then advance the break point.
+        if (name === MESSAGE_BREAK_TOOL) {
+          const segmentText = this.#segmentText();
+          this.#textAtLastBreak = this.#latestText;
+          pushUpdate({ type: 'message_break', text: segmentText });
+          continue;
+        }
+
+        // no_reply mechanically concludes the turn in silence: record the
+        // intent and skip progress surfacing — there is no visible result.
+        if (name === NO_REPLY_TOOL) {
+          this.#noReply = true;
+          continue;
+        }
+
         let argsText = null;
         if (event.data?.arguments !== undefined && event.data?.arguments !== null) {
           if (typeof event.data.arguments === 'string') {
@@ -785,6 +832,10 @@ export class HarnessReplyTracker {
         const callId = toolResultCallId(event.data);
         const toolName = (callId ? this.#toolNames.get(callId) : null)
           ?? this.#lastToolName;
+        // Suppress tool/result for message_break — it's a no-op separator,
+        // not a real tool whose result needs to be shown as progress.
+        // no_reply likewise concludes silently.
+        if (toolName === MESSAGE_BREAK_TOOL || toolName === NO_REPLY_TOOL) continue;
         const error = toolResultErrorText(event.data?.error);
         if (live) {
           const providerErrorCode = event.data?.error?.code;
@@ -1544,13 +1595,19 @@ export class HarnessClient {
 
   async stopActiveTurn(sessionId, control, options = {}) {
     if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('sessionId is required');
-    const ownership = await this.#refreshControlOwnership(sessionId, control, options);
+    // `reason` describes *why* the turn is being stopped (e.g. a newer message
+    // superseded it). It is ownership metadata, never an RPC option.
+    const { reason, ...rpcOptions } = options;
+    const ownership = await this.#refreshControlOwnership(sessionId, control, rpcOptions);
     if (!ownership) return false;
+    // The first accepted stop wins: a later /stop after an interrupt (or the
+    // reverse) does not overwrite the reason already recorded.
     if (ownership.stopRequested) return true;
     // Re-check after the refresh await. The owning ask may have completed and
     // unregistered while session.history was in flight.
     if (this.#activeControlOwnership(sessionId, control) !== ownership) return false;
     ownership.stopRequested = true;
+    ownership.stopReason = reason;
     try {
       if (this.#controlExecutor) {
         const accepted = this.#controlExecutor({
@@ -1566,7 +1623,10 @@ export class HarnessClient {
           if (typeof accepted !== 'boolean') {
             throw new TypeError('controlExecutor must return a boolean or undefined');
           }
-          if (!accepted) ownership.stopRequested = false;
+          if (!accepted) {
+            ownership.stopRequested = false;
+            ownership.stopReason = undefined;
+          }
           return accepted;
         }
       }
@@ -1574,12 +1634,13 @@ export class HarnessClient {
         'session.cancel',
         { sessionId, keepInbox: true },
         30_000,
-        options,
+        rpcOptions,
       );
       return true;
     } catch (error) {
       if (this.#activeControlOwnership(sessionId, control) === ownership) {
         ownership.stopRequested = false;
+        ownership.stopReason = undefined;
       }
       if (error instanceof HarnessRpcError && error.code === 'session-not-found') return false;
       throw error;
@@ -1971,10 +2032,24 @@ export class HarnessClient {
             const artifactCount = ownership?.stopRequested
               ? 0
               : await deliverArtifacts();
-            const answer = ownership?.stopRequested ? tracker.answer : tracker.finalAnswer;
-            if (answer) return answer;
+            // An accepted /stop keeps its interrupted feedback even when the
+            // model also concluded with no_reply: the user asked for the stop.
+            if (ownership?.stopRequested) {
+              if (tracker.answer) return tracker.answer;
+              throw turnStoppedError(ownership.stopReason);
+            }
+            if (tracker.noReply) {
+              // The model explicitly concluded the turn without a reply:
+              // silence is the intended outcome, never an empty model
+              // response. Narrated text before no_reply stays silent too,
+              // matching the wake-reclaim convention. Artifacts were already
+              // delivered above.
+              return '';
+            }
+            // Channels that split a long answer ask for the final assistant
+            // text only; everyone else keeps whatever the stream last showed.
+            if (tracker.finalAnswer) return tracker.finalAnswer;
             if (artifactCount > 0) return '';
-            if (ownership?.stopRequested) throw turnStoppedError();
             if (artifactHandoffError) throw artifactHandoffError;
             // A completed turn can do all its work through tools without text.
             // Missing end reasons retain the existing empty-reply failure.
@@ -2041,7 +2116,7 @@ export class HarnessClient {
           return tracker.answer;
         }
         if (error?.code === 'turn-stopped') throw error;
-        throw turnStoppedError();
+        throw turnStoppedError(ownership?.stopReason);
       }
     } finally {
       releasePromptInputOrigin();

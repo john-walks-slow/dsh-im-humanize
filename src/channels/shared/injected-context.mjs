@@ -253,6 +253,14 @@ export function splitLeadingInjectedContext(text, options = {}) {
 
 /**
  * Build one context message with the producer-owned source kind required by V4.
+ *
+ * V4 retired the v3 `{ kind: 'plugin', plugin }` wrapper -- the write path
+ * rejects it with "format v4 message requires a producer-owned source kind".
+ * An out-of-tree producer rides inside the kind itself as `plugin:<name>`,
+ * exactly like the released v3-to-v4 migration rewrites historical rows. These
+ * messages are observable wherever a plugin-authored source is read: the
+ * prompt split invokes them beside the user text, and downstream reads may
+ * surface their source.
  * @param block - one parsed block.
  * @param newId - identity factory for the new message.
  * @param plugin - source plugin name recorded on it.

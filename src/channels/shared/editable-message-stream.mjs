@@ -25,6 +25,7 @@ export function createEditableMessageStream({
   sendRemainder,
   messageIdForResult = () => null,
   logger = console,
+  lazy = false,
 }) {
   let messageId;
   const providerMessageIds = [];
@@ -32,7 +33,24 @@ export function createEditableMessageStream({
   let timer = null;
   let inFlight = null;
   let closed = false;
-  let lastSent = initialText;
+  let started = false;
+  let created = false;
+  // In lazy mode no placeholder is ever sent, so lastSent starts empty;
+  // eager mode seeds it with the placeholder text the start() call sends.
+  let lastSent = lazy ? '' : initialText;
+
+  // Create the message with `text` (lazy: first real content; eager: the
+  // placeholder during start()). Records the provider id. No-op once the
+  // message already exists.
+  const ensureCreated = async (text) => {
+    if (created) return;
+    messageId = await create(text);
+    created = true;
+    if ((typeof messageId === 'string' && messageId.trim())
+      || Number.isSafeInteger(messageId)) {
+      providerMessageIds.push(String(messageId));
+    }
+  };
 
   const schedule = () => {
     if (closed || timer !== null || inFlight || !pending) return;
@@ -40,8 +58,9 @@ export function createEditableMessageStream({
       timer = null;
       const text = pending;
       pending = null;
-      const next = splitMessageText(text, limit)[0] ?? initialText;
-      inFlight = Promise.resolve(next === lastSent ? undefined : edit(messageId, next))
+      const next = splitMessageText(text, limit)[0] ?? (lazy ? '' : initialText);
+      inFlight = Promise.resolve(next === lastSent ? undefined
+        : (created ? edit(messageId, next) : ensureCreated(next)))
         .then(() => { lastSent = next; })
         .catch((error) => logger.warn?.('[dsh-im] streamed message update failed:', error))
         .finally(() => {
@@ -60,14 +79,15 @@ export function createEditableMessageStream({
       return [...providerMessageIds];
     },
     async start() {
-      messageId = await create(initialText);
-      if ((typeof messageId === 'string' && messageId.trim()) || Number.isSafeInteger(messageId)) {
-        providerMessageIds.push(String(messageId));
-      }
+      // Eager mode creates the placeholder upfront; lazy mode defers until
+      // the first real text update arrives (no placeholder bubble).
+      if (!lazy) await ensureCreated(initialText);
+      started = true;
       return this;
     },
     update(text) {
       if (closed || typeof text !== 'string' || !text.trim()) return;
+      if (!started) return; // updates before start() are ignored
       pending = text;
       schedule();
     },
@@ -80,7 +100,13 @@ export function createEditableMessageStream({
       await inFlight?.catch(() => undefined);
       const chunks = splitMessageText(text, limit);
       const first = chunks[0] ?? t('处理完成。');
-      if (first !== lastSent) await edit(messageId, first);
+      if (!created) {
+        // Lazy and never created: send the first chunk as a fresh message,
+        // then any remainder. No placeholder edit.
+        await ensureCreated(first);
+      } else if (first !== lastSent) {
+        await edit(messageId, first);
+      }
       lastSent = first;
       for (const chunk of chunks.slice(1)) {
         const result = await sendRemainder(chunk);
@@ -95,6 +121,10 @@ export function createEditableMessageStream({
       pending = null;
       if (timer !== null) clearTimeout(timer);
       timer = null;
+      // If a lazy create is mid-flight it still settles and leaves the
+      // first real chunk visible — the same orphan behavior as an
+      // eagerly-cancelled placeholder (no removal API exists here).
+      inFlight?.catch(() => undefined);
     },
   };
 }

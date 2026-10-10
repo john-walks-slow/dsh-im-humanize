@@ -6,6 +6,14 @@ import { basename, extname, isAbsolute, join, resolve } from 'node:path';
 
 export const OUTBOUND_ARTIFACT_TOOL = 'dsh_im_return_file';
 
+export const ALLOWED_PRESENTATION_MODES = Object.freeze(new Set([
+  'auto',
+  'file',
+  'image',
+  'animation',
+  'voice',
+]));
+
 const ARTIFACT_KIND = 'dsh-im-outbound-artifact';
 const ARTIFACT_READ_CHUNK_BYTES = 64 * 1024;
 const MIME_BY_EXTENSION = new Map([
@@ -18,10 +26,15 @@ const MIME_BY_EXTENSION = new Map([
   ['.jpg', 'image/jpeg'],
   ['.json', 'application/json'],
   ['.md', 'text/markdown'],
+  ['.mp3', 'audio/mpeg'],
+  ['.m4a', 'audio/mp4'],
+  ['.ogg', 'audio/ogg'],
+  ['.opus', 'audio/opus'],
   ['.pdf', 'application/pdf'],
   ['.png', 'image/png'],
   ['.rar', 'application/vnd.rar'],
   ['.txt', 'text/plain'],
+  ['.wav', 'audio/wav'],
   ['.webp', 'image/webp'],
   ['.xls', 'application/vnd.ms-excel'],
   ['.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
@@ -413,6 +426,16 @@ export class OutboundArtifactRegistry {
     if (typeof requestedPath !== 'string' || !requestedPath.trim()) {
       throw new TypeError('A file path is required.');
     }
+    const rawAs = args?.as ?? args?.prefer;
+    let presentationMode = 'auto';
+    if (rawAs !== undefined && rawAs !== null) {
+      if (typeof rawAs !== 'string' || !ALLOWED_PRESENTATION_MODES.has(rawAs.trim())) {
+        throw new TypeError(
+          "Presentation mode 'as' must be one of: 'auto', 'file', 'image', 'animation', 'voice'.",
+        );
+      }
+      presentationMode = rawAs.trim();
+    }
     const agent = exec?.agent;
     const sessionId = agent?.session?.header?.id;
     const workspace = agent?.session?.header?.cwd;
@@ -449,6 +472,7 @@ export class OutboundArtifactRegistry {
       schemaVersion: 1,
       artifactId: this.#uuid(),
       deliveryKey: this.#uuid(),
+      as: presentationMode,
       ...snapshotMetadata,
       source: 'managed-temp',
       registeredBy: Object.freeze({
@@ -649,6 +673,11 @@ export function createOutboundArtifactTool({ registry = outboundArtifactRegistry
           type: 'string',
           description: 'Absolute path, or a path relative to the current workspace.',
         },
+        as: {
+          type: 'string',
+          enum: ['auto', 'file', 'image', 'animation', 'voice'],
+          description: "Optional presentation mode. 'auto' (default) infers from format; 'file' forces document sending; 'image'/'animation'/'voice' prefer the respective native presentation.",
+        },
       },
       required: ['path'],
     },
@@ -725,7 +754,7 @@ export function installOutboundArtifactTool(ctx, { registry = outboundArtifactRe
     name: 'dsh-im:return-file',
     order: 115,
     text: (assembly) => registry.hasActiveConsumer(assembly?.agent?.session)
-      ? `When the user asks to receive a file or generated image, call ${OUTBOUND_ARTIFACT_TOOL} with its path. Existing files can be sent directly; do not recreate or rename a file solely for delivery. This tool only registers the file; the channel uploads and sends it after your turn finishes. In your reply say the file is prepared or queued, never that it has already been sent or received. The channel reports delivery failures separately.`
+      ? `When the user asks to receive a file or generated image, call ${OUTBOUND_ARTIFACT_TOOL} with its path. Existing files can be sent directly; do not recreate or rename a file solely for delivery. You can optionally specify "as" ('auto' | 'file' | 'image' | 'animation' | 'voice') to control the presentation (e.g. 'voice' for voice messages, 'file' to force raw document sending). This tool only registers the file; the channel uploads and sends it after your turn finishes. In your reply say the file is prepared or queued, never that it has already been sent or received. The channel reports delivery failures separately.`
       : '',
   });
   return true;
@@ -775,6 +804,7 @@ export async function materializeOutboundArtifact(artifact, {
       fileName: artifact.fileName,
       mediaType: artifact.mediaType,
       size: artifact.size,
+      as: artifact.as ?? 'auto',
       bytes,
     });
     materializedArtifactSources.set(file, artifact);
