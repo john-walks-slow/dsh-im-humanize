@@ -93,12 +93,6 @@ import {
 import { beginStatusReaction } from '../shared/status-reaction.mjs';
 import { createMessageBreakHandler, MESSAGE_BREAK_TOOL } from '../shared/message-break.mjs';
 import {
-  fireAndForgetStop,
-  normalizeOnNewMessage,
-  resolveNewMessagePolicy,
-  SUPERSEDED_STOP_REASON,
-} from '../shared/new-message-policy.mjs';
-import {
   COMMAND_PERMISSION_DENIED_MESSAGE,
   evaluateInboundAccess,
 } from '../shared/inbound-access.mjs';
@@ -747,8 +741,6 @@ export class FeishuHarnessBridge {
   #streaming = true;
   /** message_break toggle (default true). */
   #messageBreak = true;
-  /** onNewMessage policy: interrupt (default) | queue | steer. */
-  #onNewMessage = 'interrupt';
   // Live per-turn settings provider; falls back to ctor snapshot.
   #humanize = null;
   // Pre-ask controllers: alive only while a turn is in its silent read
@@ -774,7 +766,6 @@ export class FeishuHarnessBridge {
     stepPush = false,
     streaming = true,
     messageBreak = false,
-    onNewMessage = 'interrupt',
     humanize = null,
     stepPushMode = FEISHU_STEP_PUSH_MODES.POST,
     stepCardPanels,
@@ -850,7 +841,6 @@ export class FeishuHarnessBridge {
     this.#interactionCards = interactionCards === true;
     this.#messageBreak = messageBreak === true;
     this.#streaming = streaming !== false;
-    this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#humanize = humanize ?? null;
     this.#sessionSyncTargetsFor = typeof sessionSyncTargetsFor === 'function'
       ? sessionSyncTargetsFor
@@ -1435,34 +1425,12 @@ export class FeishuHarnessBridge {
     }
     // Busy-message routing. A pending interaction or approval always queues --
     // interrupting would lose the question and steering has nothing to inject
-    // into -- so the configured policy only decides the ordinary case. The
-    // fork's `interrupt` supersedes the in-flight turn here; `queue` and
-    // `steer` run through the shared dispatcher, which owns the queue receipt,
-    // the automatic-steer eligibility gate and the waitForIdle accounting.
-    const policy = resolveNewMessagePolicy({
-      hasQueue: this.#queues.has(key),
-      hasPendingInteraction: this.#pendingInteractions.has(key),
-      hasPendingApproval: this.#approvals.hasPending(key),
-      onNewMessage: this.#humanizeSettings().onNewMessage,
-    });
-    if (policy === 'interrupt') {
-      // Supersede any silent pre-ask phase first: stopActiveTurn cannot
-      // cancel a turn that has not reached the harness yet (unconditional,
-      // not gated by sendDelay.enabled).
-      this.#abortPreAskPhase(key);
-      const current = this.#enqueueMessage(event, messageId, key, processingReaction);
-      fireAndForgetStop({
-        session: this.#boundSession(key),
-        control: { owner: this, key },
-        signal: this.#signal,
-        reason: SUPERSEDED_STOP_REASON,
-        logger: this.#logger,
-      });
-      return current;
-    }
+    // into -- so the configured mode only decides the ordinary case. All three
+    // modes live in the shared dispatcher, which owns the queue receipt, the
+    // automatic-steer eligibility gate, the interrupt supersede and the
+    // waitForIdle accounting.
     return this.#busyMessages.dispatch({
       key, messageId, text: commandText,
-      ...(policy ? { mode: policy } : {}),
       eligible: () => event.message.message_type === 'text' && !hasImages && !hasFiles
         && !hasReplyReference(commandMessage) && !isFeishuLocalCommand(commandText)
         && !(NUMBER_REPLY.test(commandText) && this.#menus.has(key))
@@ -1470,6 +1438,7 @@ export class FeishuHarnessBridge {
       harness: this.#harness, state: this.#state, status: this.#status,
       signal: this.#signal, control: { owner: this, key }, logger: this.#logger,
       acceptedMessageIds: this.#acceptedMessageIds,
+      abortPreAsk: () => this.#abortPreAskPhase(key),
       pendingInteraction: () => this.#pendingInteractions.has(key) || this.#approvals.hasPending(key),
       enhancement: {
         snapshot: this.#acceptedMessageIds.get(messageId),
@@ -1482,15 +1451,6 @@ export class FeishuHarnessBridge {
       onSteered: () => this.#finishReaction(messageId, processingReaction, 'DONE'),
       onError: (error) => this.#handleMessageFailure(event, messageId, processingReaction, error),
     });
-  }
-
-  /** Get a workspace session bound to the conversation's current session ID. */
-  #boundSession(key) {
-    if (typeof this.#state?.sessionFor !== 'function') return null;
-    const sessionId = this.#state.sessionFor(key);
-    if (typeof sessionId !== 'string' || !sessionId) return null;
-    if (typeof this.#harness?.workspaceSession !== 'function') return null;
-    return this.#harness.workspaceSession(sessionId);
   }
 
   #finishBatchResult(event, messageId, processingReaction, result) {
@@ -5438,7 +5398,6 @@ export class FeishuHarnessBridge {
       humanize: this.#humanize,
       streaming: this.#streaming,
       messageBreak: this.#messageBreak,
-      onNewMessage: this.#onNewMessage,
     });
   }
 

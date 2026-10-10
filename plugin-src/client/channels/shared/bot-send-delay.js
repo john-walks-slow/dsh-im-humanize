@@ -1,12 +1,13 @@
 /**
  * Per-bot humanization override editor, shared by every IM channel card.
  *
- * Exposes ALL humanization settings (streaming, messageBreak,
- * statusReaction, replyQuote, onNewMessage, typingIndicator,
- * typingBurst, sendDelay) for per-bot override. Each setting uses a
- * tri-state dropdown: the empty value means "follow global"; a specific
- * value means "custom override". typingBurst and sendDelay use a
- * "自定义" checkbox + the shared sub-forms.
+ * Exposes every per-bot humanization setting (streaming, messageBreak,
+ * statusReaction, replyQuote, progressStatus, typingIndicator, typingBurst,
+ * sendDelay) for per-bot override. Each setting uses a tri-state dropdown:
+ * the empty value means "follow global"; a specific value means "custom
+ * override". typingBurst and sendDelay use a "自定义" checkbox + the shared
+ * sub-forms. The busy-message mode is NOT here: it has its own per-bot slot
+ * and is edited in the per-bot general settings page.
  *
  * Field layout, hints, presets, and validation come from
  * humanize-fields.js — the SAME building blocks the global settings

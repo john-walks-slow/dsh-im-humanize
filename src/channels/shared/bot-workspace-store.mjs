@@ -1,5 +1,6 @@
 import { t } from './i18n.mjs';
-import { normalizeBusyMessageMode, validateBusyMessageMode } from './message-mode.mjs';
+import { normalizeBusyMessageMode, storedBusyMessageMode, validateBusyMessageMode,
+  DEFAULT_BUSY_MESSAGE_MODE } from './message-mode.mjs';
 import { atConnectionStage, connectionStageError, extractConnectionEvidence } from './connection-error.mjs';
 import { validateBotAlias, withBotAlias } from './bot-alias.mjs';
 import { defaultImWorkspace, ensureImWorkspaceDirectory, sameWorkspacePath } from './default-workspace.mjs';
@@ -424,6 +425,11 @@ export class BotWorkspaceStore {
   #path;
   #defaultWorkspace;
   #ungroupedWorkspace;
+  /**
+   * Live accessor for the global humanization setting that a bot without its
+   * own busy-message choice follows (see effectiveBusyMessageModeFor).
+   */
+  #busyMessageModeDefaults;
   #version = 1;
   #workspaces = {};
   #agentPresets = {};
@@ -447,11 +453,16 @@ export class BotWorkspaceStore {
   #writeQueue = Promise.resolve();
   #botQueues = new Map();
 
-  constructor(path, { defaultWorkspace = defaultImWorkspace(), ungroupedWorkspace } = {}) {
+  constructor(path, {
+    defaultWorkspace = defaultImWorkspace(),
+    ungroupedWorkspace,
+    busyMessageModeDefaults = null,
+  } = {}) {
     if (typeof path !== 'string' || !path) throw new TypeError('workspace store path is required');
     this.#path = path;
     this.#defaultWorkspace = resolve(defaultWorkspace);
     this.#ungroupedWorkspace = ungroupedWorkspace;
+    this.#busyMessageModeDefaults = busyMessageModeDefaults;
   }
 
   async load() {
@@ -554,9 +565,32 @@ export class BotWorkspaceStore {
     return this.has(id) && Object.hasOwn(this.#aliases, id) ? this.#aliases[id] : '';
   }
 
+  /**
+   * The bot's OWN busy-message choice, or undefined when it has none and
+   * follows the global humanization setting. Callers that need a concrete
+   * mode read effectiveBusyMessageModeFor instead.
+   */
   busyMessageModeFor(botId) {
     const id = botIdOf(botId);
-    return normalizeBusyMessageMode(this.has(id) ? this.#busyMessageModes[id] : undefined);
+    return this.has(id) ? storedBusyMessageMode(this.#busyMessageModes[id]) : undefined;
+  }
+
+  /**
+   * The mode the bot actually runs with: its own choice, else the live
+   * global humanization setting, else the shipped default. One resolution
+   * point for both the runtime and the client snapshot, so the panel can
+   * never disagree with the dispatcher.
+   */
+  effectiveBusyMessageModeFor(botId) {
+    const stored = this.busyMessageModeFor(botId);
+    if (stored !== undefined) return stored;
+    let configured;
+    try {
+      configured = this.#busyMessageModeDefaults?.();
+    } catch {
+      configured = undefined;
+    }
+    return normalizeBusyMessageMode(configured);
   }
 
   contextEnhancementFor(botId) {
@@ -1380,7 +1414,7 @@ export class BotWorkspaceStore {
           agentPreset: this.agentPresetFor(bot.botId),
           model: this.modelFor(bot.botId),
           contextEnhancement: this.contextEnhancementFor(bot.botId),
-          busyMessageMode: this.busyMessageModeFor(bot.botId),
+          busyMessageMode: this.effectiveBusyMessageModeFor(bot.botId),
           humanize: this.humanizeFor(bot.botId),
           accessPolicy: this.accessPolicyFor(bot.botId),
         }
@@ -1829,7 +1863,9 @@ export function createBotWorkspaceScope(
         };
       }
       if (property === 'currentBusyMessageMode') {
-        return () => isCurrentScope() ? workspaces.busyMessageModeFor(botId) : 'queue';
+        return () => (isCurrentScope()
+          ? workspaces.effectiveBusyMessageModeFor(botId)
+          : DEFAULT_BUSY_MESSAGE_MODE);
       }
       if (property === 'currentWorkspace') {
         return () => {

@@ -82,12 +82,6 @@ import {
   evaluateInboundAccess,
 } from '../shared/inbound-access.mjs';
 import { createMessageBreakHandler } from '../shared/message-break.mjs';
-import {
-  fireAndForgetStop,
-  normalizeOnNewMessage,
-  resolveNewMessagePolicy,
-  SUPERSEDED_STOP_REASON,
-} from '../shared/new-message-policy.mjs';
 import { t } from '../shared/i18n.mjs';
 
 const INTERACTION_RESOLVED_TEXT = () => t('这个问题已在其他客户端处理，无需再次回答。');
@@ -352,8 +346,6 @@ export class WeixinHarnessBridge {
   #streaming = true;
   /** message_break toggle (default false). When on, streaming is forced off. */
   #messageBreak = false;
-  /** onNewMessage policy: interrupt (default) | queue | steer. */
-  #onNewMessage = 'interrupt';
   // Live per-turn settings provider; falls back to ctor snapshot.
   #humanize = null;
   // Pre-ask controllers: alive only while a turn is in its silent read
@@ -379,7 +371,6 @@ export class WeixinHarnessBridge {
     signal,
     streaming = true,
     messageBreak = false,
-    onNewMessage = 'interrupt',
     humanize = null,
   }) {
     if (!api || typeof api.sendText !== 'function') throw new TypeError('Weixin API is required');
@@ -404,7 +395,6 @@ export class WeixinHarnessBridge {
     this.#signal = signal;
     this.#messageBreak = messageBreak === true;
     this.#streaming = streaming !== false;
-    this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#humanize = humanize ?? null;
     this.#deferred = createDeferredDeliveryCoordinator({ harness, state, signal, logger,
       deliver: (entry, outcome) => this.#deliverDeferredOutcome(entry, outcome),
@@ -585,39 +575,18 @@ export class WeixinHarnessBridge {
     }
     // Busy-message routing. A pending interaction or approval always queues --
     // interrupting would lose the question and steering has nothing to inject
-    // into -- so the configured policy only decides the ordinary case. The
-    // fork's `interrupt` supersedes the in-flight turn here; `queue` and
-    // `steer` run through the shared dispatcher, which owns the queue receipt,
-    // the automatic-steer eligibility gate and the waitForIdle accounting.
-    const policy = resolveNewMessagePolicy({
-      hasQueue: this.#queues.has(key),
-      hasPendingInteraction: this.#pendingInteractions.has(key),
-      hasPendingApproval: this.#approvals.hasPending(key),
-      onNewMessage: this.#humanizeSettings().onNewMessage,
-    });
-    if (policy === 'interrupt') {
-      // Supersede any silent read-delay phase first: stopActiveTurn cannot
-      // cancel a turn that has not reached the harness yet (unconditional,
-      // not gated by sendDelay.enabled).
-      this.#abortPreAskPhase(key);
-      const current = this.#enqueueMessage(message, messageId, key);
-      fireAndForgetStop({
-        session: this.#boundSession(key),
-        control: { owner: this, key },
-        signal: this.#signal,
-        reason: SUPERSEDED_STOP_REASON,
-        logger: this.#logger,
-      });
-      return current;
-    }
+    // into -- so the configured mode only decides the ordinary case. All three
+    // modes live in the shared dispatcher, which owns the queue receipt, the
+    // automatic-steer eligibility gate, the interrupt supersede and the
+    // waitForIdle accounting.
     return this.#busyMessages.dispatch({
       key, messageId, text: commandText,
-      ...(policy ? { mode: policy } : {}),
       eligible: () => isNativeWeixinText(message) && !extractWeixinReplyReference(message)
         && canAutomaticallySteer(this.#accessPolicy, 'direct', sender),
       harness: this.#harness, state: this.#state, status: this.#status,
       signal: this.#signal, control: { owner: this, key }, logger: this.#logger,
       acceptedMessageIds: this.#acceptedMessageIds,
+      abortPreAsk: () => this.#abortPreAskPhase(key),
       pendingInteraction: () => this.#pendingInteractions.has(key) || this.#approvals.hasPending(key),
       enhancement: this.#acceptedMessageIds.get(messageId),
       isQueued: () => this.#queues.has(key),
@@ -625,15 +594,6 @@ export class WeixinHarnessBridge {
       send: (reply) => this.#sendOutOfBand(key, sender, reply, contextToken, runId),
       onError: (error) => this.#handleInteractionFailure(message, messageId, error),
     });
-  }
-
-  /** Get a workspace session bound to the conversation's current session ID. */
-  #boundSession(key) {
-    if (typeof this.#state?.sessionFor !== 'function') return null;
-    const sessionId = this.#state.sessionFor(key);
-    if (typeof sessionId !== 'string' || !sessionId) return null;
-    if (typeof this.#harness?.workspaceSession !== 'function') return null;
-    return this.#harness.workspaceSession(sessionId);
   }
 
 
@@ -856,7 +816,6 @@ export class WeixinHarnessBridge {
       humanize: this.#humanize,
       streaming: this.#streaming,
       messageBreak: this.#messageBreak,
-      onNewMessage: this.#onNewMessage,
     });
   }
 

@@ -40,7 +40,6 @@ export class QqRuntime {
   #replyTimeoutMs;
   #streaming = true;
   #messageBreak = false;
-  #onNewMessage = 'interrupt';
   #humanize = null;
   #connectTimeoutMs;
   #createBot;
@@ -60,7 +59,7 @@ export class QqRuntime {
     accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
-    streaming = true, messageBreak = false, onNewMessage = 'interrupt', humanize = null,
+    streaming = true, messageBreak = false, humanize = null,
     connectTimeoutMs = 20_000,
     createBot = (options) => new QQBot(options),
   }) {
@@ -77,7 +76,6 @@ export class QqRuntime {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#streaming = streaming !== false;
     this.#messageBreak = messageBreak === true;
-    this.#onNewMessage = onNewMessage;
     this.#humanize = humanize ?? null;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#createBot = createBot;
@@ -192,7 +190,7 @@ export class QqRuntime {
       status: this.#status,
       logger: this.#logger,
       replyTimeoutMs: this.#replyTimeoutMs,
-      streaming: this.#streaming, messageBreak: this.#messageBreak, onNewMessage: this.#onNewMessage,
+      streaming: this.#streaming, messageBreak: this.#messageBreak,
         humanize: this.#humanize,
       signal: controller.signal,
     });

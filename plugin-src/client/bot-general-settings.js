@@ -14,10 +14,25 @@ function settingsFromResult(result, botId) {
   };
 }
 
+// What each mode means, in the order the dropdown offers them. The value the
+// snapshot reports is already the effective one (per-bot choice, else
+// the global humanization setting, see BotWorkspaceStore), so the panel
+// always shows what the dispatcher will actually do.
+const MODE_OPTIONS = [
+  ['interrupt', '打断'],
+  ['queue', '排队'],
+  ['steer', '插话'],
+];
+const MODE_HELP = {
+  interrupt: '打断当前生成，直接处理新消息',
+  queue: '当前任务结束后处理新消息',
+  steer: '将新消息补充到当前任务',
+};
+
 export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
   const modeId = React.useId();
   const [settings, setSettings] = React.useState(() => ({
-    busyMessageMode: 'queue', stepCardPanels: normalizeFeishuStepCardPanels(),
+    busyMessageMode: 'interrupt', stepCardPanels: normalizeFeishuStepCardPanels(),
   }));
   const [savedSettings, setSavedSettings] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
@@ -80,9 +95,8 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
       h('div', { className: 'dim-botGeneralRow' },
         h('div', { className: 'dim-botGeneralText' },
           h('label', { className: 'dim-botGeneralTitle', htmlFor: modeId }, '消息处理方式'),
-          h('p', { className: 'dim-botGeneralHelp', id: `${modeId}-description` }, mode === 'queue'
-            ? '当前任务结束后处理新消息'
-            : '将新消息补充到当前任务')),
+          h('p', { className: 'dim-botGeneralHelp', id: `${modeId}-description` },
+            MODE_HELP[mode] ?? MODE_HELP.queue)),
         h('div', { className: 'dim-botGeneralControl' },
           h('select', {
             id: modeId, value: mode, disabled: busy || savedSettings === null,
@@ -90,8 +104,7 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
             'aria-describedby': `${modeId}-description`,
             onChange: (event) => void save('busyMessageMode', event.target.value),
           },
-          h('option', { value: 'queue' }, '排队'),
-          h('option', { value: 'steer' }, '插话')),
+          MODE_OPTIONS.map(([value, label]) => h('option', { key: value, value }, label))),
           h('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
             h('path', { d: 'm4 6 4 4 4-4', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' })))),
       channel === 'feishu' ? [

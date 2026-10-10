@@ -79,13 +79,7 @@ import { withSessionBindingLock } from '../shared/session-binding-lock.mjs';
 import { t } from '../shared/i18n.mjs';
 import { isQqMessageAddressed, normalizeQqMentions } from './qq-mention.mjs';
 import { createMessageBreakHandler } from '../shared/message-break.mjs';
-import {
-  normalizeOnNewMessage,
-  resolveNewMessagePolicy,
-  fireAndForgetStop,
-  isSupersededStop,
-  SUPERSEDED_STOP_REASON,
-} from '../shared/new-message-policy.mjs';
+import { isSupersededStop } from '../shared/message-mode.mjs';
 import {
   applyReadDelay,
   applySegmentGap,
@@ -471,7 +465,6 @@ export class QqHarnessBridge {
   #preAskControllers = new Map();
   // Wall-clock end of the last completed turn per conversation (idle boost).
   #turnEnds = new Map();
-  #onNewMessage = 'interrupt';
   // Live per-turn settings provider; falls back to ctor snapshot.
   #humanize = null;
   #signal;
@@ -502,7 +495,6 @@ export class QqHarnessBridge {
     replyTimeoutMs = 600_000,
     streaming = true,
     messageBreak = false,
-    onNewMessage = 'interrupt',
     humanize = null,
     signal,
     fetchImpl = fetch,
@@ -526,7 +518,6 @@ export class QqHarnessBridge {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#streaming = streaming !== false;
     this.#messageBreak = messageBreak === true;
-    this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#humanize = humanize ?? null;
     this.#signal = signal;
     this.#deferred = createDeferredDeliveryCoordinator({ harness, state, signal, logger,
@@ -728,39 +719,18 @@ export class QqHarnessBridge {
     }
     // Busy-message routing. A pending interaction or approval always queues --
     // interrupting would lose the question and steering has nothing to inject
-    // into -- so the configured policy only decides the ordinary case. The
-    // fork's `interrupt` supersedes the in-flight turn here; `queue` and
-    // `steer` run through the shared dispatcher, which owns the queue receipt,
-    // the automatic-steer eligibility gate and the waitForIdle accounting.
-    const policy = resolveNewMessagePolicy({
-      hasQueue: this.#queues.has(key),
-      hasPendingInteraction: this.#pendingInteractions.has(key),
-      hasPendingApproval: this.#approvals.hasPending(key),
-      onNewMessage: this.#humanizeSettings().onNewMessage,
-    });
-    if (policy === 'interrupt') {
-      // Supersede any silent read-delay phase first: stopActiveTurn cannot
-      // cancel a turn that has not reached the harness yet (unconditional,
-      // not gated by sendDelay.enabled).
-      this.#abortPreAskPhase(key);
-      const current = this.#enqueueMessage(message, messageId, key);
-      fireAndForgetStop({
-        session: this.#boundSession(key),
-        control: { owner: this, key },
-        signal: this.#signal,
-        reason: SUPERSEDED_STOP_REASON,
-        logger: this.#logger,
-      });
-      return current;
-    }
+    // into -- so the configured mode only decides the ordinary case. All three
+    // modes live in the shared dispatcher, which owns the queue receipt, the
+    // automatic-steer eligibility gate, the interrupt supersede and the
+    // waitForIdle accounting.
     return this.#busyMessages.dispatch({
       key, messageId, text: commandText,
-      ...(policy ? { mode: policy } : {}),
       eligible: () => addressed && menuTextOnly && !explicitMenu && !numericMenu
         && canAutomaticallySteer(this.#accessPolicy, message.kind === 'c2c' ? 'direct' : 'group', sender),
       harness: this.#harness, state: this.#state, status: this.#status,
       signal: this.#signal, control: { owner: this, key }, logger: this.#logger,
       acceptedMessageIds: this.#acceptedMessageIds,
+      abortPreAsk: () => this.#abortPreAskPhase(key),
       pendingInteraction: () => this.#pendingInteractions.has(key) || this.#approvals.hasPending(key),
       enhancement: {
         snapshot: this.#acceptedMessageIds.get(messageId),
@@ -773,15 +743,6 @@ export class QqHarnessBridge {
       send: (reply) => addressed ? this.#bot.sendText(message.replyTarget, reply) : Promise.resolve(),
       onError: (error) => this.#handleInteractionFailure(message, messageId, error),
     });
-  }
-
-  /** Get a workspace session bound to the conversation's current session ID. */
-  #boundSession(key) {
-    if (typeof this.#state?.sessionFor !== 'function') return null;
-    const sessionId = this.#state.sessionFor(key);
-    if (typeof sessionId !== 'string' || !sessionId) return null;
-    if (typeof this.#harness?.workspaceSession !== 'function') return null;
-    return this.#harness.workspaceSession(sessionId);
   }
 
 
@@ -1072,7 +1033,6 @@ export class QqHarnessBridge {
       humanize: this.#humanize,
       streaming: this.#streaming,
       messageBreak: this.#messageBreak,
-      onNewMessage: this.#onNewMessage,
     });
   }
 

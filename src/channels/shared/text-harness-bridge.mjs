@@ -74,13 +74,7 @@ import {
 } from './message-failure.mjs';
 import { beginStatusReaction } from './status-reaction.mjs';
 import { createMessageBreakHandler } from './message-break.mjs';
-import {
-  fireAndForgetStop,
-  isSupersededStop,
-  normalizeOnNewMessage,
-  resolveNewMessagePolicy,
-  SUPERSEDED_STOP_REASON,
-} from './new-message-policy.mjs';
+import { isSupersededStop } from './message-mode.mjs';
 import { resolveHumanizeSettings } from './humanize-resolver.mjs';
 import {
   applyReadDelay,
@@ -211,7 +205,6 @@ export class TextHarnessBridge {
   #deliveryAttempts = new Map();
   #streaming = true;
   #messageBreak = false;
-  #onNewMessage = 'interrupt';
   // Live per-turn settings provider ({ getSettings() }); falls back to the
   // constructor snapshot above when absent.
   #humanize = null;
@@ -237,7 +230,6 @@ export class TextHarnessBridge {
     signal,
     streaming = true,
     messageBreak = false,
-    onNewMessage = 'interrupt',
     humanize = null,
     keepaliveIntervalMs = 4_000,
     interactionCard = null,
@@ -260,7 +252,6 @@ export class TextHarnessBridge {
     this.#interactionCard = interactionCard ?? null;
     this.#messageBreak = messageBreak === true;
     this.#streaming = streaming !== false;
-    this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#humanize = humanize ?? null;
     this.#deferred = createDeferredDeliveryCoordinator({ harness, state, signal, logger,
       deliver: (entry, outcome) => this.#deliverDeferredOutcome(entry, outcome),
@@ -514,22 +505,13 @@ export class TextHarnessBridge {
     }
     // Busy-message routing. A pending interaction or approval always queues --
     // interrupting would lose the question and steering has nothing to inject
-    // into -- so the configured policy only decides the ordinary case. The
-    // fork's `interrupt` supersedes the in-flight turn here; `queue` and
-    // `steer` run through the shared dispatcher, which owns the queue receipt,
-    // the automatic-steer eligibility gate and the waitForIdle accounting.
-    const policy = resolveNewMessagePolicy({
-      hasQueue: this.#queues.has(key),
-      hasPendingInteraction: this.#pendingInteractions.has(key),
-      hasPendingApproval: this.#approvals.hasPending(key),
-      onNewMessage: this.#humanizeSettings().onNewMessage,
-    });
-    if (policy === 'interrupt') {
-      return this.#interruptAndResend(normalized, messageId, senderId, key);
-    }
+    // into -- so the configured mode only decides the ordinary case. All three
+    // modes live in the shared dispatcher, which owns the queue receipt, the
+    // automatic-steer eligibility gate, the interrupt supersede and the
+    // waitForIdle accounting.
     return this.#busyMessages.dispatch({
       key, messageId, text: normalized.content,
-      commandText: text, mode: policy ?? busyMessageMode,
+      commandText: text, mode: busyMessageMode,
       onFailure: (error) => this.#signal?.aborted || error?.code === 'turn-stopped'
         ? normalized.statusReaction?.clear() : normalized.statusReaction?.error(),
       eligible: () => normalized.plainText !== false
@@ -540,6 +522,7 @@ export class TextHarnessBridge {
       harness: this.#harness, state: this.#state, status: this.#status,
       signal: this.#signal, control: { owner: this, key }, logger: this.#logger,
       acceptedMessageIds: this.#acceptedMessageIds,
+      abortPreAsk: () => this.#abortPreAskPhase(key),
       pendingInteraction: () => this.#pendingInteractions.has(key) || this.#approvals.hasPending(key),
       enhancement: {
         snapshot: this.#acceptedMessageIds.get(messageId),
@@ -566,7 +549,6 @@ export class TextHarnessBridge {
       humanize: this.#humanize,
       streaming: this.#streaming,
       messageBreak: this.#messageBreak,
-      onNewMessage: this.#onNewMessage,
     });
   }
 
@@ -599,52 +581,6 @@ export class TextHarnessBridge {
     });
     this.#commandTasks.add(task);
     return task;
-  }
-
-  /** Get a workspace session bound to the conversation's current session ID. */
-  #boundSession(key) {
-    if (typeof this.#state?.sessionFor !== 'function') return null;
-    const sessionId = this.#state.sessionFor(key);
-    if (typeof sessionId !== 'string' || !sessionId) return null;
-    if (typeof this.#harness?.workspaceSession !== 'function') return null;
-    return this.#harness.workspaceSession(sessionId);
-  }
-
-  /**
-   * interrupt: cancel the current turn immediately (fire-and-forget
-   * stopActiveTurn), then process the new message as a fresh turn once the
-   * old #process() settles.
-   */
-  #interruptAndResend(message, messageId, senderId, key) {
-    // Supersede any pre-ask phase (read delay, image staging, stream
-    // opening) of the current turn FIRST: stopActiveTurn cannot cancel a
-    // turn that has not reached the harness yet, so without this the new
-    // message would wait out the whole delayed turn and both replies
-    // would race. Unconditional — deliberately not gated by
-    // sendDelay.enabled (it also fixes a pre-existing double-reply race).
-    this.#abortPreAskPhase(key);
-    // Chain the new process after the current queue settles. The old
-    // #process() will detect turn/end (within ~300 ms) and return silently.
-    const previous = this.#queues.get(key) ?? Promise.resolve();
-    const current = previous
-      .catch(() => undefined)
-      .then(() => this.#process(message, messageId, senderId, key))
-      .finally(() => {
-        this.#acceptedMessageIds.delete(messageId);
-        if (this.#queues.get(key) === current) this.#queues.delete(key);
-      });
-    this.#queues.set(key, current);
-    // Fire-and-forget: stopActiveTurn is async (refresh ownership via RPC),
-    // but controlExecutor is synchronous. The old ask() polling loop will
-    // see turn/end on its next poll.
-    fireAndForgetStop({
-      session: this.#boundSession(key),
-      control: { owner: this, key },
-      signal: this.#signal,
-      reason: SUPERSEDED_STOP_REASON,
-      logger: this.#logger,
-    });
-    return current;
   }
 
   #enqueueMessage(message, messageId, senderId, key, {

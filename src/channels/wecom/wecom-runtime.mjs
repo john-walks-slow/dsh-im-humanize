@@ -36,7 +36,6 @@ export class WecomRuntime {
   #replyTimeoutMs;
   #streaming = true;
   #messageBreak = false;
-  #onNewMessage = 'interrupt';
   #humanize = null;
   #connectTimeoutMs;
   #maxReconnectAttempts;
@@ -57,7 +56,7 @@ export class WecomRuntime {
     accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
-    streaming = true, messageBreak = false, onNewMessage = 'interrupt', humanize = null,
+    streaming = true, messageBreak = false, humanize = null,
     connectTimeoutMs = 20_000,
     maxReconnectAttempts = 10,
     createClient = (options) => new WSClient(options),
@@ -75,7 +74,6 @@ export class WecomRuntime {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#streaming = streaming !== false;
     this.#messageBreak = messageBreak === true;
-    this.#onNewMessage = onNewMessage;
     this.#humanize = humanize ?? null;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#maxReconnectAttempts = maxReconnectAttempts;
@@ -129,7 +127,7 @@ export class WecomRuntime {
       status: this.#status,
       logger: this.#logger,
       replyTimeoutMs: this.#replyTimeoutMs,
-      streaming: this.#streaming, messageBreak: this.#messageBreak, onNewMessage: this.#onNewMessage,
+      streaming: this.#streaming, messageBreak: this.#messageBreak,
         humanize: this.#humanize,
       signal,
     });

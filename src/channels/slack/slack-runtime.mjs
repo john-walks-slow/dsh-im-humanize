@@ -448,7 +448,6 @@ export class SlackRuntime {
   #replyTimeoutMs;
   #streaming = true;
   #messageBreak = false;
-  #onNewMessage = 'interrupt';
   #humanize = null;
   #connectTimeoutMs;
   #createApi;
@@ -477,7 +476,6 @@ export class SlackRuntime {
     replyTimeoutMs = 600_000,
     streaming = true,
     messageBreak = false,
-    onNewMessage = 'interrupt',
     humanize = null,
     connectTimeoutMs = 20_000,
     createApi = (options) => new SlackApi(options),
@@ -498,7 +496,6 @@ export class SlackRuntime {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#streaming = streaming;
     this.#messageBreak = messageBreak;
-    this.#onNewMessage = onNewMessage;
     this.#humanize = humanize ?? null;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#createApi = createApi;
@@ -593,7 +590,6 @@ export class SlackRuntime {
         replyTimeoutMs: this.#replyTimeoutMs,
         streaming: this.#streaming,
         messageBreak: this.#messageBreak,
-        onNewMessage: this.#onNewMessage,
         humanize: this.#humanize,
         signal: controller.signal,
       });

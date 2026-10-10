@@ -79,13 +79,7 @@ import {
 } from '../shared/inbound-access.mjs';
 import { t } from '../shared/i18n.mjs';
 import { createMessageBreakHandler } from '../shared/message-break.mjs';
-import {
-  normalizeOnNewMessage,
-  resolveNewMessagePolicy,
-  fireAndForgetStop,
-  isSupersededStop,
-  SUPERSEDED_STOP_REASON,
-} from '../shared/new-message-policy.mjs';
+import { isSupersededStop } from '../shared/message-mode.mjs';
 
 const DEFAULT_FILE_UPLOAD_TIMEOUT_MS = 120_000;
 
@@ -580,7 +574,6 @@ export class WecomHarnessBridge {
   #replyTimeoutMs;
   #streaming = true;
   #messageBreak = false;
-  #onNewMessage = 'interrupt';
   // Live per-turn settings provider; falls back to ctor snapshot.
   #humanize = null;
   // Pre-ask controllers: alive only while a turn is in its silent read
@@ -617,7 +610,6 @@ export class WecomHarnessBridge {
     replyTimeoutMs = 600_000,
     streaming = true,
     messageBreak = false,
-    onNewMessage = 'interrupt',
     humanize = null,
     generateStreamId = generateReqId,
     fileUploadTimeoutMs = DEFAULT_FILE_UPLOAD_TIMEOUT_MS,
@@ -640,7 +632,6 @@ export class WecomHarnessBridge {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#streaming = streaming !== false;
     this.#messageBreak = messageBreak === true;
-    this.#onNewMessage = normalizeOnNewMessage(onNewMessage);
     this.#humanize = humanize ?? null;
     this.#generateReqId = generateStreamId;
     this.#fileUploadTimeoutMs = Math.min(fileUploadTimeoutMs, DEFAULT_FILE_UPLOAD_TIMEOUT_MS);
@@ -1088,40 +1079,19 @@ export class WecomHarnessBridge {
     }
     // Busy-message routing. A pending interaction or approval always queues --
     // interrupting would lose the question and steering has nothing to inject
-    // into -- so the configured policy only decides the ordinary case. The
-    // fork's `interrupt` supersedes the in-flight turn here; `queue` and
-    // `steer` run through the shared dispatcher, which owns the queue receipt,
-    // the automatic-steer eligibility gate and the waitForIdle accounting.
-    const policy = resolveNewMessagePolicy({
-      hasQueue: this.#queues.has(key),
-      hasPendingInteraction: this.#pendingInteractions.has(key),
-      hasPendingApproval: this.#approvals.hasPending(key),
-      onNewMessage: this.#humanizeSettings().onNewMessage,
-    });
-    if (policy === 'interrupt') {
-      // Supersede any silent pre-ask phase first: stopActiveTurn cannot
-      // cancel a turn that has not reached the harness yet (unconditional,
-      // not gated by sendDelay.enabled).
-      this.#abortPreAskPhase(key);
-      const current = this.#enqueueMessage(frame, messageId, key);
-      fireAndForgetStop({
-        session: this.#boundSession(key),
-        control: { owner: this, key },
-        signal: this.#signal,
-        reason: SUPERSEDED_STOP_REASON,
-        logger: this.#logger,
-      });
-      return current;
-    }
+    // into -- so the configured mode only decides the ordinary case. All three
+    // modes live in the shared dispatcher, which owns the queue receipt, the
+    // automatic-steer eligibility gate, the interrupt supersede and the
+    // waitForIdle accounting.
     return this.#busyMessages.dispatch({
       key, messageId, text: commandText,
-      ...(policy ? { mode: policy } : {}),
       eligible: () => isNativeWecomText(frame) && !hasReplyReference(commandMessage)
         && !parseWecomMenu(commandText) && !this.#cardFrames.has(frame)
         && canAutomaticallySteer(this.#accessPolicy, conversationType, senderId),
       harness: this.#harness, state: this.#state, status: this.#status,
       signal: this.#signal, control: { owner: this, key }, logger: this.#logger,
       acceptedMessageIds: this.#acceptedMessageIds,
+      abortPreAsk: () => this.#abortPreAskPhase(key),
       pendingInteraction: () => this.#pendingInteractions.has(key) || this.#approvals.hasPending(key),
       enhancement: {
         snapshot: this.#acceptedMessageIds.get(messageId),
@@ -1131,15 +1101,6 @@ export class WecomHarnessBridge {
       enqueue: (options) => this.#enqueueMessage(frame, messageId, key, options),
       send: (reply) => this.#sendImmediate(frame, chatId, reply),
     });
-  }
-
-  /** Get a workspace session bound to the conversation's current session ID. */
-  #boundSession(key) {
-    if (typeof this.#state?.sessionFor !== 'function') return null;
-    const sessionId = this.#state.sessionFor(key);
-    if (typeof sessionId !== 'string' || !sessionId) return null;
-    if (typeof this.#harness?.workspaceSession !== 'function') return null;
-    return this.#harness.workspaceSession(sessionId);
   }
 
   #enqueueMessage(frame, messageId, key, {
@@ -1372,7 +1333,6 @@ export class WecomHarnessBridge {
       humanize: this.#humanize,
       streaming: this.#streaming,
       messageBreak: this.#messageBreak,
-      onNewMessage: this.#onNewMessage,
     });
   }
 

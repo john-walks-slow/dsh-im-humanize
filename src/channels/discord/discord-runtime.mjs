@@ -3,6 +3,7 @@ import { createEditableMessageStream, splitMessageText } from '../shared/editabl
 import { fetchFileStream } from '../shared/file-download.mjs';
 import { fetchImageBuffer } from '../shared/image-prompt.mjs';
 import { t } from '../shared/i18n.mjs';
+import { DEFAULT_BUSY_MESSAGE_MODE } from '../shared/message-mode.mjs';
 import { captureContextEnhancement } from '../shared/context-enhancement.mjs';
 import { evaluateInboundAccess } from '../shared/inbound-access.mjs';
 import { DiscordApi } from './discord-api.mjs';
@@ -545,7 +546,6 @@ export class DiscordRuntime {
   #replyTimeoutMs;
   #streaming = true;
   #messageBreak = false;
-  #onNewMessage = 'interrupt';
   #humanize = null;
   #connectTimeoutMs;
   #createApi;
@@ -581,7 +581,6 @@ export class DiscordRuntime {
     replyTimeoutMs = 600_000,
     streaming = true,
     messageBreak = false,
-    onNewMessage = 'interrupt',
     humanize = null,
     connectTimeoutMs = 20_000,
     createApi = (options) => new DiscordApi(options),
@@ -602,7 +601,6 @@ export class DiscordRuntime {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#streaming = streaming;
     this.#messageBreak = messageBreak;
-    this.#onNewMessage = onNewMessage;
     this.#humanize = humanize ?? null;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#createApi = createApi;
@@ -700,7 +698,6 @@ export class DiscordRuntime {
         replyTimeoutMs: this.#replyTimeoutMs,
         streaming: this.#streaming,
         messageBreak: this.#messageBreak,
-        onNewMessage: this.#onNewMessage,
         humanize: this.#humanize,
         signal: controller.signal,
       });
@@ -900,7 +897,7 @@ export class DiscordRuntime {
         this.#contextEnhancement,
         message.guild_id ? 'group' : 'direct',
       );
-      const busyMessageMode = this.#harness.currentBusyMessageMode?.() ?? 'queue';
+      const busyMessageMode = this.#harness.currentBusyMessageMode?.() ?? DEFAULT_BUSY_MESSAGE_MODE;
       const pendingRoute = resolveDiscordMessageRoute(message, this.#config.platformId, {
         api: this.#api,
         channel: this.#channels.get(String(message.channel_id)),

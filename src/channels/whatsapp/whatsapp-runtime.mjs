@@ -714,7 +714,6 @@ export class WhatsappRuntime {
   #replyTimeoutMs;
   #streaming = true;
   #messageBreak = false;
-  #onNewMessage = 'interrupt';
   #humanize = null;
   #connectTimeoutMs;
   #mediaUploadTimeoutMs;
@@ -737,7 +736,6 @@ export class WhatsappRuntime {
     replyTimeoutMs = 600_000,
     streaming = true,
     messageBreak = false,
-    onNewMessage = 'interrupt',
     humanize = null,
     connectTimeoutMs = 30_000,
     mediaUploadTimeoutMs = WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS,
@@ -756,7 +754,6 @@ export class WhatsappRuntime {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#streaming = streaming;
     this.#messageBreak = messageBreak;
-    this.#onNewMessage = onNewMessage;
     this.#humanize = humanize ?? null;
     this.#connectTimeoutMs = connectTimeoutMs;
     if (!Number.isSafeInteger(mediaUploadTimeoutMs) || mediaUploadTimeoutMs <= 0) {
@@ -867,7 +864,6 @@ export class WhatsappRuntime {
         replyTimeoutMs: this.#replyTimeoutMs,
         streaming: this.#streaming,
         messageBreak: this.#messageBreak,
-        onNewMessage: this.#onNewMessage,
         humanize: this.#humanize,
         signal: controller.signal,
       });

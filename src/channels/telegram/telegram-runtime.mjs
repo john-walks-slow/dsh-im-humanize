@@ -1221,7 +1221,6 @@ export class TelegramRuntime {
   #replyTimeoutMs;
   #streaming = true;
   #messageBreak = false;
-  #onNewMessage = 'interrupt';
   #humanize = null;
   #createApi;
   #createHttpTransport;
@@ -1253,7 +1252,6 @@ export class TelegramRuntime {
     replyTimeoutMs = 600_000,
     streaming = true,
     messageBreak = false,
-    onNewMessage = 'interrupt',
     humanize = null,
     createApi = (options) => new TelegramApi(options),
     createHttpTransport = createTelegramHttpTransport,
@@ -1272,7 +1270,6 @@ export class TelegramRuntime {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#streaming = streaming;
     this.#messageBreak = messageBreak;
-    this.#onNewMessage = onNewMessage;
     this.#humanize = humanize ?? null;
     this.#createApi = createApi;
     this.#createHttpTransport = createHttpTransport;
@@ -1392,7 +1389,6 @@ export class TelegramRuntime {
         replyTimeoutMs: this.#replyTimeoutMs,
         streaming: this.#streaming,
         messageBreak: this.#messageBreak,
-        onNewMessage: this.#onNewMessage,
         humanize: this.#humanize,
         signal: controller.signal,
       });

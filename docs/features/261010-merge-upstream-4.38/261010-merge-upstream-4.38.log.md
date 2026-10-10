@@ -12,7 +12,8 @@
 | P2-c | host 层 `plugin-src/host/**` | ✅ 完成 |
 | P2-d | 渠道层 `src/channels/<渠道>/**` | ✅ 完成 |
 | P2-e | 客户端层 `plugin-src/client/**` + `scripts/verify-package.mjs`（含 R3 简化） | ✅ 完成 |
-| P2-f | R2：人化设置字段声明式化（并落地删除 `new-message-policy`，改用上游 `busyMessageModes`） | 待办 |
+| P2-f1 | R2：人化设置字段声明式化（一张表派生全部默认值/宽松读/严格校验 + 两个面板） | ✅ 完成 |
+| P2-f2 | 收敛 `onNewMessage` → `busyMessageMode`：per-bot 复用 `busyMessageModes`、`interrupt` 补成 dispatcher 第三态、删除 `new-message-policy.mjs` | ✅ 完成 |
 | P2-g | 测试适配 + `npm run build` + 分层验证 | 待办 |
 
 ## 批次记录
@@ -152,6 +153,32 @@ client 侧：
 - 全局面板的「新消息行为」与新命名的 `busyMessageMode` 是同一概念的两个层级，README 需同步写清优先级。
 - 严格校验的错误 `field` 前缀要分域（全局 `streaming` vs per-bot `humanize.streaming`），否则 `management-rpc`/`humanize-*` 既有断言会漂。
 
+#### 实施记录（P2-f1 / P2-f2）
+
+**P2-f1（字段表）**：新增 `src/channels/shared/humanize-schema.mjs`（browser-safe，无 Node API）。表项 `{ key, kind: 'boolean'|'enum'|'shape', control, default, values?, options?, perBot, label?, hint?, normalize/validate/requireComplete? }`，由它派生 `HUMANIZE_KEYS`、`PER_BOT_HUMANIZE_KEYS`、`DEFAULT_HUMANIZE_SETTINGS`、`normalizeHumanizeField/Settings/Override`、`validateHumanizeSettings(value, { scope, sendDelayBase })`。删除的重复清单：host 的 `HUMANIZE_CONFIG_KEYS`、`humanize-rpc.mjs` 的 `SETTABLE_KEYS`、resolver 的第四份默认值、客户端 `HUMANIZE_SETTING_META`/`SHIPPED_HUMANIZE_DEFAULTS`/`BOOLEAN_SETTING_KEYS`/`BOOLEAN_KEYS`+`ENUM_KEYS`。
+
+- **接口面保持稳定**：`humanize-settings.mjs` 与 `humanize-override.mjs` 退化为「store+RPC 处理器」/「端点」+ 再导出（`normalizeHumanizeOverride`、`validateHumanizeOverrideSection`、`validateHumanizeUpdate`、`DEFAULT_HUMANIZE_SETTINGS` 等），14 处 import 与 fork 既有测试因此零改动。
+- **行为修正**：`resolveHumanizeSettings` 改为表驱动，snapshot 缺失时回落到**表内默认值**（此前 `messageBreak` 回落到 `false`，与出厂默认 `true` 不一致）。仅影响「无 provider 且不传 snapshot」的直接构造。
+- **`perBot` 语义**：宽松读 per-bot 段时「键缺失」与「键等于默认值」必须区分，故 per-bot 读取不做修复（非法值丢弃、继续继承全局），与严格校验同一判据。
+- 客户端两个面板改为遍历表；全局面板的标量字段顺序即表序，因此「输入状态指示」上移到了发送延迟之前（有意的版式统一）。
+- **顺带修掉一个合并缺陷**：`BotWorkspaceStore.setHumanize` 把 humanize 当作 `#persist` 的第 7 个位置参数，而合并后的签名第 7 位是 `busyMessageModes`（humanize 是第 8 位）——per-bot 拟人化段会写进 `busyMessageModes`，两个设置互相污染。定位方式：跑 fork 的 `humanize-override.test.mjs`，`disk.humanize` 缺失。已改为 7 个 `undefined` + humanize 并加注释说明位置。
+- **坑（值得记住）**：上游 `test/client-ui.test.mjs` 的「每个中文串都有英文投影」用例用正则 `(['"\`])(...)\1` 提取字符串，注释里的引号也会被当成字符串起始；客户端源码注释里写一个 ASCII 撇号（`schema's`、`bot's`）就会把后面的代码吞进一个「字符串」，于是报出一条莫名其妙的未翻译项。本批踩了两次，改写注释后恢复。
+
+**P2-f2（模式收敛）**：
+
+1. `message-mode.mjs` 成为模式词汇的唯一出处：`BUSY_MESSAGE_MODES`（interrupt/queue/steer）、`DEFAULT_BUSY_MESSAGE_MODE='interrupt'`、`normalizeBusyMessageMode`（宽松，回落默认）、`storedBusyMessageMode`（严格读，未设置返回 **undefined**）、`validateBusyMessageMode`、`SUPERSEDED_STOP_REASON`/`isSupersededStop`（从 `new-message-policy.mjs` 迁入）。
+2. schema 里字段改名 `onNewMessage` → `busyMessageMode`，`perBot: false`（per-bot 走 `workspaces.json.busyMessageModes`），标签改「消息处理方式（全局默认）」。
+3. **优先级一处解析**：`BotWorkspaceStore.effectiveBusyMessageModeFor(botId)` = 机器人自选 → 全局人化设置 → `interrupt`；`busyMessageModeFor` 保留为「原始读」（未设置 undefined）。`decorateStatus` 与 `currentBusyMessageMode` 都走 effective，所以客户端卡片显示的就是 dispatcher 真正会执行的值。全局值经 `busyMessageModeDefaults` 访问器在**每个 production.mjs 的 store 构造处**注入（10 个文件各 1 行，与同文件里已有的 `config.humanizeDefaults?.(channel)` 同一来源）。
+4. `interrupt` 成为 `BusyMessageDispatcher` 的第三态：新增 `abortPreAsk` 回调，dispatcher 自己算 `state.sessionFor(key)` → `harness.workspaceSession()` → `stopActiveTurn({reason:'superseded'})`（fire-and-forget），并保留 `isQueued()` 门控（无在途回合不打断）与 `pendingInteraction()` 早退（等交互一律排队）。**interrupt 绕过 `#tails` 串行链**（要抢占，不能排在别的路由决定后面），queue/steer 的语义不变。
+5. 6 个 bridge（`text-harness-bridge`、qq、dingtalk、feishu、wecom、weixin）删掉手写的 policy 块 + `#interruptAndResend`/`#boundSession` + `resolveNewMessagePolicy` 调用，改为给 dispatcher 传 `abortPreAsk`；`mode` 直接来自 `harness.currentBusyMessageMode()`（accept 的 `busyMessageMode` 快照）。**`new-message-policy.mjs` 已删除**（`trySteer` 在 P2-d 后已无调用者）。
+6. **顺带清掉死管线**：`onNewMessage` 这条「配置 → runtime 构造快照 → bridge 构造快照 → resolver」的通道在 f2 后无任何读取者，故从 9 个 runtime、8 个 `humanizationOptions` 与 6 个 bridge 构造器里整体移除（否则会留下一个看似能配、实际不生效的旋钮）。
+7. 客户端：per-bot「消息处理方式」下拉补第三项「打断」（三项：打断/排队/插话），说明文案按当前模式三态切换；i18n 字典同步（新增 `打断`/`打断当前生成，直接处理新消息`/`消息处理方式（全局默认）` + 新 hint，删除 `新消息行为` 及三条已死的 `跟随全局 (${...})` 模板投影）。
+8. README×2 同步：速览表行改为 `busyMessageMode`，正文写清「全局默认 + 每机器人可单独覆盖 + 生效优先级」，per-bot 覆盖清单里去掉「新消息行为」（它已移到通用设置）。
+
+**P2-f 的偏离记录**：设计稿写「由 `humanize-schema.mjs` 派生 + 各消费者改 import」，实际改为在两个旧模块里**再导出**派生 API（14 处 import 与 fork 测试零改动、单一出处不变）；设计稿提到的「客户端卡片标明来源（per-bot / 全局）」未实现——收敛后 per-bot 一旦设置就是显式值，未设置时显示全局值本身即准确行为，再加一个来源标注只增加界面噪音与快照字段。两处偏离都写在这里备查。
+
+**P2-f 实测**：`npm run build`（client+host）与 `node scripts/verify-package.mjs` 通过。fork 侧 `humanize-settings`+`humanize-override`+`client-humanize-ui` 预跑 **29/29**（f1 后），f2 后 6 个用例因改名/移位的**预期差异**待 P2-g 适配（见下）；上游侧回归集 141 个用例中 3 个失败（组成的 host 路由数与 inbound-TTL loopback 为既有项，另有 1 个是默认值从 queue 变 interrupt 的预期差异）。
+
 ## i18n 并集核对（P2 源码阶段的收尾验证）
 
 字典以中文原文为 key，所以「并集」的正确判据不是 key 数量相等，而是**代码里用到的 key 都能查到译文**。两侧都跑了一遍：
@@ -169,6 +196,12 @@ client 侧：
 3. `test/channels/feishu/session-sync.test.mjs` 13 个用例的桩只有上游的两个方法，fork 的 `createSessionSyncCoordinator` 要求 4 个（多 `listSessionConversations`、`send`）→ 报 `Session sync requires a complete delivery service`。补桩即可（P2-c 已在 host 侧实测过同因同解）。
 4. 仓库级替身 `rich-message.test.mjs` 的 `429 + "message is not modified"` 子用例断言 `calls.length === 3`（fork 的 429 重试使其为 5，语义断言仍成立）。
 5. `test/channels/dingtalk/client-api.test.mjs` 的端点快照是上游版，合并后多出 fork 的 `setHumanize: 'bot.humanize.set'` → 并集（P2-g 跑 `test/` 重放后应自然由 fork 版覆盖，仍在此记账）。
+
+6. **默认模式从 queue 变 `interrupt`（P2-f2 的有意变更）**：以下上游 4.38 测试断言的是上游默认值，需按 fork 语义改写——`test/message-mode-settings.test.mjs`（17 例：`busyMessageModeFor` 未设置返回 undefined、`currentBusyMessageMode` 返回 interrupt、payload 允许 `interrupt`）、`test/channels/shared/context-enhancement-production.test.mjs`（13 例：`currentBusyMessageMode()` 期望值）、`test/bot-general-settings.test.mjs`（1 例：初始值 `interrupt` + 三个选项）、`test/client-delivery-settings.test.mjs`（1 例：同因）。改写时保持「断言的是 fork 文档化的行为」这一原则。
+7. **`test/humanize-bridge.test.mjs` 的 artifact 用例**：fork part 1（`224c3606`）把 `stage()` 改成「必须有活跃消费者」，该用例直接 `outboundArtifactRegistry.stage(...)` 而没有开消费者 → 现在抛 `artifact-consumer-required`。**main 上同因同失败**（P2-f2 期间实测确认），属 part 1 的测试缺口，需补上消费者再断言。
+8. **fork 侧因 f2 需改写的用例**（改名与移位，非回归）：`test/humanize-settings.test.mjs`（默认表、`resolveHumanizeSettings` 期望值）、`test/humanize-override.test.mjs`（per-bot 段不再含 `onNewMessage`，字段路径 `humanize.onNewMessage` 变为「未知键」）、`test/client-humanize-ui.test.mjs`（per-bot 编辑器只保存自定义键的期望值）、`test/humanize-bridge.test.mjs` 的 queue/steer 两例（模式改由 `harness.currentBusyMessageMode()` 驱动，不再来自 humanize 设置）。`test/new-message-policy.test.mjs` 随模块删除。
+9. **建议补测**：`BusyMessageDispatcher` 的 `interrupt` 第三态（抢占、`abortPreAsk` 调用、`stopActiveTurn` 带 `reason:'superseded'`、等交互时不打断），以及 `effectiveBusyMessageModeFor` 的三级回落。
+10. **可选（测试健壮性）**：让 `test/client-ui.test.mjs` 的中文串提取先剥掉注释再匹配，从根上消除「注释里的撇号吞代码」这类假失败（本批踩了两次，见 P2-f 实施记录的坑）。
 
 ### P2-e（客户端层 `plugin-src/client/**` + `scripts/verify-package.mjs`，含 R3）
 

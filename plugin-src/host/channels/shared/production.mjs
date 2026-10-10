@@ -57,14 +57,13 @@ export async function createTokenProductionController(ctx, config, internals, de
     || Array.isArray(channelRuntimeOptions)) {
     throw new TypeError(`dsh-im ${channel} runtimeOptions must return an object`);
   }
-  // Pass the humanization config options (streaming, messageBreak,
-  // onNewMessage) from the global plugin config to every channel runtime
+  // Pass the humanization config options (streaming, messageBreak)
+  // from the global plugin config to every channel runtime
   // as the constructor-time snapshot, plus the live per-bot provider
   // (`humanize`) that bridges re-read on every turn.
   const humanizationOptions = {
     streaming: config.streaming !== false,
     messageBreak: config.messageBreak !== false,
-    onNewMessage: config.onNewMessage ?? 'interrupt',
   };
   const createSupervisor = internals.createConnectionSupervisor ?? createTokenConnectionSupervisor;
   const seedAccessPolicy = typeof definitions.initialAccessPolicyForBot === 'function'
@@ -80,7 +79,12 @@ export async function createTokenProductionController(ctx, config, internals, de
   const { defaultWorkspace, ungroupedWorkspace } = await prepareBotWorkspace(config);
   const WorkspaceStore = internals.WorkspaceStore ?? BotWorkspaceStore;
   const workspaces = internals.workspaces
-    ?? await new WorkspaceStore(paths.workspaces, { defaultWorkspace, ungroupedWorkspace }).load();
+    ?? await new WorkspaceStore(paths.workspaces, {
+      defaultWorkspace,
+      ungroupedWorkspace,
+      // A bot that never picked a mode follows the live global setting.
+      busyMessageModeDefaults: () => config.humanizeDefaults?.(channel)?.busyMessageMode,
+    }).load();
   const configuredBots = configStore.list();
   await workspaces.reconcile(configuredBots.map((bot) => bot.botId));
   await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.botId, {

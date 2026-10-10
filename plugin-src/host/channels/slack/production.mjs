@@ -50,7 +50,12 @@ export async function createProductionController(ctx, config = {}, internals = {
   const { defaultWorkspace, ungroupedWorkspace } = await prepareBotWorkspace(config);
   const WorkspaceStore = internals.WorkspaceStore ?? BotWorkspaceStore;
   const workspaces = internals.workspaces
-    ?? await new WorkspaceStore(paths.workspaces, { defaultWorkspace, ungroupedWorkspace }).load();
+    ?? await new WorkspaceStore(paths.workspaces, {
+      defaultWorkspace,
+      ungroupedWorkspace,
+      // A bot that never picked a mode follows the live global setting.
+      busyMessageModeDefaults: () => config.humanizeDefaults?.('slack')?.busyMessageMode,
+    }).load();
   const configuredBots = configStore.list();
   await workspaces.reconcile(configuredBots.map((bot) => bot.botId));
   await Promise.all(configuredBots.map((bot) => workspaces.ensure(bot.botId, {
@@ -129,7 +134,6 @@ export async function createProductionController(ctx, config = {}, internals = {
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
         streaming: config.streaming !== false,
         messageBreak: config.messageBreak !== false,
-        onNewMessage: config.onNewMessage ?? 'interrupt',
         connectTimeoutMs: config.connectTimeoutMs ?? 20_000,
         logger: {
           error: (...args) => logger.error?.(`[${botId}]`, ...args),

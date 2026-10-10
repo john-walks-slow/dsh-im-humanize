@@ -64,7 +64,12 @@ export async function createProductionController(ctx, config = {}, internals = {
   const { defaultWorkspace, ungroupedWorkspace } = await prepareBotWorkspace(config);
   const WorkspaceStore = internals.WorkspaceStore ?? BotWorkspaceStore;
   const workspaces = internals.workspaces
-    ?? await new WorkspaceStore(paths.workspaces, { defaultWorkspace, ungroupedWorkspace }).load();
+    ?? await new WorkspaceStore(paths.workspaces, {
+      defaultWorkspace,
+      ungroupedWorkspace,
+      // A bot that never picked a mode follows the live global setting.
+      busyMessageModeDefaults: () => config.humanizeDefaults?.('dingtalk')?.busyMessageMode,
+    }).load();
   const canListConfiguredBots = typeof configStore.list === 'function';
   const configuredBots = canListConfiguredBots ? configStore.list() : [];
   if (canListConfiguredBots) {
@@ -149,7 +154,6 @@ export async function createProductionController(ctx, config = {}, internals = {
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
         streaming: config.streaming !== false,
         messageBreak: config.messageBreak !== false,
-        onNewMessage: config.onNewMessage ?? 'interrupt',
         maxMessageChars: config.maxMessageChars ?? 4_000,
         connectTimeoutMs: config.connectTimeoutMs ?? 15_000,
         logger: {

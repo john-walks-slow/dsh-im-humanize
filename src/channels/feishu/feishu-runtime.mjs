@@ -130,7 +130,6 @@ export class FeishuRuntime {
   #replyTimeoutMs;
   #streaming = true;
   #messageBreak = false;
-  #onNewMessage = 'interrupt';
   #humanize = null;
   #connectTimeoutMs;
   #requestTimeoutMs;
@@ -189,7 +188,6 @@ export class FeishuRuntime {
     replyTimeoutMs = 600000,
     streaming = true,
     messageBreak = false,
-    onNewMessage = 'interrupt',
     humanize = null,
     connectTimeoutMs = 15000,
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
@@ -242,7 +240,6 @@ export class FeishuRuntime {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#streaming = streaming !== false;
     this.#messageBreak = messageBreak === true;
-    this.#onNewMessage = onNewMessage;
     this.#humanize = humanize ?? null;
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#requestTimeoutMs = requestTimeoutMs;
@@ -392,7 +389,6 @@ export class FeishuRuntime {
         stepPush: this.#stepPush,
         streaming: this.#streaming,
         messageBreak: this.#messageBreak,
-        onNewMessage: this.#onNewMessage,
         humanize: this.#humanize,
         stepPushMode: this.#stepPushMode,
         stepCardPanels: this.#stepCardPanels,

@@ -4,8 +4,8 @@
  * Bridges receive a `humanize` provider ({ getSettings() }) from their
  * runtime and resolve settings once per turn so global (humanize.json) and
  * per-bot (workspaces.json) updates apply live. Constructor-snapshot values
- * (streaming/messageBreak/onNewMessage) remain as fallbacks for direct
- * constructions (tests, embedded use) where no provider is wired.
+ * (streaming/messageBreak) remain as fallbacks for direct constructions
+ * (tests, embedded use) where no provider is wired.
  *
  * Field defaults and repairs come from the schema table — the resolver only
  * decides WHICH source wins (live provider → constructor snapshot → shipped

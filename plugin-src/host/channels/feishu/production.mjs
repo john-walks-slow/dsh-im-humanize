@@ -125,7 +125,12 @@ export async function createProductionController(ctx, config = {}, internals = {
   const { defaultWorkspace, ungroupedWorkspace } = await prepareBotWorkspace(config);
   const WorkspaceStore = internals.WorkspaceStore ?? BotWorkspaceStore;
   const workspaces = internals.workspaces
-    ?? await new WorkspaceStore(paths.workspaces, { defaultWorkspace, ungroupedWorkspace }).load();
+    ?? await new WorkspaceStore(paths.workspaces, {
+      defaultWorkspace,
+      ungroupedWorkspace,
+      // A bot that never picked a mode follows the live global setting.
+      busyMessageModeDefaults: () => config.humanizeDefaults?.('feishu')?.busyMessageMode,
+    }).load();
   const canListConfiguredBots = typeof configStore.list === 'function';
   const listConfiguredBots = () => canListConfiguredBots ? configStore.list() : [];
   const configuredBots = listConfiguredBots();
@@ -279,7 +284,6 @@ export async function createProductionController(ctx, config = {}, internals = {
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
         streaming: config.streaming !== false,
         messageBreak: config.messageBreak !== false,
-        onNewMessage: config.onNewMessage ?? 'interrupt',
         slashCommands: config.slashCommands !== false,
         slashPanel: botConfig.slashPanel,
         ...(wsAgent ? { wsAgent } : {}),

@@ -6,6 +6,7 @@ import {
 } from './dingtalk-bridge.mjs';
 import { sendRememberedConnectionTest } from '../shared/connection-test.mjs';
 import { t } from '../shared/i18n.mjs';
+import { DEFAULT_BUSY_MESSAGE_MODE } from '../shared/message-mode.mjs';
 import { captureContextEnhancement } from '../shared/context-enhancement.mjs';
 import { dingtalkRuntimeStartError } from './connection-error.mjs';
 import { DINGTALK_CARD_TOPIC } from './dingtalk-menu.mjs';
@@ -139,7 +140,6 @@ export class DingtalkRuntime {
   #replyTimeoutMs;
   #streaming = true;
   #messageBreak = false;
-  #onNewMessage = 'interrupt';
   #humanize = null;
   #maxMessageChars;
   #connectTimeoutMs;
@@ -164,7 +164,7 @@ export class DingtalkRuntime {
     accessPolicy,
     logger = console,
     replyTimeoutMs = 600_000,
-    streaming = true, messageBreak = false, onNewMessage = 'interrupt', humanize = null,
+    streaming = true, messageBreak = false, humanize = null,
     maxMessageChars = 4_000,
     connectTimeoutMs = 15_000,
     connectPollIntervalMs = 25,
@@ -187,7 +187,6 @@ export class DingtalkRuntime {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#streaming = streaming !== false;
     this.#messageBreak = messageBreak === true;
-    this.#onNewMessage = onNewMessage;
     this.#humanize = humanize ?? null;
     this.#maxMessageChars = maxMessageChars;
     this.#connectTimeoutMs = connectTimeoutMs;
@@ -261,7 +260,7 @@ export class DingtalkRuntime {
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
-        streaming: this.#streaming, messageBreak: this.#messageBreak, onNewMessage: this.#onNewMessage,
+        streaming: this.#streaming, messageBreak: this.#messageBreak,
         humanize: this.#humanize,
         maxMessageChars: this.#maxMessageChars,
         signal,
@@ -322,7 +321,7 @@ export class DingtalkRuntime {
         } catch {
           // Optional settings failures leave the original message path active.
         }
-        const busyMessageMode = this.#harness.currentBusyMessageMode?.() ?? 'queue';
+        const busyMessageMode = this.#harness.currentBusyMessageMode?.() ?? DEFAULT_BUSY_MESSAGE_MODE;
         const task = Promise.resolve().then(async () => {
           if (this.#bridge !== bridge) return;
           let message;

@@ -32,15 +32,10 @@ import {
   normalizeTypingIndicator,
   validateTypingBurst,
 } from './typing-session.mjs';
-
-/** Busy-message routing vocabulary (the `onNewMessage` field's domain). */
-export const ON_NEW_MESSAGE_MODES = Object.freeze(['interrupt', 'queue', 'steer']);
-export const DEFAULT_ON_NEW_MESSAGE = 'interrupt';
-
-/** Lenient read of the configured mode: unknown values fall back to the default. */
-export function normalizeOnNewMessage(value) {
-  return ON_NEW_MESSAGE_MODES.includes(value) ? value : DEFAULT_ON_NEW_MESSAGE;
-}
+import {
+  BUSY_MESSAGE_MODES,
+  DEFAULT_BUSY_MESSAGE_MODE,
+} from './message-mode.mjs';
 
 const typingIndicatorOptions = Object.freeze([
   Object.freeze({ value: 'off', label: '关闭' }),
@@ -110,15 +105,18 @@ export const HUMANIZE_FIELDS = Object.freeze([
     hint: '处理任务时显示中间状态气泡（如“正在处理…”“正在使用工具…”“正在整理结果…”）。关闭后不发送占位气泡与中间进度文案，回复直达；流式文本仍正常逐字显示。适用于所有具备过程气泡的聊天渠道（QQ/微信本就无中间进度；AI Office 任务进度不受影响）。',
   },
   {
-    key: 'onNewMessage',
+    key: 'busyMessageMode',
     kind: 'enum',
     control: 'select',
-    default: DEFAULT_ON_NEW_MESSAGE,
-    values: ON_NEW_MESSAGE_MODES,
+    default: DEFAULT_BUSY_MESSAGE_MODE,
+    values: BUSY_MESSAGE_MODES,
     options: busyMessageOptions,
-    perBot: true,
-    label: '新消息行为',
-    hint: '生成中收到新消息时的处理方式：打断重发、排队等待、或注入为纠偏指令。交互等待时一律排队。',
+    // The per-bot choice lives in its own durable slot (workspaces.json
+    // `busyMessageModes`) rather than in the per-bot humanize section, so a
+    // bot states it once and this section cannot shadow it.
+    perBot: false,
+    label: '消息处理方式（全局默认）',
+    hint: '机器人未单独设置时使用：生成中收到新消息，是打断重发、排队等待，还是注入为纠偏指令。交互等待时一律排队。每个机器人可在「通用设置」里单独覆盖。',
   },
   {
     key: 'typingIndicator',
