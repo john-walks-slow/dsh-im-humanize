@@ -4,6 +4,7 @@ import { registerManagementRpc } from '../management-rpc.mjs';
 import {
   HUMANIZE_RPC_CHANNEL,
   HUMANIZE_ENDPOINTS,
+  HUMANIZE_KEYS,
   HumanizeSettingsStore,
   createHumanizeRpcHandler,
   validateHumanizeUpdate,
@@ -14,19 +15,9 @@ export { HUMANIZE_RPC_CHANNEL, HUMANIZE_ENDPOINTS };
 
 const ENDPOINTS = new Set(Object.values(HUMANIZE_ENDPOINTS));
 
-// Keys the client may send on humanize.set. Field-level validation
-// happens in validateHumanizeUpdate; this only gates the top-level shape.
-const SETTABLE_KEYS = new Set([
-  'streaming',
-  'messageBreak',
-  'onNewMessage',
-  'sendDelay',
-  'typingIndicator',
-  'typingBurst',
-  'statusReaction',
-  'replyQuote',
-  'progressStatus',
-]);
+// Top-level shape gate for humanize.set: unknown keys are rejected here,
+// field-level validation happens in validateHumanizeUpdate.
+const SETTABLE_KEYS = new Set(HUMANIZE_KEYS);
 
 export function validHumanizePayload(endpoint, payload) {
   if (!ENDPOINTS.has(endpoint)) return false;

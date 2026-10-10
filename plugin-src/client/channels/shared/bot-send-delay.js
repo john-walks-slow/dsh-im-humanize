@@ -35,10 +35,11 @@
 import * as React from 'react';
 
 import { h } from '../../i18n.js';
+import { PER_BOT_HUMANIZE_KEYS } from '../../../../src/channels/shared/humanize-schema.mjs';
 import {
   FieldError,
-  HUMANIZE_SETTING_META,
   SEND_DELAY_PRESETS,
+  SCALAR_HUMANIZE_FIELDS,
   SendDelayFields,
   SendDelayPresetSelect,
   TypingBurstFields,
@@ -57,9 +58,14 @@ export const TYPING_CAPABILITY = Object.freeze({
   none: 'none',
 });
 
-const BOOLEAN_KEYS = ['streaming', 'messageBreak', 'statusReaction', 'replyQuote', 'progressStatus'];
-const ENUM_KEYS = ['onNewMessage', 'typingIndicator'];
-const ALL_KEYS = [...BOOLEAN_KEYS, ...ENUM_KEYS, 'typingBurst', 'sendDelay'];
+// Which tri-state the per-bot dropdown encodes: booleans as the strings
+// 'true'/'false' (the empty value means "follow global"), enums as their
+// own value. Both key lists come from the shared field table.
+const BOOLEAN_KEYS = SCALAR_HUMANIZE_FIELDS
+  .filter((field) => field.kind === 'boolean').map((field) => field.key);
+const ENUM_KEYS = SCALAR_HUMANIZE_FIELDS
+  .filter((field) => field.kind === 'enum').map((field) => field.key);
+const ALL_KEYS = PER_BOT_HUMANIZE_KEYS;
 
 // ── per-key draft derivation ───────────────────────────────────────
 
@@ -152,9 +158,18 @@ function booleanLabel(value) {
   return value ? '开' : '关';
 }
 
-function enumLabel(key, value) {
-  const options = HUMANIZE_SETTING_META[key]?.options ?? [];
-  return options.find((option) => option.value === value)?.label ?? value;
+/** The dropdown options for one per-bot scalar field. */
+function fieldOptions(field) {
+  return field.kind === 'boolean'
+    ? [{ value: 'true', label: '开启' }, { value: 'false', label: '关闭' }]
+    : field.options;
+}
+
+/** How "follow global" labels the inherited value, in the same terms as the dropdown. */
+function inheritedLabel(field, value) {
+  return field.kind === 'boolean'
+    ? booleanLabel(value)
+    : field.options.find((option) => option.value === value)?.label ?? value;
 }
 
 // ── Main component ─────────────────────────────────────────────────
@@ -249,8 +264,7 @@ export function BotHumanizeEditor({
   // Whether the save button should say "清除覆盖" (payload is null and
   // an override exists) vs "保存" (payload is non-null).
   const hasOverride = countOverrides(humanize) > 0;
-  const draftHasCustom = BOOLEAN_KEYS.some((key) => draft[key] !== '')
-    || ENUM_KEYS.some((key) => draft[key] !== '')
+  const draftHasCustom = SCALAR_HUMANIZE_FIELDS.some((field) => draft[field.key] !== '')
     || draft.typingBurst.custom
     || draft.sendDelay.custom;
 
@@ -270,56 +284,24 @@ export function BotHumanizeEditor({
     h('span', { className: 'dim-sendDelayChevron', 'aria-hidden': 'true' }, open ? '▾' : '▸')),
     open ? h('div', { className: 'dim-sendDelayBody' },
 
-      // ── Boolean toggles (tri-state dropdown) ──────────────────────
-      ...BOOLEAN_KEYS.map((key) => {
-        const meta = HUMANIZE_SETTING_META[key];
-        return h('label', { key, className: 'dim-humanizeField dim-sendDelayField' },
-          h('span', { className: 'dim-humanizeFieldRow' },
-            h('select', {
-              value: draft[key],
-              disabled: busy,
-              'aria-label': meta.label,
-              onChange: (event) => updateSelect(key, event.target.value),
-            },
-            h('option', { value: '' },
-              `跟随全局 (${booleanLabel(defaults[key])})`),
-            h('option', { value: 'true' }, '开启'),
-            h('option', { value: 'false' }, '关闭')),
-            h('span', { className: 'dim-humanizeFieldName' }, meta.label)),
-          h('span', { className: 'dim-humanizeFieldHint' }, meta.hint));
-      }),
-
-      // ── onNewMessage dropdown ─────────────────────────────────────
-      h('label', { className: 'dim-humanizeField dim-sendDelayField' },
+      // ── Scalar settings (tri-state dropdown: 跟随全局 / explicit) ───
+      ...SCALAR_HUMANIZE_FIELDS.map((field) => h(
+        'label',
+        { key: field.key, className: 'dim-humanizeField dim-sendDelayField' },
         h('span', { className: 'dim-humanizeFieldRow' },
           h('select', {
-            value: draft.onNewMessage,
+            value: draft[field.key],
             disabled: busy,
-            'aria-label': HUMANIZE_SETTING_META.onNewMessage.label,
-            onChange: (event) => updateSelect('onNewMessage', event.target.value),
+            'aria-label': field.label,
+            onChange: (event) => updateSelect(field.key, event.target.value),
           },
           h('option', { value: '' },
-            `跟随全局 (${enumLabel('onNewMessage', defaults.onNewMessage)})`),
-          HUMANIZE_SETTING_META.onNewMessage.options.map((option) =>
+            `跟随全局 (${inheritedLabel(field, defaults[field.key])})`),
+          fieldOptions(field).map((option) =>
             h('option', { key: option.value, value: option.value }, option.label))),
-          h('span', { className: 'dim-humanizeFieldName' }, HUMANIZE_SETTING_META.onNewMessage.label)),
-        h('span', { className: 'dim-humanizeFieldHint' }, HUMANIZE_SETTING_META.onNewMessage.hint)),
-
-      // ── typingIndicator dropdown ─────────────────────────────────
-      h('label', { className: 'dim-humanizeField dim-sendDelayField' },
-        h('span', { className: 'dim-humanizeFieldRow' },
-          h('select', {
-            value: draft.typingIndicator,
-            disabled: busy,
-            'aria-label': HUMANIZE_SETTING_META.typingIndicator.label,
-            onChange: (event) => updateSelect('typingIndicator', event.target.value),
-          },
-          h('option', { value: '' },
-            `跟随全局 (${enumLabel('typingIndicator', defaults.typingIndicator)})`),
-          HUMANIZE_SETTING_META.typingIndicator.options.map((option) =>
-            h('option', { key: option.value, value: option.value }, option.label))),
-          h('span', { className: 'dim-humanizeFieldName' }, HUMANIZE_SETTING_META.typingIndicator.label)),
-        h('span', { className: 'dim-humanizeFieldHint' }, HUMANIZE_SETTING_META.typingIndicator.hint)),
+          h('span', { className: 'dim-humanizeFieldName' }, field.label)),
+        h('span', { className: 'dim-humanizeFieldHint' }, field.hint),
+      )),
 
       // ── typingBurst (gated by a custom checkbox) ──────────────────
       h('div', { className: 'dim-humanizeField dim-sendDelayField' },

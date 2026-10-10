@@ -11,6 +11,10 @@
  * and error message renders identically from here, so the detail level
  * and format can never drift between the two surfaces.
  *
+ * Field labels, hints, options, and defaults are NOT restated here: they
+ * come from src/channels/shared/humanize-schema.mjs, the same table the
+ * host validates against (the module is browser-safe by design).
+ *
  * Browser-safe (client bundle only; no Node APIs, no hooks — the
  * components are pure h() trees driven entirely by props).
  *
@@ -18,8 +22,16 @@
  * checkbox count in this file in sync with its manifest.
  */
 import { h } from '../../i18n.js';
-import { DEFAULT_SEND_DELAY_CONFIG } from '../../../../src/channels/shared/send-delay.mjs';
-import { DEFAULT_TYPING_BURST } from '../../../../src/channels/shared/typing-session.mjs';
+import {
+  DEFAULT_SEND_DELAY_CONFIG,
+} from '../../../../src/channels/shared/send-delay.mjs';
+import {
+  DEFAULT_TYPING_BURST,
+} from '../../../../src/channels/shared/typing-session.mjs';
+import {
+  DEFAULT_HUMANIZE_SETTINGS,
+  HUMANIZE_FIELDS,
+} from '../../../../src/channels/shared/humanize-schema.mjs';
 
 // ── shared limits (wire format is milliseconds) ─────────────────────
 
@@ -32,72 +44,13 @@ export const TYPING_BURST_MAX_MS = 30000;
 
 // ── setting metadata (labels + hints shared by both panels) ─────────
 
-export const ON_NEW_MESSAGE_OPTIONS = Object.freeze([
-  { value: 'interrupt', label: '打断重发 (interrupt)' },
-  { value: 'queue', label: '排队等待 (queue)' },
-  { value: 'steer', label: '注入纠偏 (steer)' },
-]);
+/** The fields both panels render as one control, in table (render) order. */
+export const SCALAR_HUMANIZE_FIELDS = Object.freeze(
+  HUMANIZE_FIELDS.filter((field) => field.kind !== 'shape'),
+);
 
-export const TYPING_INDICATOR_OPTIONS = Object.freeze([
-  { value: 'off', label: '关闭' },
-  { value: 'continuous', label: '持续' },
-  { value: 'burst', label: '断续' },
-]);
-
-/**
- * Canonical labels and hints for the six scalar settings. Mirrors
- * DEFAULT_HUMANIZE_SETTINGS in src/channels/shared/humanize-settings.mjs
- * (kept local to avoid pulling Node APIs into the browser bundle).
- */
-export const HUMANIZE_SETTING_META = Object.freeze({
-  streaming: Object.freeze({
-    label: '流式回复',
-    hint: '开启后 AI 回复逐字显示。关闭后一次性发送完整回复，更有沉浸感。',
-  }),
-  messageBreak: Object.freeze({
-    label: '分步消息 (message_break)',
-    hint: 'AI 调用 message_break 工具在回复中插入断点，每个分段作为独立消息发送。与「流式回复」同时开启时，每段各自逐字流式，断点处定稿为一条消息。',
-  }),
-  statusReaction: Object.freeze({
-    label: '状态表情回应',
-    hint: '处理任务时用表情标记状态（处理中/成功/失败）。关闭后不再发送表情，回复照常送达。支持 Telegram、Discord、WhatsApp、Slack、飞书、钉钉。',
-  }),
-  replyQuote: Object.freeze({
-    label: '回复引用',
-    hint: '回复时引用你的消息（引用样式）。关闭后回复以普通消息发出。仅影响 Telegram、Discord、WhatsApp 的引用样式；话题、Thread 归组不受影响。',
-  }),
-  progressStatus: Object.freeze({
-    label: '过程进度提示',
-    hint: '处理任务时显示中间状态气泡（如“正在处理…”“正在使用工具…”“正在整理结果…”）。关闭后不发送占位气泡与中间进度文案，回复直达；流式文本仍正常逐字显示。适用于所有具备过程气泡的聊天渠道（QQ/微信本就无中间进度；AI Office 任务进度不受影响）。',
-  }),
-  onNewMessage: Object.freeze({
-    label: '新消息行为',
-    hint: '生成中收到新消息时的处理方式：打断重发、排队等待、或注入为纠偏指令。交互等待时一律排队。',
-    options: ON_NEW_MESSAGE_OPTIONS,
-  }),
-  typingIndicator: Object.freeze({
-    label: '输入状态指示',
-    hint: '处理开始后显示“正在输入”的方式：持续显示，或像真人一样时断时续（断续）。无对应接口的渠道自动忽略此项。',
-    options: TYPING_INDICATOR_OPTIONS,
-  }),
-});
-
-/**
- * Shipped factory defaults for every humanization setting — the prefill
- * base when no live global config is available (mirrors
- * DEFAULT_HUMANIZE_SETTINGS; kept local for browser safety).
- */
-export const SHIPPED_HUMANIZE_DEFAULTS = Object.freeze({
-  streaming: true,
-  messageBreak: true,
-  statusReaction: true,
-  replyQuote: true,
-  progressStatus: true,
-  onNewMessage: 'interrupt',
-  typingIndicator: 'burst',
-  typingBurst: DEFAULT_TYPING_BURST,
-  sendDelay: DEFAULT_SEND_DELAY_CONFIG,
-});
+/** Shipped factory defaults (from the schema table), used to prefill with no live config. */
+export const SHIPPED_HUMANIZE_DEFAULTS = DEFAULT_HUMANIZE_SETTINGS;
 
 /** Merge the live global defaults over the shipped ones (lenient). */
 export function resolvedHumanizeDefaults(humanizeDefaults) {

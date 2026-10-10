@@ -3,37 +3,26 @@
  *
  * Bridges receive a `humanize` provider ({ getSettings() }) from their
  * runtime and resolve settings once per turn so global (humanize.json) and
- * per-bot (workspaces.json) updates apply live. Constructor-snapshot
- * values (streaming/messageBreak/onNewMessage) remain as fallbacks for
- * direct constructions (tests, embedded use) where no provider is wired.
+ * per-bot (workspaces.json) updates apply live. Constructor-snapshot values
+ * (streaming/messageBreak/onNewMessage) remain as fallbacks for direct
+ * constructions (tests, embedded use) where no provider is wired.
  *
- * Provider output is normally already normalized (see
- * createHumanizeProvider); this resolver normalizes defensively again —
- * all normalizers are idempotent.
+ * Field defaults and repairs come from the schema table — the resolver only
+ * decides WHICH source wins (live provider → constructor snapshot → shipped
+ * default) and normalizes whatever it picked, so provider output that a
+ * hand-edited section left malformed cannot leak into a turn.
  */
-import { normalizeOnNewMessage } from './new-message-policy.mjs';
-import { normalizeSendDelayConfig } from './send-delay.mjs';
-import { normalizeTypingBurst, normalizeTypingIndicator } from './typing-session.mjs';
+import { HUMANIZE_FIELDS, normalizeHumanizeField } from './humanize-schema.mjs';
 
-export function resolveHumanizeSettings({
-  humanize = null,
-  streaming = true,
-  messageBreak = false,
-  onNewMessage = 'interrupt',
-} = {}) {
+export function resolveHumanizeSettings({ humanize = null, ...snapshot } = {}) {
   const provided = typeof humanize?.getSettings === 'function'
     ? humanize.getSettings()
     : null;
   const source = provided && typeof provided === 'object' ? provided : {};
-  return {
-    streaming: typeof source.streaming === 'boolean' ? source.streaming : streaming !== false,
-    messageBreak: typeof source.messageBreak === 'boolean' ? source.messageBreak : messageBreak === true,
-    onNewMessage: normalizeOnNewMessage(source.onNewMessage ?? onNewMessage),
-    sendDelay: normalizeSendDelayConfig(source.sendDelay),
-    typingIndicator: normalizeTypingIndicator(source.typingIndicator),
-    typingBurst: normalizeTypingBurst(source.typingBurst),
-    statusReaction: typeof source.statusReaction === 'boolean' ? source.statusReaction : true,
-    replyQuote: typeof source.replyQuote === 'boolean' ? source.replyQuote : true,
-    progressStatus: typeof source.progressStatus === 'boolean' ? source.progressStatus : true,
-  };
+  const resolved = {};
+  for (const field of HUMANIZE_FIELDS) {
+    const value = source[field.key] ?? snapshot[field.key] ?? field.default;
+    resolved[field.key] = normalizeHumanizeField(field.key, value);
+  }
+  return resolved;
 }

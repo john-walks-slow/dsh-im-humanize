@@ -5,8 +5,13 @@
  * checks and normalization are shared here.
  */
 
-export const ON_NEW_MESSAGE_MODES = Object.freeze(['interrupt', 'queue', 'steer']);
-export const DEFAULT_ON_NEW_MESSAGE = 'interrupt';
+import {
+  DEFAULT_ON_NEW_MESSAGE,
+  ON_NEW_MESSAGE_MODES,
+  normalizeOnNewMessage,
+} from './humanize-schema.mjs';
+
+export { DEFAULT_ON_NEW_MESSAGE, ON_NEW_MESSAGE_MODES, normalizeOnNewMessage };
 
 /**
  * Stop reason recorded when a new message supersedes an in-flight turn
@@ -22,14 +27,6 @@ export const SUPERSEDED_STOP_REASON = 'superseded';
 /** Whether a `turn-stopped` failure came from a newer message superseding it. */
 export function isSupersededStop(error) {
   return error?.stopReason === SUPERSEDED_STOP_REASON;
-}
-
-/**
- * Normalize the onNewMessage config value.
- * Falls back to the default for unknown values.
- */
-export function normalizeOnNewMessage(value) {
-  return ON_NEW_MESSAGE_MODES.includes(value) ? value : DEFAULT_ON_NEW_MESSAGE;
 }
 
 /**

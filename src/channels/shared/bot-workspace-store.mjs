@@ -1000,10 +1000,11 @@ export class BotWorkspaceStore {
       if (section) next[id] = section;
       else delete next[id];
       // Messages keep the previous committed snapshot until rename succeeds.
-      // humanize is the 7th positional slot (after aliases and
-      // conversationWorkspaces); the earlier slots keep upstream callers
-      // positional-arg compatible.
-      await this.#persist(undefined, undefined, undefined, undefined, undefined, undefined, next);
+      // #persist takes the document sections positionally; humanize is the
+      // LAST slot (upstream's seven, then the fork's eighth) — every earlier
+      // argument must stay undefined so the caller's own sections survive.
+      await this.#persist(undefined, undefined, undefined, undefined, undefined,
+        undefined, undefined, next);
       this.#humanize = next;
       return section ? { ...section } : null;
     });

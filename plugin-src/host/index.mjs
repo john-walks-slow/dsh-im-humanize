@@ -27,6 +27,7 @@ import { installSessionSyncCoordinator } from './session-sync-coordinator.mjs';
 import { installSessionTitlePrefix } from './session-title-prefix.mjs';
 import { installUpdateRpc } from './update-rpc.mjs';
 import { installHumanizeRpc } from './humanize-rpc.mjs';
+import { HUMANIZE_KEYS } from '../../src/channels/shared/humanize-settings.mjs';
 
 export const name = 'dsh-im-host';
 export const inject = [
@@ -37,18 +38,9 @@ export const inject = [
 
 // Humanization keys forwarded to every channel config with channel
 // sub-object priority. `humanizeDefaults` (installed by activateChannels)
-// provides the live per-channel resolution for bridges.
-const HUMANIZE_CONFIG_KEYS = [
-  'streaming',
-  'messageBreak',
-  'onNewMessage',
-  'sendDelay',
-  'typingIndicator',
-  'typingBurst',
-  'statusReaction',
-  'replyQuote',
-  'progressStatus',
-];
+// provides the live per-channel resolution for bridges. The key list is the
+// shared field table's — never a second copy.
+const HUMANIZE_CONFIG_KEYS = HUMANIZE_KEYS;
 
 function channelConfig(config, name, deliveryService) {
   const channel = config[name] ?? {};

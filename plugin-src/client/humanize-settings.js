@@ -3,7 +3,7 @@ import * as React from 'react';
 import { h } from './i18n.js';
 import {
   FieldError,
-  HUMANIZE_SETTING_META,
+  SCALAR_HUMANIZE_FIELDS,
   SEND_DELAY_PRESETS,
   SendDelayFields,
   SendDelayPresetSelect,
@@ -23,8 +23,6 @@ export const HUMANIZE_ENDPOINTS = Object.freeze({
   get: 'humanize.get',
   set: 'humanize.set',
 });
-
-const BOOLEAN_SETTING_KEYS = ['streaming', 'messageBreak', 'statusReaction', 'replyQuote', 'progressStatus'];
 
 function presentError(error, fallback) {
   return error?.message || fallback;
@@ -183,33 +181,28 @@ export function HumanizeSettingsPanel({ rpcCall }) {
       h('p', { className: 'dim-humanizeDesc' },
         '控制 AI 回复的发送方式，让对话更像真人交流。'),
 
-      // Boolean toggles (labels + hints from the shared metadata — the
-      // same texts the per-bot editor shows).
-      ...BOOLEAN_SETTING_KEYS.map((key) => {
-        const meta = HUMANIZE_SETTING_META[key];
-        return h('label', { key, className: 'dim-humanizeField' },
+      // Scalar settings — labels, hints, and option lists come from the
+      // shared field table (the same texts the per-bot editor shows).
+      ...SCALAR_HUMANIZE_FIELDS.map((field) => (field.kind === 'boolean'
+        ? h('label', { key: field.key, className: 'dim-humanizeField' },
           h('span', { className: 'dim-humanizeFieldRow' },
             h('input', {
               type: 'checkbox',
-              checked: settings[key] !== false,
-              onChange: (e) => updateField(key, e.target.checked),
+              checked: settings[field.key] !== false,
+              onChange: (e) => updateField(field.key, e.target.checked),
             }),
-            h('span', { className: 'dim-humanizeFieldName' }, meta.label)),
-          h('span', { className: 'dim-humanizeFieldHint' }, meta.hint));
-      }),
-
-      // onNewMessage dropdown
-      h('label', { className: 'dim-humanizeField' },
-        h('span', { className: 'dim-humanizeFieldName' }, HUMANIZE_SETTING_META.onNewMessage.label),
-        h('select', {
-          value: settings.onNewMessage,
-          onChange: (e) => updateField('onNewMessage', e.target.value),
-        },
-        HUMANIZE_SETTING_META.onNewMessage.options.map((opt) =>
-          h('option', { key: opt.value, value: opt.value }, opt.label),
-        )),
-        h('span', { className: 'dim-humanizeFieldHint' }, HUMANIZE_SETTING_META.onNewMessage.hint),
-      ),
+            h('span', { className: 'dim-humanizeFieldName' }, field.label)),
+          h('span', { className: 'dim-humanizeFieldHint' }, field.hint))
+        : h('label', { key: field.key, className: 'dim-humanizeField' },
+          h('span', { className: 'dim-humanizeFieldName' }, field.label),
+          h('select', {
+            value: settings[field.key],
+            onChange: (e) => updateField(field.key, e.target.value),
+          },
+          field.options.map((opt) =>
+            h('option', { key: opt.value, value: opt.value }, opt.label),
+          )),
+          h('span', { className: 'dim-humanizeFieldHint' }, field.hint)))),
 
       // Send delay — the shared field group (identical layout, hints,
       // and validation to the per-bot editor's custom sendDelay form).
@@ -229,18 +222,7 @@ export function HumanizeSettingsPanel({ rpcCall }) {
       h('span', { className: 'dim-humanizeFieldHint' },
         '钉钉、企业微信、飞书、Slack 等无输入状态接口的渠道只有延迟生效，且阅读延迟封顶 5 秒。'),
 
-      // Typing indicator (phase ②: compose)
-      h('label', { className: 'dim-humanizeField' },
-        h('span', { className: 'dim-humanizeFieldName' }, HUMANIZE_SETTING_META.typingIndicator.label),
-        h('select', {
-          value: settings.typingIndicator,
-          onChange: (e) => updateField('typingIndicator', e.target.value),
-        },
-        HUMANIZE_SETTING_META.typingIndicator.options.map((opt) =>
-          h('option', { key: opt.value, value: opt.value }, opt.label),
-        )),
-        h('span', { className: 'dim-humanizeFieldHint' }, HUMANIZE_SETTING_META.typingIndicator.hint),
-      ),
+      // Typing burst (phase ②: compose)
       h('details', { className: 'dim-humanizeAdvanced' },
         h('summary', null, '断续节奏高级参数'),
         h(TypingBurstFields, {
