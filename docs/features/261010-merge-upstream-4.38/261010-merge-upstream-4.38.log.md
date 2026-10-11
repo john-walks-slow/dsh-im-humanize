@@ -269,3 +269,14 @@ client 侧：
   - `feishu-proxy`「Feishu verification uses the SDK HTTP client through HTTPS_PROXY」、`lark-sdk-handshake-patch`「patched real SDK survives handshake timeout…」：在纯净 `/tmp/v438`（detached v4.38.0 + 独立 node_modules）上**逐字相同地失败**。
   - `telegram.test.mjs` 的 3 个「received poll batch retains its settings across cursor writes」：在 **fork main 树上同样失败**，报同一条 `both poll batches did not reach Harness`（5s 上限内的轮询批次未跑完）。
 - 191 个 cancelled 是既有噪声：多为「用 `AbortSignal.timeout` 给挂死调用设上限」的用例——该定时器是 unref 的，事件循环一旦空闲，进程先退出，用例就被记成 `cancelledByParent`（典型 `Promise resolution is still pending but the event loop has already resolved`）。受影响文件的 tests/pass/cancelled 三元组在纯净 `v4.38` 上逐个一致（`discord` 30、`qq/bridge` 52、`wecom/bridge` 52、`slack` 17、`plugin-host` 12、`matrix-api` 6、`feishu-runtime` 6、`weixin/harness-client` 9、`status-reaction` 2、`device-auth` 1、`dingtalk-runtime` 3）。
+
+## 收尾：fork 的 docs 记录补入（落地前体检）
+
+落地前把 `f434ca0..main` 的 205 条 fork delta 逐条与分支比对，发现 re-baseline 只搬了源码 / 测试 / 元数据，**fork 自 4.21.2 以来新增或改写的文档记录整批没跟过来**：
+
+- fork 新增（status A）且分支缺失：**60 个文档**（`docs/features/260908..261009` 九组、`docs/issues/260909..261010` 九组、`docs/方案/*.md`），另有 `pnpm-lock.yaml` 与 `new-message-policy.mjs`/其测试三份是**有意丢弃**（已批准），不计入丢失。
+- fork 修改（status M）且分支缺失：1 个（`docs/方案/私聊投递目标当前会话双向同步方案.md`）。
+- 逐条比对 status M 的 205 条中 95 条「双方都改」的文件：**没有一条出现「分支 == BASE 而 main != BASE」**，即源码侧没有 fork 修改被静默丢弃（唯一 fork-edit-lost 就是上面那个文档）。
+- fork 删除（status D）的文件在分支里也都不存在，无回潮。
+
+处置：把 61 个缺失文档按 `main` 的字节原样补进分支（`git hash-object` 与 `main:<path>` 逐个校验一致），随「补齐 docs」提交入库。上游 4.38 自己的 docs 更新不受影响（只补分支里不存在的路径，不做目录级覆盖）。
