@@ -280,3 +280,15 @@ client 侧：
 - fork 删除（status D）的文件在分支里也都不存在，无回潮。
 
 处置：把 61 个缺失文档按 `main` 的字节原样补进分支（`git hash-object` 与 `main:<path>` 逐个校验一致），随「补齐 docs」提交入库。上游 4.38 自己的 docs 更新不受影响（只补分支里不存在的路径，不做目录级覆盖）。
+
+## 落地：rebase 分支回到主工作区（261011）
+
+用户批准后，`main` 以 re-baseline 方式落到 `rebase-upstream-4.38`（落地前 HEAD `de7a3c16`）：
+
+1. 落地前逐条比对 `f434ca0..main` 的 205 条 fork delta 与分支，确认 fork 的 docs 记录整批缺失（60 新增 + 1 改写），补入后再次比对：**缺失 0、丢失 0**（有意丢弃的 `pnpm-lock.yaml` 与 `new-message-policy` 模块及测试除外）。
+2. 打安全标签 **`pre-4.38-rebaseline-20261011`** 指向原 main `d68894d2`（含 4.21.2 全部历史与 part 1 修复），旧历史随时可回。
+3. `git reset --hard rebase-upstream-4.38` → main = `de7a3c16`（879 个提交：上游 4.38 全量历史 + fork 13 个提交），工作区与分支树逐字节一致。
+4. `npm install`：4.38 新增依赖 `@matrix-org/olm` / `imapflow` / `mailparser` / `nodemailer`（+ `sharp`、`@tencent-qqmail/agently-cli`）到位，无依赖被移除；`npm install` 顺手改写的 `package-lock.json`（仅本地 npm 版本差异的 `libc` 元数据）已还原，未入库。
+5. `npm run build` + `node scripts/verify-package.mjs` 通过；`lib/index.js` 为 4.38 基线 + fork 定制的构建产物。
+
+未做（需用户决定）：推送到 origin（main 与 origin/main 已分叉，需 force push）、删除 `.worktrees/merge-upstream-4.38`、重启 dsh。
