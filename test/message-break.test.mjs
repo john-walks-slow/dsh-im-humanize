@@ -8,6 +8,11 @@ import {
   installMessageBreakTool,
 } from '../src/channels/shared/message-break.mjs';
 
+/** A registry whose only owned turn is the given session object. */
+function registryOwning(session) {
+  return { hasActiveConsumer: (candidate) => candidate === session };
+}
+
 test('message-break: tool definition has correct name and description', () => {
   const def = createMessageBreakToolDefinition();
   assert.equal(def.name, MESSAGE_BREAK_TOOL);
@@ -15,29 +20,53 @@ test('message-break: tool definition has correct name and description', () => {
   assert.match(def.description, /Do not use when the user message does not come from dsh-im/);
 });
 
-test('message-break: installMessageBreakTool registers tool and system prompt section', () => {
+test('message-break: installMessageBreakTool registers the tool, its guard and the ownership-gated guidance', () => {
   const registeredTools = [];
-  const sections = [];
+  const guards = [];
+  const contexts = [];
+  const ownedSession = { id: 'owned' };
   const fakeCtx = {
     tools: {
-      register(tool) {
-        registeredTools.push(tool);
-      },
+      register(tool) { registeredTools.push(tool); },
+      guard(check) { guards.push(check); },
     },
     systemPrompt: {
-      section(sec) {
-        sections.push(sec);
-      },
+      context(context) { contexts.push(context); },
     },
   };
-  const result = installMessageBreakTool(fakeCtx);
+  const result = installMessageBreakTool(fakeCtx, { registry: registryOwning(ownedSession) });
   assert.equal(result, true);
   assert.equal(registeredTools.length, 1);
   assert.equal(registeredTools[0].name, 'message_break');
   assert.match(registeredTools[0].description, /Do not use when the user message does not come from dsh-im/);
-  assert.equal(sections.length, 1);
-  assert.equal(sections[0].name, 'dsh-im:message-break');
-  assert.match(sections[0].text, /Do not use when the user message does not come from dsh-im/);
+  assert.equal(guards.length, 1);
+  assert.equal(contexts.length, 1);
+  assert.equal(contexts[0].name, 'dsh-im:message-break');
+  // The guidance renders for a turn an IM channel is delivering, and nowhere else.
+  assert.match(contexts[0].text({ agent: { session: ownedSession } }),
+    /split it into multiple shorter messages/);
+  assert.equal(contexts[0].text({ agent: { session: { id: 'web' } } }), '');
+  assert.equal(contexts[0].text(undefined), '');
+});
+
+test('message-break: the guard refuses the tool outside an IM-delivered turn', () => {
+  const guards = [];
+  const ownedSession = { id: 'owned' };
+  installMessageBreakTool({
+    tools: { register() {}, guard(check) { guards.push(check); } },
+    systemPrompt: { context() {} },
+  }, { registry: registryOwning(ownedSession) });
+  const [guard] = guards;
+  assert.equal(guard({ name: MESSAGE_BREAK_TOOL, agent: { session: ownedSession } }), undefined);
+  assert.match(guard({ name: MESSAGE_BREAK_TOOL, agent: { session: { id: 'web' } } }),
+    /no IM delivery consumer/);
+  assert.equal(guard({ name: 'bash', agent: { session: { id: 'web' } } }), undefined,
+    'other tools stay untouched');
+});
+
+test('message-break: install refuses a context without the guard capability', () => {
+  const fakeCtx = { tools: { register() {} }, systemPrompt: { context() {} } };
+  assert.equal(installMessageBreakTool(fakeCtx, { registry: registryOwning(null) }), false);
 });
 
 test('message-break: tool definition has no required parameters', () => {
@@ -146,12 +175,13 @@ test('message-break: segmentsCover never suppresses a tail split by raw whitespa
 
 test('message-break: prompt surfaces spell out the write-then-break rule', () => {
   const def = createMessageBreakToolDefinition();
-  const sections = [];
+  const contexts = [];
+  const ownedSession = { id: 'owned' };
   installMessageBreakTool({
-    tools: { register() {} },
-    systemPrompt: { section: (sec) => sections.push(sec) },
-  });
-  for (const text of [def.description, sections[0].text]) {
+    tools: { register() {}, guard() {} },
+    systemPrompt: { context: (context) => contexts.push(context) },
+  }, { registry: registryOwning(ownedSession) });
+  for (const text of [def.description, contexts[0].text({ agent: { session: ownedSession } })]) {
     // The rule that makes the tool work: the segment is written first.
     assert.match(text, /Write the segment first, then call this tool|write a segment, then call message_break/);
     assert.match(text, /Never call it before you start writing a segment|Never call message_break before you start a segment/);

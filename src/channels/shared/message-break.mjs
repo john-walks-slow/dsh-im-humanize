@@ -15,10 +15,23 @@
  * streaming channels finalize the segment in the carrier that streamed it and
  * open a fresh carrier for the next one; channels without a carrier send each
  * segment as a separate message.
+ *
+ * Only a turn an IM channel is delivering can use it: the guidance renders for
+ * such turns alone, and a call from any other turn is denied by the tool guard
+ * (see installMessageBreakTool).
  */
+
+import { outboundArtifactRegistry } from './semantic/artifact.mjs';
 
 export const MESSAGE_BREAK_TOOL = 'message_break';
 const MAX_MESSAGE_BREAKS_PER_TURN = 20;
+
+/**
+ * Denial reason for a turn no IM channel is delivering: the break would have
+ * nothing to split, because only a channel bridge turns the tool call into
+ * separate chat messages.
+ */
+const MESSAGE_BREAK_UNAVAILABLE = 'message_break only splits the messages a dsh-im chat is receiving, and this turn has no IM delivery consumer; nothing would be split. Reply normally instead.';
 
 /**
  * Build the tool definition for ctx.tools.register().
@@ -27,7 +40,7 @@ const MAX_MESSAGE_BREAKS_PER_TURN = 20;
 export function createMessageBreakToolDefinition() {
   return Object.freeze({
     name: MESSAGE_BREAK_TOOL,
-    description: 'This tool is only meaningful in dsh-im sessions (where the context contains a <dsh_im> tag); calling it outside a dsh-im session has no effect. Insert a message break to split your response into multiple shorter messages, like a human chatting. Write the segment first, then call this tool: everything you have written since the previous break is sent immediately as its own chat message. Never call it before you start writing a segment — an empty break sends nothing, and the text that follows waits for the next break. Text after the last break is sent as the final message. Call it at natural paragraph or topic boundaries. The tool takes no parameters. Do not use when the user message does not come from dsh-im.',
+    description: 'This tool is only meaningful in dsh-im sessions (where the context contains a <dsh_im> tag); calling it outside a dsh-im session is refused. Insert a message break to split your response into multiple shorter messages, like a human chatting. Write the segment first, then call this tool: everything you have written since the previous break is sent immediately as its own chat message. Never call it before you start writing a segment — an empty break sends nothing, and the text that follows waits for the next break. Text after the last break is sent as the final message. Call it at natural paragraph or topic boundaries. The tool takes no parameters. Do not use when the user message does not come from dsh-im.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -52,19 +65,35 @@ export function createMessageBreakToolDefinition() {
 }
 
 /**
- * Register the message_break tool and its system prompt section.
+ * Register the message_break tool, its ownership guard, and its guidance.
+ *
+ * The break only exists for an IM chat: the channel bridge turns the tool call
+ * into separate chat messages. A turn no channel is delivering (Web, CLI, a
+ * wake delivered by session sync) therefore gets neither the guidance nor a
+ * successful call — the guard denies it, exactly like dsh_im_return_file
+ * refuses a file no IM consumer can claim. Ownership is the artifact
+ * registry's per-turn consumer, the plugin's single notion of "an IM channel
+ * is delivering this turn".
+ *
  * Returns true on success, false if the context lacks the required capabilities.
  */
-export function installMessageBreakTool(ctx) {
+export function installMessageBreakTool(ctx, { registry = outboundArtifactRegistry } = {}) {
   if (typeof ctx?.tools?.register !== 'function'
-    || typeof ctx?.systemPrompt?.section !== 'function') {
+    || typeof ctx?.tools?.guard !== 'function'
+    || typeof ctx?.systemPrompt?.context !== 'function') {
     return false;
   }
+  const owned = (session) => registry.hasActiveConsumer(session);
   ctx.tools.register(createMessageBreakToolDefinition());
-  ctx.systemPrompt.section({
+  ctx.tools.guard((exec) => exec?.name === MESSAGE_BREAK_TOOL && !owned(exec?.agent?.session)
+    ? MESSAGE_BREAK_UNAVAILABLE
+    : undefined);
+  ctx.systemPrompt.context({
     name: 'dsh-im:message-break',
     order: 116,
-    text: 'When your response is long, split it into multiple shorter messages with the message_break tool, mimicking human chat style: write a segment, then call message_break to deliver it as its own chat message, then write the next segment. The break is a trailing delimiter — everything written since the previous break is sent at the call. Never call message_break before you start a segment: an empty break sends nothing, and the text that follows waits for the next break or the end of the turn. Text after the last break becomes the final message. Call it at natural paragraph or topic boundaries. The tool takes no parameters. Do not use when the user message does not come from dsh-im.',
+    text: (assembly) => (owned(assembly?.agent?.session)
+      ? 'When your response is long, split it into multiple shorter messages with the message_break tool, mimicking human chat style: write a segment, then call message_break to deliver it as its own chat message, then write the next segment. The break is a trailing delimiter — everything written since the previous break is sent at the call. Never call message_break before you start a segment: an empty break sends nothing, and the text that follows waits for the next break or the end of the turn. Text after the last break becomes the final message. Call it at natural paragraph or topic boundaries. The tool takes no parameters. Do not use when the user message does not come from dsh-im.'
+      : ''),
   });
   return true;
 }
