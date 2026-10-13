@@ -537,3 +537,7 @@ The initial list is based on user accounts in [GitHub Contributors](https://gith
 The list and contribution types are maintained in [`.all-contributorsrc`](.all-contributorsrc). If someone or a contribution is missing, please open an [issue](https://github.com/xmanrui/dsh-im/issues) or a pull request; non-code contributions are welcome too.
 
 Maintainers can run `npx --yes --package=all-contributors-cli@6.26.1 all-contributors add <username> <type[,type...]>` to add contributors and contribution types. After editing the configuration manually, run `npx --yes --package=all-contributors-cli@6.26.1 all-contributors generate` to update both READMEs. Once the [All Contributors Bot](https://allcontributors.org/en/bot/installation/) is installed for the repository, a comment such as `@all-contributors please add @username for code, doc, test` on an issue or pull request can also update the list.
+
+## Community
+
+- Thanks to the [LINUX DO](https://linux.do/) community for providing the discussion environment.
